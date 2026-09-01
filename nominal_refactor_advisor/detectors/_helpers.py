@@ -8,10 +8,6 @@ from __future__ import annotations
 
 from ..factorization import (
     FactorizationRow,
-    InheritanceDesign,
-    InheritanceDesignSearch,
-    InheritanceMethodSpec,
-    InheritanceResidueProfile,
     ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
@@ -1069,7 +1065,8 @@ def _runtime_adapter_shell_candidates_for_function(
             if keyword.arg is None:
                 continue
             if (
-                direct_attr_name := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
+                direct_attr_name
+                := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
                     keyword.value, source_name
                 )
             ) is not None:
@@ -3360,68 +3357,67 @@ def _alternate_constructor_family_groups(
     return tuple(groups)
 
 
-_ABCOptimizerFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
-_ABCOptimizerMethodNamesByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
-_ABCOptimizerAxisSpecsByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
-_ABCOptimizerAxisRow: TypeAlias = tuple[str, tuple[str, ...]]
-_ABCOptimizerAxisRowsByFamily: TypeAlias = dict[
-    _ABCOptimizerFamilyKey, set[_ABCOptimizerAxisRow]
+_MethodFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
+_MethodFamilyMethodNamesByFamily: TypeAlias = dict[_MethodFamilyKey, set[str]]
+_MethodFamilyAxisSpecsByFamily: TypeAlias = dict[_MethodFamilyKey, set[str]]
+_MethodFamilyAxisRow: TypeAlias = tuple[str, tuple[str, ...]]
+_MethodFamilyAxisRowsByFamily: TypeAlias = dict[
+    _MethodFamilyKey, set[_MethodFamilyAxisRow]
 ]
-_ABCOptimizerLatticeEdgesByFamily: TypeAlias = dict[
-    _ABCOptimizerFamilyKey, set[tuple[tuple[str, ...], tuple[str, ...]]]
+_MethodFamilyLatticeEdgesByFamily: TypeAlias = dict[
+    _MethodFamilyKey, set[tuple[tuple[str, ...], tuple[str, ...]]]
 ]
-_ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
+_MethodFamilyMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
+class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
     shared_statement_count: int
     varying_coordinates: tuple[CompactMethodSemanticCoordinate, ...]
     compression_certificate: CompressionCertificate
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerMethodPlan(ClassFamilyWitnessCarrier):
+class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     base_symbol: str
     method_name: str
-    profile: _ABCOptimizerMethodGroupProfile
+    profile: _MethodFamilyMethodGroupProfile
     line_numbers: tuple[int, ...]
     line_count: int
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerResiduePlacement(ResidueHookNamesCarrier):
-    abc_method_names: tuple[str, ...]
+class _MethodFamilyResidueEvidence(ResidueHookNamesCarrier):
     leaf_residue_names: tuple[str, ...]
-    residue_count: int
+    residue_declaration_count: int
     shared_to_residue_ratio: float
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerFamilyMethodSurface:
+class _MethodFamilyMethodSurface:
     base_name: str
     method_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerFamilyPlan(
-    _ABCOptimizerFamilyMethodSurface,
+class _MethodFamilyEvidence(
+    _MethodFamilyMethodSurface,
     ResidueHookNamesCarrier,
-    ABCOptimizerAxisDesignCarrier,
-    ABCOptimizerHierarchyMetricsCarrier,
-    ABCOptimizerResiduePlacementCarrier,
+    MethodFamilyRelationSpecCarrier,
+    MethodFamilyLatticeMetricsCarrier,
+    MethodFamilyResidueEvidenceCarrier,
 ):
     class_names: tuple[str, ...]
 
 
-_ABCOptimizerFamilyCandidateT = TypeVar("_ABCOptimizerFamilyCandidateT")
-_ABCOptimizerFamilyCandidateBuilder: TypeAlias = Callable[
-    [tuple[_ABCOptimizerMethodPlan, ...], _ABCOptimizerFamilyPlan],
-    _ABCOptimizerFamilyCandidateT | None,
+_MethodFamilyCandidateT = TypeVar("_MethodFamilyCandidateT")
+_MethodFamilyCandidateBuilder: TypeAlias = Callable[
+    [tuple[_MethodFamilyMethodPlan, ...], _MethodFamilyEvidence],
+    _MethodFamilyCandidateT | None,
 ]
 
 
-def _abc_optimizer_residue_names(
+def _method_family_residue_names(
     method_name: str,
     varying_coordinates: tuple[CompactMethodSemanticCoordinate, ...],
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -3446,8 +3442,8 @@ def _abc_optimizer_residue_names(
     )
 
 
-def _abc_optimizer_family_certificate(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+def _method_family_certificate(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
 ) -> CompressionCertificate | None:
     class_names = method_plans[0].class_names
     manual_object_count = sum(
@@ -3481,8 +3477,8 @@ def _abc_optimizer_family_certificate(
     return certificate if certificate.pays_rent else None
 
 
-def _abc_optimizer_residue_axis_catalog_certificate(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+def _method_family_residue_axis_catalog_certificate(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
     residue_kind_names: tuple[str, ...],
 ) -> CompressionCertificate | None:
     axis_names = tuple(
@@ -3509,7 +3505,7 @@ def _abc_optimizer_residue_axis_catalog_certificate(
     return certificate if certificate.pays_rent else None
 
 
-def _abc_optimizer_base_is_more_specific(
+def _method_family_base_is_more_specific(
     candidate_base_name: str,
     incumbent_base_name: str,
     class_index: ClassFamilyIndex,
@@ -3517,27 +3513,27 @@ def _abc_optimizer_base_is_more_specific(
     return incumbent_base_name in class_index.ancestor_symbols(candidate_base_name)
 
 
-def _abc_optimizer_more_specific_method_plans(
-    method_plans: Iterable[_ABCOptimizerMethodPlan],
+def _method_family_more_specific_method_plans(
+    method_plans: Iterable[_MethodFamilyMethodPlan],
     class_index: ClassFamilyIndex,
-) -> tuple[_ABCOptimizerMethodPlan, ...]:
-    plans_by_key: dict[_ABCOptimizerMethodPlanKey, _ABCOptimizerMethodPlan] = {}
+) -> tuple[_MethodFamilyMethodPlan, ...]:
+    plans_by_key: dict[_MethodFamilyMethodPlanKey, _MethodFamilyMethodPlan] = {}
     for method_plan in method_plans:
         key = (method_plan.method_name, method_plan.class_names)
         incumbent = plans_by_key.get(key)
-        if incumbent is None or _abc_optimizer_base_is_more_specific(
+        if incumbent is None or _method_family_base_is_more_specific(
             method_plan.base_symbol, incumbent.base_symbol, class_index
         ):
             plans_by_key[key] = method_plan
     return tuple(plans_by_key.values())
 
 
-def _abc_optimizer_candidate_from_method_plan_path(
+def _method_family_candidate_from_method_plan_path(
     file_path: str,
-    method_plan: _ABCOptimizerMethodPlan,
-    family_plan: _ABCOptimizerFamilyPlan,
-) -> SemanticOverlapABCOptimizationCandidate:
-    return SemanticOverlapABCOptimizationCandidate(
+    method_plan: _MethodFamilyMethodPlan,
+    family_plan: _MethodFamilyEvidence,
+) -> SemanticOverlapMethodCandidate:
+    return SemanticOverlapMethodCandidate(
         file_path=file_path,
         line=min(method_plan.line_numbers),
         base_name=method_plan.base_name,
@@ -3551,17 +3547,11 @@ def _abc_optimizer_candidate_from_method_plan_path(
         property_hook_names=method_plan.profile.property_hook_names,
         behavior_hook_names=method_plan.profile.behavior_hook_names,
         family_method_names=family_plan.method_names,
-        abc_concrete_method_names=family_plan.abc_concrete_method_names,
         leaf_residue_names=family_plan.leaf_residue_names,
-        subclass_residue_count=family_plan.subclass_residue_count,
+        residue_declaration_count=family_plan.residue_declaration_count,
         shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
-        mixin_axis_names=family_plan.mixin_axis_names,
-        overlap_axis_names=family_plan.overlap_axis_names,
-        mixin_axis_specs=family_plan.mixin_axis_specs,
-        overlap_axis_specs=family_plan.overlap_axis_specs,
-        hierarchy_normal_form=family_plan.hierarchy_normal_form,
-        optimizer_score=family_plan.optimizer_score,
-        abc_layer_count=family_plan.abc_layer_count,
+        strict_subset_family_specs=family_plan.strict_subset_family_specs,
+        partial_overlap_family_specs=family_plan.partial_overlap_family_specs,
         lattice_node_count=family_plan.lattice_node_count,
         lattice_edge_count=family_plan.lattice_edge_count,
         line_count=method_plan.line_count,
@@ -3569,13 +3559,13 @@ def _abc_optimizer_candidate_from_method_plan_path(
     )
 
 
-def _abc_optimizer_family_candidate(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plan: _ABCOptimizerFamilyPlan,
-) -> SemanticOverlapABCFamilyOptimizationCandidate | None:
+def _method_family_candidate(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plan: _MethodFamilyEvidence,
+) -> SemanticOverlapMethodFamilyCandidate | None:
     if len(method_plans) < 2:
         return None
-    certificate = _abc_optimizer_family_certificate(method_plans)
+    certificate = _method_family_certificate(method_plans)
     if certificate is None:
         return None
     file_paths = tuple(
@@ -3607,7 +3597,7 @@ def _abc_optimizer_family_candidate(
             for method_plan in method_plans
         )
     )
-    return SemanticOverlapABCFamilyOptimizationCandidate(
+    return SemanticOverlapMethodFamilyCandidate(
         file_path=file_paths[0],
         line=min(line_numbers),
         base_name=family_plan.base_name,
@@ -3619,16 +3609,14 @@ def _abc_optimizer_family_candidate(
         shared_statement_count=sum(
             (method_plan.profile.shared_statement_count for method_plan in method_plans)
         ),
-        residue_count=residue_count,
-        abc_concrete_method_names=family_plan.abc_concrete_method_names,
+        residue_declaration_count=residue_count,
         classvar_names=family_plan.classvar_names,
         property_hook_names=family_plan.property_hook_names,
         behavior_hook_names=family_plan.behavior_hook_names,
         leaf_residue_names=family_plan.leaf_residue_names,
         shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
-        hierarchy_normal_form=family_plan.hierarchy_normal_form,
-        optimizer_score=family_plan.optimizer_score,
-        abc_layer_count=family_plan.abc_layer_count,
+        strict_subset_family_specs=family_plan.strict_subset_family_specs,
+        partial_overlap_family_specs=family_plan.partial_overlap_family_specs,
         lattice_node_count=family_plan.lattice_node_count,
         lattice_edge_count=family_plan.lattice_edge_count,
         line_count=sum((method_plan.line_count for method_plan in method_plans)),
@@ -3636,29 +3624,29 @@ def _abc_optimizer_family_candidate(
     )
 
 
-def _abc_optimizer_residue_kind_names(
-    method_plan: _ABCOptimizerMethodPlan,
+def _method_family_residue_kind_names(
+    method_plan: _MethodFamilyMethodPlan,
 ) -> tuple[str, ...]:
     return tuple((kind for _, kind, _ in method_plan.profile.varying_coordinates))
 
 
-def _abc_optimizer_residue_axis_catalog_candidate(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plan: _ABCOptimizerFamilyPlan,
-) -> SemanticOverlapABCResidueAxisCatalogCandidate | None:
+def _method_family_residue_axis_catalog_candidate(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plan: _MethodFamilyEvidence,
+) -> SemanticOverlapResidueAxisCandidate | None:
     residue_context = (
         Maybe.of(method_plans)
         .filter(lambda plans: len(plans) >= 2)
         .map(
             lambda plans: {
-                _abc_optimizer_residue_kind_names(method_plan) for method_plan in plans
+                _method_family_residue_kind_names(method_plan) for method_plan in plans
             }
         )
         .filter(lambda signatures: len(signatures) == 1)
         .map(lambda signatures: next(iter(signatures)))
         .filter(bool)
         .combine(
-            lambda residue_kind_names: _abc_optimizer_residue_axis_catalog_certificate(
+            lambda residue_kind_names: _method_family_residue_axis_catalog_certificate(
                 method_plans, residue_kind_names
             ),
             lambda residue_kind_names, certificate: (residue_kind_names, certificate),
@@ -3689,7 +3677,7 @@ def _abc_optimizer_residue_axis_catalog_candidate(
             for class_name in method_plan.class_names
         )
     )
-    return SemanticOverlapABCResidueAxisCatalogCandidate(
+    return SemanticOverlapResidueAxisCandidate(
         file_path=file_paths[0],
         line=min(line_numbers),
         base_name=family_plan.base_name,
@@ -3705,19 +3693,19 @@ def _abc_optimizer_residue_axis_catalog_candidate(
     )
 
 
-def _abc_optimizer_axis_spec(method_name: str, class_names: tuple[str, ...]) -> str:
+def _method_family_member_spec(method_name: str, class_names: tuple[str, ...]) -> str:
     return f"{method_name}[{','.join(class_names)}]"
 
 
-def _abc_optimizer_family_axis_spec(
+def _method_family_group_spec(
     method_names: tuple[str, ...], class_names: tuple[str, ...]
 ) -> str:
     return f"{'+'.join(method_names)}[{','.join(class_names)}]"
 
 
-def _abc_optimizer_global_certificate(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+def _method_family_global_certificate(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plans: tuple[_MethodFamilyEvidence, ...],
 ) -> CompressionCertificate:
     return CompressionCertificate.from_object_family(
         manual_object_count=sum(
@@ -3734,7 +3722,7 @@ def _abc_optimizer_global_certificate(
         semantic_axes=(
             *(method_plan.method_name for method_plan in method_plans),
             *(
-                _abc_optimizer_family_axis_spec(
+                _method_family_group_spec(
                     family_plan.method_names, family_plan.class_names
                 )
                 for family_plan in family_plans
@@ -3762,8 +3750,8 @@ def _abc_optimizer_global_certificate(
     )
 
 
-def _abc_optimizer_family_sets_have_global_structure(
-    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+def _method_family_sets_have_global_structure(
+    family_plans: tuple[_MethodFamilyEvidence, ...],
 ) -> bool:
     class_sets = tuple(
         (frozenset(family_plan.class_names) for family_plan in family_plans)
@@ -3775,8 +3763,8 @@ def _abc_optimizer_family_sets_have_global_structure(
     return False
 
 
-def _abc_optimizer_global_lattice_edge_count(
-    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+def _method_family_global_lattice_edge_count(
+    family_plans: tuple[_MethodFamilyEvidence, ...],
 ) -> int:
     edges: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
     class_sets = tuple(
@@ -3795,16 +3783,16 @@ def _abc_optimizer_global_lattice_edge_count(
     return len(edges)
 
 
-def _abc_optimizer_global_inheritance_candidate(
+def _method_family_global_inheritance_candidate(
     base_name: str,
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
-) -> GlobalInheritanceOptimizationCandidate | None:
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plans: tuple[_MethodFamilyEvidence, ...],
+) -> OverlappingInheritanceFamiliesCandidate | None:
     if len(family_plans) < 2:
         return None
-    if not _abc_optimizer_family_sets_have_global_structure(family_plans):
+    if not _method_family_sets_have_global_structure(family_plans):
         return None
-    certificate = _abc_optimizer_global_certificate(method_plans, family_plans)
+    certificate = _method_family_global_certificate(method_plans, family_plans)
     if not certificate.pays_rent:
         return None
     file_paths = tuple(
@@ -3835,7 +3823,7 @@ def _abc_optimizer_global_inheritance_candidate(
             for class_name in method_plan.class_names
         }
     )
-    return GlobalInheritanceOptimizationCandidate(
+    return OverlappingInheritanceFamiliesCandidate(
         file_path=file_paths[0],
         line=min(line_numbers),
         base_name=base_name,
@@ -3845,24 +3833,24 @@ def _abc_optimizer_global_inheritance_candidate(
         ),
         family_specs=tuple(
             (
-                _abc_optimizer_family_axis_spec(
+                _method_family_group_spec(
                     family_plan.method_names, family_plan.class_names
                 )
                 for family_plan in family_plans
             )
         ),
-        mixin_axis_specs=sorted_tuple(
+        strict_subset_family_specs=sorted_tuple(
             (
                 axis_spec
                 for family_plan in family_plans
-                for axis_spec in family_plan.mixin_axis_specs
+                for axis_spec in family_plan.strict_subset_family_specs
             )
         ),
-        overlap_axis_specs=sorted_tuple(
+        partial_overlap_family_specs=sorted_tuple(
             (
                 axis_spec
                 for family_plan in family_plans
-                for axis_spec in family_plan.overlap_axis_specs
+                for axis_spec in family_plan.partial_overlap_family_specs
             )
         ),
         file_paths=file_paths,
@@ -3871,8 +3859,8 @@ def _abc_optimizer_global_inheritance_candidate(
         shared_statement_count=sum(
             (method_plan.profile.shared_statement_count for method_plan in method_plans)
         ),
-        residue_count=sum(
-            (family_plan.subclass_residue_count for family_plan in family_plans)
+        residue_declaration_count=sum(
+            (family_plan.residue_declaration_count for family_plan in family_plans)
         ),
         leaf_residue_names=sorted_tuple(
             (
@@ -3880,9 +3868,6 @@ def _abc_optimizer_global_inheritance_candidate(
                 for family_plan in family_plans
                 for residue_name in family_plan.leaf_residue_names
             )
-        ),
-        optimizer_score=sum(
-            (family_plan.optimizer_score for family_plan in family_plans)
         ),
         lattice_node_count=len(
             {family_plan.class_names for family_plan in family_plans}
@@ -3893,87 +3878,18 @@ def _abc_optimizer_global_inheritance_candidate(
                 if set(left.class_names) & set(right.class_names)
             }
         ),
-        lattice_edge_count=_abc_optimizer_global_lattice_edge_count(family_plans),
+        lattice_edge_count=_method_family_global_lattice_edge_count(family_plans),
         line_count=sum((method_plan.line_count for method_plan in method_plans)),
         compression_certificate=certificate,
     )
 
 
-def _abc_optimizer_hierarchy_normal_form(
-    *,
-    base_name: str,
-    class_names: tuple[str, ...],
-    method_names: tuple[str, ...],
-    mixin_axis_specs: tuple[str, ...],
-    overlap_axis_specs: tuple[str, ...],
-) -> str:
-    root = f"ABC({base_name}:{','.join(class_names)}){{{','.join(method_names)}}}"
-    mixins = f" + MIXIN({';'.join(mixin_axis_specs)})" if mixin_axis_specs else ""
-    overlaps = (
-        f" + OVERLAP({';'.join(overlap_axis_specs)})" if overlap_axis_specs else ""
-    )
-    return f"{root}{mixins}{overlaps}"
-
-
-def _inheritance_method_spec(
-    method_plan: _ABCOptimizerMethodPlan,
-) -> InheritanceMethodSpec:
-    return InheritanceMethodSpec(
-        method_name=method_plan.method_name,
-        class_names=method_plan.class_names,
-        shared_statement_count=method_plan.profile.shared_statement_count,
-        residue=InheritanceResidueProfile(
-            classvar_names=method_plan.profile.classvar_names,
-            property_hook_names=method_plan.profile.property_hook_names,
-            behavior_hook_names=method_plan.profile.behavior_hook_names,
-        ),
-    )
-
-
-def _abc_optimizer_best_inheritance_design(
-    base_name: str, method_plans: tuple[_ABCOptimizerMethodPlan, ...]
-) -> InheritanceDesign | None:
-    return (
-        InheritanceDesignSearch(
-            (_inheritance_method_spec(method_plan) for method_plan in method_plans)
-        )
-        .solve(base_name)
-        .best_design
-    )
-
-
-def _abc_optimizer_residue_placement(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+def _method_family_residue_evidence(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
     *,
     class_names: tuple[str, ...],
-    method_names: tuple[str, ...],
-    subset_method_names: tuple[str, ...],
-    overlap_method_names: tuple[str, ...],
     shared_statement_score: int,
-    best_design: InheritanceDesign | None,
-) -> _ABCOptimizerResiduePlacement:
-    if best_design is not None:
-        return _ABCOptimizerResiduePlacement(
-            abc_method_names=best_design.abc_method_names,
-            classvar_names=best_design.classvar_names,
-            property_hook_names=sorted_tuple(
-                (
-                    name
-                    for method_plan in method_plans
-                    for name in method_plan.profile.property_hook_names
-                )
-            ),
-            behavior_hook_names=sorted_tuple(
-                (
-                    name
-                    for method_plan in method_plans
-                    for name in method_plan.profile.behavior_hook_names
-                )
-            ),
-            leaf_residue_names=best_design.leaf_residue_names,
-            residue_count=best_design.residue_declaration_count,
-            shared_to_residue_ratio=best_design.shared_to_residue_ratio,
-        )
+) -> _MethodFamilyResidueEvidence:
     classvars = sorted_tuple(
         (
             name
@@ -3995,36 +3911,34 @@ def _abc_optimizer_residue_placement(
             for name in method_plan.profile.behavior_hook_names
         )
     )
-    residue_count = len(class_names) * (
-        len(classvars) + len(properties) + len(behaviors)
+    residue_declaration_count = len(class_names) * sum(
+        (
+            len(method_plan.profile.classvar_names)
+            + len(method_plan.profile.property_hook_names)
+            + len(method_plan.profile.behavior_hook_names)
+            for method_plan in method_plans
+        )
     )
-    return _ABCOptimizerResiduePlacement(
-        abc_method_names=tuple(
-            (
-                method_name
-                for method_name in method_names
-                if method_name not in (*subset_method_names, *overlap_method_names)
-            )
-        ),
+    return _MethodFamilyResidueEvidence(
         classvar_names=classvars,
         property_hook_names=properties,
         behavior_hook_names=behaviors,
         leaf_residue_names=sorted_tuple((*classvars, *properties, *behaviors)),
-        residue_count=residue_count,
-        shared_to_residue_ratio=shared_statement_score / max(residue_count, 1),
+        residue_declaration_count=residue_declaration_count,
+        shared_to_residue_ratio=(
+            shared_statement_score / max(residue_declaration_count, 1)
+        ),
     )
 
 
-def _abc_optimizer_family_plan(
-    family_key: _ABCOptimizerFamilyKey,
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    subset_method_names: tuple[str, ...],
-    overlap_method_names: tuple[str, ...],
+def _method_family_plan(
+    family_key: _MethodFamilyKey,
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
     subset_axis_specs: tuple[str, ...],
     overlap_axis_specs: tuple[str, ...],
     lattice_node_count: int,
     lattice_edge_count: int,
-) -> _ABCOptimizerFamilyPlan:
+) -> _MethodFamilyEvidence:
     _, class_names = family_key
     base_name = method_plans[0].base_name
     method_names = sorted_tuple(
@@ -4033,87 +3947,34 @@ def _abc_optimizer_family_plan(
     shared_statement_score = sum(
         (method_plan.profile.shared_statement_count for method_plan in method_plans)
     )
-    residue_cost = sum(
-        (
-            len(method_plan.profile.classvar_names)
-            + len(method_plan.profile.property_hook_names)
-            + len(method_plan.profile.behavior_hook_names)
-            for method_plan in method_plans
-        )
-    )
-    optimizer_score = (
-        len(class_names) * shared_statement_score
-        + (len(method_names) * len(class_names))
-        - residue_cost
-        - len(subset_method_names)
-        - (2 * len(overlap_method_names))
-    )
-    best_design = _abc_optimizer_best_inheritance_design(base_name, method_plans)
-    design_mixin_axis_names = (
-        best_design.mixin_axis_names if best_design is not None else subset_method_names
-    )
-    design_overlap_axis_names = (
-        best_design.overlap_axis_names
-        if best_design is not None
-        else overlap_method_names
-    )
-    placement = _abc_optimizer_residue_placement(
+    residue = _method_family_residue_evidence(
         method_plans,
         class_names=class_names,
-        method_names=method_names,
-        subset_method_names=subset_method_names,
-        overlap_method_names=overlap_method_names,
         shared_statement_score=shared_statement_score,
-        best_design=best_design,
     )
-    design_normal_form = (
-        best_design.normal_form
-        if best_design is not None
-        else _abc_optimizer_hierarchy_normal_form(
-            base_name=base_name,
-            class_names=class_names,
-            method_names=method_names,
-            mixin_axis_specs=subset_axis_specs,
-            overlap_axis_specs=overlap_axis_specs,
-        )
-    )
-    design_score = (
-        best_design.optimizer_score if best_design is not None else optimizer_score
-    )
-    design_abc_layer_count = (
-        best_design.abc_layer_count
-        if best_design is not None
-        else (1 if method_names else 0) + len(overlap_method_names)
-    )
-    return _ABCOptimizerFamilyPlan(
+    return _MethodFamilyEvidence(
         base_name=base_name,
         class_names=class_names,
         method_names=method_names,
-        abc_concrete_method_names=placement.abc_method_names,
-        classvar_names=placement.classvar_names,
-        property_hook_names=placement.property_hook_names,
-        behavior_hook_names=placement.behavior_hook_names,
-        leaf_residue_names=placement.leaf_residue_names,
-        subclass_residue_count=placement.residue_count,
-        shared_to_residue_ratio=placement.shared_to_residue_ratio,
-        mixin_axis_names=design_mixin_axis_names,
-        overlap_axis_names=design_overlap_axis_names,
-        mixin_axis_specs=subset_axis_specs,
-        overlap_axis_specs=overlap_axis_specs,
-        hierarchy_normal_form=design_normal_form,
-        optimizer_score=design_score,
-        abc_layer_count=design_abc_layer_count,
+        classvar_names=residue.classvar_names,
+        property_hook_names=residue.property_hook_names,
+        behavior_hook_names=residue.behavior_hook_names,
+        leaf_residue_names=residue.leaf_residue_names,
+        residue_declaration_count=residue.residue_declaration_count,
+        shared_to_residue_ratio=residue.shared_to_residue_ratio,
+        strict_subset_family_specs=subset_axis_specs,
+        partial_overlap_family_specs=overlap_axis_specs,
         lattice_node_count=lattice_node_count,
         lattice_edge_count=lattice_edge_count,
     )
 
 
-def _abc_optimizer_partitioned_axis_coordinates(
-    subset_rows: set[_ABCOptimizerAxisRow],
+def _method_family_partitioned_axis_coordinates(
+    subset_rows: set[_MethodFamilyAxisRow],
     overlap_method_names: set[str],
     overlap_axis_specs: set[str],
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    nonorthogonal_subset_rows: set[_ABCOptimizerAxisRow] = set()
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    nonorthogonal_subset_rows: set[_MethodFamilyAxisRow] = set()
     subset_row_tuple = tuple(subset_rows)
     for left_index, left_row in enumerate(subset_row_tuple):
         left_classes = set(left_row[1])
@@ -4126,39 +3987,33 @@ def _abc_optimizer_partitioned_axis_coordinates(
             nonorthogonal_subset_rows.update((left_row, right_row))
 
     clean_subset_rows = subset_rows - nonorthogonal_subset_rows
-    clean_subset_methods = {method_name for method_name, _ in clean_subset_rows}
-    nonorthogonal_methods = {
-        method_name for method_name, _ in nonorthogonal_subset_rows
-    }
     clean_subset_specs = {
-        _abc_optimizer_axis_spec(method_name, class_names)
+        _method_family_member_spec(method_name, class_names)
         for method_name, class_names in clean_subset_rows
     }
     nonorthogonal_specs = {
-        _abc_optimizer_axis_spec(method_name, class_names)
+        _method_family_member_spec(method_name, class_names)
         for method_name, class_names in nonorthogonal_subset_rows
     }
     return (
-        sorted_tuple(clean_subset_methods),
-        sorted_tuple(overlap_method_names | nonorthogonal_methods),
         sorted_tuple(clean_subset_specs),
         sorted_tuple(overlap_axis_specs | nonorthogonal_specs),
     )
 
 
-def _abc_optimizer_family_plans(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-) -> dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan]:
-    exact_groups: dict[_ABCOptimizerFamilyKey, list[_ABCOptimizerMethodPlan]] = (
-        defaultdict(list)
+def _method_family_plans(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+) -> dict[_MethodFamilyKey, _MethodFamilyEvidence]:
+    exact_groups: dict[_MethodFamilyKey, list[_MethodFamilyMethodPlan]] = defaultdict(
+        list
     )
-    overlap_methods_by_family: _ABCOptimizerMethodNamesByFamily = defaultdict(set)
-    subset_rows_by_family: _ABCOptimizerAxisRowsByFamily = defaultdict(set)
-    overlap_specs_by_family: _ABCOptimizerAxisSpecsByFamily = defaultdict(set)
-    lattice_nodes_by_family: dict[_ABCOptimizerFamilyKey, set[tuple[str, ...]]] = (
-        defaultdict(set)
+    overlap_methods_by_family: _MethodFamilyMethodNamesByFamily = defaultdict(set)
+    subset_rows_by_family: _MethodFamilyAxisRowsByFamily = defaultdict(set)
+    overlap_specs_by_family: _MethodFamilyAxisSpecsByFamily = defaultdict(set)
+    lattice_nodes_by_family: dict[_MethodFamilyKey, set[tuple[str, ...]]] = defaultdict(
+        set
     )
-    lattice_edges_by_family: _ABCOptimizerLatticeEdgesByFamily = defaultdict(set)
+    lattice_edges_by_family: _MethodFamilyLatticeEdgesByFamily = defaultdict(set)
     for method_plan in method_plans:
         family_key = (method_plan.base_symbol, method_plan.class_names)
         family_classes = set(method_plan.class_names)
@@ -4197,13 +4052,15 @@ def _abc_optimizer_family_plans(
             ):
                 overlap_methods_by_family[family_key].add(other_plan.method_name)
                 overlap_specs_by_family[family_key].add(
-                    _abc_optimizer_axis_spec(other_plan.method_name, other_class_names)
+                    _method_family_member_spec(
+                        other_plan.method_name, other_class_names
+                    )
                 )
     return {
-        family_key: _abc_optimizer_family_plan(
+        family_key: _method_family_plan(
             family_key,
             tuple(group),
-            *_abc_optimizer_partitioned_axis_coordinates(
+            *_method_family_partitioned_axis_coordinates(
                 subset_rows_by_family[family_key],
                 overlap_methods_by_family[family_key],
                 overlap_specs_by_family[family_key],
@@ -4215,7 +4072,7 @@ def _abc_optimizer_family_plans(
     }
 
 
-def _compact_abc_optimizer_varying_coordinates(
+def _compact_method_family_varying_coordinates(
     profiles: tuple[CompactClassMethodSemanticProfile, ...],
 ) -> tuple[CompactMethodSemanticCoordinate, ...]:
     grouped: dict[tuple[tuple[str, ...], str], set[str]] = defaultdict(set)
@@ -4234,12 +4091,12 @@ def _compact_abc_optimizer_varying_coordinates(
     )
 
 
-def _compact_abc_optimizer_method_plan(
+def _compact_method_family_method_plan(
     base_symbol: str,
     base_name: str,
     method_name: str,
     class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-) -> _ABCOptimizerMethodPlan | None:
+) -> _MethodFamilyMethodPlan | None:
     if len(class_methods) < 2:
         return None
     methods = tuple(method for _, method in class_methods)
@@ -4253,13 +4110,13 @@ def _compact_abc_optimizer_method_plan(
     skeletons = {profile.skeleton for profile in profiles}
     if len(skeletons) != 1:
         return None
-    varying_coordinates = _compact_abc_optimizer_varying_coordinates(profiles)
+    varying_coordinates = _compact_method_family_varying_coordinates(profiles)
     if not varying_coordinates or len(varying_coordinates) > max(
         4, shared_statement_count * 2
     ):
         return None
     classvar_names, property_hook_names, behavior_hook_names = (
-        _abc_optimizer_residue_names(method_name, varying_coordinates)
+        _method_family_residue_names(method_name, varying_coordinates)
     )
     certificate = ClassFamilyCompressionProfile.from_repeated_method_family(
         class_count=len({indexed_class.symbol for indexed_class, _ in class_methods}),
@@ -4269,11 +4126,11 @@ def _compact_abc_optimizer_method_plan(
     ).compression_certificate
     if not certificate.pays_rent:
         return None
-    return _ABCOptimizerMethodPlan(
+    return _MethodFamilyMethodPlan(
         base_symbol=base_symbol,
         base_name=base_name,
         method_name=method_name,
-        profile=_ABCOptimizerMethodGroupProfile(
+        profile=_MethodFamilyMethodGroupProfile(
             shared_statement_count=shared_statement_count,
             varying_coordinates=varying_coordinates,
             classvar_names=classvar_names,
@@ -4290,7 +4147,7 @@ def _compact_abc_optimizer_method_plan(
     )
 
 
-def _compact_abc_optimizer_classes_by_base(
+def _compact_method_family_classes_by_base(
     class_index: CompactClassFamilyIndex,
 ) -> dict[tuple[str, str], list[CompactIndexedClass]]:
     classes_by_base = {
@@ -4321,16 +4178,16 @@ def _compact_abc_optimizer_classes_by_base(
     return classes_by_base
 
 
-def _compact_abc_optimizer_specific_method_plans(
+def _compact_method_family_specific_method_plans(
     projections: tuple[CompactModuleClassProjection, ...],
     class_index: CompactClassFamilyIndex,
-) -> tuple[_ABCOptimizerMethodPlan, ...]:
+) -> tuple[_MethodFamilyMethodPlan, ...]:
     methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
     for projection in projections:
         for method in projection.class_methods:
             methods_by_class[method.class_symbol][method.method_name] = method
-    classes_by_base = _compact_abc_optimizer_classes_by_base(class_index)
-    method_plans: list[_ABCOptimizerMethodPlan] = []
+    classes_by_base = _compact_method_family_classes_by_base(class_index)
+    method_plans: list[_MethodFamilyMethodPlan] = []
     for (base_symbol, base_name), indexed_classes in classes_by_base.items():
         if len(indexed_classes) < 2:
             continue
@@ -4352,7 +4209,7 @@ def _compact_abc_optimizer_specific_method_plans(
                 )
                 is not None
             )
-            method_plan = _compact_abc_optimizer_method_plan(
+            method_plan = _compact_method_family_method_plan(
                 base_symbol,
                 base_name,
                 method_name,
@@ -4360,7 +4217,7 @@ def _compact_abc_optimizer_specific_method_plans(
             )
             if method_plan is not None:
                 method_plans.append(method_plan)
-    return _abc_optimizer_more_specific_method_plans(method_plans, class_index)
+    return _method_family_more_specific_method_plans(method_plans, class_index)
 
 
 _ExactTinyMethodRoleKey: TypeAlias = tuple[str, str, str]
@@ -4550,14 +4407,14 @@ def _compact_exact_tiny_method_role_candidates(
 
 
 def _compact_semantic_overlap_method_candidates(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
-) -> tuple[SemanticOverlapABCOptimizationCandidate, ...]:
-    candidates: list[SemanticOverlapABCOptimizationCandidate] = []
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
+) -> tuple[SemanticOverlapMethodCandidate, ...]:
+    candidates: list[SemanticOverlapMethodCandidate] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for method_plan in method_plans:
         family_plan = family_plans[(method_plan.base_symbol, method_plan.class_names)]
-        candidate = _abc_optimizer_candidate_from_method_plan_path(
+        candidate = _method_family_candidate_from_method_plan_path(
             method_plan.file_paths[0], method_plan, family_plan
         )
         key = (candidate.base_name, candidate.method_name, candidate.class_names)
@@ -4576,15 +4433,15 @@ def _compact_semantic_overlap_method_candidates(
     )
 
 
-def _compact_abc_optimizer_family_candidates(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
-    builder: _ABCOptimizerFamilyCandidateBuilder[_ABCOptimizerFamilyCandidateT],
-) -> tuple[_ABCOptimizerFamilyCandidateT, ...]:
-    candidates: list[_ABCOptimizerFamilyCandidateT] = []
+def _compact_method_family_candidates(
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
+    builder: _MethodFamilyCandidateBuilder[_MethodFamilyCandidateT],
+) -> tuple[_MethodFamilyCandidateT, ...]:
+    candidates: list[_MethodFamilyCandidateT] = []
     for family_key, family_plan in family_plans.items():
         candidate = builder(
-            _abc_optimizer_family_method_plans(method_plans, family_key),
+            _method_family_method_plans(method_plans, family_key),
             family_plan,
         )
         if candidate is not None:
@@ -4601,11 +4458,11 @@ def _compact_abc_optimizer_family_candidates(
 
 
 def _compact_global_inheritance_candidates(
-    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_plans: dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan],
-) -> tuple[GlobalInheritanceOptimizationCandidate, ...]:
-    method_plans_by_base: dict[str, list[_ABCOptimizerMethodPlan]] = defaultdict(list)
-    family_plans_by_base: dict[str, list[_ABCOptimizerFamilyPlan]] = defaultdict(list)
+    method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
+) -> tuple[OverlappingInheritanceFamiliesCandidate, ...]:
+    method_plans_by_base: dict[str, list[_MethodFamilyMethodPlan]] = defaultdict(list)
+    family_plans_by_base: dict[str, list[_MethodFamilyEvidence]] = defaultdict(list)
     for method_plan in method_plans:
         method_plans_by_base[method_plan.base_name].append(method_plan)
     for family_plan in family_plans.values():
@@ -4614,7 +4471,7 @@ def _compact_global_inheritance_candidates(
         candidate
         for base_name, base_method_plans in method_plans_by_base.items()
         if (
-            candidate := _abc_optimizer_global_inheritance_candidate(
+            candidate := _method_family_global_inheritance_candidate(
                 base_name,
                 tuple(base_method_plans),
                 tuple(family_plans_by_base[base_name]),
@@ -4633,12 +4490,12 @@ def _compact_global_inheritance_candidates(
 
 
 @dataclass(frozen=True)
-class CompactABCOptimizerContext:
+class CompactMethodFamilyContext:
     exact_method_candidates: tuple[ExactTinyMethodRoleCandidate, ...]
-    method_candidates: tuple[SemanticOverlapABCOptimizationCandidate, ...]
-    family_candidates: tuple[SemanticOverlapABCFamilyOptimizationCandidate, ...]
-    global_candidates: tuple[GlobalInheritanceOptimizationCandidate, ...]
-    residue_axis_candidates: tuple[SemanticOverlapABCResidueAxisCatalogCandidate, ...]
+    method_candidates: tuple[SemanticOverlapMethodCandidate, ...]
+    family_candidates: tuple[SemanticOverlapMethodFamilyCandidate, ...]
+    global_candidates: tuple[OverlappingInheritanceFamiliesCandidate, ...]
+    residue_axis_candidates: tuple[SemanticOverlapResidueAxisCandidate, ...]
 
     @classmethod
     def from_projections(
@@ -4646,13 +4503,13 @@ class CompactABCOptimizerContext:
         projections: tuple[CompactModuleClassProjection, ...],
         *,
         class_index: CompactClassFamilyIndex | None = None,
-    ) -> "CompactABCOptimizerContext":
+    ) -> "CompactMethodFamilyContext":
         if class_index is None:
             class_index = build_compact_class_family_index(projections)
-        method_plans = _compact_abc_optimizer_specific_method_plans(
+        method_plans = _compact_method_family_specific_method_plans(
             projections, class_index
         )
-        family_plans = _abc_optimizer_family_plans(method_plans)
+        family_plans = _method_family_plans(method_plans)
         return cls(
             exact_method_candidates=_compact_exact_tiny_method_role_candidates(
                 projections,
@@ -4661,26 +4518,26 @@ class CompactABCOptimizerContext:
             method_candidates=_compact_semantic_overlap_method_candidates(
                 method_plans, family_plans
             ),
-            family_candidates=_compact_abc_optimizer_family_candidates(
+            family_candidates=_compact_method_family_candidates(
                 method_plans,
                 family_plans,
-                _abc_optimizer_family_candidate,
+                _method_family_candidate,
             ),
             global_candidates=_compact_global_inheritance_candidates(
                 method_plans, family_plans
             ),
-            residue_axis_candidates=_compact_abc_optimizer_family_candidates(
+            residue_axis_candidates=_compact_method_family_candidates(
                 method_plans,
                 family_plans,
-                _abc_optimizer_residue_axis_catalog_candidate,
+                _method_family_residue_axis_catalog_candidate,
             ),
         )
 
 
-def _abc_optimizer_family_method_plans(
-    specific_method_plans: tuple[_ABCOptimizerMethodPlan, ...],
-    family_key: _ABCOptimizerFamilyKey,
-) -> tuple[_ABCOptimizerMethodPlan, ...]:
+def _method_family_method_plans(
+    specific_method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    family_key: _MethodFamilyKey,
+) -> tuple[_MethodFamilyMethodPlan, ...]:
     return tuple(
         (
             method_plan

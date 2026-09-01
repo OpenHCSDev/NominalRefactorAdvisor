@@ -105,7 +105,6 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "     - Class",
         "     - Base",
         "     - Genericity",
-        "     - Priority",
     ]
     for detector_type in detector_types:
         finding_spec = _finding_spec(detector_type)
@@ -125,7 +124,6 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
                 f"     - ``{detector_type.__name__}``",
                 f"     - ``{_detector_base_name(detector_type)}``",
                 f"     - ``{detector_type.genericity}``",
-                f"     - ``{detector_type.detector_priority}``",
             ]
         )
     lines.extend(["", "Detectors", "---------", ""])
@@ -145,7 +143,6 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
                 ),
                 f":Base: ``{_detector_base_name(detector_type)}``",
                 f":Genericity: ``{detector_type.genericity}``",
-                f":Priority: ``{detector_type.detector_priority}``",
                 f":Reference: :doc:`detector_reference/{detector_type.detector_id}`",
                 f":Summary: {_detector_summary(detector_type)}",
                 "",
@@ -192,7 +189,6 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
         f":Detector ID: ``{detector_type.detector_id}``",
         f":Base: ``{_detector_base_name(detector_type)}``",
         f":Genericity: ``{detector_type.genericity}``",
-        f":Priority: ``{detector_type.detector_priority}``",
         f":Implementation module: ``{detector_type.__module__}``",
         "",
         f"{_detector_summary(detector_type)}",

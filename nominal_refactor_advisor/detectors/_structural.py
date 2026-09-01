@@ -7,8 +7,6 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 from __future__ import annotations
 
 import ast
-from abc import ABC, abstractmethod
-from metaclass_registry import AutoRegisterMeta
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
@@ -18,7 +16,6 @@ from ..class_index import (
 )
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
-from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..source_identity import source_path_text
 from ..semantic_match import (
     Maybe,
@@ -29,6 +26,7 @@ from ._base import *
 from ._helpers import *
 from ._helpers import _property_alias_hook_groups
 from ._structural_step_regex_extractor import *
+from ._substrate_support import *
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
@@ -43,158 +41,6 @@ def _reflective_self_attribute_compression_certificate(
         replacement_shape=_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
         semantic_axes=(candidate.attribute_name, candidate.reflective_builtin),
     )
-
-
-def _semantic_overlap_abc_scaffold(
-    candidate: SemanticOverlapABCOptimizationCandidate,
-) -> str:
-    base_name = f"{candidate.base_name}{_camel_case(candidate.method_name)}Template"
-    classvar_block = "\n".join(
-        (f"    {name}: ClassVar[object]" for name in candidate.classvar_names)
-    )
-    property_block = "\n".join(
-        (
-            f"    @property\n    @abstractmethod\n    def {name}(self): ..."
-            for name in candidate.property_hook_names
-        )
-    )
-    behavior_block = "\n".join(
-        (
-            f"    @abstractmethod\n    def {name}(self, *args, **kwargs): ..."
-            for name in candidate.behavior_hook_names
-        )
-    )
-    residue_block = "\n\n".join(
-        block for block in (classvar_block, property_block, behavior_block) if block
-    )
-    if residue_block:
-        residue_block = f"\n{residue_block}\n"
-    return (
-        f"class {base_name}({candidate.base_name}, ABC):\n"
-        f"    def {candidate.method_name}(self, *args, **kwargs):\n"
-        "        # Move the shared statement skeleton here.\n"
-        "        # Route only irreducible differences through the declarations/hooks below.\n"
-        "        ...\n"
-        f"{residue_block}"
-    )
-
-
-class _SemanticOverlapPatchRenderer(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    @abstractmethod
-    def __call__(
-        self,
-        candidate: (
-            SemanticOverlapABCOptimizationCandidate
-            | SemanticOverlapABCFamilyOptimizationCandidate
-            | SemanticOverlapABCResidueAxisCatalogCandidate
-        ),
-    ) -> str:
-        raise NotImplementedError
-
-
-class _SemanticOverlapABCPatchRenderer(_SemanticOverlapPatchRenderer):
-    def __call__(self, candidate: SemanticOverlapABCOptimizationCandidate) -> str:
-        residue = (
-            *candidate.classvar_names,
-            *candidate.property_hook_names,
-            *candidate.behavior_hook_names,
-        )
-        residue_summary = ", ".join(residue) if residue else "no hooks"
-        family_summary = ", ".join(candidate.family_method_names)
-        mixin_summary = (
-            ", ".join(candidate.mixin_axis_specs)
-            if candidate.mixin_axis_specs
-            else "no subset mixins"
-        )
-        overlap_summary = (
-            ", ".join(candidate.overlap_axis_specs)
-            if candidate.overlap_axis_specs
-            else "no partial overlaps"
-        )
-        return (
-            f"# Extract `{candidate.method_name}` from {candidate.class_names} into an intermediate ABC over `{candidate.base_name}`.\n"
-            f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
-            f"# Candidate hierarchy layer owns methods: {family_summary}; concrete ABC methods: {candidate.abc_concrete_method_names}; subset mixin axes: {mixin_summary}.\n"
-            f"# Partial-overlap axes needing explicit precedence/layering: {overlap_summary}.\n"
-            f"# Keep only residue declarations/hooks on leaves: {residue_summary}; leaf residue basis: {candidate.leaf_residue_names}."
-        )
-
-
-class _SemanticOverlapABCFamilyPatchRenderer(_SemanticOverlapPatchRenderer):
-    def __call__(self, candidate: SemanticOverlapABCFamilyOptimizationCandidate) -> str:
-        return (
-            f"# Extract methods {candidate.method_names} from {candidate.class_names} into one ABC family over `{candidate.base_name}`.\n"
-            f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
-            f"# Move concrete template methods {candidate.abc_concrete_method_names} to the ABC.\n"
-            f"# Keep classvars {candidate.classvar_names}, properties {candidate.property_hook_names}, and behavior hooks {candidate.behavior_hook_names} as leaf residue.\n"
-            f"# The family removes {candidate.shared_statement_count} shared statement objects with {candidate.residue_count} residue declarations."
-        )
-
-
-def _global_inheritance_optimization_patch(
-    candidate: GlobalInheritanceOptimizationCandidate,
-) -> str:
-    mixins = (
-        ", ".join(candidate.mixin_axis_specs)
-        if candidate.mixin_axis_specs
-        else "no clean subset mixins"
-    )
-    overlaps = (
-        ", ".join(candidate.overlap_axis_specs)
-        if candidate.overlap_axis_specs
-        else "no partial-overlap layers"
-    )
-    return (
-        f"# Treat `{candidate.base_name}` as one inheritance lattice across families {candidate.family_specs}.\n"
-        f"# Move shared method skeletons {candidate.method_names} into the highest valid ABC/layer in the lattice.\n"
-        f"# Use subset mixins for {mixins}; introduce explicit precedence layers for {overlaps}.\n"
-        f"# Leaves keep only residue declarations/hooks {candidate.leaf_residue_names}."
-    )
-
-
-class _SemanticOverlapABCResidueAxisPatchRenderer(_SemanticOverlapPatchRenderer):
-    def __call__(self, candidate: SemanticOverlapABCResidueAxisCatalogCandidate) -> str:
-        return (
-            f"# Replace per-method residue declarations for {candidate.method_names} over `{candidate.base_name}` "
-            f"with one residue-axis catalog keyed by {candidate.residue_kind_names}.\n"
-            "# Derive hook/classvar names from the residue axis rows instead of declaring each method's residue surface independently."
-        )
-
-
-_semantic_overlap_abc_patch = _SemanticOverlapABCPatchRenderer()
-_semantic_overlap_abc_family_patch = _SemanticOverlapABCFamilyPatchRenderer()
-_semantic_overlap_abc_residue_axis_patch = _SemanticOverlapABCResidueAxisPatchRenderer()
-
-
-def _semantic_overlap_abc_family_scaffold(
-    candidate: SemanticOverlapABCFamilyOptimizationCandidate,
-) -> str:
-    base_name = f"{candidate.base_name}TemplateFamily"
-    method_block = "\n\n".join(
-        (
-            f"    def {method_name}(self, *args, **kwargs):\n"
-            "        # Move the shared method skeleton here.\n"
-            "        ..."
-            for method_name in candidate.method_names
-        )
-    )
-    return f"class {base_name}({candidate.base_name}, ABC):\n{method_block}"
-
-
-def _semantic_overlap_abc_residue_axis_scaffold(
-    candidate: SemanticOverlapABCResidueAxisCatalogCandidate,
-) -> str:
-    rows = "\n".join(
-        (f"    ResidueAxisRow(kind={kind!r})," for kind in candidate.residue_kind_names)
-    )
-    return f"ResidueAxisCatalog(\n{rows}\n)"
-
-
-from ._substrate_support import *
 
 
 def _witness_mixin_enforcement_candidate(
@@ -314,7 +160,7 @@ class RepeatedPropertyAliasHookDetector(
     detector_id = "repeated_property_alias_hooks"
     candidate_collector = _property_alias_hook_groups
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated property hook aliases should move into a shared base or mixin",
         "Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.",
         "single authoritative hook property implementation for a nominal subclass family",
@@ -364,16 +210,16 @@ class RepeatedPropertyAliasHookDetector(
         )
 
 
-ABCOptimizerCandidateT = TypeVar("ABCOptimizerCandidateT")
+MethodFamilyCandidateT = TypeVar("MethodFamilyCandidateT")
 
 
-class _CompactABCOptimizerDetectorBase(
+class _CompactMethodFamilyDetectorBase(
     CompactContextCandidateDetector[
         CompactModuleClassProjection,
-        CompactABCOptimizerContext,
-        ABCOptimizerCandidateT,
+        CompactMethodFamilyContext,
+        MethodFamilyCandidateT,
     ],
-    Generic[ABCOptimizerCandidateT],
+    Generic[MethodFamilyCandidateT],
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(
@@ -385,83 +231,83 @@ class _CompactABCOptimizerDetectorBase(
         cls,
         projections: tuple[CompactModuleClassProjection, ...],
         config: DetectorConfig,
-    ) -> CompactABCOptimizerContext:
+    ) -> CompactMethodFamilyContext:
         del config
-        return CompactABCOptimizerContext.from_projections(projections)
+        return CompactMethodFamilyContext.from_projections(projections)
 
     @classmethod
     def _compact_context_from_shared(
         cls,
         context: object | None,
-    ) -> CompactABCOptimizerContext:
-        if isinstance(context, CompactABCOptimizerContext):
+    ) -> CompactMethodFamilyContext:
+        if isinstance(context, CompactMethodFamilyContext):
             return context
         repository = CompactClassRepositoryContext.require(context)
         return repository.cached(
-            CompactABCOptimizerContext,
-            lambda: CompactABCOptimizerContext.from_projections(
+            CompactMethodFamilyContext,
+            lambda: CompactMethodFamilyContext.from_projections(
                 repository.projections,
                 class_index=repository.class_index,
             ),
         )
 
 
-class _CompactSemanticOverlapABCOptimizationDetectorBase(
-    _CompactABCOptimizerDetectorBase[SemanticOverlapABCOptimizationCandidate]
+class _CompactSemanticOverlapMethodDetectorBase(
+    _CompactMethodFamilyDetectorBase[SemanticOverlapMethodCandidate]
 ):
     def _candidates_from_compact_context(
         self,
-        context: CompactABCOptimizerContext,
+        context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapABCOptimizationCandidate]:
+    ) -> Sequence[SemanticOverlapMethodCandidate]:
         del config
         return context.method_candidates
 
 
 class _CompactExactTinyMethodRoleDetectorBase(
-    _CompactABCOptimizerDetectorBase[ExactTinyMethodRoleCandidate]
+    _CompactMethodFamilyDetectorBase[ExactTinyMethodRoleCandidate]
 ):
     def _candidates_from_compact_context(
         self,
-        context: CompactABCOptimizerContext,
+        context: CompactMethodFamilyContext,
         config: DetectorConfig,
     ) -> Sequence[ExactTinyMethodRoleCandidate]:
         del config
         return context.exact_method_candidates
 
 
-class _CompactSemanticOverlapABCFamilyOptimizationDetectorBase(
-    _CompactABCOptimizerDetectorBase[SemanticOverlapABCFamilyOptimizationCandidate]
+class _CompactSemanticOverlapMethodFamilyDetectorBase(
+    _CompactMethodFamilyDetectorBase[SemanticOverlapMethodFamilyCandidate]
 ):
     def _candidates_from_compact_context(
         self,
-        context: CompactABCOptimizerContext,
+        context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapABCFamilyOptimizationCandidate]:
+    ) -> Sequence[SemanticOverlapMethodFamilyCandidate]:
         del config
         return context.family_candidates
 
 
-class _CompactGlobalInheritanceOptimizationDetectorBase(
-    _CompactABCOptimizerDetectorBase[GlobalInheritanceOptimizationCandidate]
+class _CompactOverlappingInheritanceFamiliesDetectorBase(
+    _CompactMethodFamilyDetectorBase[OverlappingInheritanceFamiliesCandidate]
 ):
     def _candidates_from_compact_context(
         self,
-        context: CompactABCOptimizerContext,
+        context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[GlobalInheritanceOptimizationCandidate]:
+    ) -> Sequence[OverlappingInheritanceFamiliesCandidate]:
         del config
         return context.global_candidates
 
 
-class _CompactSemanticOverlapABCResidueAxisCatalogDetectorBase(
-    _CompactABCOptimizerDetectorBase[SemanticOverlapABCResidueAxisCatalogCandidate]
+class _CompactSemanticOverlapResidueAxisDetectorBase(
+    _CompactMethodFamilyDetectorBase[SemanticOverlapResidueAxisCandidate]
 ):
     def _candidates_from_compact_context(
         self,
-        context: CompactABCOptimizerContext,
+        context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapABCResidueAxisCatalogCandidate]:
+    ) -> Sequence[SemanticOverlapResidueAxisCandidate]:
         del config
         return context.residue_axis_candidates
 
@@ -469,10 +315,10 @@ class _CompactSemanticOverlapABCResidueAxisCatalogDetectorBase(
 declare_candidate_rule_detector(
     ExactTinyMethodRoleCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Exact tiny method roles should acquire one nominal mixin",
-        "Several classes without one nominal ancestor own the same complete tiny method declaration. The exact method role is one maintenance object and should be inherited from one mixin when the added inheritance wiring pays rent.",
-        "one nominal mixin owns the exact method role and participants inherit it",
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Exact tiny methods expose one repeated nominal role",
+        "Several classes without one nominal ancestor own the same complete tiny method declaration. The exact method role is one maintenance object, but the current snapshot does not prove whether an existing authority or a new inheritance boundary should own it.",
+        "one proved nominal authority derives the exact method role for every participant",
         "unrelated classes repeat the same promotion-safe method declaration and the exact-role compression certificate pays rent",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -487,18 +333,10 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"{candidate.method_names} are repeated exactly across {candidate.class_names} "
-        f"without one nominal ancestor; promote the {candidate.statement_count} shared "
-        "statements to one mixin."
+        f"without one nominal ancestor and contain {candidate.statement_count} shared "
+        "statement(s); no ownership placement is selected from this snapshot."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=lambda candidate: (
-        f"class Shared{''.join(_camel_case(name) for name in candidate.method_names)}Mixin:\n"
-        + "\n".join(f"    def {name}(self): ..." for name in candidate.method_names)
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Promote the exact {candidate.method_names} declarations from "
-        f"{candidate.class_names} into one shared mixin and inherit it."
-    ),
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.class_names),
@@ -512,12 +350,12 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    SemanticOverlapABCOptimizationCandidate,
+    SemanticOverlapMethodCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Sibling implementations should anti-unify into an ABC template",
-        "Sibling classes that share a base and implement the same method with the same statement skeleton are paying for one algorithm multiple times. When the differences are a small set of expression coordinates, the base should own the concrete algorithm and leaves should expose only classvars, properties, or abstract hooks for the irreducible residue.",
-        "one intermediate ABC owns the shared method skeleton and leaves keep only minimal hooks/declarations",
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Sibling implementations expose one repeated algorithm",
+        "Sibling classes that share a base implement the same statement skeleton at several maintenance sites. The common statements and varying expression coordinates prove semantic overlap, but do not by themselves prove where that algorithm belongs in the reachable inheritance design.",
+        "one proved nominal authority derives the shared algorithm without duplicating its residue semantics",
         "same method across sibling classes has an anti-unifiable statement skeleton with small residue",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -533,17 +371,15 @@ declare_candidate_rule_detector(
         f"`{candidate.method_name}` in siblings {candidate.class_names} over `{candidate.base_name}` shares "
         f"{candidate.shared_statement_count} statements with {candidate.varying_coordinate_count} residue coordinate(s): "
         f"classvars {candidate.classvar_names}, properties {candidate.property_hook_names}, hooks {candidate.behavior_hook_names}. "
-        f"Move concrete methods {candidate.abc_concrete_method_names} to the ABC and leave leaf residue basis "
-        f"{candidate.leaf_residue_names} on leaves ({candidate.subclass_residue_count} residue declaration(s), "
-        f"shared/residue ratio {candidate.shared_to_residue_ratio:.2f}). "
-        f"The derived hierarchy plan scores {candidate.optimizer_score} with {candidate.abc_layer_count} ABC layer(s), "
-        f"{candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} lattice edge(s), "
-        f"family methods {candidate.family_method_names}, mixin axes {candidate.mixin_axis_specs}, "
-        f"overlap axes {candidate.overlap_axis_specs}, and normal form `{candidate.hierarchy_normal_form}`."
+        f"The observed leaf residue basis is {candidate.leaf_residue_names} across "
+        f"{candidate.residue_declaration_count} residue declaration(s), with a "
+        f"shared/residue ratio of {candidate.shared_to_residue_ratio:.2f}. "
+        f"Its enclosing class-set evidence contains {candidate.lattice_node_count} lattice node(s), "
+        f"{candidate.lattice_edge_count} lattice edge(s), family methods {candidate.family_method_names}, "
+        f"strict-subset families {candidate.strict_subset_family_specs}, and partial-overlap families "
+        f"{candidate.partial_overlap_family_specs}; no hierarchy placement is selected from this snapshot."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=_semantic_overlap_abc_scaffold,
-    codemod_patch=_semantic_overlap_abc_patch,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.class_names),
@@ -556,20 +392,19 @@ declare_candidate_rule_detector(
             )
         ),
     ),
-    detector_priority=-10,
-    detector_name="SemanticOverlapAbcOptimizationDetector",
-    detector_base=_CompactSemanticOverlapABCOptimizationDetectorBase,
+    detector_name="SemanticOverlapMethodDetector",
+    detector_base=_CompactSemanticOverlapMethodDetectorBase,
 )
 
 
 declare_candidate_rule_detector(
-    SemanticOverlapABCFamilyOptimizationCandidate,
+    SemanticOverlapMethodFamilyCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Class-family algorithms should collapse as one ABC hierarchy",
-        "A class family has several methods with compatible anti-unifiable bodies over the same base and subclass set. Treating each method independently misses the larger normal form: the base hierarchy should own the full algorithm family while leaves expose only the combined residue.",
-        "one ABC family owns all shared method skeletons and leaf classes keep only residue declarations",
-        "multiple semantic-overlap ABC method candidates share the same base and subclass family",
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Class-family methods expose one repeated algorithm family",
+        "A class family has several methods with compatible anti-unifiable bodies over the same base and subclass set. Their combined evidence establishes a shared maintenance object while leaving its correct inheritance placement unresolved.",
+        "one proved nominal authority derives the complete shared method family and its irreducible residue",
+        "multiple semantic-overlap method observations share the same base and subclass family",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -582,15 +417,14 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.base_name}` subclasses {candidate.class_names} repeat family methods {candidate.method_names} "
-        f"with {candidate.shared_statement_count} shared statements, {candidate.residue_count} residue declaration(s), "
-        f"concrete ABC methods {candidate.abc_concrete_method_names}, leaf residue basis {candidate.leaf_residue_names}, "
-        f"shared/residue ratio {candidate.shared_to_residue_ratio:.2f}, "
-        f"{candidate.abc_layer_count} ABC layer(s), {candidate.lattice_node_count} lattice node(s), "
-        f"{candidate.lattice_edge_count} lattice edge(s), and normal form `{candidate.hierarchy_normal_form}`."
+        f"with {candidate.shared_statement_count} shared statements and {candidate.residue_declaration_count} "
+        f"residue declaration(s). The observed leaf residue basis is {candidate.leaf_residue_names}, "
+        f"with a shared/residue ratio of {candidate.shared_to_residue_ratio:.2f}. The surrounding class sets "
+        f"contain {candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} lattice edge(s), "
+        f"strict-subset families {candidate.strict_subset_family_specs}, and partial-overlap families "
+        f"{candidate.partial_overlap_family_specs}; no hierarchy placement is selected from this snapshot."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=_semantic_overlap_abc_family_scaffold,
-    codemod_patch=_semantic_overlap_abc_family_patch,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.method_symbols),
@@ -598,20 +432,19 @@ declare_candidate_rule_detector(
         class_count=len(candidate.class_names),
         method_symbols=candidate.method_symbols,
     ),
-    detector_priority=-11,
-    detector_name="SemanticOverlapAbcFamilyOptimizationDetector",
-    detector_base=_CompactSemanticOverlapABCFamilyOptimizationDetectorBase,
+    detector_name="SemanticOverlapMethodFamilyDetector",
+    detector_base=_CompactSemanticOverlapMethodFamilyDetectorBase,
 )
 
 
 declare_candidate_rule_detector(
-    GlobalInheritanceOptimizationCandidate,
+    OverlappingInheritanceFamiliesCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Inheritance root should optimize the whole overlap lattice",
-        "A base class has several overlapping subclass method families. Optimizing each repeated override independently can trap the hierarchy in a local minimum; the base should solve the full class-set lattice and place shared algorithms, subset mixins, and partial-overlap layers globally.",
-        "one inheritance-lattice cover assigns shared methods to ABCs or mixins while leaves keep only residue declarations",
-        "multiple semantic-overlap ABC families under one root have intersecting but non-identical subclass sets",
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Overlapping inheritance families require one authority proof",
+        "A base class has several intersecting subclass method families. Each family is only a local view; the complete class-set lattice is the evidence boundary that any safe authority assignment must cover.",
+        "one proved authority assignment covers the complete inheritance lattice without duplicating algorithms or residue semantics",
+        "multiple semantic-overlap method families under one root have intersecting but non-identical subclass sets",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -623,20 +456,15 @@ declare_candidate_rule_detector(
         ),
     ),
     summary=lambda candidate: (
-        f"`{candidate.base_name}` has a global inheritance lattice over classes {candidate.class_names}: "
+        f"`{candidate.base_name}` has an inheritance lattice over classes {candidate.class_names}: "
         f"families {candidate.family_specs}, methods {candidate.method_names}, "
         f"{candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} edge(s), "
-        f"subset mixins {candidate.mixin_axis_specs}, partial overlaps {candidate.overlap_axis_specs}, "
-        f"{candidate.shared_statement_count} shared statements, {candidate.residue_count} residue declarations, "
-        f"leaf residue basis {candidate.leaf_residue_names}, optimizer score {candidate.optimizer_score}."
+        f"strict-subset families {candidate.strict_subset_family_specs}, partial-overlap families "
+        f"{candidate.partial_overlap_family_specs}, {candidate.shared_statement_count} shared statements, "
+        f"{candidate.residue_declaration_count} residue declarations, and observed residue basis "
+        f"{candidate.leaf_residue_names}. No hierarchy placement is selected from this snapshot."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=lambda candidate: (
-        f"class {candidate.base_name}GlobalTemplate({candidate.base_name}, ABC):\n"
-        "    # One lattice owner derives concrete ABC methods, subset mixins, and overlap layers.\n"
-        "    ..."
-    ),
-    codemod_patch=_global_inheritance_optimization_patch,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.method_symbols),
@@ -644,20 +472,19 @@ declare_candidate_rule_detector(
         class_count=len(candidate.class_names),
         method_symbols=candidate.method_symbols,
     ),
-    detector_priority=-12,
-    detector_name="GlobalInheritanceOptimizationDetector",
-    detector_base=_CompactGlobalInheritanceOptimizationDetectorBase,
+    detector_name="OverlappingInheritanceFamiliesDetector",
+    detector_base=_CompactOverlappingInheritanceFamiliesDetectorBase,
 )
 
 
 declare_candidate_rule_detector(
-    SemanticOverlapABCResidueAxisCatalogCandidate,
+    SemanticOverlapResidueAxisCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "ABC residue axes should derive from one catalog",
-        "A semantic-overlap ABC family has several methods whose varying coordinates share the same residue kind signature. Naming classvars and hooks independently per method keeps a second manual axis beside the template hierarchy.",
-        "one residue-axis catalog derives classvar and hook declarations for the ABC family",
-        "multiple ABC family methods share the same residue coordinate kinds",
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Repeated residue signatures expose one semantic axis",
+        "A semantic-overlap method family has several varying coordinates with the same residue-kind signature. Naming those coordinates independently keeps the same semantic axis in several maintenance sites.",
+        "one declared residue-axis authority derives every corresponding classvar and hook projection",
+        "multiple method-family observations share the same residue coordinate kinds",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -671,28 +498,24 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.base_name}` family methods {candidate.method_names} share residue kinds "
-        f"{candidate.residue_kind_names} across {candidate.residue_site_count} residue site(s); "
-        "derive the hook/classvar surface from one residue-axis catalog."
+        f"{candidate.residue_kind_names} across {candidate.residue_site_count} residue site(s)."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=_semantic_overlap_abc_residue_axis_scaffold,
-    codemod_patch=_semantic_overlap_abc_residue_axis_patch,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.residue_site_count,
         mapping_name=candidate.base_name,
         field_names=candidate.residue_kind_names,
     ),
-    detector_priority=-13,
-    detector_name="SemanticOverlapAbcResidueAxisCatalogDetector",
-    detector_base=_CompactSemanticOverlapABCResidueAxisCatalogDetectorBase,
+    detector_name="SemanticOverlapResidueAxisDetector",
+    detector_base=_CompactSemanticOverlapResidueAxisDetectorBase,
 )
 
 
 declare_candidate_rule_detector(
     ConstantPropertyDefaultBundleCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Constant property defaults should derive from descriptors",
         "A class that repeats many one-line properties returning literal defaults is using method syntax for data. The default surface should be declared as typed descriptors or a property-default table while real override behavior stays in subclasses.",
         "typed constant-property descriptor defaults on the nominal base",
@@ -721,7 +544,6 @@ declare_candidate_rule_detector(
         mapping_name=candidate.class_name,
         field_names=candidate.property_names,
     ),
-    detector_priority=-4,
     detector_name="ConstantPropertyDefaultBundleDetector",
     candidate_collector=_constant_property_default_bundle_candidates,
 )
@@ -781,7 +603,7 @@ class ReflectiveSelfAttributeEscapeDetector(
 declare_candidate_rule_detector(
     RepeatedBaseBundleCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated MRO base bundle should become a named ABC mixin",
         "Several classes repeat the same contiguous base bundle. That bundle is already a semantic composition unit, so it should have a nominal name and be reused as one ABC/mixin rather than respelled across implementation classes.",
         "named ABC/mixin for one repeated semantic MRO bundle",
@@ -812,7 +634,6 @@ declare_candidate_rule_detector(
         mapping_name="mro-base-bundle",
         field_names=candidate.base_names,
     ),
-    detector_priority=-5,
     detector_name="RepeatedBaseBundleDetector",
     candidate_collector=_repeated_base_bundle_candidates,
 )
@@ -1564,7 +1385,7 @@ class AlternateConstructorFamilyDetector(
 declare_candidate_rule_detector(
     AccumulatorFoldFamilyCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Accumulator folds should derive from one fold algebra",
         "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. The loop skeleton is an algebraic fold and should be one reusable composition primitive.",
         "single accumulator-fold substrate with declarative step hooks",
@@ -1607,7 +1428,7 @@ declare_candidate_rule_detector(
 declare_candidate_rule_detector(
     CatalogInstallingMixinFamilyCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Catalog-installing mixins should share one subclass hook",
         "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.",
         "one reusable catalog-installing subclass hook with declarative catalog attribute residue",

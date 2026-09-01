@@ -46,7 +46,7 @@ def test_source_index_rejects_forced_target_handle_collision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "module.py").write_text(
-        "def alpha():\n" "    return 1\n" "\n" "def beta():\n" "    return 2\n",
+        "def alpha():\n    return 1\n\ndef beta():\n    return 2\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -107,7 +107,7 @@ def test_impact_ranking_rejects_forced_finding_handle_collision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = FindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        pattern_id=PatternId.SHARED_ALGORITHM_AUTHORITY,
         title="Shared title",
         why="Shared rationale",
         capability_gap="Shared capability gap",

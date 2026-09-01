@@ -424,8 +424,7 @@ class DetectorTypeShardRunner:
                 finding
                 for detector_findings in self.findings_by_detector()
                 for finding in detector_findings
-            ),
-            detector_types=self.detector_types,
+            )
         )
 
 
@@ -1009,8 +1008,7 @@ class CompactFamilyProjectionBatch:
 
     def __post_init__(self) -> None:
         if any(
-            CompactGlobalProjectionAccumulator._retains_ast(item)
-            for item in self.items
+            CompactGlobalProjectionAccumulator._retains_ast(item) for item in self.items
         ):
             raise TypeError(f"{self.family.__name__} projection retains an AST")
 
@@ -1153,9 +1151,7 @@ def build_compact_projection_shard(
                         continue
                     projections = tuple(projections_list)
                     if family not in demand_by_family:
-                        projection_signature = (
-                            source.store_items(family, projections)
-                        )
+                        projection_signature = source.store_items(family, projections)
                     else:
                         projection_signature = source.store_items(
                             family,
@@ -1203,26 +1199,17 @@ def build_compact_projection_shard(
             # value already constructed by this worker for the current join so
             # the parent does not immediately reopen every newly written file.
             if family in demand_by_family:
-                projection_signature = (
-                    source.store_items(
-                        family,
-                        projections,
-                        demand_signature_by_family[family],
-                    )
+                projection_signature = source.store_items(
+                    family,
+                    projections,
+                    demand_signature_by_family[family],
                 )
             else:
-                projection_signature = (
-                    source.store_items(family, projections)
-                )
+                projection_signature = source.store_items(family, projections)
             add_runtime_projection(family, projections, projection_signature)
         del module
     if local_findings:
-        local_findings = tuple(
-            SortedFindingsAuthority.sort(
-                local_findings,
-                detector_types=request.local_detector_types,
-            )
-        )
+        local_findings = tuple(SortedFindingsAuthority.sort(local_findings))
     cache_bundle_complete = bool(
         request.bundle_families
         and not request.family_demands
@@ -1564,9 +1551,7 @@ class BoundedCompactProjectionManifest:
         repaired = tuple(collect_family_items(module, family))
         for projection in repaired:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
-                raise TypeError(
-                    f"{family.__name__} repaired projection retains an AST"
-                )
+                raise TypeError(f"{family.__name__} repaired projection retains an AST")
         del module
         release_module_analysis_memory(collect_cycles=False)
         return repaired
@@ -2060,10 +2045,7 @@ def analyze_compact_roots_with_cache(
             local_analysis_required = bool(
                 include_local_findings and partition.per_module_detector_types
             )
-            if (
-                local_analysis_required
-                and aggregate_lookup.status.can_reuse_findings
-            ):
+            if local_analysis_required and aggregate_lookup.status.can_reuse_findings:
                 if source_signature_cache is not None:
                     local_semantic_hash = source_signature_cache.semantic_source_hash(
                         path,
@@ -2125,9 +2107,7 @@ def analyze_compact_roots_with_cache(
                 )
 
             local_detector_types = (
-                partition.per_module_detector_types
-                if local_analysis_required
-                else ()
+                partition.per_module_detector_types if local_analysis_required else ()
             )
             if local_cache_lookup is not None:
                 local_detector_types = detector_bundle_plan.missing_detector_types(
@@ -2379,8 +2359,7 @@ def analyze_compact_roots_with_cache(
             [
                 *local_findings,
                 *global_findings,
-            ],
-            detector_types=detector_types,
+            ]
         )
     )
     if report_scope is not None and report_scope.has_report_filter:
@@ -2453,61 +2432,33 @@ class EvidenceLocalPartialDetectorSelection:
         )
 
 
-@dataclass(frozen=True)
-class DetectorPriorityIndex:
-    """Presentation priority derived from the registered detector family."""
-
-    detector_types: tuple[type[IssueDetector], ...]
-    unknown_detector_priority: int = 10_000
-
-    @classmethod
-    def from_registered_detectors(cls) -> "DetectorPriorityIndex":
-        return cls(IssueDetector.registered_detector_types())
-
-    @property
-    def priorities_by_detector_id(self) -> dict[str, int]:
-        return {
-            detector_id: detector_type.detector_priority
-            for detector_type in self.detector_types
-            for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None
-        }
-
-    def priority_for_finding(self, finding: RefactorFinding) -> int:
-        priorities = self.priorities_by_detector_id
-        if finding.detector_id in priorities:
-            return priorities[finding.detector_id]
-        return self.unknown_detector_priority
-
-
 class SortedFindingsAuthority:
-    """Centralize the stable presentation order for detector findings."""
+    """Order findings by source identity without implying semantic priority."""
 
-    @classmethod
+    @staticmethod
     def sort(
-        cls,
         findings: Iterable[RefactorFinding],
-        *,
-        detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> list[RefactorFinding]:
-        priority_index = (
-            DetectorPriorityIndex.from_registered_detectors()
-            if detector_types is None
-            else DetectorPriorityIndex(detector_types)
-        )
         return sorted(
             findings,
-            key=lambda finding: cls.sort_key(finding, priority_index),
+            key=SortedFindingsAuthority.sort_key,
         )
 
     @staticmethod
     def sort_key(
         finding: RefactorFinding,
-        priority_index: DetectorPriorityIndex,
-    ) -> tuple[int, int, str, str]:
+    ) -> tuple[tuple[tuple[str, int, str], ...], str, int, str, str]:
         return (
-            priority_index.priority_for_finding(finding),
-            finding.pattern_id,
+            tuple(
+                (
+                    location.file_path,
+                    location.line,
+                    location.symbol or "",
+                )
+                for location in finding.evidence
+            ),
+            finding.detector_id,
+            finding.pattern_id.value,
             finding.title,
             finding.summary,
         )
@@ -2662,7 +2613,7 @@ def analyze_detector_types(
             findings.extend(
                 detector._collect_findings_from_graph(graph, modules, config)
             )
-    return SortedFindingsAuthority.sort(findings, detector_types=detector_types)
+    return SortedFindingsAuthority.sort(findings)
 
 
 @dataclass(frozen=True)
@@ -3177,8 +3128,7 @@ def analyze_module_detector_types_with_cache(
         finding_bundles,
     )
     findings = SortedFindingsAuthority.sort(
-        detector_bundle_plan.findings(finding_bundles),
-        detector_types=detector_types,
+        detector_bundle_plan.findings(finding_bundles)
     )
     return IncrementalAnalysisResult(findings, cache_lookup.status)
 
@@ -3236,8 +3186,7 @@ class IncrementalAnalysisCacheResolver:
                 *contextual_module_findings.findings,
                 *contextual_global_findings.findings,
                 *global_findings.findings,
-            ],
-            detector_types=self._detector_types,
+            ]
         )
         return IncrementalAnalysisResult(
             findings=(
@@ -3980,8 +3929,7 @@ class FastCachedPathAnalysisAuthority:
                     changed_findings,
                     changed_paths,
                 ),
-            ],
-            detector_types=default_detector_types_for_analysis(),
+            ]
         )
         analysis_cache.store_partial(
             cache_result.cache_identity,

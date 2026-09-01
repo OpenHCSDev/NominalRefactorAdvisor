@@ -82,8 +82,8 @@ from .factorization import (
     CompressibleExplanation,
     DeclaredExplanationConflictGraph,
     ExplanationConflictGraph,
-    MDLCompetition,
-    MDLCompetitionResult,
+    CurrentSnapshotMDLCompetition,
+    CurrentSnapshotMDLCompetitionResult,
 )
 from .models import (
     AutoRegisterMetaRentMetrics,
@@ -318,14 +318,15 @@ class FindingRecipeSynthesisStatus(StrEnum):
         "reachable trajectory effect is unproved",
         FindingRecipeSynthesisDisposition.UNCOUNTED,
     )
-    DOMINATED_BY_CERTIFIED_PLAN = (
-        "dominated_by_certified_plan",
-        "a conflicting recipe has a strictly shorter certified end state",
+    DOMINATED_IN_CURRENT_SNAPSHOT = (
+        "dominated_in_current_snapshot",
+        "a conflicting current-snapshot candidate has a strictly shorter "
+        "certified local end state",
         FindingRecipeSynthesisDisposition.UNCOUNTED,
     )
-    AMBIGUOUS_CERTIFIED_PLAN = (
-        "ambiguous_certified_plan",
-        "equal-cost conflicting recipes require an authority choice",
+    AMBIGUOUS_CURRENT_SNAPSHOT = (
+        "ambiguous_current_snapshot",
+        "equal-cost current-snapshot candidates require an authority choice",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     UNPROVED_RECIPE_PLAN = (
@@ -590,6 +591,8 @@ ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
+
+
 class AuthorityClaimPayload:
     """Payload field ownership for recipe authority claims."""
 
@@ -4338,8 +4341,7 @@ class SourceLineDiffAuthority:
                         file_path=target.file_path,
                         insertion_line=target.line + source_start,
                         inserted_lines=candidate_lines[
-                            prefix_count
-                            + replacement_start : prefix_count
+                            prefix_count + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -4351,8 +4353,7 @@ class SourceLineDiffAuthority:
                         start_line=target.line + source_start,
                         end_line=target.line + source_end - 1,
                         replacement_lines=candidate_lines[
-                            prefix_count
-                            + replacement_start : prefix_count
+                            prefix_count + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -10458,6 +10459,7 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
     def return_statement_lines(statement: ast.Return) -> tuple[str, ...]:
         return tuple(f"        {line}" for line in ast.unparse(statement).splitlines())
 
+
 @dataclass(frozen=True, kw_only=True)
 class DispatchToPolymorphismOperation(
     TargetNodeRecipeOperationMixin,
@@ -12579,7 +12581,7 @@ class FindingRecipeSynthesisRecord:
         return self.evaluation.executable_declaration_name
 
     @property
-    def competition_proof(self) -> FindingRecipePlanCompetitionProof | None:
+    def competition_proof(self) -> CurrentSnapshotRecipeCompetitionProof | None:
         return self.evaluation.competition_proof
 
     @property
@@ -12676,7 +12678,7 @@ class FindingRecipePlanCandidate(CompressibleExplanation):
 
 
 @dataclass(frozen=True)
-class FindingRecipePlanCompetitionProof(CodemodJsonReport):
+class CurrentSnapshotRecipeCompetitionProof(CodemodJsonReport):
     """Exact certified alternatives for one connected recipe conflict."""
 
     component_candidate_indices: tuple[int, ...]
@@ -12701,9 +12703,7 @@ class FindingRecipePlanCompetitionProof(CodemodJsonReport):
             "alternative_candidate_index_witnesses": (
                 self.alternative_candidate_index_witnesses
             ),
-            "alternative_finding_id_witnesses": (
-                self.alternative_finding_id_witnesses
-            ),
+            "alternative_finding_id_witnesses": (self.alternative_finding_id_witnesses),
             "optimal_solution_count": self.optimal_solution_count,
             "certified_savings": self.certified_savings,
             "candidate_certificates": tuple(
@@ -12809,7 +12809,9 @@ class FindingRecipeEvaluation(ABC):
     proof_obstacles = ConstantProperty[tuple[FindingRecipeProofObstacle, ...]](())
     refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
     executable_declaration_name = ConstantProperty[str]("")
-    competition_proof = ConstantProperty[FindingRecipePlanCompetitionProof | None](None)
+    competition_proof = ConstantProperty[CurrentSnapshotRecipeCompetitionProof | None](
+        None
+    )
     planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
         FindingRecipePlanningHorizon.NONE
     )
@@ -12997,10 +12999,10 @@ class CurrentSnapshotSelectedRecipeEvaluation(ExecutableRecipeEvaluation):
 class CertifiedPlanSelectedRecipeEvaluation(CurrentSnapshotSelectedRecipeEvaluation):
     """Recipe selected by exact competition among current-snapshot candidates."""
 
-    proof: FindingRecipePlanCompetitionProof
+    proof: CurrentSnapshotRecipeCompetitionProof
 
     @property
-    def competition_proof(self) -> FindingRecipePlanCompetitionProof:
+    def competition_proof(self) -> CurrentSnapshotRecipeCompetitionProof:
         return self.proof
 
 
@@ -13061,13 +13063,13 @@ class NonPayingRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
 class CertifiedPlanCompetitionEvaluation(NonPlanningExecutableRecipeEvaluation):
     """Executable recipe excluded by one typed current-snapshot proof."""
 
-    proof: FindingRecipePlanCompetitionProof
+    proof: CurrentSnapshotRecipeCompetitionProof
     planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
         FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
     )
 
     @property
-    def competition_proof(self) -> FindingRecipePlanCompetitionProof:
+    def competition_proof(self) -> CurrentSnapshotRecipeCompetitionProof:
         return self.proof
 
 
@@ -13075,14 +13077,14 @@ class CertifiedPlanCompetitionEvaluation(NonPlanningExecutableRecipeEvaluation):
 class DominatedByCertifiedPlanEvaluation(CertifiedPlanCompetitionEvaluation):
     """Recipe absent from every strictly shorter certified optimum."""
 
-    status = FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN
+    status = FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT
 
 
 @dataclass(frozen=True, kw_only=True)
 class AmbiguousCertifiedPlanEvaluation(CertifiedPlanCompetitionEvaluation):
     """Recipe belongs to an unresolved equal-cost conflict component."""
 
-    status = FindingRecipeSynthesisStatus.AMBIGUOUS_CERTIFIED_PLAN
+    status = FindingRecipeSynthesisStatus.AMBIGUOUS_CURRENT_SNAPSHOT
     planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
         FindingRecipePlanningHorizon.UNPROVED
     )
@@ -15131,14 +15133,6 @@ class ExactTinyMethodRoleFindingRecipeSynthesizer(
             method_names=tuple(promotion.method_names),
             rationale="",
         )
-
-
-class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
-    RepeatedMethodPromotionFindingRecipeSynthesizer
-):
-    """Only execute semantic-overlap findings that are already exact duplicates."""
-
-    detector_id = "semantic_overlap_abc_optimization"
 
 
 @dataclass(frozen=True)
@@ -20297,8 +20291,7 @@ class ClassFamilyCollectionElementProjection(StrEnum):
     CLASS_NAME = (
         "class_name",
         lambda factory_name, member_source: (
-            f"{factory_name}(member_type.__name__ for member_type in "
-            f"{member_source})"
+            f"{factory_name}(member_type.__name__ for member_type in {member_source})"
         ),
     )
 
@@ -20428,9 +20421,9 @@ class ContextualSemanticMirrorRecipeBuilder(
 ):
     """Shared lifecycle for semantic-mirror builders that require selector context."""
 
-    __registry__: ClassVar[dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]] = (
-        {}
-    )
+    __registry__: ClassVar[
+        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
+    ] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -21005,8 +20998,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         if context is None:
             return RejectedRecipeEvaluation(
                 reason=(
-                    "semantic mapping mirror recipes require a source selector "
-                    "context"
+                    "semantic mapping mirror recipes require a source selector context"
                 ),
                 executable_declaration_type=type(self),
             )
@@ -21537,18 +21529,15 @@ class FindingRecipePlanBuilder:
             for record in evaluated_records
             if record.candidate_recipes
         )
-        competition_result = (
-            FindingRecipePlanCompetition(
-                candidates=candidates,
-                source_snapshot=(
-                    selector_context.execution_snapshot()
-                    if selector_context is not None
-                    else None
-                ),
-                batch_projection=self,
-            )
-            .solve()
-        )
+        competition_result = CurrentSnapshotRecipeCompetition(
+            candidates=candidates,
+            source_snapshot=(
+                selector_context.execution_snapshot()
+                if selector_context is not None
+                else None
+            ),
+            batch_projection=self,
+        ).solve()
         competition_records = iter(competition_result.records)
         synthesis_records = tuple(
             next(competition_records) if record.candidate_recipes else record
@@ -21889,8 +21878,8 @@ class FindingRecipePlanBuilder:
 
 
 @dataclass(frozen=True)
-class FindingRecipePlanCompetitionResult:
-    """Order-preserving recipe evaluations after exact global competition."""
+class CurrentSnapshotRecipeCompetitionResult:
+    """Order-preserving evaluations after exact current-snapshot competition."""
 
     candidates: tuple[FindingRecipePlanCandidate, ...]
     evaluations: tuple[FindingRecipeEvaluation, ...]
@@ -21927,7 +21916,7 @@ class FindingRecipeComponentDecision:
     """Exact position-preserving choice for one comparable conflict component."""
 
     global_indices: tuple[int, ...]
-    local_result: "MDLCompetitionResult"
+    local_result: "CurrentSnapshotMDLCompetitionResult"
     pair_assessments: tuple[FindingRecipeCandidatePairAssessment, ...]
 
     @property
@@ -21947,8 +21936,8 @@ class FindingRecipeComponentDecision:
 
 
 @dataclass(frozen=True)
-class FindingRecipePlanCompetition:
-    """Select a globally shortest compatible current-snapshot recipe set."""
+class CurrentSnapshotRecipeCompetition:
+    """Compare compatible recipes exactly within the current candidate snapshot."""
 
     candidates: tuple[FindingRecipePlanCandidate, ...]
     source_snapshot: CodemodSourceSnapshot | None
@@ -21957,8 +21946,7 @@ class FindingRecipePlanCompetition:
     @cached_property
     def candidate_simulations(self) -> tuple[FindingRecipeSetSimulation, ...]:
         return tuple(
-            self.simulate_recipe_set((index,))
-            for index in range(len(self.candidates))
+            self.simulate_recipe_set((index,)) for index in range(len(self.candidates))
         )
 
     @cached_property
@@ -22100,9 +22088,7 @@ class FindingRecipePlanCompetition:
                 right_index,
                 FindingRecipeCandidatePairDisposition.UNPROVED,
                 "individual recipe simulation is unproved: "
-                + "; ".join(
-                    assessment.reason for assessment in unproved_candidates
-                ),
+                + "; ".join(assessment.reason for assessment in unproved_candidates),
             )
         if self.candidates_have_nominal_conflict(left_index, right_index):
             return FindingRecipeCandidatePairAssessment(
@@ -22138,13 +22124,9 @@ class FindingRecipePlanCompetition:
                 right_index,
                 FindingRecipeCandidatePairDisposition.UNPROVED,
                 "composed recipe simulation is unproved: "
-                + "; ".join(
-                    assessment.reason for assessment in unproved_compositions
-                ),
+                + "; ".join(assessment.reason for assessment in unproved_compositions),
             )
-        if (
-            simulations[0].rewritten_sources != simulations[1].rewritten_sources
-        ):
+        if simulations[0].rewritten_sources != simulations[1].rewritten_sources:
             return FindingRecipeCandidatePairAssessment(
                 left_index,
                 right_index,
@@ -22190,7 +22172,7 @@ class FindingRecipePlanCompetition:
             adjacency,
         )
 
-    def solve(self) -> FindingRecipePlanCompetitionResult:
+    def solve(self) -> CurrentSnapshotRecipeCompetitionResult:
         evaluations = list(self.precompetition_evaluations)
         eligible_indices = self.competition_eligible_candidate_indices
         eligible_index_set = frozenset(eligible_indices)
@@ -22260,7 +22242,7 @@ class FindingRecipePlanCompetition:
                 if assessment.disposition
                 is FindingRecipeCandidatePairDisposition.CONFLICTING
             )
-            result = MDLCompetition(
+            result = CurrentSnapshotMDLCompetition(
                 DeclaredExplanationConflictGraph(
                     explanations=component_candidates,
                     declared_conflict_edges=conflict_edges,
@@ -22294,7 +22276,7 @@ class FindingRecipePlanCompetition:
             for index in eligible_indices:
                 if index not in unresolved_indices:
                     evaluations[index] = self.unproved_evaluation(index, reason)
-            return FindingRecipePlanCompetitionResult(
+            return CurrentSnapshotRecipeCompetitionResult(
                 candidates=self.candidates,
                 evaluations=tuple(evaluations),
             )
@@ -22317,7 +22299,7 @@ class FindingRecipePlanCompetition:
                     proof,
                     ambiguous=index in ambiguous,
                 )
-        return FindingRecipePlanCompetitionResult(
+        return CurrentSnapshotRecipeCompetitionResult(
             candidates=self.candidates,
             evaluations=tuple(evaluations),
         )
@@ -22382,17 +22364,21 @@ class FindingRecipePlanCompetition:
         candidate_indices: tuple[int, ...],
     ) -> FindingRecipeSetSimulation:
         if not candidate_indices:
-            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
-                candidate_indices=(),
-                disposition=FindingRecipeSetDisposition.NO_SELECTION,
-                reason="the exact competition has no invariant executable selection",
-            ))
+            return FindingRecipeSetSimulation(
+                FindingRecipeSetAssessment(
+                    candidate_indices=(),
+                    disposition=FindingRecipeSetDisposition.NO_SELECTION,
+                    reason="the exact competition has no invariant executable selection",
+                )
+            )
         if self.source_snapshot is None:
-            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
-                candidate_indices=candidate_indices,
-                disposition=FindingRecipeSetDisposition.UNPROVED,
-                reason="recipe-set simulation requires a source snapshot",
-            ))
+            return FindingRecipeSetSimulation(
+                FindingRecipeSetAssessment(
+                    candidate_indices=candidate_indices,
+                    disposition=FindingRecipeSetDisposition.UNPROVED,
+                    reason="recipe-set simulation requires a source snapshot",
+                )
+            )
         recipes = [
             self.candidates[index].record.evaluation.required_recipe
             for index in candidate_indices
@@ -22413,30 +22399,36 @@ class FindingRecipePlanCompetition:
                 if len(candidate_indices) > 1
                 else FindingRecipeSetDisposition.UNPROVED
             )
-            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
-                candidate_indices=candidate_indices,
-                disposition=disposition,
-                reason=f"recipe set has conflicting source edits: {error}",
-            ))
+            return FindingRecipeSetSimulation(
+                FindingRecipeSetAssessment(
+                    candidate_indices=candidate_indices,
+                    disposition=disposition,
+                    reason=f"recipe set has conflicting source edits: {error}",
+                )
+            )
         except (
             CodemodOperationPreflightError,
             SyntaxError,
         ) as error:
-            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
-                candidate_indices=candidate_indices,
-                disposition=FindingRecipeSetDisposition.UNPROVED,
-                reason=f"recipe set cannot be simulated: {error}",
-            ))
+            return FindingRecipeSetSimulation(
+                FindingRecipeSetAssessment(
+                    candidate_indices=candidate_indices,
+                    disposition=FindingRecipeSetDisposition.UNPROVED,
+                    reason=f"recipe set cannot be simulated: {error}",
+                )
+            )
         if not simulation.is_clean:
-            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
-                candidate_indices=candidate_indices,
-                disposition=FindingRecipeSetDisposition.UNPROVED,
-                reason=(
-                    "recipe set violates "
-                    f"{simulation.architecture_guard_report.violation_count} "
-                    "architecture guard(s)"
-                ),
-            ))
+            return FindingRecipeSetSimulation(
+                FindingRecipeSetAssessment(
+                    candidate_indices=candidate_indices,
+                    disposition=FindingRecipeSetDisposition.UNPROVED,
+                    reason=(
+                        "recipe set violates "
+                        f"{simulation.architecture_guard_report.violation_count} "
+                        "architecture guard(s)"
+                    ),
+                )
+            )
         rewritten_sources = simulation.simulation.rewritten_sources
         source_digest = hashlib.blake2s(
             "\0".join(
@@ -22482,7 +22474,7 @@ class FindingRecipePlanCompetition:
     def certified_exclusion_evaluation(
         self,
         index: int,
-        proof: FindingRecipePlanCompetitionProof,
+        proof: CurrentSnapshotRecipeCompetitionProof,
         *,
         ambiguous: bool,
     ) -> CertifiedPlanCompetitionEvaluation:
@@ -22503,7 +22495,7 @@ class FindingRecipePlanCompetition:
     def certified_selected_evaluation(
         self,
         index: int,
-        proof: FindingRecipePlanCompetitionProof,
+        proof: CurrentSnapshotRecipeCompetitionProof,
     ) -> CertifiedPlanSelectedRecipeEvaluation:
         evaluation = self.candidates[index].record.evaluation
         return CertifiedPlanSelectedRecipeEvaluation(
@@ -22530,7 +22522,7 @@ class FindingRecipePlanCompetition:
         self,
         decision: FindingRecipeComponentDecision,
         selected_set_assessment: FindingRecipeSetAssessment,
-    ) -> FindingRecipePlanCompetitionProof:
+    ) -> CurrentSnapshotRecipeCompetitionProof:
         selected_candidate_indices = decision.selected_global_indices
         selected_finding_ids = tuple(
             self.candidates[index].explanation_key
@@ -22538,14 +22530,11 @@ class FindingRecipePlanCompetition:
         )
         alternative_candidate_index_witnesses = tuple(
             tuple(decision.global_indices[local_index] for local_index in witness)
-            for witness in self.alternative_local_index_witnesses(
-                decision.local_result
-            )
+            for witness in self.alternative_local_index_witnesses(decision.local_result)
         )
         alternative_finding_id_witnesses = tuple(
             tuple(
-                self.candidates[index].explanation_key
-                for index in alternative_indices
+                self.candidates[index].explanation_key for index in alternative_indices
             )
             for alternative_indices in alternative_candidate_index_witnesses
         )
@@ -22564,7 +22553,7 @@ class FindingRecipePlanCompetition:
             ambiguity.certified_savings
             for ambiguity in decision.local_result.ambiguities
         )
-        return FindingRecipePlanCompetitionProof(
+        return CurrentSnapshotRecipeCompetitionProof(
             component_candidate_indices=decision.global_indices,
             component_finding_ids=tuple(
                 self.candidates[index].explanation_key
@@ -22575,9 +22564,7 @@ class FindingRecipePlanCompetition:
             alternative_candidate_index_witnesses=(
                 alternative_candidate_index_witnesses
             ),
-            alternative_finding_id_witnesses=(
-                alternative_finding_id_witnesses
-            ),
+            alternative_finding_id_witnesses=(alternative_finding_id_witnesses),
             optimal_solution_count=prod(
                 ambiguity.optimal_solution_count
                 for ambiguity in decision.local_result.ambiguities
@@ -22605,13 +22592,12 @@ class FindingRecipePlanCompetition:
 
     @staticmethod
     def alternative_local_index_witnesses(
-        result: "MDLCompetitionResult",
+        result: "CurrentSnapshotMDLCompetitionResult",
     ) -> tuple[tuple[int, ...], ...]:
         if not result.ambiguities:
             return (result.selected_indices,)
         baseline_witnesses = tuple(
-            ambiguity.alternative_index_witnesses[0]
-            for ambiguity in result.ambiguities
+            ambiguity.alternative_index_witnesses[0] for ambiguity in result.ambiguities
         )
         witnesses: list[tuple[int, ...]] = []
         for ambiguity_index, ambiguity in enumerate(result.ambiguities):
@@ -22622,9 +22608,7 @@ class FindingRecipePlanCompetition:
                             local_index
                             for index, baseline in enumerate(baseline_witnesses)
                             for local_index in (
-                                alternative
-                                if index == ambiguity_index
-                                else baseline
+                                alternative if index == ambiguity_index else baseline
                             )
                         )
                     )

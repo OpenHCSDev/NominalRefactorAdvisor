@@ -861,7 +861,7 @@ def _inline_ast_predicate_grammar_certificate(
 declare_candidate_rule_detector(
     InlineAstPredicateGrammarCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Authority method contains inline AST predicate grammar",
         "A nominal authority method that still hand-codes AST traversal, isinstance checks, attribute guards, and boolean predicate ladders has only moved the smell. The deeper normal form is a declarative matcher/effect-step grammar: node types and field predicates are data, while traversal and failure semantics live in one reusable ABC.",
         "declarative AST matcher grammar with traversal and predicate semantics owned once",
@@ -2354,7 +2354,7 @@ class NominalInstanceExplicitOrderingDetector(
         CompactClassRepositoryContext.from_projections
     )
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Nominal declaration catalog uses explicit ordering instead of MRO",
         "An abstract nominal value family carries a `priority`, `precedence`, `rank`, or `order` instance field, while class-owned declarations supply that field and a consumer sorts by it. The field is a second ordering authority beside the inheritance graph. Give each declaration one nominal catalog node and derive the sequence from its MRO.",
         "MRO-owned sequence for nominal declaration catalogs",
@@ -2589,7 +2589,7 @@ class TransportShellTemplateMethodDetector(
 ):
     candidate_collector = _transport_shell_template_candidates
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Template-method family is a transport shell over a downstream authority",
         "The docs say nominal families should have one authoritative owner. When an ABC template method only materializes an intermediate object from a class-level selector, delegates through one hook, and repackages through another hook, the extra family is usually a transport shell around an already authoritative boundary.",
         "single authoritative materialization/execution family instead of a parallel transport shell",
@@ -3875,7 +3875,7 @@ class ImplicitSelfContractMixinDetector(
         compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Concrete mixins should not hide consumer contracts behind `self`-casts",
         "The docs reserve mixins for orthogonal reusable concerns that participate in nominal MRO cleanly. When a concrete mixin erases `self` through `cast(..., self)` to reach consumer-owned fields, the mixin is carrying non-orthogonal family logic through a hidden contract instead of a declared base or policy.",
         "declared nominal base or policy row for the shared algorithm instead of a hidden mixin self-contract",
@@ -3960,7 +3960,7 @@ class RepeatedGuardValidatorFamilyDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedGuardValidatorFamilyCandidate]
 ):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated guard validators should collapse into one case-policy authority",
         "When several sibling boolean helpers walk the same subject through fail-fast guards and case-local final checks, the algorithm skeleton is split across helper names instead of being owned by one nominal case policy or declarative rule family.",
         "single authoritative case-policy or rule-table validator",
@@ -4056,7 +4056,7 @@ class RepeatedValidateShapeGuardFamilyDetector(
     module_projection_family = CompactValidateShapeModuleProjectionFamily
     candidate_collector = _repeated_validate_shape_guard_candidates_for_modules
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated validate() shape guards should collapse into one validated-record authority",
         "Sibling nominal records repeat the same fail-fast shape and dimensional guards in `validate()` while differing only in field names or a small residue check. The docs treat that as duplicated contract authority that should move into one shared validated-record base, field-spec table, or mixin hook.",
         "single authoritative validated-record contract for repeated shape/ndim guards",
@@ -4118,7 +4118,7 @@ class RepeatedResultAssemblyPipelineDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedResultAssemblyPipelineCandidate]
 ):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated result-assembly pipeline should collapse into one authoritative assembler",
         "Several owners repeat the same downstream result-assembly stages and differ only in the upstream source or projection that feeds the pipeline. The docs treat that as shared algorithm authority that should move into one template method or authoritative helper with one orthogonal source hook.",
         "single authoritative result-assembly pipeline with one source hook",
@@ -4209,7 +4209,6 @@ declare_candidate_rule_detector(
         parameter_count=2 if collector.uses_config else 1,
         callee_family_count=1,
     ),
-    detector_priority=-19,
     candidate_collector=_candidate_collector_boilerplate_candidates,
 )
 
@@ -4217,7 +4216,7 @@ declare_candidate_rule_detector(
 declare_candidate_rule_detector(
     TypedCandidateCastBoilerplateCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Candidate template method should receive typed candidates directly",
         "Detector classes repeatedly accept `candidate: object`, immediately cast it to a nominal candidate type, and then never use the object-typed parameter again. That cast belongs in the generic detector base contract: the implementation hook should receive the typed candidate directly.",
         "generic typed candidate detector base with no per-detector cast prelude",
@@ -4242,7 +4241,6 @@ declare_candidate_rule_detector(
         f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude."
     ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
-    detector_priority=-18,
     candidate_collector=_typed_candidate_cast_boilerplate_candidates,
 )
 
@@ -4281,7 +4279,6 @@ declare_candidate_rule_detector(
         field_names=candidate.assignment_names,
         source_name=candidate.base_name,
     ),
-    detector_priority=-17,
     candidate_collector=_declarative_detector_class_candidates,
 )
 
@@ -4289,7 +4286,7 @@ declare_candidate_rule_detector(
 declare_candidate_rule_detector(
     StaticTypedObservationDetectorCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Static observation detector should derive from typed observation algebra",
         "A static detector whose evidence method only collects one typed observation family and maps its line/symbol payload into `SourceLocation` is repeating the same module-observation algorithm. The detector should declare the observation family, item type, evidence threshold, and summary template while the ABC owns collection and evidence projection.",
         "typed observation detector algebra with one shared collection/projection algorithm",
@@ -4325,7 +4322,6 @@ declare_candidate_rule_detector(
         ),
         source_name=candidate.observation_family_name,
     ),
-    detector_priority=-16,
     candidate_collector=_static_typed_observation_detector_candidates,
 )
 
@@ -4378,7 +4374,6 @@ declare_candidate_rule_detector(
         field_names=family.field_names,
         source_name=family.enum_name,
     ),
-    detector_priority=-13,
     candidate_collector=_schema_accessor_family_candidates,
 )
 
@@ -4430,7 +4425,6 @@ declare_candidate_rule_detector(
         field_names=candidate.index_expressions,
         source_name="carrier_tuple_context",
     ),
-    detector_priority=-13,
     candidate_collector=_tuple_index_semantic_opacity_candidates,
     source_candidate_collector=lambda module, syntax_index, config: (
         None
@@ -4507,7 +4501,7 @@ class FindingSpecDefaultFieldBoilerplateDetector(
 declare_candidate_rule_detector(
     ClassMethodLineWitnessCandidate,
     high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Detector finding builder should derive detector_id",
         "Concrete detectors repeatedly call `self.finding_spec.build(self.detector_id, ...)`. The detector id is instance-owned template context, not per-finding payload; a shared `build_finding(...)` hook should inject it once.",
         "typed detector template method that injects detector identity into finding construction",
@@ -4541,7 +4535,7 @@ class DirectBuildFindingRendererDetector(
     ModuleCollectorCandidateDetector[DirectBuildFindingRendererCandidate]
 ):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Direct build_finding renderer should be a typed renderer value",
         "A `_finding_for_candidate` method whose entire body is `return self.build_finding(...)` does not own control flow. It is a data renderer over one candidate type, so the candidate-to-finding algorithm should live once in the ABC and the detector should supply a typed renderer object.",
         "typed candidate finding renderer reused by detector ABC machinery",
@@ -4652,7 +4646,6 @@ declare_candidate_rule_detector(
         literal_cases=(*candidate.source_axis_values, *candidate.target_axis_values),
     ),
     compression_certificate=_closed_axis_conversion_matrix_compression_certificate,
-    detector_priority=-9,
     candidate_collector=_closed_axis_conversion_matrix_candidates,
 )
 
@@ -4660,7 +4653,7 @@ declare_candidate_rule_detector(
 declare_candidate_rule_detector(
     ArrayProtocolProbeBridgeCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated array capability probes should become a bridge authority",
         "Several operations probe the same array protocol attributes. The bridge normal form is one nominal array bridge that owns capability discovery and exposes typed operation hooks, rather than every operation rediscovering shape/device/dtype semantics.",
         "array bridge ABC with capability properties and operation hooks",
@@ -4696,7 +4689,6 @@ declare_candidate_rule_detector(
     ),
     metrics=lambda candidate: ProbeCountMetrics(probe_site_count=candidate.probe_count),
     compression_certificate=lambda candidate: candidate.compression_certificate,
-    detector_priority=-9,
     candidate_collector=_array_protocol_probe_bridge_candidates,
 )
 
@@ -4704,7 +4696,7 @@ declare_candidate_rule_detector(
 declare_candidate_rule_detector(
     NodeVisitorStackBoilerplateCandidate,
     high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Manual AST visitor scope stacks should be inherited",
         "Concrete `ast.NodeVisitor` classes that hand-declare multiple scope stacks and repeat push/pop transitions are reimplementing one traversal skeleton. The stack lifecycle belongs in a nominal ABC; concrete visitors should supply hooks for observation-specific work.",
         "one nominal visitor ABC owns stack lifecycle and concrete visitors provide hooks",

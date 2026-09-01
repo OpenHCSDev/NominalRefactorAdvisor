@@ -34,7 +34,7 @@ def _write_module(root: Path, relative_path: str, source: str) -> Path:
 
 def _finding_spec() -> FindingSpec:
     return FindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        pattern_id=PatternId.SHARED_ALGORITHM_AUTHORITY,
         title="Collapse repeated class family",
         why="Repeated behavior has one grammar.",
         capability_gap="certified grammar compression",
@@ -121,7 +121,7 @@ def test_inspect_paths_loads_and_analyzes_roots(tmp_path: Path) -> None:
     module_path = _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Loader:\n" "    def run(self):\n" "        return make_value()\n",
+        "class Loader:\n    def run(self):\n        return make_value()\n",
     )
 
     report = inspect_paths((module_path,))

@@ -1,14 +1,13 @@
-"""Universal finite factorization engine for semantic duplication.
+"""Finite factorization evidence algebra for semantic duplication.
 
-The engine treats refactor candidates as finite products: each semantic object
-is a row, each observed invariant is an axis, and a factorization is an orbit
-whose shared axes can move to an authority while residue axes stay as hooks.
+Each semantic object is a row and each observed invariant is an axis.  The
+module derives finite relations and exact current-snapshot competition evidence
+without choosing a refactoring normal form or authority placement.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import combinations
@@ -25,7 +24,6 @@ AxisName: TypeAlias = str
 AxisValue: TypeAlias = Hashable
 AxisAssignment: TypeAlias = tuple[AxisName, AxisValue]
 AxisSignature: TypeAlias = tuple[AxisAssignment, ...]
-LatticeKey: TypeAlias = tuple[frozenset[str], frozenset[AxisName], frozenset[AxisName]]
 ConceptAttribute: TypeAlias = AxisAssignment
 AxisPairRows: TypeAlias = tuple[tuple[AxisName, AxisName], ...]
 ProjectionPath: TypeAlias = tuple[str, ...]
@@ -76,113 +74,6 @@ class FactorizationRow:
 
     def project(self, axis_names: Iterable[AxisName]) -> AxisSignature:
         return tuple((axis_name, self.value_for(axis_name)) for axis_name in axis_names)
-
-
-@dataclass(frozen=True)
-class FactorizationOrbit:
-    """Objects sharing one authority projection with explicit residue axes."""
-
-    shared_signature: AxisSignature
-    rows: tuple[FactorizationRow, ...]
-    residue_axis_names: tuple[AxisName, ...]
-
-    @property
-    def object_names(self) -> tuple[str, ...]:
-        return tuple((row.object_name for row in self.rows))
-
-    @property
-    def shared_axis_names(self) -> tuple[AxisName, ...]:
-        return tuple((axis_name for axis_name, _ in self.shared_signature))
-
-    @property
-    def independent_source_count(self) -> int:
-        return len(frozenset((row.source_name for row in self.rows if row.source_name)))
-
-    @property
-    def residue_site_count(self) -> int:
-        return len(self.rows) * len(self.residue_axis_names)
-
-
-@dataclass(frozen=True)
-class FactorizationPlan:
-    """A certified shared-authority plus residue-hook normal form."""
-
-    authority_name: str
-    orbit: FactorizationOrbit
-    compression_certificate: CompressionCertificate
-
-    @property
-    def normal_form(self) -> str:
-        shared_axes = ",".join(self.orbit.shared_axis_names) or "unit"
-        residue_axes = ",".join(self.orbit.residue_axis_names) or "none"
-        objects = ",".join(self.orbit.object_names)
-        return (
-            f"FACT({self.authority_name}:{shared_axes})"
-            f" -> RESIDUE({residue_axes}) [{objects}]"
-        )
-
-    @property
-    def certified_savings(self) -> int:
-        return self.compression_certificate.certified_description_length_savings
-
-    @property
-    def pays_rent(self) -> bool:
-        return self.compression_certificate.pays_rent
-
-
-@dataclass(frozen=True)
-class NegativeCompressionProof:
-    """Explicit proof that a tempting factorization does not pay rent."""
-
-    authority_name: str
-    orbit: FactorizationOrbit
-    compression_certificate: CompressionCertificate
-    reason: str
-
-    @property
-    def normal_form(self) -> str:
-        shared_axes = ",".join(self.orbit.shared_axis_names) or "unit"
-        residue_axes = ",".join(self.orbit.residue_axis_names) or "none"
-        return (
-            f"REJECT({self.authority_name}:{shared_axes})"
-            f" -> RESIDUE({residue_axes}) because {self.reason}"
-        )
-
-    @property
-    def certified_savings(self) -> int:
-        return self.compression_certificate.certified_description_length_savings
-
-
-@dataclass(frozen=True)
-class FactorizationAssessment:
-    """Paid plan or negative proof for one orbit normal form."""
-
-    plan: FactorizationPlan | None
-    rejection: NegativeCompressionProof | None
-
-    def __post_init__(self) -> None:
-        if (self.plan is None) == (self.rejection is None):
-            raise ValueError("factorization assessments must contain exactly one proof")
-
-    @property
-    def accepted(self) -> bool:
-        return self.plan is not None
-
-    @property
-    def orbit(self) -> FactorizationOrbit:
-        if self.plan is not None:
-            return self.plan.orbit
-        if self.rejection is not None:
-            return self.rejection.orbit
-        raise RuntimeError("unreachable invalid factorization assessment")
-
-    @property
-    def certified_savings(self) -> int:
-        if self.plan is not None:
-            return self.plan.certified_savings
-        if self.rejection is not None:
-            return self.rejection.certified_savings
-        raise RuntimeError("unreachable invalid factorization assessment")
 
 
 class CompressibleExplanation(ABC, metaclass=AutoRegisterMeta):
@@ -247,100 +138,6 @@ class FiniteCoverRelation(ABC, Generic[CoverNodeT]):
                     continue
                 edges.append((candidate, parent))
         return tuple(edges)
-
-
-@dataclass(frozen=True)
-class FactorizationLatticeNode(CompressibleExplanation):
-    """One node in the factorization lattice."""
-
-    plan: FactorizationPlan
-
-    @classmethod
-    def from_plan(cls, plan: FactorizationPlan) -> "FactorizationLatticeNode":
-        return cls(plan)
-
-    @property
-    def explanation_key(self) -> Hashable:
-        return (
-            self.plan.authority_name,
-            sorted_tuple(self.shared_axis_names),
-            sorted_tuple(self.residue_axis_names),
-            sorted_tuple(self.object_names),
-        )
-
-    @property
-    def object_names(self) -> frozenset[str]:
-        return frozenset(self.plan.orbit.object_names)
-
-    @property
-    def covered_objects(self) -> frozenset[Hashable]:
-        return frozenset(self.object_names)
-
-    @property
-    def shared_axis_names(self) -> frozenset[AxisName]:
-        return frozenset(self.plan.orbit.shared_axis_names)
-
-    @property
-    def residue_axis_names(self) -> frozenset[AxisName]:
-        return frozenset(self.plan.orbit.residue_axis_names)
-
-    @property
-    def compression_certificate(self) -> CompressionCertificate:
-        return self.plan.compression_certificate
-
-    def refines(self, other: "FactorizationLatticeNode") -> bool:
-        return (
-            self.object_names <= other.object_names
-            and self.shared_axis_names >= other.shared_axis_names
-            and self.residue_axis_names <= other.residue_axis_names
-        )
-
-    def meet_key(self, other: "FactorizationLatticeNode") -> LatticeKey:
-        return (
-            self.object_names & other.object_names,
-            self.shared_axis_names | other.shared_axis_names,
-            self.residue_axis_names & other.residue_axis_names,
-        )
-
-    def join_key(self, other: "FactorizationLatticeNode") -> LatticeKey:
-        return (
-            self.object_names | other.object_names,
-            self.shared_axis_names & other.shared_axis_names,
-            self.residue_axis_names | other.residue_axis_names,
-        )
-
-
-@dataclass(frozen=True)
-class FactorizationLattice(FiniteCoverRelation[FactorizationLatticeNode]):
-    """Finite lattice of paid factorization explanations."""
-
-    nodes: tuple[FactorizationLatticeNode, ...]
-    cover_elements = AliasProperty[tuple[FactorizationLatticeNode, ...]]("nodes")
-
-    @classmethod
-    def from_plans(cls, plans: Iterable[FactorizationPlan]) -> "FactorizationLattice":
-        return cls(
-            sorted_tuple(
-                (FactorizationLatticeNode.from_plan(plan) for plan in plans),
-                key=lambda node: node.explanation_key,
-            )
-        )
-
-    def refines(
-        self, child: FactorizationLatticeNode, parent: FactorizationLatticeNode
-    ) -> bool:
-        return child.refines(parent)
-
-    def best_antichain(self) -> tuple[FactorizationLatticeNode, ...]:
-        return tuple(
-            (
-                node
-                for node in MDLCompetition(
-                    CoveredObjectExplanationConflictGraph(self.nodes)
-                ).best_non_overlapping()
-                if isinstance(node, FactorizationLatticeNode)
-            )
-        )
 
 
 @dataclass(frozen=True)
@@ -444,9 +241,7 @@ class ExplanationConflictGraph(ABC):
                     self.explanations[index].certified_savings for index in ordered
                 ),
             )
-        optimal_witness_by_membership: dict[
-            tuple[int, bool], tuple[int, ...]
-        ] = {}
+        optimal_witness_by_membership: dict[tuple[int, bool], tuple[int, ...]] = {}
         optimal_solution_count = 0
         invariant_selected_indices: set[int] | None = None
         best_score = 0
@@ -510,17 +305,6 @@ class ExplanationConflictGraph(ABC):
 
 
 @dataclass(frozen=True)
-class CoveredObjectExplanationConflictGraph(ExplanationConflictGraph):
-    """Conflict graph derived from overlapping semantic object coverage."""
-
-    def conflicts(self, left: int, right: int) -> bool:
-        return bool(
-            self.explanations[left].covered_objects
-            & self.explanations[right].covered_objects
-        )
-
-
-@dataclass(frozen=True)
 class DeclaredExplanationConflictGraph(ExplanationConflictGraph):
     """Conflict graph whose exact edges are proved by a domain projection."""
 
@@ -546,74 +330,6 @@ class DeclaredExplanationConflictGraph(ExplanationConflictGraph):
 
 
 @dataclass(frozen=True)
-class SemanticHyperedge:
-    """One many-object semantic compression edge."""
-
-    edge_key: Hashable
-    objects: frozenset[Hashable]
-    axes: frozenset[Hashable]
-    owner: Hashable | None = None
-    weight: int = 0
-
-    @classmethod
-    def from_explanation(
-        cls, explanation: CompressibleExplanation
-    ) -> "SemanticHyperedge":
-        key = explanation.explanation_key
-        axes: frozenset[Hashable] = frozenset()
-        if isinstance(explanation, FactorizationLatticeNode):
-            axes = frozenset(
-                (*explanation.shared_axis_names, *explanation.residue_axis_names)
-            )
-        return cls(
-            edge_key=key,
-            objects=frozenset(explanation.covered_objects),
-            axes=axes,
-            owner=key[0] if isinstance(key, tuple) and key else None,
-            weight=explanation.certified_savings,
-        )
-
-    def overlaps(self, other: "SemanticHyperedge") -> bool:
-        return bool(self.objects & other.objects)
-
-
-@dataclass(frozen=True)
-class SemanticCompressionHypergraph:
-    """Hypergraph whose edges are candidate semantic compressions."""
-
-    hyperedges: tuple[SemanticHyperedge, ...]
-
-    @classmethod
-    def from_explanations(
-        cls, explanations: Iterable[CompressibleExplanation]
-    ) -> "SemanticCompressionHypergraph":
-        return cls(
-            sorted_tuple(
-                (SemanticHyperedge.from_explanation(item) for item in explanations),
-                key=lambda item: repr(item.edge_key),
-            )
-        )
-
-    @property
-    def object_vertices(self) -> frozenset[Hashable]:
-        return frozenset((item for edge in self.hyperedges for item in edge.objects))
-
-    @property
-    def axis_vertices(self) -> frozenset[Hashable]:
-        return frozenset((item for edge in self.hyperedges for item in edge.axes))
-
-    @property
-    def overlap_edges(self) -> tuple[tuple[Hashable, Hashable], ...]:
-        return tuple(
-            (
-                (left.edge_key, right.edge_key)
-                for left, right in combinations(self.hyperedges, 2)
-                if left.overlaps(right)
-            )
-        )
-
-
-@dataclass(frozen=True)
 class FormalConcept:
     """One formal concept: extent of objects and intent of shared attributes."""
 
@@ -626,24 +342,6 @@ class FormalConcept:
     @property
     def axis_names(self) -> frozenset[AxisName]:
         return frozenset((axis_name for axis_name, _ in self.intent))
-
-
-@dataclass(frozen=True)
-class ConceptDecompositionCandidate:
-    """Concept-lattice evidence for one ABC plus orthogonal mixin axes."""
-
-    concept: FormalConcept
-    shared_axis_names: tuple[AxisName, ...]
-    mixin_axis_names: tuple[AxisName, ...]
-    dependent_axis_names: tuple[AxisName, ...]
-    support: int
-
-    @property
-    def normal_form(self) -> str:
-        shared = ",".join(self.shared_axis_names) or "unit"
-        mixins = ",".join(self.mixin_axis_names) or "none"
-        dependent = ",".join(self.dependent_axis_names) or "none"
-        return f"CONCEPT(ABC:{shared}) + MIXIN({mixins}) + DEP({dependent})"
 
 
 @dataclass(frozen=True)
@@ -751,51 +449,6 @@ class FormalConceptLattice(FiniteCoverRelation[FormalConcept]):
             )
         )
 
-    def decomposition_candidates(
-        self, independence_model: "AxisIndependenceModel | None" = None
-    ) -> tuple[ConceptDecompositionCandidate, ...]:
-        candidates: list[ConceptDecompositionCandidate] = []
-        for concept in self.compression_concepts:
-            axis_names = sorted_tuple(concept.axis_names, key=repr)
-            mixin_axes = (
-                tuple(
-                    (
-                        axis
-                        for axis in axis_names
-                        if all(
-                            (
-                                other == axis
-                                or independence_model.orthogonal(axis, other)
-                                for other in axis_names
-                            )
-                        )
-                    )
-                )
-                if independence_model is not None
-                else ()
-            )
-            dependent_axes = tuple(
-                (axis for axis in axis_names if axis not in mixin_axes)
-            )
-            candidates.append(
-                ConceptDecompositionCandidate(
-                    concept=concept,
-                    shared_axis_names=dependent_axes or axis_names,
-                    mixin_axis_names=mixin_axes,
-                    dependent_axis_names=dependent_axes,
-                    support=len(concept.extent),
-                )
-            )
-        return sorted_tuple(
-            candidates,
-            key=lambda item: (
-                -item.support,
-                -len(item.concept.intent),
-                item.shared_axis_names,
-                item.mixin_axis_names,
-            ),
-        )
-
 
 @dataclass(frozen=True)
 class AxisIndependenceModel:
@@ -829,14 +482,6 @@ class AxisIndependenceModel:
         axis_tuple = sorted_tuple(frozenset(axes), key=repr)
         return len(axis_tuple) - self.rank(axis_tuple)
 
-    def decomposition_role(self, axes: Iterable[AxisName]) -> str:
-        defect = self.rank_defect(axes)
-        if defect == 0:
-            return "mixin_axis"
-        if defect == len(frozenset(axes)) - 1:
-            return "abc_axis"
-        return "layered_abc_mixin_axis"
-
     @property
     def dependent_axis_pairs(self) -> AxisPairRows:
         return tuple(
@@ -856,15 +501,6 @@ class AxisIndependenceModel:
                 if self.orthogonal(left, right)
             )
         )
-
-
-@dataclass(frozen=True)
-class SuppressedExplanation:
-    """One MDL explanation rejected in favor of a shorter cover."""
-
-    explanation: CompressibleExplanation
-    selected_by: CompressibleExplanation | None
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -895,12 +531,11 @@ class AmbiguousExplanationSelection:
 
 
 @dataclass(frozen=True)
-class MDLCompetitionResult:
-    """Shortest selected MDL cover plus rejected explanations."""
+class CurrentSnapshotMDLCompetitionResult:
+    """Invariant MDL selections and ambiguities for one candidate snapshot."""
 
     conflict_graph: ExplanationConflictGraph
     selected_indices: tuple[int, ...]
-    suppressed: tuple[SuppressedExplanation, ...]
     ambiguities: tuple[AmbiguousExplanationSelection, ...] = ()
 
     @property
@@ -935,334 +570,8 @@ class ResidueHookNamesCarrier:
     behavior_hook_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class InheritanceResidueProfile(ResidueHookNamesCarrier):
-    """Residual subclass surface left after shared inheritance behavior moves upward."""
-
-
-@dataclass(frozen=True)
-class InheritanceMethodSpec:
-    """One repeated method family available to inheritance design search."""
-
-    method_name: str
-    class_names: tuple[str, ...]
-    shared_statement_count: int
-    residue: InheritanceResidueProfile
-
-
-@dataclass(frozen=True)
-class InheritanceSearchResult:
-    """Best hierarchy design plus dominated alternatives."""
-
-    best_design: InheritanceDesign | None
-    suppressed_designs: tuple[InheritanceDesign, ...]
-
-
-@dataclass(frozen=True)
-class InheritanceDesign(CompressibleExplanation):
-    """One candidate ABC/mixin/hook allocation for a class family."""
-
-    normal_form: str
-    method_specs: tuple[InheritanceMethodSpec, ...]
-    abc_method_names: tuple[str, ...]
-    mixin_axis_names: tuple[str, ...]
-    overlap_axis_names: tuple[str, ...]
-    design_compression_certificate: CompressionCertificate
-    compression_certificate = AliasProperty[CompressionCertificate](
-        "design_compression_certificate"
-    )
-
-    @property
-    def explanation_key(self) -> Hashable:
-        return (
-            self.normal_form,
-            self.abc_method_names,
-            self.mixin_axis_names,
-            self.overlap_axis_names,
-        )
-
-    @property
-    def covered_objects(self) -> frozenset[Hashable]:
-        return frozenset(
-            (
-                f"{class_name}.{method_spec.method_name}"
-                for method_spec in self.method_specs
-                for class_name in method_spec.class_names
-            )
-        )
-
-    @property
-    def abc_layer_count(self) -> int:
-        return (1 if self.abc_method_names else 0) + len(self.overlap_axis_names)
-
-    @property
-    def optimizer_score(self) -> int:
-        return (
-            self.certified_savings
-            + len(self.covered_objects)
-            + (2 * len(self.mixin_axis_names))
-            - self.abc_layer_count
-        )
-
-    @property
-    def classvar_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            (
-                name
-                for method_spec in self.method_specs
-                for name in method_spec.residue.classvar_names
-            )
-        )
-
-    @property
-    def hook_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            (
-                name
-                for method_spec in self.method_specs
-                for name in (
-                    *method_spec.residue.property_hook_names,
-                    *method_spec.residue.behavior_hook_names,
-                )
-            )
-        )
-
-    @property
-    def leaf_residue_names(self) -> tuple[str, ...]:
-        return sorted_tuple((*self.classvar_names, *self.hook_names))
-
-    @property
-    def residue_declaration_count(self) -> int:
-        return sum(
-            (
-                len(method_spec.class_names)
-                * (
-                    len(method_spec.residue.classvar_names)
-                    + len(method_spec.residue.property_hook_names)
-                    + len(method_spec.residue.behavior_hook_names)
-                )
-                for method_spec in self.method_specs
-            )
-        )
-
-    @property
-    def shared_statement_count(self) -> int:
-        return sum(
-            (method_spec.shared_statement_count for method_spec in self.method_specs)
-        )
-
-    @property
-    def shared_to_residue_ratio(self) -> float:
-        return self.shared_statement_count / max(self.residue_declaration_count, 1)
-
-
-class InheritanceDesignSearch:
-    """Search ABC, mixin, hook, and classvar placements for one class family."""
-
-    def __init__(self, method_specs: Iterable[InheritanceMethodSpec]) -> None:
-        self.method_specs = sorted_tuple(
-            method_specs, key=lambda item: (item.method_name, item.class_names)
-        )
-
-    def candidate_designs(self, base_name: str) -> tuple[InheritanceDesign, ...]:
-        if not self.method_specs:
-            return ()
-        return sorted_tuple(
-            (
-                design
-                for design in (
-                    self._unified_abc_design(base_name),
-                    self._layered_mixin_design(base_name),
-                )
-                if design is not None and design.pays_rent
-            ),
-            key=lambda item: (-item.optimizer_score, item.normal_form),
-        )
-
-    def solve(self, base_name: str) -> InheritanceSearchResult:
-        designs = self.candidate_designs(base_name)
-        best = designs[0] if designs else None
-        return InheritanceSearchResult(best, designs[1:])
-
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                class_name
-                for method_spec in self.method_specs
-                for class_name in method_spec.class_names
-            }
-        )
-
-    def _unified_abc_design(self, base_name: str) -> InheritanceDesign | None:
-        method_names = tuple((method.method_name for method in self.method_specs))
-        return self._design(
-            base_name=base_name,
-            abc_method_names=method_names,
-            mixin_axis_names=(),
-            overlap_axis_names=(),
-        )
-
-    def _layered_mixin_design(self, base_name: str) -> InheritanceDesign | None:
-        all_classes = frozenset(self.class_names)
-        mixin_methods = tuple(
-            (
-                method
-                for method in self.method_specs
-                if frozenset(method.class_names) < all_classes
-                and not method.residue.behavior_hook_names
-            )
-        )
-        if not mixin_methods:
-            return None
-        mixin_method_names = tuple((method.method_name for method in mixin_methods))
-        overlap_method_names = tuple(
-            (
-                method.method_name
-                for method in self.method_specs
-                if method.method_name not in mixin_method_names
-                and frozenset(method.class_names) != all_classes
-            )
-        )
-        abc_method_names = tuple(
-            (
-                method.method_name
-                for method in self.method_specs
-                if method.method_name
-                not in (*mixin_method_names, *overlap_method_names)
-            )
-        )
-        return self._design(
-            base_name=base_name,
-            abc_method_names=abc_method_names,
-            mixin_axis_names=mixin_method_names,
-            overlap_axis_names=overlap_method_names,
-        )
-
-    def _design(
-        self,
-        *,
-        base_name: str,
-        abc_method_names: tuple[str, ...],
-        mixin_axis_names: tuple[str, ...],
-        overlap_axis_names: tuple[str, ...],
-    ) -> InheritanceDesign | None:
-        certificate = self._compression_certificate(
-            abc_method_names=abc_method_names,
-            mixin_axis_names=mixin_axis_names,
-            overlap_axis_names=overlap_axis_names,
-        )
-        design = InheritanceDesign(
-            normal_form=self._normal_form(
-                base_name,
-                abc_method_names,
-                mixin_axis_names,
-                overlap_axis_names,
-            ),
-            method_specs=self.method_specs,
-            abc_method_names=abc_method_names,
-            mixin_axis_names=mixin_axis_names,
-            overlap_axis_names=overlap_axis_names,
-            design_compression_certificate=certificate,
-        )
-        return design if design.pays_rent else None
-
-    def _compression_certificate(
-        self,
-        *,
-        abc_method_names: tuple[str, ...],
-        mixin_axis_names: tuple[str, ...],
-        overlap_axis_names: tuple[str, ...],
-    ) -> CompressionCertificate:
-        class_count = max(len(self.class_names), 1)
-        manual_object_count = sum(
-            (
-                len(method_spec.class_names) * method_spec.shared_statement_count
-                for method_spec in self.method_specs
-            )
-        )
-        residue_count = sum(
-            (
-                self._residue_multiplier(
-                    method_spec,
-                    mixin_axis_names=mixin_axis_names,
-                    overlap_axis_names=overlap_axis_names,
-                )
-                * (
-                    len(method_spec.residue.classvar_names)
-                    + len(method_spec.residue.property_hook_names)
-                    + len(method_spec.residue.behavior_hook_names)
-                )
-                for method_spec in self.method_specs
-            )
-        )
-        layer_count = (
-            (1 if abc_method_names else 0)
-            + len(mixin_axis_names)
-            + len(overlap_axis_names)
-        )
-        return CompressionCertificate.from_object_family(
-            manual_object_count=manual_object_count,
-            replacement_shape=ObjectFamilyShape(
-                shared_objects=("abc_base",) * max(layer_count, 1),
-                per_axis_objects=("residue_declaration",),
-            ),
-            semantic_axes=(
-                *self.class_names,
-                *abc_method_names,
-                *mixin_axis_names,
-                *overlap_axis_names,
-            ),
-            residual_object_count=residue_count,
-            provenance_object_count=1,
-            independent_source_count=class_count,
-        )
-
-    def _residue_multiplier(
-        self,
-        method_spec: InheritanceMethodSpec,
-        *,
-        mixin_axis_names: tuple[str, ...],
-        overlap_axis_names: tuple[str, ...],
-    ) -> int:
-        if method_spec.method_name in mixin_axis_names:
-            return 1
-        if method_spec.method_name in overlap_axis_names:
-            return max(len(method_spec.class_names) - 1, 1)
-        return len(method_spec.class_names)
-
-    def _normal_form(
-        self,
-        base_name: str,
-        abc_method_names: tuple[str, ...],
-        mixin_axis_names: tuple[str, ...],
-        overlap_axis_names: tuple[str, ...],
-    ) -> str:
-        abc = f"ABC({base_name}:{','.join(self.class_names)})"
-        methods = f"{{{','.join(abc_method_names)}}}" if abc_method_names else "{}"
-        mixins = f" + MIXIN({','.join(mixin_axis_names)})" if mixin_axis_names else ""
-        overlaps = (
-            f" + OVERLAP({','.join(overlap_axis_names)})" if overlap_axis_names else ""
-        )
-        hooks = f" -> HOOKS({','.join(self._hook_basis())})"
-        return f"{abc}{methods}{mixins}{overlaps}{hooks}"
-
-    def _hook_basis(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                name
-                for method_spec in self.method_specs
-                for name in (
-                    *method_spec.residue.classvar_names,
-                    *method_spec.residue.property_hook_names,
-                    *method_spec.residue.behavior_hook_names,
-                )
-            }
-        )
-
-
-class MDLCompetition:
-    """Select the shortest non-overlapping explanation set by certified MDL."""
+class CurrentSnapshotMDLCompetition:
+    """Compare non-overlapping explanations exactly in one candidate snapshot."""
 
     def __init__(self, conflict_graph: ExplanationConflictGraph) -> None:
         self.conflict_graph = conflict_graph
@@ -1271,10 +580,7 @@ class MDLCompetition:
     def explanations(self) -> tuple[CompressibleExplanation, ...]:
         return self.conflict_graph.explanations
 
-    def best_non_overlapping(self) -> tuple[CompressibleExplanation, ...]:
-        return self.solve().selected
-
-    def solve(self) -> MDLCompetitionResult:
+    def solve(self) -> CurrentSnapshotMDLCompetitionResult:
         component_selections = self.conflict_graph.exact_component_selections()
         selected_indices = tuple(
             sorted(
@@ -1283,12 +589,6 @@ class MDLCompetition:
                 for index in component.invariant_selected_indices
             )
         )
-        ambiguity_by_index = {
-            index: component
-            for component in component_selections
-            if component.is_ambiguous
-            for index in component.component_indices
-        }
         ambiguities = tuple(
             AmbiguousExplanationSelection(
                 component_indices=component.component_indices,
@@ -1306,59 +606,9 @@ class MDLCompetition:
             for component in component_selections
             if component.is_ambiguous
         )
-        suppressed: list[SuppressedExplanation] = []
-        for explanation_index, explanation in enumerate(self.explanations):
-            if explanation_index in selected_indices:
-                continue
-            if not explanation.pays_rent:
-                suppressed.append(
-                    SuppressedExplanation(
-                        explanation=explanation,
-                        selected_by=None,
-                        reason="negative certified MDL savings",
-                    )
-                )
-                continue
-            if explanation_index in ambiguity_by_index:
-                suppressed.append(
-                    SuppressedExplanation(
-                        explanation=explanation,
-                        selected_by=None,
-                        reason="equal-cost conflicting MDL optima are ambiguous",
-                    )
-                )
-                continue
-            selected_by = next(
-                (
-                    self.explanations[selected_index]
-                    for selected_index in selected_indices
-                    if self.conflict_graph.conflicts(
-                        explanation_index,
-                        selected_index,
-                    )
-                ),
-                None,
-            )
-            if selected_by is not None:
-                suppressed.append(
-                    SuppressedExplanation(
-                        explanation=explanation,
-                        selected_by=selected_by,
-                        reason="conflicts with the exact shorter MDL cover",
-                    )
-                )
-                continue
-            suppressed.append(
-                SuppressedExplanation(
-                    explanation=explanation,
-                    selected_by=None,
-                    reason="excluded by exact MDL competition",
-                )
-            )
-        return MDLCompetitionResult(
+        return CurrentSnapshotMDLCompetitionResult(
             conflict_graph=self.conflict_graph,
             selected_indices=selected_indices,
-            suppressed=tuple(suppressed),
             ambiguities=ambiguities,
         )
 
@@ -1603,189 +853,6 @@ class OwnershipClosure:
         return owners[0] if owners else None
 
 
-class FactorizationEngine:
-    """Discover finite-product factorizations from axis-labelled objects."""
-
-    def __init__(self, rows: Iterable[FactorizationRow]) -> None:
-        self.rows = tuple(rows)
-        self._axis_system = FiniteAxisSystem.from_rows(
-            ((row.object_name, dict(row.axis_values)) for row in self.rows)
-        )
-
-    @classmethod
-    def from_mappings(
-        cls,
-        rows: Iterable[tuple[str, Mapping[AxisName, object]]],
-    ) -> "FactorizationEngine":
-        return cls(
-            (
-                FactorizationRow.from_mapping(object_name, axis_values)
-                for object_name, axis_values in rows
-            )
-        )
-
-    @property
-    def axis_names(self) -> tuple[AxisName, ...]:
-        return self._axis_system.axes
-
-    def orbits_for_axes(
-        self,
-        shared_axis_names: Iterable[AxisName],
-        *,
-        minimum_object_count: int = 2,
-    ) -> tuple[FactorizationOrbit, ...]:
-        shared_axes = sorted_tuple(
-            self._axis_system.closure(shared_axis_names), key=repr
-        )
-        buckets: dict[AxisSignature, list[FactorizationRow]] = defaultdict(list)
-        for row in self.rows:
-            buckets[row.project(shared_axes)].append(row)
-        return sorted_tuple(
-            (
-                FactorizationOrbit(
-                    shared_signature=signature,
-                    rows=tuple(rows),
-                    residue_axis_names=self._varying_axes(rows, shared_axes),
-                )
-                for signature, rows in buckets.items()
-                if len(rows) >= minimum_object_count
-            ),
-            key=lambda orbit: (orbit.shared_signature, orbit.object_names),
-        )
-
-    def candidate_plans(
-        self,
-        authority_name: str,
-        *,
-        minimum_object_count: int = 2,
-    ) -> tuple[FactorizationPlan, ...]:
-        return tuple(
-            (
-                assessment.plan
-                for assessment in self.candidate_assessments(
-                    authority_name, minimum_object_count=minimum_object_count
-                )
-                if assessment.plan is not None
-            )
-        )
-
-    def candidate_assessments(
-        self,
-        authority_name: str,
-        *,
-        minimum_object_count: int = 2,
-    ) -> tuple[FactorizationAssessment, ...]:
-        assessments: list[FactorizationAssessment] = []
-        seen_orbits: set[tuple[AxisSignature, tuple[str, ...], tuple[str, ...]]] = set()
-        for shared_axes in self._candidate_shared_axis_sets():
-            for orbit in self.orbits_for_axes(
-                shared_axes, minimum_object_count=minimum_object_count
-            ):
-                if not orbit.residue_axis_names:
-                    continue
-                orbit_key = (
-                    orbit.shared_signature,
-                    orbit.object_names,
-                    orbit.residue_axis_names,
-                )
-                if orbit_key in seen_orbits:
-                    continue
-                seen_orbits.add(orbit_key)
-                certificate = self._compression_certificate(orbit)
-                if certificate.pays_rent:
-                    assessments.append(
-                        FactorizationAssessment(
-                            plan=FactorizationPlan(
-                                authority_name=authority_name,
-                                orbit=orbit,
-                                compression_certificate=certificate,
-                            ),
-                            rejection=None,
-                        )
-                    )
-                else:
-                    assessments.append(
-                        FactorizationAssessment(
-                            plan=None,
-                            rejection=NegativeCompressionProof(
-                                authority_name=authority_name,
-                                orbit=orbit,
-                                compression_certificate=certificate,
-                                reason="replacement grammar plus residue does not reduce certified description length",
-                            ),
-                        )
-                    )
-        return sorted_tuple(
-            assessments,
-            key=lambda assessment: (
-                -assessment.certified_savings,
-                assessment.orbit.shared_axis_names,
-                assessment.orbit.residue_axis_names,
-                assessment.orbit.object_names,
-            ),
-        )
-
-    def concept_lattice(self) -> FormalConceptLattice:
-        return FormalConceptLattice.from_rows(self.rows)
-
-    def semantic_hypergraph(
-        self,
-        authority_name: str,
-        *,
-        minimum_object_count: int = 2,
-    ) -> SemanticCompressionHypergraph:
-        return SemanticCompressionHypergraph.from_explanations(
-            FactorizationLattice.from_plans(
-                self.candidate_plans(
-                    authority_name, minimum_object_count=minimum_object_count
-                )
-            ).nodes
-        )
-
-    def axis_independence_model(self) -> AxisIndependenceModel:
-        return AxisIndependenceModel.from_rows(self.rows)
-
-    def _candidate_shared_axis_sets(self) -> tuple[tuple[AxisName, ...], ...]:
-        axes = self.axis_names
-        return tuple(
-            (
-                axis_set
-                for size in range(1, len(axes))
-                for axis_set in combinations(axes, size)
-            )
-        )
-
-    def _varying_axes(
-        self, rows: Iterable[FactorizationRow], shared_axes: tuple[AxisName, ...]
-    ) -> tuple[AxisName, ...]:
-        shared_axis_set = frozenset(shared_axes)
-        rows = tuple(rows)
-        return sorted_tuple(
-            (
-                axis_name
-                for axis_name in self.axis_names
-                if axis_name not in shared_axis_set
-                and len(frozenset((row.value_for(axis_name) for row in rows))) > 1
-            ),
-            key=repr,
-        )
-
-    def _compression_certificate(
-        self, orbit: FactorizationOrbit
-    ) -> CompressionCertificate:
-        independent_source_count = max(orbit.independent_source_count, 1)
-        return CompressionCertificate.from_object_family(
-            manual_object_count=len(orbit.rows) * max(len(self.axis_names), 1),
-            replacement_shape=ObjectFamilyShape(
-                shared_objects=("factorized_authority",),
-                per_axis_objects=("residue_projection",),
-            ),
-            semantic_axes=(*orbit.shared_axis_names, *orbit.residue_axis_names),
-            residual_object_count=orbit.residue_site_count,
-            independent_source_count=independent_source_count,
-        )
-
-
 def factorization_axis_catalog_certificate(
     rows: Iterable[FactorizationRow],
     *,
@@ -1796,17 +863,19 @@ def factorization_axis_catalog_certificate(
     """Certify replacing repeated row/axis declarations with a catalog."""
 
     row_tuple = tuple(rows)
-    engine = FactorizationEngine(row_tuple)
+    axis_names = FiniteAxisSystem.from_rows(
+        ((row.object_name, dict(row.axis_values)) for row in row_tuple)
+    ).axes
     independent_source_count = len(
         frozenset((row.source_name for row in row_tuple if row.source_name))
     )
     return CompressionCertificate.from_object_family(
-        manual_object_count=len(row_tuple) * len(engine.axis_names),
+        manual_object_count=len(row_tuple) * len(axis_names),
         replacement_shape=ObjectFamilyShape(
             shared_objects=shared_objects,
             per_axis_objects=per_axis_objects,
         ),
-        semantic_axes=engine.axis_names,
+        semantic_axes=axis_names,
         residual_object_count=residual_object_count,
         independent_source_count=max(independent_source_count, 1),
     )

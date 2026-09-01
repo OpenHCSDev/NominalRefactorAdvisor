@@ -96,7 +96,6 @@ class SemanticMirrorWithoutDescentDetector(
 ):
     """Report presentation projections that mirror a nominal semantic authority."""
 
-    detector_priority = -100
     compact_finding_chunk_size = 64
     semantic_mirror_authority_evidence_index = 1
     module_projection_families = (

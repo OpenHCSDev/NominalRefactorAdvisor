@@ -343,7 +343,7 @@ def test_context_semantic_supplements_use_indexed_call_projection(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "module.py").write_text(
-        "class Presenter:\n" "    def build(self):\n" "        return Result()\n",
+        "class Presenter:\n    def build(self):\n        return Result()\n",
         encoding="utf-8",
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
@@ -2532,7 +2532,7 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
-        "class Handler:\n" "    pass\n" "\n" "class Alpha(Handler):\n" "    pass\n",
+        "class Handler:\n    pass\n\nclass Alpha(Handler):\n    pass\n",
         encoding="utf-8",
     )
 
@@ -2582,7 +2582,9 @@ def test_source_local_detector_requests_ast_fallback_for_carrier_syntax(
             ),
             missing_families=(),
             config=DetectorConfig(),
-            local_detector_types=(systemic_detectors.TupleIndexSemanticOpacityDetector,),
+            local_detector_types=(
+                systemic_detectors.TupleIndexSemanticOpacityDetector,
+            ),
         )
     )
 
@@ -2670,7 +2672,9 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
                 systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
             ),
             config=DetectorConfig(),
-            local_detector_types=(systemic_detectors.TupleIndexSemanticOpacityDetector,),
+            local_detector_types=(
+                systemic_detectors.TupleIndexSemanticOpacityDetector,
+            ),
         )
     )
 
@@ -5073,7 +5077,7 @@ def test_compact_pass_through_nominal_wrapper_preserves_semantics(
     ]
 
 
-def _write_compact_abc_optimizer_fixture(package_root: Path) -> None:
+def _write_compact_method_family_fixture(package_root: Path) -> None:
     package_root.mkdir()
     (package_root / "workers.py").write_text(
         "from abc import ABC\n"
@@ -5375,34 +5379,36 @@ def test_compact_class_method_promotion_hazards_are_nominal_facts(
     assert all(method.statement_sources == () for method in methods)
 
 
-def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
+def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
-    _write_compact_abc_optimizer_fixture(package_root)
+    _write_compact_method_family_fixture(package_root)
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
-    projections = structural_detectors.SemanticOverlapAbcOptimizationDetector.compact_module_projections(
-        modules
+    projections = (
+        structural_detectors.SemanticOverlapMethodDetector.compact_module_projections(
+            modules
+        )
     )
-    context = structural_detectors.CompactABCOptimizerContext.from_projections(
+    context = structural_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
     detector_candidate_pairs = (
         (
-            structural_detectors.SemanticOverlapAbcOptimizationDetector,
+            structural_detectors.SemanticOverlapMethodDetector,
             context.method_candidates,
         ),
         (
-            structural_detectors.SemanticOverlapAbcFamilyOptimizationDetector,
+            structural_detectors.SemanticOverlapMethodFamilyDetector,
             context.family_candidates,
         ),
         (
-            structural_detectors.GlobalInheritanceOptimizationDetector,
+            structural_detectors.OverlappingInheritanceFamiliesDetector,
             context.global_candidates,
         ),
         (
-            structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector,
+            structural_detectors.SemanticOverlapResidueAxisDetector,
             context.residue_axis_candidates,
         ),
     )
@@ -5432,24 +5438,24 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
         "constant",
     )
     for removed_name in (
-        "_semantic_overlap_abc_optimization_candidates",
-        "_semantic_overlap_abc_optimization_candidates_from_modules",
-        "_semantic_overlap_abc_family_optimization_candidates",
+        "_semantic_overlap_method_candidates",
+        "_semantic_overlap_method_candidates_from_modules",
+        "_semantic_overlap_method_family_candidates",
         "_semantic_overlap_global_inheritance_candidates",
-        "_semantic_overlap_abc_residue_axis_catalog_candidates",
-        "_abc_optimizer_specific_method_plans",
-        "_abc_optimizer_candidates_from_family_plans",
-        "_compact_abc_optimizer_context",
-        "ABCOptimizerAuthority",
+        "_semantic_overlap_residue_axis_candidates",
+        "_method_family_specific_method_plans",
+        "_method_family_candidates_from_family_plans",
+        "_compact_method_family_context",
+        "MethodFamilyAuthority",
         "ABC_OPTIMIZER_AUTHORITY",
         "_ABCSemanticSkeletonNormalizer",
-        "_ABCOptimizerFamilyCandidateOrder",
-        "_abc_optimizer_statement_skeleton",
+        "_MethodFamilyCandidateOrder",
+        "_method_family_statement_skeleton",
         "_semantic_overlap_coordinates",
     ):
         assert not hasattr(helper_detectors, removed_name)
     assert not hasattr(
-        structural_detectors._CompactABCOptimizerDetectorBase,
+        structural_detectors._CompactMethodFamilyDetectorBase,
         "compact_candidate_attribute",
     )
     assert not hasattr(class_index_module, "_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
@@ -5458,12 +5464,12 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     assert not hasattr(class_index_module.CompactClassMethod, "coordinates_blob")
 
 
-def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
+def test_compact_method_family_profiles_are_derived_after_the_family_join(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
-    _write_compact_abc_optimizer_fixture(package_root)
+    _write_compact_method_family_fixture(package_root)
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     projection_family = class_index_module.CompactModuleClassProjectionFamily
     projections = tuple(
@@ -5487,7 +5493,7 @@ def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
     )
 
     assert profile_derivations == []
-    context = structural_detectors.CompactABCOptimizerContext.from_projections(
+    context = structural_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
 
@@ -5507,20 +5513,20 @@ def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
     )
 
 
-def test_abc_optimizer_detectors_share_one_compact_context(
+def test_method_family_detectors_share_one_compact_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
-    _write_compact_abc_optimizer_fixture(package_root)
+    _write_compact_method_family_fixture(package_root)
     detector_types = (
-        structural_detectors.SemanticOverlapAbcOptimizationDetector,
-        structural_detectors.SemanticOverlapAbcFamilyOptimizationDetector,
-        structural_detectors.GlobalInheritanceOptimizationDetector,
-        structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector,
+        structural_detectors.SemanticOverlapMethodDetector,
+        structural_detectors.SemanticOverlapMethodFamilyDetector,
+        structural_detectors.OverlappingInheritanceFamiliesDetector,
+        structural_detectors.SemanticOverlapResidueAxisDetector,
     )
     calls = 0
-    original_builder = structural_detectors.CompactABCOptimizerContext.from_projections
+    original_builder = structural_detectors.CompactMethodFamilyContext.from_projections
 
     def counting_builder(projections, config):
         nonlocal calls
@@ -5924,16 +5930,16 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert surface_detectors.PassThroughNominalWrapperDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.SemanticOverlapAbcOptimizationDetector in (
+    assert structural_detectors.SemanticOverlapMethodDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.SemanticOverlapAbcFamilyOptimizationDetector in (
+    assert structural_detectors.SemanticOverlapMethodFamilyDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.GlobalInheritanceOptimizationDetector in (
+    assert structural_detectors.OverlappingInheritanceFamiliesDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.SemanticOverlapAbcResidueAxisCatalogDetector in (
+    assert structural_detectors.SemanticOverlapResidueAxisDetector in (
         partition.compact_global_detector_types
     )
     assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (

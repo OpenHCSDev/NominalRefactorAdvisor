@@ -464,7 +464,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
     genericity: ClassVar[str] = "generic"
-    detector_priority: ClassVar[int] = 0
     ssot_authority_boundary: ClassVar[bool] = False
     semantic_mirror_role: ClassVar[bool] = False
     semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
@@ -487,7 +486,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         return sorted_tuple(
             detector_types,
             key=lambda item: (
-                item.detector_priority,
                 item.__module__,
                 vars(item).get("__firstlineno__", 0),
                 item.__qualname__,
@@ -1141,6 +1139,8 @@ def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeVa
 
 ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
+
+
 class FindingBuildContextKwargs(TypedDict, total=False):
     scaffold: str | None
     codemod_patch: str | None
@@ -2008,7 +2008,6 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
     source_candidate_collector: (
         SourceModuleCandidateCollector[CandidateItemT] | None
     ) = None
-    detector_priority: int | None = None
 
     @classmethod
     def from_kwargs(
@@ -2031,7 +2030,6 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
     detector_base: type[IssueDetector]
     candidate_collector: DetectorCollector[CandidateItemT]
     source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT]
-    detector_priority: int | None
 
 
 DetectorNamespaceValue: TypeAlias = (
@@ -2090,7 +2088,7 @@ class DetectorDeclaration(Generic[CandidateItemT]):
         | FindingSpec
         | CandidateFindingRenderer[CandidateItemT]
         | DetectorCollector[CandidateItemT]
-        | SourceModuleCandidateCollector[CandidateItemT]
+        | SourceModuleCandidateCollector[CandidateItemT],
     ]:
         namespace: dict[
             str,
@@ -2099,7 +2097,7 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             | FindingSpec
             | CandidateFindingRenderer[CandidateItemT]
             | DetectorCollector[CandidateItemT]
-            | SourceModuleCandidateCollector[CandidateItemT]
+            | SourceModuleCandidateCollector[CandidateItemT],
         ] = {
             "__module__": module_name,
             "__firstlineno__": firstlineno,
@@ -2112,8 +2110,6 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             namespace["source_candidate_collector"] = (
                 self.options.source_candidate_collector
             )
-        if self.options.detector_priority is not None:
-            namespace["detector_priority"] = self.options.detector_priority
         return namespace
 
     def install(
@@ -5851,9 +5847,7 @@ class RegistryProjectionSurfaceEvidence:
         path_parts = tuple(part.lower() for part in path.parts)
         stem = path.stem.lower()
         return (
-            "tests" in path_parts
-            or stem.startswith("test_")
-            or stem.endswith("_test")
+            "tests" in path_parts or stem.startswith("test_") or stem.endswith("_test")
         )
 
     @property
@@ -5929,9 +5923,7 @@ class RegistryProjectionRole(StrEnum):
         *,
         file_path: str,
     ) -> bool:
-        return (
-            self._test_surface and evidence.is_test_surface(file_path)
-        ) or bool(
+        return (self._test_surface and evidence.is_test_surface(file_path)) or bool(
             self._terms
             and any(
                 term in evidence.normalized_module_stem(file_path)
@@ -5957,9 +5949,7 @@ class RegistryProjectionRole(StrEnum):
         if name_claimed_roles:
             return single_item(name_claimed_roles)
         module_claimed_roles = tuple(
-            role
-            for role in cls
-            if role.claims_module(evidence, file_path=file_path)
+            role for role in cls if role.claims_module(evidence, file_path=file_path)
         )
         if module_claimed_roles:
             return single_item(module_claimed_roles)
@@ -5987,8 +5977,9 @@ class RegistryProjectionSurfaceKind(StrEnum):
 
     EXPORT_ROSTER = (
         "export_roster",
-        lambda evidence: evidence.surface_name == "__all__"
-        and bool(evidence.shared_type_names),
+        lambda evidence: (
+            evidence.surface_name == "__all__" and bool(evidence.shared_type_names)
+        ),
         lambda proof: proof.registered_type_names,
         lambda evidence: evidence.shared_type_names,
         RegistryProjectionRole.REGISTRY_PROJECTION,
@@ -5996,10 +5987,12 @@ class RegistryProjectionSurfaceKind(StrEnum):
     )
     KEY_ROSTER = (
         "key_roster",
-        lambda evidence: bool(evidence.shared_key_names)
-        and not evidence.shared_type_names
-        and not evidence.has_key_to_type_pairs
-        and not evidence.has_type_to_key_pairs,
+        lambda evidence: (
+            bool(evidence.shared_key_names)
+            and not evidence.shared_type_names
+            and not evidence.has_key_to_type_pairs
+            and not evidence.has_type_to_key_pairs
+        ),
         lambda proof: proof.key_names,
         lambda evidence: evidence.shared_key_names,
         RegistryProjectionRole.OPTION_ROSTER,
@@ -6007,10 +6000,12 @@ class RegistryProjectionSurfaceKind(StrEnum):
     )
     TYPE_ROSTER = (
         "type_roster",
-        lambda evidence: evidence.surface_name != "__all__"
-        and bool(evidence.shared_type_names)
-        and not evidence.has_key_to_type_pairs
-        and not evidence.has_type_to_key_pairs,
+        lambda evidence: (
+            evidence.surface_name != "__all__"
+            and bool(evidence.shared_type_names)
+            and not evidence.has_key_to_type_pairs
+            and not evidence.has_type_to_key_pairs
+        ),
         lambda proof: proof.registered_type_names,
         lambda evidence: evidence.shared_type_names,
         RegistryProjectionRole.OPTION_ROSTER,
@@ -7574,8 +7569,8 @@ def _structural_confusability_candidates_for_function(
     class_nodes: Sequence[ast.ClassDef],
     class_lookup: dict[str, ast.ClassDef],
 ) -> Iterable[StructuralConfusabilityCandidate]:
-    annotated_parameter_names = (
-        SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(function)
+    annotated_parameter_names = SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(
+        function
     )
     for parameter_name in SUPPORT_PROJECTION_AUTHORITY.parameter_names(function):
         if parameter_name in annotated_parameter_names:
@@ -8035,8 +8030,7 @@ class SupportProjectionAuthority:
                 *node.args.args,
                 *node.args.kwonlyargs,
             )
-            if parameter.arg not in {"self", "cls"}
-            and parameter.annotation is not None
+            if parameter.arg not in {"self", "cls"} and parameter.annotation is not None
         )
 
     def strategy_selector_specs(
@@ -9825,40 +9819,26 @@ class ClassFamilyWitnessCarrier:
 
 
 @dataclass(frozen=True)
-class ABCOptimizerLatticeMetricsCarrier:
-    optimizer_score: int
+class MethodFamilyLatticeMetricsCarrier:
     lattice_node_count: int
     lattice_edge_count: int
 
 
 @dataclass(frozen=True)
-class ABCOptimizerHierarchyMetricsCarrier(ABCOptimizerLatticeMetricsCarrier):
-    hierarchy_normal_form: str
-    abc_layer_count: int
+class MethodFamilyRelationSpecCarrier:
+    strict_subset_family_specs: tuple[str, ...]
+    partial_overlap_family_specs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class ABCOptimizerAxisSpecCarrier:
-    mixin_axis_specs: tuple[str, ...]
-    overlap_axis_specs: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ABCOptimizerAxisDesignCarrier(ABCOptimizerAxisSpecCarrier):
-    mixin_axis_names: tuple[str, ...]
-    overlap_axis_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ABCOptimizerResiduePlacementCarrier:
-    abc_concrete_method_names: tuple[str, ...]
+class MethodFamilyResidueEvidenceCarrier:
     leaf_residue_names: tuple[str, ...]
-    subclass_residue_count: int
+    residue_declaration_count: int
     shared_to_residue_ratio: float
 
 
 @dataclass(frozen=True)
-class ABCOptimizerLineCompressionSurface:
+class MethodFamilyLineCompressionSurface:
     line_numbers: tuple[int, ...]
     line_count: int
     compression_certificate: CompressionCertificate
@@ -9866,7 +9846,7 @@ class ABCOptimizerLineCompressionSurface:
 
 @dataclass(frozen=True)
 class ExactTinyMethodRoleCandidate(
-    ABCOptimizerLineCompressionSurface,
+    MethodFamilyLineCompressionSurface,
     LineWitnessCandidate,
 ):
     """Exact tiny behavior repeated across classes without one nominal ancestor."""
@@ -9888,7 +9868,7 @@ class ExactTinyMethodRoleCandidate(
 
 
 @dataclass(frozen=True)
-class ABCOptimizerMethodFamilyEvidenceSurface(ABCOptimizerLineCompressionSurface):
+class MethodFamilyEvidenceSurface(MethodFamilyLineCompressionSurface):
     method_names: tuple[str, ...]
     method_symbols: tuple[str, ...]
     evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
@@ -9901,21 +9881,21 @@ class ABCOptimizerMethodFamilyEvidenceSurface(ABCOptimizerLineCompressionSurface
 
 
 @dataclass(frozen=True)
-class ABCOptimizerFamilyOptimizationSurface(ABCOptimizerMethodFamilyEvidenceSurface):
+class MethodFamilyAggregateEvidenceSurface(MethodFamilyEvidenceSurface):
     shared_statement_count: int
-    residue_count: int
+    residue_declaration_count: int
     leaf_residue_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class SemanticOverlapABCOptimizationCandidate(
-    ABCOptimizerLineCompressionSurface,
+class SemanticOverlapMethodCandidate(
+    MethodFamilyLineCompressionSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
     ResidueHookNamesCarrier,
-    ABCOptimizerAxisDesignCarrier,
-    ABCOptimizerHierarchyMetricsCarrier,
-    ABCOptimizerResiduePlacementCarrier,
+    MethodFamilyRelationSpecCarrier,
+    MethodFamilyLatticeMetricsCarrier,
+    MethodFamilyResidueEvidenceCarrier,
 ):
     method_name: str
     shared_statement_count: int
@@ -9931,31 +9911,31 @@ class SemanticOverlapABCOptimizationCandidate(
 
 
 @dataclass(frozen=True)
-class SemanticOverlapABCFamilyOptimizationCandidate(
-    ABCOptimizerFamilyOptimizationSurface,
+class SemanticOverlapMethodFamilyCandidate(
+    MethodFamilyAggregateEvidenceSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
     ResidueHookNamesCarrier,
-    ABCOptimizerHierarchyMetricsCarrier,
+    MethodFamilyLatticeMetricsCarrier,
+    MethodFamilyRelationSpecCarrier,
 ):
-    abc_concrete_method_names: tuple[str, ...]
     shared_to_residue_ratio: float
 
 
 @dataclass(frozen=True)
-class GlobalInheritanceOptimizationCandidate(
-    ABCOptimizerFamilyOptimizationSurface,
+class OverlappingInheritanceFamiliesCandidate(
+    MethodFamilyAggregateEvidenceSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
-    ABCOptimizerLatticeMetricsCarrier,
-    ABCOptimizerAxisSpecCarrier,
+    MethodFamilyLatticeMetricsCarrier,
+    MethodFamilyRelationSpecCarrier,
 ):
     family_specs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class SemanticOverlapABCResidueAxisCatalogCandidate(
-    ABCOptimizerMethodFamilyEvidenceSurface,
+class SemanticOverlapResidueAxisCandidate(
+    MethodFamilyEvidenceSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
 ):

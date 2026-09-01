@@ -52,11 +52,11 @@ itself explain which invariant was preserved, which code motion was legal, or
 what source evidence justified the move.
 
 Several mathematical names in DNA were wrappers over ordinary thresholds or
-ranked heuristics. They were still useful as prioritization signals, but they
-were not sufficient as refactoring authority. In NRA, algebraic labels must
-name a checkable object: an orbit, quotient, fiber, finite axis system,
-anti-unifier, registry, hook basis, evidence graph, or certified description
-length delta.
+ranked heuristics. Their observations can still contribute structural evidence,
+but their ranks are not refactoring authority and must not become an implied
+work order. In NRA, algebraic labels must name a checkable object: an orbit,
+quotient, fiber, finite axis system, anti-unifier, registry, hook basis,
+evidence graph, or certified description length delta.
 
 NRA Design Consequences
 -----------------------
@@ -66,7 +66,7 @@ NRA should keep the following DNA lessons:
 * emit compact, stable finding identifiers derived from detector and evidence
   coordinates
 * preserve source-resolved evidence in every compressed representation
-* separate raw findings from prioritization vectors
+* separate raw findings from non-actionable overlap and payoff evidence
 * make impact and payoff evidence explicit rather than implied by severity
 * prefer algebraic certificates over named mathematical metaphors
 
@@ -76,7 +76,7 @@ NRA should reject the following DNA patterns:
 * framework counts that look rigorous but are disconnected from a concrete code
   transformation
 * generic "reduce entropy" guidance without a typed refactor shape
-* action rankings that cannot explain their source evidence and payoff
+* action rankings without a proved reachable trajectory and authority assignment
 
 Practical Rule
 --------------

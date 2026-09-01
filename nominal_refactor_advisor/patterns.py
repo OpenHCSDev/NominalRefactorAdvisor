@@ -77,9 +77,9 @@ class PatternId(IntEnum):
         ),
     )
 
-    ABC_TEMPLATE_METHOD = _pattern(
+    SHARED_ALGORITHM_AUTHORITY = _pattern(
         stable_id=5,
-        display_name="ABC Template-Method Migration",
+        display_name="Shared Algorithm Authority",
         required_relation=(
             "Shared non-orthogonal orchestration has one nominal algorithm owner; "
             "orthogonal variation remains independently composable through MRO."

@@ -1351,9 +1351,7 @@ def _native_environment_module_projection(
         scopes: list[_FunctionScope] = []
         for function_node in functions:
             lexical_scopes = syntax_index.named_scope_nodes(function_node)
-            if any(
-                scope.type == "function_definition" for scope in lexical_scopes
-            ):
+            if any(scope.type == "function_definition" for scope in lexical_scopes):
                 continue
             class_node = next(
                 (
@@ -1381,8 +1379,8 @@ def _native_environment_module_projection(
                     for name in imported_read_names
                 )
             )
-            may_declare_authority = (
-                _native_environment_function_may_declare_authority(function_symbol)
+            may_declare_authority = _native_environment_function_may_declare_authority(
+                function_symbol
             )
             may_be_wrapper = class_node is not None and class_method_count <= 2
             if not (may_read_environment or may_declare_authority or may_be_wrapper):
@@ -1486,7 +1484,6 @@ class EnvironmentBooleanAuthorityDriftDetector(
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-    detector_priority = -2
 
     def _findings_from_compact_projections(
         self,

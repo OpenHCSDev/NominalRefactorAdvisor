@@ -1002,8 +1002,7 @@ class CodemodSimulationFindingProjection:
                         changed_findings,
                         changed_paths,
                     ),
-                ],
-                detector_types=detector_types,
+                ]
             )
         )
         return CodemodWorkflowScan(

@@ -337,9 +337,7 @@ _CLI_ARGUMENT_SPECS = (
             dest="include_impact_ranking",
             default=None,
             default_supplied=True,
-            help=(
-                "Skip the non-actionable structural-overlap evidence report."
-            ),
+            help=("Skip the non-actionable structural-overlap evidence report."),
         ),
         CliArgumentSpec(
             flags=("--prove-economics",),
@@ -809,6 +807,7 @@ class JsonPayloadImpactRankingPolicy:
             return self.payload_profile.sections.default_impact_ranking
         return False
 
+
 class JsonPreparseCachePayloadMode(Enum):
     """Pre-parse cache payload mode for JSON scans."""
 
@@ -972,6 +971,7 @@ class SourceSnapshotCacheEligibility:
     @property
     def can_use_cached_source_context(self) -> bool:
         return self.needs_source_snapshot and not self.requires_parsed_modules
+
 
 @dataclass(frozen=True)
 class JsonPayloadBuildTiming:
@@ -1959,9 +1959,8 @@ class CliCommand(ABC, metaclass=AutoRegisterMeta):
         parser: argparse.ArgumentParser,
         args: argparse.Namespace,
     ) -> None:
-        if (
-            args.codemod_plan is not None
-            and not issubclass(cls, CodemodPlanConsumingCliCommand)
+        if args.codemod_plan is not None and not issubclass(
+            cls, CodemodPlanConsumingCliCommand
         ):
             parser.error("selected CLI command does not consume --codemod-plan")
 
@@ -3613,10 +3612,7 @@ def _main_without_deadline() -> int:
                 analysis_elapsed += perf_counter() - started
                 del local_modules
             modules = []
-            findings = SortedFindingsAuthority.sort(
-                findings,
-                detector_types=local_detector_types,
-            )
+            findings = SortedFindingsAuthority.sort(findings)
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
             analysis_cache_status = (

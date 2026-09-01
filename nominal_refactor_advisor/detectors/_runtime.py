@@ -416,6 +416,7 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
             )
         return findings
 
+
 _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
     {
         "artifact",
@@ -1350,10 +1351,7 @@ _RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
 def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
     """Return whether source contains a symbol required by every bridge witness."""
 
-    return (
-        _GLOBALS_BUILTIN_NAME in source
-        or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
-    )
+    return _GLOBALS_BUILTIN_NAME in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
 
 
 def _call_symbol(node: ast.AST) -> str:
@@ -3660,7 +3658,6 @@ def _exact_type_guard_candidates_from_compact_projections(
 class ExactTypeGuardInheritanceRetreatDetector(
     CompactClassRepositoryCandidateDetector[ExactTypeGuardInheritanceRetreatCandidate],
 ):
-    detector_priority = -21
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Exact-type boundary guard retreats from nominal inheritance",
@@ -4632,9 +4629,8 @@ class AlgebraicVariantMethodFamilyDetector(
     ],
 ):
     module_projection_family = CompactAlgebraicVariantModuleProjectionFamily
-    detector_priority = -15
     finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Algebraic variant method family inflates public authority surface",
         "A public authority class that grows sibling methods whose names encode operation variants is exporting the operation algebra in method names. If those methods share a product carrier/request parameter and forward to the same construction shape, the variant should live in a nominal context, request, or product type instead of multiplying public methods.",
         "one algebraic operation over a nominal context/request/product variant",
@@ -5055,7 +5051,7 @@ class RepeatedProjectionHelperDetector(
 
 class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Parallel guarded wrappers and specs should become a polymorphic family",
         "Parallel wrapper functions plus parallel spec declarations mean the code already has a hidden strategy family, but it is encoded as duplicated procedural glue. The docs prefer moving the shared algorithm into an ABC and letting polymorphic spec classes own the node family differences.",
         "single authoritative polymorphic wrapper/spec family",
@@ -5107,7 +5103,7 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
 class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
     detector_id = "manual_indexed_family"
     finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Manually expanded indexed family should become one nominal family abstraction",
         "The same collection scaffold is being hand-expanded over a latent family index. The docs prefer one authoritative nominal family abstraction whose members provide only the varying family metadata.",
         "single authoritative indexed family abstraction",

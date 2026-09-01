@@ -9,7 +9,7 @@ import subprocess
 import sys
 from abc import ABC
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -134,7 +134,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeClassPlanReport,
     FindingRecipePlanBuilder,
     FindingRecipePlanCandidate,
-    FindingRecipePlanCompetition,
+    CurrentSnapshotRecipeCompetition,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisStatus,
@@ -203,22 +203,13 @@ from nominal_refactor_advisor.economics import (
 )
 from nominal_refactor_advisor.factorization import (
     AxisIndependenceModel,
-    CoveredObjectExplanationConflictGraph,
+    CompressibleExplanation,
     DeclaredExplanationConflictGraph,
-    FactorizationEngine,
-    FactorizationLattice,
-    FactorizationLatticeNode,
-    FactorizationOrbit,
-    FactorizationPlan,
     FactorizationRow,
     FormalConceptLattice,
-    InheritanceDesignSearch,
-    InheritanceMethodSpec,
-    InheritanceResidueProfile,
-    MDLCompetition,
+    CurrentSnapshotMDLCompetition,
     OwnershipClosure,
     OwnershipProjection,
-    SemanticCompressionHypergraph,
 )
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
@@ -232,7 +223,6 @@ from nominal_refactor_advisor.models import (
     HierarchyCandidateMetrics,
     MappingMetrics,
     RefactorFinding,
-    RepeatedMethodMetrics,
     SourceLocation,
 )
 from nominal_refactor_advisor.impact_ranking import (
@@ -303,7 +293,7 @@ from nominal_refactor_advisor.taxonomy import (
 
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
-_SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID = "semantic_overlap_abc_optimization"
+_SEMANTIC_OVERLAP_METHOD_DETECTOR_ID = "semantic_overlap_method"
 
 
 def _finding_spec(
@@ -402,7 +392,7 @@ def test_source_location_owns_portable_path_identity() -> None:
     assert location.file_path == "C:/repo/pkg/module.py"
 
 
-def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
+def test_sorted_findings_authority_uses_source_identity_without_priority() -> None:
     raw_finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
         "A raw surface issue",
@@ -417,7 +407,7 @@ def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
     semantic_finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Z semantic mirror",
-        "semantic mirrors are the primary work queue",
+        "semantic mirrors require descent evidence",
         "descent path from authority",
         "presentation mirrors authority",
     ).build(
@@ -428,7 +418,7 @@ def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
 
     ordered = SortedFindingsAuthority.sort((raw_finding, semantic_finding))
 
-    assert ordered[0].detector_id == "semantic_mirror_without_descent"
+    assert ordered[0].detector_id == "unreferenced_private_function"
 
 
 def test_impact_ranking_reports_only_non_actionable_overlap_evidence() -> None:
@@ -1269,12 +1259,12 @@ def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_orde
             detector_id,
             f"{detector_id} proposes a competing rewrite.",
             (SourceLocation(module_path.as_posix(), 1, "value"),),
-                compression_certificate=CompressionCertificate(
-                    before_cost=SemanticCostVector(residual_objects=before),
-                    after_cost=SemanticCostVector(residual_objects=after),
-                    semantic_axes=(module_path.as_posix(), "value"),
-                ),
-            )
+            compression_certificate=CompressionCertificate(
+                before_cost=SemanticCostVector(residual_objects=before),
+                after_cost=SemanticCostVector(residual_objects=after),
+                semantic_axes=(module_path.as_posix(), "value"),
+            ),
+        )
 
     weak = finding(weak_detector_id, before=10, after=7)
     strong = finding(strong_detector_id, before=10, after=1)
@@ -1303,7 +1293,7 @@ def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_orde
             FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
         )
         assert records_by_detector[weak_detector_id].status is (
-            FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN
+            FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT
         )
         assert plan.expected_removed_finding_ids == (strong.stable_id,)
         assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
@@ -1378,7 +1368,7 @@ def _direct_recipe_candidate(
             finding=finding,
             evaluation=ExecutableRecipeEvaluation(
                 executable_recipe=recipe,
-                executable_declaration_type=FindingRecipePlanCompetition,
+                executable_declaration_type=CurrentSnapshotRecipeCompetition,
             ),
             action_keys=(
                 FindingRecipeActionKey(
@@ -1397,7 +1387,7 @@ def _direct_recipe_competition(
 ) -> tuple[FindingRecipeSynthesisRecord, ...]:
     builder = FindingRecipePlanBuilder(())
     return (
-        FindingRecipePlanCompetition(
+        CurrentSnapshotRecipeCompetition(
             candidates=candidates,
             source_snapshot=snapshot,
             batch_projection=builder,
@@ -1430,7 +1420,7 @@ def test_finding_recipe_competition_rejects_equal_cost_local_choice(
     payloads = tuple(record.to_dict() for record in records)
 
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.AMBIGUOUS_CERTIFIED_PLAN
+        FindingRecipeSynthesisStatus.AMBIGUOUS_CURRENT_SNAPSHOT
     }
     assert all(not record.candidate_recipes for record in records)
     assert all(payload["competition_proof"] is not None for payload in payloads)
@@ -1439,10 +1429,7 @@ def test_finding_recipe_competition_rejects_equal_cost_local_choice(
         for payload in payloads
     } == {()}
     assert all(
-        len(
-            payload["competition_proof"]["alternative_finding_id_witnesses"]
-        )
-        == 2
+        len(payload["competition_proof"]["alternative_finding_id_witnesses"]) == 2
         for payload in payloads
     )
     assert all(
@@ -1653,7 +1640,7 @@ def test_finding_recipe_competition_co_selects_composable_disjoint_edits(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     builder = FindingRecipePlanBuilder(())
-    competition = FindingRecipePlanCompetition(
+    competition = CurrentSnapshotRecipeCompetition(
         candidates=candidates,
         source_snapshot=snapshot,
         batch_projection=builder,
@@ -1736,7 +1723,7 @@ def test_finding_recipe_competition_rejects_order_dependent_composition(
                             source=source,
                         )
                     ),
-                    executable_declaration_type=FindingRecipePlanCompetition,
+                    executable_declaration_type=CurrentSnapshotRecipeCompetition,
                 ),
             )
         )
@@ -1849,7 +1836,7 @@ def test_finding_recipe_competition_preserves_duplicate_finding_positions(
 
     assert records[0].finding_id == records[1].finding_id
     assert tuple(record.status for record in records) == (
-        FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN,
+        FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT,
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
     )
     proof = records[1].competition_proof
@@ -2759,7 +2746,7 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
         if isinstance(node, ast.ClassDef)
     }
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Class evidence selector fixture",
         "Class evidence should resolve to source targets.",
         "source-indexed class evidence",
@@ -3548,7 +3535,7 @@ def test_exact_tiny_method_role_excludes_promotion_hazards(
             id="direct-receiver-member",
         ),
         pytest.param(
-            "def render(self, value):\n" "    owner = self\n" "    return owner.prefix",
+            "def render(self, value):\n    owner = self\n    return owner.prefix",
             id="aliased-receiver-member",
         ),
     ),
@@ -3738,9 +3725,7 @@ def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> N
         ),
         pytest.param(
             _exact_tiny_method_role_source(
-                "def render(self, value):\n"
-                "    owner = self\n"
-                "    return owner.prefix"
+                "def render(self, value):\n    owner = self\n    return owner.prefix"
             ),
             "receiver members",
             id="receiver-alias-requirement",
@@ -3873,167 +3858,7 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
     assert remaining == []
 
 
-def test_method_promotion_synthesis_reports_direct_base_rejection(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "class SharedBase:\n"
-        "    def emit(self, rows):\n"
-        "        raise NotImplementedError\n\n\n"
-        "class Alpha(SharedBase):\n"
-        "    def emit(self, rows):\n"
-        "        return self.write(rows)\n\n\n"
-        "class Beta(SharedBase):\n"
-        "    def emit(self, rows):\n"
-        "        return self.write(rows)\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = RefactorFinding(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Semantic-overlap methods should derive from one ABC authority",
-        why="Repeated methods should move behind a shared authority.",
-        capability_gap="one inherited authority algorithm",
-        relation_context="same public method template repeats",
-        detector_id="semantic_overlap_abc_optimization",
-        summary="Alpha and Beta repeat emit.",
-        evidence=(
-            SourceLocation(module_path.as_posix(), 6, "Alpha.emit"),
-            SourceLocation(module_path.as_posix(), 11, "Beta.emit"),
-        ),
-        metrics=RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=2,
-            statement_count=1,
-            class_count=2,
-            method_symbols=("Alpha.emit", "Beta.emit"),
-        ),
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = snapshot.plan_from_findings(
-        (finding,),
-        detector_ids=("semantic_overlap_abc_optimization",),
-    )
-    record = plan.records[0]
-
-    assert plan.document.recipes == ()
-    assert plan.rejected_count == 1
-    assert record.status.value == "rejected_by_safety_check"
-    assert record.summary == "Alpha and Beta repeat emit."
-    assert record.capability_gap == "one inherited authority algorithm"
-    assert record.reason == (
-        "a direct base already defines at least one promoted method name"
-    )
-
-
-def test_method_promotion_synthesis_rejects_unresolved_class_targets(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "class Alpha:\n"
-        "    def emit(self, rows):\n"
-        "        return rows\n\n\n"
-        "class Beta:\n"
-        "    def emit(self, rows):\n"
-        "        return rows\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = RefactorFinding(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Semantic-overlap methods should derive from one ABC authority",
-        why="Repeated methods should move behind a shared authority.",
-        capability_gap="one inherited authority algorithm",
-        relation_context="same public method template repeats",
-        detector_id="semantic_overlap_abc_optimization",
-        summary="Missing classes repeat emit.",
-        evidence=(
-            SourceLocation(module_path.as_posix(), 2, "MissingAlpha.emit"),
-            SourceLocation(module_path.as_posix(), 7, "MissingBeta.emit"),
-        ),
-        metrics=RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=2,
-            statement_count=1,
-            class_count=2,
-            method_symbols=("MissingAlpha.emit", "MissingBeta.emit"),
-        ),
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = snapshot.plan_from_findings(
-        (finding,),
-        detector_ids=("semantic_overlap_abc_optimization",),
-    )
-    record = plan.records[0]
-
-    assert plan.document.recipes == ()
-    assert plan.rejected_count == 1
-    assert record.status.value == "rejected_by_safety_check"
-    assert record.reason == "Expected one class target for 'MissingAlpha'"
-
-
-def test_method_promotion_synthesis_rewrites_multiline_class_headers(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "class Marker:\n"
-        "    pass\n\n\n"
-        "class Alpha(\n"
-        "    Marker\n"
-        "):\n"
-        "    def emit(self, rows):\n"
-        "        return rows\n\n\n"
-        "class Beta:\n"
-        "    def emit(self, rows):\n"
-        "        return rows\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = RefactorFinding(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Semantic-overlap methods should derive from one ABC authority",
-        why="Repeated methods should move behind a shared authority.",
-        capability_gap="one inherited authority algorithm",
-        relation_context="same public method template repeats",
-        detector_id="semantic_overlap_abc_optimization",
-        summary="Alpha and Beta repeat emit.",
-        evidence=(
-            SourceLocation(module_path.as_posix(), 8, "Alpha.emit"),
-            SourceLocation(module_path.as_posix(), 13, "Beta.emit"),
-        ),
-        metrics=RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=2,
-            statement_count=1,
-            class_count=2,
-            method_symbols=("Alpha.emit", "Beta.emit"),
-        ),
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = snapshot.plan_from_findings(
-        (finding,),
-        detector_ids=("semantic_overlap_abc_optimization",),
-    )
-    record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    diff = snapshot.unified_diff(simulation.simulation)
-
-    assert len(plan.document.recipes) == 1
-    assert plan.rejected_count == 0
-    assert record.status.value == "executable_candidate"
-    assert simulation.is_clean is True
-    assert "+class SharedEmitMixin:" in diff
-    assert "+class Alpha(SharedEmitMixin, Marker):" in diff
-    assert "+class Beta(SharedEmitMixin):" in diff
-
-
-def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
+def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -4066,7 +3891,7 @@ def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
     findings = tuple(
         finding
         for finding in analyze_modules(modules)
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
     source_index = build_source_index(modules, findings)
     context = CodemodSelectorContext(
@@ -4077,13 +3902,17 @@ def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
 
     plan = codemod_plan_from_findings(
         findings,
-        detector_ids=(_SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID,),
+        detector_ids=(_SEMANTIC_OVERLAP_METHOD_DETECTOR_ID,),
         selector_context=context,
     )
 
     assert findings
     assert plan.expected_removed_finding_count == 0
     assert plan.document.recipes == ()
+    assert all(
+        record.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+        for record in plan.records
+    )
 
 
 def test_refactor_recipe_inserts_after_module_imports(
@@ -5677,74 +5506,6 @@ def test_injective_type_registry_proof_detects_aliasing_and_missing_types() -> N
     assert not proof.is_injective
 
 
-def test_factorization_engine_derives_shared_authority_and_residue_axes() -> None:
-    engine = FactorizationEngine.from_mappings(
-        (
-            (
-                "CsvExporter.emit",
-                {
-                    "family": "Exporter",
-                    "algorithm": "emit",
-                    "codec": "csv",
-                    "suffix": ".csv",
-                },
-            ),
-            (
-                "JsonExporter.emit",
-                {
-                    "family": "Exporter",
-                    "algorithm": "emit",
-                    "codec": "json",
-                    "suffix": ".json",
-                },
-            ),
-            (
-                "XmlExporter.emit",
-                {
-                    "family": "Exporter",
-                    "algorithm": "emit",
-                    "codec": "xml",
-                    "suffix": ".xml",
-                },
-            ),
-        )
-    )
-
-    plans = engine.candidate_plans("ExporterABC")
-    (plan,) = plans
-
-    assert plan is not None
-    assert plan.pays_rent
-    assert plan.orbit.shared_axis_names == ("algorithm", "family")
-    assert plan.orbit.residue_axis_names == ("codec", "suffix")
-    assert plan.orbit.object_names == (
-        "CsvExporter.emit",
-        "JsonExporter.emit",
-        "XmlExporter.emit",
-    )
-    assert plan.normal_form == (
-        "FACT(ExporterABC:algorithm,family)"
-        " -> RESIDUE(codec,suffix)"
-        " [CsvExporter.emit,JsonExporter.emit,XmlExporter.emit]"
-    )
-
-
-def test_factorization_engine_rejects_unpaid_singletons() -> None:
-    rows = (
-        (
-            "CsvExporter.emit",
-            {
-                "family": "Exporter",
-                "algorithm": "emit",
-                "codec": "csv",
-                "suffix": ".csv",
-            },
-        ),
-    )
-
-    assert FactorizationEngine.from_mappings(rows).candidate_plans("ExporterABC") == ()
-
-
 def test_factorization_row_requires_declared_axis_for_projection() -> None:
     row = FactorizationRow.from_mapping("Only.emit", {"family": "Exporter"})
 
@@ -5756,175 +5517,23 @@ def test_factorization_row_requires_declared_axis_for_projection() -> None:
         raise AssertionError("factorization rows should reject undeclared axes")
 
 
-def _factorization_plan(
-    name: str,
-    *,
-    object_names: tuple[str, ...],
-    shared_axes: tuple[str, ...],
-    residue_axes: tuple[str, ...],
-    manual_object_count: int,
-    residual_object_count: int,
-) -> FactorizationPlan:
-    rows = tuple(
-        (
-            FactorizationRow.from_mapping(
-                object_name,
-                {
-                    **{axis_name: axis_name for axis_name in shared_axes},
-                    **{
-                        axis_name: f"{axis_name}:{object_name}"
-                        for axis_name in residue_axes
-                    },
-                },
-            )
-            for object_name in object_names
-        )
-    )
-    orbit = FactorizationOrbit(
-        shared_signature=tuple((axis_name, axis_name) for axis_name in shared_axes),
-        rows=rows,
-        residue_axis_names=residue_axes,
-    )
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=manual_object_count,
-        replacement_shape=ObjectFamilyShape(shared_objects=("authority",)),
-        semantic_axes=(*shared_axes, *residue_axes),
-        residual_object_count=residual_object_count,
-    )
-    return FactorizationPlan(name, orbit, certificate)
+@dataclass(frozen=True)
+class _MDLFixtureExplanation(CompressibleExplanation):
+    key: str
+    objects: frozenset[str]
+    certificate: CompressionCertificate
 
+    @property
+    def explanation_key(self) -> str:
+        return self.key
 
-def test_factorization_lattice_and_mdl_competition_choose_global_explanation() -> None:
-    broad = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec", "suffix"),
-        manual_object_count=12,
-        residual_object_count=3,
-    )
-    refined = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit"),
-        shared_axes=("family", "codec"),
-        residue_axes=("suffix",),
-        manual_object_count=8,
-        residual_object_count=2,
-    )
+    @property
+    def covered_objects(self) -> frozenset[str]:
+        return self.objects
 
-    lattice = FactorizationLattice.from_plans((broad, refined))
-    broad_node = next(
-        node
-        for node in lattice.nodes
-        if node.object_names == frozenset(broad.orbit.object_names)
-    )
-    refined_node = next(
-        node
-        for node in lattice.nodes
-        if node.object_names == frozenset(refined.orbit.object_names)
-    )
-
-    assert lattice.cover_edges == ((refined_node, broad_node),)
-    assert refined_node.refines(broad_node)
-    assert refined_node.meet_key(broad_node) == (
-        frozenset({"Csv.emit", "Json.emit"}),
-        frozenset({"family", "codec"}),
-        frozenset({"suffix"}),
-    )
-    assert refined_node.join_key(broad_node) == (
-        frozenset({"Csv.emit", "Json.emit", "Xml.emit"}),
-        frozenset({"family"}),
-        frozenset({"codec", "suffix"}),
-    )
-    assert lattice.best_antichain() == (broad_node,)
-
-
-def test_mdl_competition_suppresses_overlapping_weaker_explanations() -> None:
-    broad = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec", "suffix"),
-        manual_object_count=12,
-        residual_object_count=3,
-    )
-    refined = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit"),
-        shared_axes=("family", "codec"),
-        residue_axes=("suffix",),
-        manual_object_count=8,
-        residual_object_count=2,
-    )
-    lattice = FactorizationLattice.from_plans((broad, refined))
-    broad_node = next(
-        node
-        for node in lattice.nodes
-        if node.object_names == frozenset(broad.orbit.object_names)
-    )
-    result = MDLCompetition(
-        CoveredObjectExplanationConflictGraph(lattice.nodes)
-    ).solve()
-
-    assert result.selected == (broad_node,)
-    assert len(result.suppressed) == 1
-    assert {item.reason for item in result.suppressed} == {
-        "conflicts with the exact shorter MDL cover"
-    }
-
-
-def test_mdl_competition_uses_exact_conflict_graph_not_greedy_order() -> None:
-    broad = _factorization_plan(
-        "BroadABC",
-        object_names=("Csv.emit", "Json.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec",),
-        manual_object_count=12,
-        residual_object_count=1,
-    )
-    left = _factorization_plan(
-        "LeftABC",
-        object_names=("Csv.emit",),
-        shared_axes=("family", "codec"),
-        residue_axes=(),
-        manual_object_count=8,
-        residual_object_count=0,
-    )
-    right = _factorization_plan(
-        "RightABC",
-        object_names=("Json.emit",),
-        shared_axes=("family", "codec"),
-        residue_axes=(),
-        manual_object_count=8,
-        residual_object_count=0,
-    )
-    lattice = FactorizationLattice.from_plans((broad, left, right))
-    graph = CoveredObjectExplanationConflictGraph(lattice.nodes)
-    result = MDLCompetition(graph).solve()
-
-    assert len(graph.conflict_edges) == 2
-    assert graph.independent(
-        (
-            lattice.nodes.index(
-                next(
-                    node
-                    for node in lattice.nodes
-                    if node.plan.authority_name == "LeftABC"
-                )
-            ),
-            lattice.nodes.index(
-                next(
-                    node
-                    for node in lattice.nodes
-                    if node.plan.authority_name == "RightABC"
-                )
-            ),
-        )
-    )
-    assert {node.plan.authority_name for node in result.selected} == {
-        "LeftABC",
-        "RightABC",
-    }
+    @property
+    def compression_certificate(self) -> CompressionCertificate:
+        return self.certificate
 
 
 def _mdl_explanation(
@@ -5932,22 +5541,15 @@ def _mdl_explanation(
     *,
     before: int,
     after: int,
-) -> FactorizationLatticeNode:
-    row = FactorizationRow.from_mapping(key, {"identity": key})
-    return FactorizationLatticeNode.from_plan(
-        FactorizationPlan(
-            authority_name=key,
-            orbit=FactorizationOrbit(
-                shared_signature=(("identity", key),),
-                rows=(row,),
-                residue_axis_names=(),
-            ),
-            compression_certificate=CompressionCertificate(
-                before_cost=SemanticCostVector(residual_objects=before),
-                after_cost=SemanticCostVector(residual_objects=after),
-                semantic_axes=(key,),
-            ),
-        )
+) -> _MDLFixtureExplanation:
+    return _MDLFixtureExplanation(
+        key=key,
+        objects=frozenset((key,)),
+        certificate=CompressionCertificate(
+            before_cost=SemanticCostVector(residual_objects=before),
+            after_cost=SemanticCostVector(residual_objects=after),
+            semantic_axes=(key,),
+        ),
     )
 
 
@@ -5960,14 +5562,16 @@ def test_declared_mdl_competition_escapes_path_graph_greedy_minimum() -> None:
         declared_conflict_edges=frozenset({(0, 1), (1, 2)}),
     )
 
-    result = MDLCompetition(graph).solve()
+    result = CurrentSnapshotMDLCompetition(graph).solve()
 
     assert result.selected_indices == (0, 2)
     assert result.selected == (left, right)
     assert result.ambiguities == ()
 
 
-def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses() -> None:
+def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses() -> (
+    None
+):
     explanations = tuple(
         _mdl_explanation(f"alternative-{index}", before=5, after=1)
         for index in range(20)
@@ -5981,7 +5585,7 @@ def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses()
         ),
     )
 
-    result = MDLCompetition(graph).solve()
+    result = CurrentSnapshotMDLCompetition(graph).solve()
 
     assert result.selected == ()
     assert len(result.ambiguities) == 1
@@ -5993,34 +5597,6 @@ def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses()
         for witness in ambiguity.alternative_witnesses
         for explanation in witness
     } == {explanation.explanation_key for explanation in explanations}
-
-
-def test_semantic_compression_hypergraph_projects_explanation_edges() -> None:
-    broad = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec", "suffix"),
-        manual_object_count=12,
-        residual_object_count=3,
-    )
-    refined = _factorization_plan(
-        "ExporterABC",
-        object_names=("Csv.emit", "Json.emit"),
-        shared_axes=("family", "codec"),
-        residue_axes=("suffix",),
-        manual_object_count=8,
-        residual_object_count=2,
-    )
-    hypergraph = SemanticCompressionHypergraph.from_explanations(
-        FactorizationLattice.from_plans((broad, refined)).nodes
-    )
-
-    assert hypergraph.object_vertices == frozenset(
-        {"Csv.emit", "Json.emit", "Xml.emit"}
-    )
-    assert hypergraph.axis_vertices == frozenset({"family", "codec", "suffix"})
-    assert len(hypergraph.overlap_edges) == 1
 
 
 def test_formal_concept_lattice_derives_shared_intents() -> None:
@@ -6047,7 +5623,7 @@ def test_formal_concept_lattice_derives_shared_intents() -> None:
     assert lattice.cover_edges
 
 
-def test_formal_concept_lattice_exposes_galois_closure_and_decomposition() -> None:
+def test_formal_concept_lattice_exposes_galois_closure() -> None:
     rows = (
         FactorizationRow.from_mapping(
             "Csv.emit",
@@ -6076,40 +5652,11 @@ def test_formal_concept_lattice_exposes_galois_closure_and_decomposition() -> No
             },
         ),
     )
-    engine = FactorizationEngine(rows)
-    lattice = engine.concept_lattice()
+    lattice = FormalConceptLattice.from_rows(rows)
     closure = lattice.galois_closure(("Csv.emit", "Json.emit"))
-    candidates = lattice.decomposition_candidates(engine.axis_independence_model())
 
     assert closure.extent == frozenset({"Csv.emit", "Json.emit"})
     assert ("phase", "emit") in closure.intent
-    assert any(
-        candidate.support == 2
-        and "phase" in candidate.shared_axis_names
-        and {"family", "phase"} <= set(candidate.dependent_axis_names)
-        for candidate in candidates
-    )
-
-
-def test_factorization_engine_returns_negative_compression_proofs() -> None:
-    engine = FactorizationEngine.from_mappings(
-        (
-            ("CsvExporter.emit", {"family": "Exporter", "codec": "csv"}),
-            ("JsonExporter.emit", {"family": "Exporter", "codec": "json"}),
-        )
-    )
-
-    assessments = engine.candidate_assessments("ExporterABC")
-
-    assert engine.candidate_plans("ExporterABC") == ()
-    assert any(
-        (
-            assessment.rejection is not None
-            and assessment.rejection.certified_savings <= 0
-            and "does not reduce" in assessment.rejection.reason
-        )
-        for assessment in assessments
-    )
 
 
 def test_ownership_closure_recovers_transitive_projection_owner() -> None:
@@ -6208,68 +5755,6 @@ def test_axis_independence_model_separates_dependent_and_orthogonal_axes() -> No
     assert ("codec", "phase") in model.independent_axis_pairs
     assert model.orthogonal("suffix", "phase")
     assert model.rank_defect(("codec", "suffix")) == 1
-    assert model.decomposition_role(("codec", "suffix")) == "abc_axis"
-    assert model.decomposition_role(("codec", "phase")) == "mixin_axis"
-
-
-def test_inheritance_design_search_prefers_mixin_for_orthogonal_subset_method() -> None:
-    common_residue = InheritanceResidueProfile(
-        classvar_names=("FORMAT",),
-        property_hook_names=(),
-        behavior_hook_names=(),
-    )
-    hook_residue = InheritanceResidueProfile(
-        classvar_names=(),
-        property_hook_names=("_payload",),
-        behavior_hook_names=("_emit_operation",),
-    )
-    search = InheritanceDesignSearch(
-        (
-            InheritanceMethodSpec(
-                "emit",
-                ("CsvExporter", "JsonExporter", "XmlExporter"),
-                5,
-                hook_residue,
-            ),
-            InheritanceMethodSpec(
-                "serialize_options",
-                ("CsvExporter", "JsonExporter"),
-                4,
-                common_residue,
-            ),
-        )
-    )
-
-    result = search.solve("ExporterBase")
-
-    assert result.best_design is not None
-    assert result.best_design.pays_rent
-    assert result.best_design.mixin_axis_names == ("serialize_options",)
-    assert result.best_design.abc_method_names == ("emit",)
-    assert "MIXIN(serialize_options)" in result.best_design.normal_form
-    assert "_emit_operation" in result.best_design.hook_names
-    assert "FORMAT" in result.best_design.classvar_names
-
-
-def test_inheritance_design_search_uses_unified_abc_without_orthogonal_mixins() -> None:
-    residue = InheritanceResidueProfile(
-        classvar_names=(),
-        property_hook_names=("payload",),
-        behavior_hook_names=("operate",),
-    )
-    search = InheritanceDesignSearch(
-        (
-            InheritanceMethodSpec("run", ("Alpha", "Beta", "Gamma"), 6, residue),
-            InheritanceMethodSpec("build", ("Alpha", "Beta", "Gamma"), 5, residue),
-        )
-    )
-
-    result = search.solve("RunnerBase")
-
-    assert result.best_design is not None
-    assert result.best_design.mixin_axis_names == ()
-    assert result.best_design.abc_method_names == ("build", "run")
-    assert result.best_design.abc_layer_count == 1
 
 
 def test_abstraction_rent_budget_derives_from_semantic_object_family() -> None:
@@ -6353,7 +5838,7 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
         ("role", "format"),
     )
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -6374,7 +5859,7 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
 
 def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
     spec = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -6460,7 +5945,7 @@ def test_planner_uses_stable_identity_order_not_local_savings(
     tmp_path: Path,
 ) -> None:
     spec = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Compress family",
         "Manual declarations are derivable.",
         "description length reduction",
@@ -6719,7 +6204,7 @@ def test_planner_does_not_expose_a_fabricated_escape_proof_surface(
         "temporary normalization unlocks a larger compression",
     )
     abc_spec = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Extract ABC",
         "The algorithm belongs in a base class once identity is nominal.",
         "shared algorithm authority",
@@ -6892,7 +6377,7 @@ def test_economics_markdown_and_json_expose_evidence_proof() -> None:
         ("abc",),
     )
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -12871,8 +12356,9 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
-        payload["unified_diff"]
+    assert (
+        "+class RegisteredHandler(metaclass=AutoRegisterMeta):"
+        in (payload["unified_diff"])
     )
     assert module_path.read_text() == original_source
 
@@ -14098,11 +13584,13 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     stage_payload = report.to_dict()["stages"][0]
     assert "synthesis_report" not in stage_payload
-    assert stage_payload["finding_delta"]["before_finding_ids"] == (
-        stage_payload["progress"]["before_target_finding_ids"]
+    assert (
+        stage_payload["finding_delta"]["before_finding_ids"]
+        == (stage_payload["progress"]["before_target_finding_ids"])
     )
-    assert stage_payload["finding_delta"]["after_finding_ids"] == (
-        stage_payload["progress"]["after_target_finding_ids"]
+    assert (
+        stage_payload["finding_delta"]["after_finding_ids"]
+        == (stage_payload["progress"]["after_target_finding_ids"])
     )
     assert len(stage_payload["class_plan_report"]["classes"]) == 1
     assert (
@@ -14361,7 +13849,7 @@ def test_goal_runner_does_not_commit_current_snapshot_recipe_competition(
     records = report.stages[0].class_plan_report.finding_plan.records
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
-        FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN,
+        FindingRecipeSynthesisStatus.DOMINATED_IN_CURRENT_SNAPSHOT,
     }
     assert all(record.competition_proof is not None for record in records)
 
@@ -17027,7 +16515,7 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -17720,7 +17208,7 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -17816,7 +17304,7 @@ def test_source_index_retains_all_matching_evidence_targets(tmp_path: Path) -> N
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Nested semantic path",
         "All enclosing targets remain addressable.",
         "parallel source paths preserved",
@@ -17852,7 +17340,7 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -17913,7 +17401,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
         "Repeated behavior has one grammar.",
         "certified grammar compression",
@@ -18108,7 +17596,9 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
     ).to_dict()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
     gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
-    gate_evidence = cast(tuple[dict[str, object], ...], gate_payload["boundary_evidence"])
+    gate_evidence = cast(
+        tuple[dict[str, object], ...], gate_payload["boundary_evidence"]
+    )
 
     assert payload["active_finding_surface"] == "semantic_refactor_boundary_evidence"
     assert payload["finding_payload_mode"] == "semantic_boundary_evidence"
@@ -18816,7 +18306,7 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass PatternId:\n    ABC_TEMPLATE_METHOD = "abc"\n    AUTHORITATIVE_SCHEMA = "schema"\n    AUTO_REGISTER_META = "auto"\n\n\n_PATTERN_DEPENDENCIES = {\n    PatternId.ABC_TEMPLATE_METHOD: {PatternId.AUTHORITATIVE_SCHEMA},\n    PatternId.AUTHORITATIVE_SCHEMA: {PatternId.AUTO_REGISTER_META},\n    PatternId.AUTO_REGISTER_META: set(),\n}\n\n\n_PATTERN_PRIORITY = {\n    PatternId.ABC_TEMPLATE_METHOD: 80,\n    PatternId.AUTHORITATIVE_SCHEMA: 60,\n    PatternId.AUTO_REGISTER_META: 50,\n}\n\n\n_PATTERN_BUILDERS = {\n    PatternId.ABC_TEMPLATE_METHOD: build_abc,\n    PatternId.AUTHORITATIVE_SCHEMA: build_schema,\n    PatternId.AUTO_REGISTER_META: build_registry,\n}\n',
+        '\nclass PatternId:\n    SHARED_ALGORITHM_AUTHORITY = "abc"\n    AUTHORITATIVE_SCHEMA = "schema"\n    AUTO_REGISTER_META = "auto"\n\n\n_PATTERN_DEPENDENCIES = {\n    PatternId.SHARED_ALGORITHM_AUTHORITY: {PatternId.AUTHORITATIVE_SCHEMA},\n    PatternId.AUTHORITATIVE_SCHEMA: {PatternId.AUTO_REGISTER_META},\n    PatternId.AUTO_REGISTER_META: set(),\n}\n\n\n_PATTERN_PRIORITY = {\n    PatternId.SHARED_ALGORITHM_AUTHORITY: 80,\n    PatternId.AUTHORITATIVE_SCHEMA: 60,\n    PatternId.AUTO_REGISTER_META: 50,\n}\n\n\n_PATTERN_BUILDERS = {\n    PatternId.SHARED_ALGORITHM_AUTHORITY: build_abc,\n    PatternId.AUTHORITATIVE_SCHEMA: build_schema,\n    PatternId.AUTO_REGISTER_META: build_registry,\n}\n',
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -18978,7 +18468,7 @@ def test_detects_repeated_property_alias_hooks_across_subclasses(
     assert "self.lineno" in finding.summary
 
 
-def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
+def test_detects_semantic_overlap_method(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -18990,7 +18480,7 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
         (
             finding
             for finding in findings
-            if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+            if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
         )
     )
     assert "CsvExporter" in finding.summary
@@ -18999,18 +18489,13 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     assert "Exporter" in finding.summary
     assert "classvars" in finding.summary
     assert "hooks" in finding.summary
-    assert "Move concrete methods ('emit',)" in finding.summary
-    assert "leaf residue basis" in finding.summary
+    assert "observed leaf residue basis" in finding.summary
     assert "shared/residue ratio" in finding.summary
-    assert "derived hierarchy plan scores" in finding.summary
-    assert "normal form" in finding.summary
+    assert "strict-subset families" in finding.summary
     assert "0 lattice edge(s)" in finding.summary
-    assert "class ExporterEmitTemplate" in (finding.scaffold or "")
-    assert "Hierarchy normal form:" in (finding.codemod_patch or "")
-    assert "Candidate hierarchy layer owns methods" in (finding.codemod_patch or "")
-    assert "concrete ABC methods: ('emit',)" in (finding.codemod_patch or "")
-    assert "leaf residue basis" in (finding.codemod_patch or "")
-    assert "Partial-overlap axes" in (finding.codemod_patch or "")
+    assert "no hierarchy placement is selected" in finding.summary
+    assert finding.scaffold is None
+    assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
     source_index = cast(
@@ -19033,7 +18518,7 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     assert any((row["target_ids"] for row in evidence))
 
 
-def test_abc_optimizer_groups_subclasses_of_unresolved_external_base(
+def test_method_family_groups_subclasses_of_unresolved_external_base(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -19045,7 +18530,7 @@ def test_abc_optimizer_groups_subclasses_of_unresolved_external_base(
     finding = next(
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
 
     assert "over `Exporter`" in finding.summary
@@ -19054,7 +18539,7 @@ def test_abc_optimizer_groups_subclasses_of_unresolved_external_base(
     assert "XmlExporter" in finding.summary
 
 
-def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
+def test_method_family_derives_subset_mixin_axes(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -19064,14 +18549,14 @@ def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
     findings = [
         finding
         for finding in all_findings
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     emit_finding = next(finding for finding in findings if "`emit`" in finding.summary)
     assert "validate" in emit_finding.summary
     assert "validate[CsvExporter,JsonExporter]" in emit_finding.summary
 
 
-def test_abc_optimizer_derives_partial_overlap_axes(tmp_path: Path) -> None:
+def test_method_family_derives_partial_overlap_axes(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -19081,37 +18566,34 @@ def test_abc_optimizer_derives_partial_overlap_axes(tmp_path: Path) -> None:
     findings = [
         finding
         for finding in all_findings
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     audit_finding = next(
         finding for finding in findings if "`audit`" in finding.summary
     )
     emit_finding = next(finding for finding in findings if "`emit`" in finding.summary)
-    assert "mixin axes ()" in emit_finding.summary
+    assert "strict-subset families ()" in emit_finding.summary
     assert "audit[CsvWorker,JsonWorker]" in emit_finding.summary
     assert "cache[JsonWorker,XmlWorker]" in emit_finding.summary
     assert "cache[JsonWorker,XmlWorker]" in audit_finding.summary
-    assert (
-        "Partial-overlap axes needing explicit precedence/layering: "
-        "cache[JsonWorker,XmlWorker]"
-    ) in (audit_finding.codemod_patch or "")
+    assert audit_finding.codemod_patch is None
     global_finding = next(
         finding
         for finding in all_findings
-        if finding.detector_id == "global_inheritance_optimization"
+        if finding.detector_id == "overlapping_inheritance_families"
     )
-    assert "global inheritance lattice" in global_finding.summary
+    assert "inheritance lattice" in global_finding.summary
     assert "emit" in global_finding.summary
     assert "audit" in global_finding.summary
     assert "cache" in global_finding.summary
-    assert "partial overlaps" in global_finding.summary
-    assert "One lattice owner" in (global_finding.scaffold or "")
-    assert "highest valid ABC/layer" in (global_finding.codemod_patch or "")
+    assert "partial-overlap families" in global_finding.summary
+    assert global_finding.scaffold is None
+    assert global_finding.codemod_patch is None
     assert global_finding.compression_certificate is not None
     assert global_finding.compression_certificate.pays_rent
 
 
-def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> None:
+def test_method_family_uses_transitive_inheritance_closure(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -19120,7 +18602,7 @@ def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> No
     summaries = [
         finding.summary
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     assert any(
         (
@@ -19133,7 +18615,7 @@ def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> No
     )
 
 
-def test_global_abc_optimizer_uses_transitive_overlap_lattice(
+def test_global_method_family_uses_transitive_overlap_lattice(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -19145,10 +18627,10 @@ def test_global_abc_optimizer_uses_transitive_overlap_lattice(
     global_finding = next(
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == "global_inheritance_optimization"
+        if finding.detector_id == "overlapping_inheritance_families"
     )
 
-    assert "`Worker` has a global inheritance lattice" in global_finding.summary
+    assert "`Worker` has an inheritance lattice" in global_finding.summary
     assert "CsvAuditWorker" in global_finding.summary
     assert "JsonAuditWorker" in global_finding.summary
     assert "XmlAuditWorker" in global_finding.summary
@@ -19158,7 +18640,7 @@ def test_global_abc_optimizer_uses_transitive_overlap_lattice(
     assert global_finding.compression_certificate.pays_rent
 
 
-def test_abc_optimizer_prefers_specific_base_for_duplicate_closure(
+def test_method_family_prefers_specific_base_for_duplicate_closure(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -19169,13 +18651,13 @@ def test_abc_optimizer_prefers_specific_base_for_duplicate_closure(
     summaries = [
         finding.summary
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     assert any("over `ReportExporter`" in summary for summary in summaries)
     assert not any("over `Exporter`" in summary for summary in summaries)
 
 
-def test_abc_optimizer_uses_cross_module_inheritance_closure(tmp_path: Path) -> None:
+def test_method_family_uses_cross_module_inheritance_closure(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/base.py",
@@ -19199,7 +18681,7 @@ def test_abc_optimizer_uses_cross_module_inheritance_closure(tmp_path: Path) -> 
     findings = [
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     finding = next(
         finding for finding in findings if "over `Exporter`" in finding.summary
@@ -19210,7 +18692,7 @@ def test_abc_optimizer_uses_cross_module_inheritance_closure(tmp_path: Path) -> 
     assert len({source_location.file_path for source_location in finding.evidence}) == 3
 
 
-def test_abc_optimizer_detects_whole_family_template(tmp_path: Path) -> None:
+def test_method_family_detects_whole_family_template(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -19219,25 +18701,21 @@ def test_abc_optimizer_detects_whole_family_template(tmp_path: Path) -> None:
     findings = [
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == "semantic_overlap_abc_family_optimization"
+        if finding.detector_id == "semantic_overlap_method_family"
     ]
     finding = next(finding for finding in findings if "Exporter" in finding.summary)
     assert "emit" in finding.summary
     assert "validate" in finding.summary
-    assert "ABC(Exporter:CsvExporter,JsonExporter,XmlExporter){emit,validate}" in (
-        finding.summary
-    )
-    assert "concrete ABC methods ('emit', 'validate')" in finding.summary
-    assert "leaf residue basis" in finding.summary
-    assert "Move concrete template methods ('emit', 'validate')" in (
-        finding.codemod_patch or ""
-    )
+    assert "observed leaf residue basis" in finding.summary
+    assert "no hierarchy placement is selected" in finding.summary
+    assert finding.scaffold is None
+    assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
     assert len(finding.evidence) == 6
 
 
-def test_abc_optimizer_detects_residue_axis_catalog(tmp_path: Path) -> None:
+def test_method_family_detects_residue_axis_catalog(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -19246,7 +18724,7 @@ def test_abc_optimizer_detects_residue_axis_catalog(tmp_path: Path) -> None:
     findings = [
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == "semantic_overlap_abc_residue_axis_catalog"
+        if finding.detector_id == "semantic_overlap_residue_axis"
     ]
     finding = next(finding for finding in findings if "Exporter" in finding.summary)
     assert "emit" in finding.summary
@@ -19264,7 +18742,7 @@ def test_ignores_semantic_overlap_without_shared_base(tmp_path: Path) -> None:
     )
     assert not any(
         (
-            finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+            finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
             for finding in analyze_path(tmp_path)
         )
     )

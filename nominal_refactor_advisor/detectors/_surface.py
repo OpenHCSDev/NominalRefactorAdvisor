@@ -442,7 +442,7 @@ class PassThroughNominalWrapperDetector(
     IssueDetector,
 ):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Pass-through wrapper should reuse the existing nominal authority directly",
         "A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers should use the existing authority directly.",
         "direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
@@ -502,7 +502,7 @@ class PassThroughNominalWrapperDetector(
 
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated finding-assembly pipeline should move into a detector base",
         "Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. The docs prefer one template-method substrate plus mixins for residue.",
         "candidate-driven detector template with abstract hooks and mixins",
@@ -619,7 +619,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
 
 class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated guarded spec wrappers should collapse into mixins",
         "Several observation-spec methods differ only by a scope guard and one delegate helper call. The docs prefer one shared wrapper substrate with orthogonal scope mixins.",
         "shared wrapper substrate with orthogonal scope mixins",

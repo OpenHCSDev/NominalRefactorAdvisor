@@ -96,9 +96,8 @@ class IndexedClass(ClassDeclaration):
                 declared_base_name
                 for base in node.bases
                 if (
-                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
-                        base
-                    )
+                    declared_base_name
+                    := ClassSymbolResolutionAuthority.declared_base_name(base)
                 )
                 is not None
             ),
@@ -318,8 +317,7 @@ class CompactModuleClassProjection(
                 values[dataclass_field.name] = dataclass_field.default_factory()
             else:
                 raise TypeError(
-                    f"{declaration_type.__name__}.{dataclass_field.name} "
-                    "has no default"
+                    f"{declaration_type.__name__}.{dataclass_field.name} has no default"
                 )
         return values
 
@@ -2422,7 +2420,7 @@ def _compact_class_method_statements_from_sources(
 ) -> tuple[ast.stmt, ...]:
     statements = tuple(ast.parse("\n".join(statement_sources)).body)
     if len(statements) != len(statement_sources):
-        raise ValueError("ABC optimizer statement source lost its AST boundary")
+        raise ValueError("Method-family statement source lost its AST boundary")
     return statements
 
 
