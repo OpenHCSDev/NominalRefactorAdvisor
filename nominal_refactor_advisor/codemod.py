@@ -12743,6 +12743,18 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
         return self.planning_horizon.requires_trajectory_proof
 
     @property
+    def application_blocked(self) -> bool:
+        """Whether current evidence is insufficient to apply the candidate batch."""
+
+        return self.requires_trajectory_proof
+
+    @property
+    def application_block_reason(self) -> str:
+        """Return the declaration-owned reason application remains unavailable."""
+
+        return self.planning_horizon.application_block_reason
+
+    @property
     def planning_horizon(self) -> FindingRecipePlanningHorizon:
         return FindingRecipePlanningHorizon.join(
             record.planning_horizon for record in self.records
@@ -12756,6 +12768,8 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
             "rejected_count": self.rejected_count,
             "unsupported_count": self.unsupported_count,
             "planning_horizon": self.planning_horizon.value,
+            "application_blocked": self.application_blocked,
+            "application_block_reason": self.application_block_reason,
             "status_counts": {
                 status.value: sum(
                     1 for record in self.records if record.status is status
@@ -13252,7 +13266,7 @@ class FindingRecipeSynthesisAttempt:
 
 @dataclass(frozen=True)
 class FindingRecipePlan(FindingRecipeSynthesisBoundary):
-    """Codemod plan synthesized from executable advisor findings."""
+    """Current-snapshot candidate batch synthesized from advisor findings."""
 
     document: CodemodPlanDocument
 
@@ -13306,6 +13320,8 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
             "document": self.document.to_dict(),
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
             "expected_removed_finding_count": self.expected_removed_finding_count,
+            "application_blocked": self.report.application_blocked,
+            "application_block_reason": self.report.application_block_reason,
             **self.synthesis_payload(),
         }
 

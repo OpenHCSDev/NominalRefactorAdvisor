@@ -2915,23 +2915,22 @@ class CodemodSynthesisExecution(
         }
 
     def run(self) -> int:
-        planning_horizon = self.finding_plan.report.planning_horizon
-        trajectory_proof_required = planning_horizon.requires_trajectory_proof
-        if not trajectory_proof_required:
+        synthesis_report = self.finding_plan.report
+        if not synthesis_report.application_blocked:
             write_cli_json_artifact(
                 self.plan_out,
                 self.finding_plan.document.to_dict(),
             )
         if (
             self.execution_request.mode.applies_changes or self.plan_out is not None
-        ) and trajectory_proof_required:
+        ) and synthesis_report.application_blocked:
             print(
                 json.dumps(
                     {
                         **self.unexecuted_payload(),
                         "application_blocked": True,
                         "application_block_reason": (
-                            planning_horizon.application_block_reason
+                            synthesis_report.application_block_reason
                         ),
                     },
                     indent=2,

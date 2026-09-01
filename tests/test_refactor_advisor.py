@@ -12353,6 +12353,9 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["simulation"]["parse_validation"]["parse_valid"] is True
     assert payload["expected_removed_finding_count"] == 1
     assert payload["synthesis_report"]["candidate_count"] == 1
+    assert payload["application_blocked"] is True
+    assert payload["synthesis_report"]["application_blocked"] is True
+    assert "reachable refactor trajectories" in payload["application_block_reason"]
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
@@ -14626,6 +14629,8 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
     assert len(payload["classes"]) == 1
     assert finding_plan["expected_removed_finding_count"] == 1
+    assert finding_plan["application_blocked"] is True
+    assert "reachable refactor trajectories" in finding_plan["application_block_reason"]
     assert class_payload["class_id"] == execution_class["class_id"]
     assert execution_class["evidence_site_count"] >= 1
     assert execution_class["evidence"]
