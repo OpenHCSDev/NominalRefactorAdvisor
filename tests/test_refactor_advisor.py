@@ -12926,7 +12926,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     assert stage.applied is False
     assert stage.progress.removed_target_finding_ids == (finding.stable_id,)
     assert stage.progress.surviving_target_finding_ids == ()
-    assert stage.finding_delta is not None
+    assert stage.finding_delta.finding_ids is stage.progress.finding_ids
     assert stage.finding_delta.confirmed_expected_removed_finding_ids(
         stage.expected_removed_finding_ids
     ) == (finding.stable_id,)
@@ -12941,6 +12941,14 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     stage_payload = report.to_dict()["stages"][0]
     assert "synthesis_report" not in stage_payload
+    assert (
+        stage_payload["finding_delta"]["before_finding_ids"]
+        == (stage_payload["progress"]["before_target_finding_ids"])
+    )
+    assert (
+        stage_payload["finding_delta"]["after_finding_ids"]
+        == (stage_payload["progress"]["after_target_finding_ids"])
+    )
     assert len(stage_payload["class_plan_report"]["classes"]) == 1
     assert (
         stage_payload["class_plan_report"]["finding_recipe_plan"]["synthesis_report"][
@@ -13058,6 +13066,7 @@ def test_applied_migration_termination_uses_actual_rescan(
     assert stage.progress.achieved is False
     assert stage.progress.made_progress is False
     assert stage.progress.after_target_finding_ids == (finding.stable_id,)
+    assert stage.finding_delta.finding_ids is stage.progress.finding_ids
 
 
 def test_class_family_migration_derives_serial_stages_from_one_concept(

@@ -93,6 +93,19 @@ class CodemodFindingIdTransition:
     before_ids: tuple[str, ...]
     after_ids: tuple[str, ...]
 
+    @classmethod
+    def from_findings(
+        cls,
+        before_findings: Iterable[RefactorFinding],
+        after_findings: Iterable[RefactorFinding],
+    ) -> "CodemodFindingIdTransition":
+        """Project finding declarations onto their stable identity transition."""
+
+        return cls(
+            before_ids=tuple(finding.stable_id for finding in before_findings),
+            after_ids=tuple(finding.stable_id for finding in after_findings),
+        )
+
     def with_after_ids(
         self,
         after_ids: Iterable[str],
@@ -164,10 +177,10 @@ class CodemodFindingDelta:
         after_findings: tuple[RefactorFinding, ...],
     ) -> "CodemodFindingDelta":
         return cls(
-            finding_ids=CodemodFindingIdTransition(
-                before_ids=tuple(finding.stable_id for finding in before_findings),
-                after_ids=tuple(finding.stable_id for finding in after_findings),
-            ),
+            finding_ids=CodemodFindingIdTransition.from_findings(
+                before_findings,
+                after_findings,
+            )
         )
 
     @property
@@ -485,31 +498,21 @@ class CodemodRefactorGoalProgress:
     @classmethod
     def from_findings(
         cls,
-        migration_type: type[RefactorConcept],
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
-        *,
-        before_snapshot: CodemodSourceSnapshot,
-        after_snapshot: CodemodSourceSnapshot,
     ) -> "CodemodRefactorGoalProgress":
         return cls(
-            finding_ids=CodemodFindingIdTransition(
-                before_ids=tuple(
-                    finding.stable_id
-                    for finding in migration_type.target_findings(
-                        before_findings,
-                        before_snapshot,
-                    )
-                ),
-                after_ids=tuple(
-                    finding.stable_id
-                    for finding in migration_type.target_findings(
-                        after_findings,
-                        after_snapshot,
-                    )
-                ),
+            finding_ids=CodemodFindingIdTransition.from_findings(
+                before_findings,
+                after_findings,
             )
         )
+
+    @property
+    def finding_delta(self) -> CodemodFindingDelta:
+        """Project generic delta reporting from the single goal transition."""
+
+        return CodemodFindingDelta(self.finding_ids)
 
     @property
     def before_target_finding_ids(self) -> tuple[str, ...]:
@@ -563,8 +566,11 @@ class CodemodRefactorGoalStage:
     class_plan_report: FindingRecipeClassPlanReport
     simulation: CodemodPlanDocumentSimulation
     progress: CodemodRefactorGoalProgress
-    finding_delta: CodemodFindingDelta
     applied: bool = False
+
+    @property
+    def finding_delta(self) -> CodemodFindingDelta:
+        return self.progress.finding_delta
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
@@ -586,10 +592,6 @@ class CodemodRefactorGoalStage:
             progress=replace(
                 self.progress,
                 finding_ids=self.progress.finding_ids.with_after_ids(after_ids),
-            ),
-            finding_delta=replace(
-                self.finding_delta,
-                finding_ids=self.finding_delta.finding_ids.with_after_ids(after_ids),
             ),
             applied=True,
         )
@@ -1346,13 +1348,6 @@ class CodemodRefactorGoalRunner:
             class_plan_report=class_plan_report,
             simulation=simulation,
             progress=CodemodRefactorGoalProgress.from_findings(
-                self.migration_type,
-                before_scan.findings,
-                after_scan.findings,
-                before_snapshot=before_scan.source_snapshot,
-                after_snapshot=after_scan.source_snapshot,
-            ),
-            finding_delta=CodemodFindingDelta.from_findings(
                 before_target_findings,
                 after_target_findings,
             ),
