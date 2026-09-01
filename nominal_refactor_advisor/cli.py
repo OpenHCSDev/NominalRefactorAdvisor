@@ -79,6 +79,7 @@ from .codemod import (
     FindingRecipePlan,
     FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
+    FindingRecipeFrontierBudget,
     JsonObject,
     JsonValue,
     RefactorConcept,
@@ -94,6 +95,7 @@ from .codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
+    CodemodRefactorTrajectoryBudget,
     CodemodSimulationFindingProjection,
 )
 from .detectors import DetectorConfig, IssueDetector
@@ -556,7 +558,27 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-goal-max-stages",),
             value_type=int,
             default=8,
-            help="Maximum staged recipe simulations for --codemod-refactor-goal.",
+            help=(
+                "Maximum reachable trajectory depth proved for --codemod-refactor-goal."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-max-states",),
+            value_type=int,
+            default=512,
+            help=(
+                "Maximum exact source states exhaustively explored for "
+                "--codemod-refactor-goal."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-max-branches",),
+            value_type=int,
+            default=256,
+            help=(
+                "Maximum compatible recipe batches enumerated at each exact "
+                "source state for --codemod-refactor-goal."
+            ),
         ),
     )
     + _config_argument_specs()
@@ -3192,7 +3214,13 @@ class CodemodRefactorGoalCliCommand(
                 findings=self.findings,
             ),
             migration_type=migration_type,
-            max_stages=self.args.codemod_goal_max_stages,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(
+                max_depth=self.args.codemod_goal_max_stages,
+                max_states=self.args.codemod_goal_max_states,
+                recipe_frontier=FindingRecipeFrontierBudget(
+                    max_candidate_batches=self.args.codemod_goal_max_branches,
+                ),
+            ),
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()
         if report.stop_reason.completed:

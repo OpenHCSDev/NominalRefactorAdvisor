@@ -63,10 +63,33 @@ request a simulation:
 
 This proves only that the candidate is coherent in the current snapshot.  It
 does not establish that the candidate belongs to a globally complete refactor
-trajectory.  NRA therefore blocks plan export and source application while the
-planning horizon is ``current_snapshot`` or ``unproved``.  A goal run reports
-``unproved_trajectory`` and leaves the checkout unchanged rather than choosing
-a locally attractive first move.
+trajectory.  NRA therefore blocks one-shot plan export and source application
+while the planning horizon is ``current_snapshot`` or ``unproved``.
+
+To prove a goal across reachable source states, run:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/python/package \
+     --codemod-refactor-goal semantic_carrier --json
+
+The goal runner enumerates every clean compatible recipe batch at each state,
+explores the resulting exact source-state graph, and deduplicates cycles by
+source identity.  It emits an applicable replay sequence only when complete
+exploration reaches one unique terminal source state.  Local compression scores
+and candidate order do not select a branch.
+
+Guards supplied through ``--codemod-plan`` are terminal invariants.  The search
+may cross an intermediate state that violates them when a later stage repairs
+that state.  The terminal source must satisfy every supplied guard, and the
+exported replay attaches those guards to its final stage.  Guards owned by an
+individual recipe continue to validate that recipe's immediate result.
+
+``--codemod-goal-max-stages``, ``--codemod-goal-max-states``, and
+``--codemod-goal-max-branches`` bound the proof search.  Reaching any bound
+produces an ``incomplete`` trajectory proof and leaves the checkout unchanged.
+Distinct terminal states produce ``ambiguous_terminal_states``; a completely
+explored graph with no terminal produces ``no_terminal_state``.
 
 The default persistent cache is maintained at most once per hour.  Retention
 keeps at most 128 recently used analysis roots, 4 GiB across those roots, 2 GiB

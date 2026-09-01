@@ -2283,6 +2283,18 @@ class PositionalCallNameIndex:
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
+    @cached_property
+    def source_state_id(self) -> str:
+        """Return the exact identity of this complete source state."""
+
+        return hashlib.blake2s(
+            "\0".join(
+                f"{file_path}\0{self.sources_by_file_path[file_path]}"
+                for file_path in sorted(self.sources_by_file_path)
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
     def execution_snapshot(self) -> "CodemodSourceSnapshot":
         return self
 
@@ -2551,10 +2563,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         findings: Iterable[RefactorFinding],
         *,
         detector_ids: Iterable[str] = (),
+        frontier_budget: "FindingRecipeFrontierBudget | None" = None,
     ) -> "FindingRecipePlan":
         return codemod_plan_from_findings(
             findings,
             detector_ids=detector_ids,
+            frontier_budget=frontier_budget,
             selector_context=self,
         )
 
@@ -12443,11 +12457,55 @@ class FindingRecipeSetSimulation:
     """Internal source result paired with its public proof assessment."""
 
     assessment: FindingRecipeSetAssessment
+    document: CodemodPlanDocument | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
     rewritten_sources: Mapping[str, str] = field(
         default_factory=dict,
         compare=False,
         repr=False,
     )
+
+
+@dataclass(frozen=True)
+class FindingRecipeFrontierBudget(CodemodJsonReport):
+    """Explicit finite budget for exact current-state branch enumeration."""
+
+    max_candidate_batches: int = 256
+
+    def __post_init__(self) -> None:
+        if self.max_candidate_batches < 1:
+            raise ValueError("trajectory branch budget must be at least 1")
+
+    def to_dict(self) -> JsonObject:
+        return {"max_candidate_batches": self.max_candidate_batches}
+
+
+class FindingRecipeTrajectoryObstacleKind(StrEnum):
+    """Typed reason an exact current-state trajectory frontier is unavailable."""
+
+    CANDIDATE_SIMULATION = "candidate_simulation"
+    PAIR_COMPOSITION = "pair_composition"
+    BATCH_SIMULATION = "batch_simulation"
+    ENUMERATION_BUDGET = "enumeration_budget"
+
+
+@dataclass(frozen=True)
+class FindingRecipeTrajectoryObstacle(CodemodJsonReport):
+    """One proof obligation preventing an exact trajectory frontier."""
+
+    kind: FindingRecipeTrajectoryObstacleKind
+    finding_ids: tuple[str, ...]
+    reason: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "kind": self.kind.value,
+            "finding_ids": self.finding_ids,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -12595,6 +12653,57 @@ class FindingRecipePlanCandidate:
             self.finding_id,
             self.record.recipe_id,
         )
+
+
+@dataclass(frozen=True)
+class FindingRecipeTrajectoryBranch(CodemodJsonReport):
+    """One clean current-state transition without recommendation semantics."""
+
+    finding_ids: tuple[str, ...]
+    assessment: FindingRecipeSetAssessment
+    document: CodemodPlanDocument = field(compare=False, repr=False)
+
+    @property
+    def candidate_indices(self) -> tuple[int, ...]:
+        return self.assessment.candidate_indices
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "candidate_indices": self.candidate_indices,
+            "finding_ids": self.finding_ids,
+            "assessment": self.assessment.to_dict(),
+            "document": self.document.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeTrajectoryFrontier(CodemodJsonReport):
+    """All proved current-state transitions or explicit incompleteness evidence."""
+
+    budget: FindingRecipeFrontierBudget
+    branches: tuple[FindingRecipeTrajectoryBranch, ...] = ()
+    obstacles: tuple[FindingRecipeTrajectoryObstacle, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.obstacles
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "complete": self.complete,
+            "budget": self.budget.to_dict(),
+            "branch_count": len(self.branches),
+            "branches": tuple(branch.to_dict() for branch in self.branches),
+            "obstacles": tuple(obstacle.to_dict() for obstacle in self.obstacles),
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeCandidateBatchEnumeration:
+    """Bounded enumeration result that never presents truncation as completeness."""
+
+    candidate_index_batches: tuple[tuple[int, ...], ...]
+    truncated: bool
 
 
 @dataclass(frozen=True)
@@ -13132,6 +13241,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     """Current-snapshot candidate batch synthesized from advisor findings."""
 
     document: CodemodPlanDocument
+    trajectory_frontier: FindingRecipeTrajectoryFrontier
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
@@ -13185,6 +13295,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
             "expected_removed_finding_count": self.expected_removed_finding_count,
             "application_blocked": self.report.application_blocked,
             "application_block_reason": self.report.application_block_reason,
+            "trajectory_frontier": self.trajectory_frontier.to_dict(),
             **self.synthesis_payload(),
         }
 
@@ -21373,10 +21484,13 @@ class ProjectedBatchRewriteSet:
 
 @dataclass(frozen=True)
 class FindingRecipePlanBuilder:
-    """Build the shortest compatible executable plan from advisor findings."""
+    """Build current-state synthesis evidence and its exact transition frontier."""
 
     findings: tuple[RefactorFinding, ...]
     detector_ids: frozenset[str] = frozenset()
+    frontier_budget: FindingRecipeFrontierBudget = field(
+        default_factory=FindingRecipeFrontierBudget
+    )
     rewrite_line_replacement_cache: dict[
         PlannedSourceRewrite,
         tuple[PhysicalSourceEdit, ...],
@@ -21416,6 +21530,7 @@ class FindingRecipePlanBuilder:
                 else None
             ),
             batch_projection=self,
+            frontier_budget=self.frontier_budget,
         ).solve()
         batch_records = iter(batch_result.records)
         synthesis_records = tuple(
@@ -21431,6 +21546,7 @@ class FindingRecipePlanBuilder:
                     selector_context,
                 ),
             ),
+            trajectory_frontier=batch_result.trajectory_frontier,
             report=FindingRecipeSynthesisReport(synthesis_records),
         )
 
@@ -21762,6 +21878,7 @@ class CurrentSnapshotRecipeBatchResult:
 
     candidates: tuple[FindingRecipePlanCandidate, ...]
     evaluations: tuple[FindingRecipeEvaluation, ...]
+    trajectory_frontier: FindingRecipeTrajectoryFrontier
 
     def __post_init__(self) -> None:
         if len(self.candidates) != len(self.evaluations):
@@ -21797,6 +21914,13 @@ class CurrentSnapshotRecipeBatchEvaluation:
     candidates: tuple[FindingRecipePlanCandidate, ...]
     source_snapshot: CodemodSourceSnapshot | None
     batch_projection: FindingRecipePlanBuilder = field(compare=False, repr=False)
+    frontier_budget: FindingRecipeFrontierBudget = field(
+        default_factory=FindingRecipeFrontierBudget
+    )
+    recipe_set_simulation_cache: dict[
+        tuple[int, ...],
+        FindingRecipeSetSimulation,
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @cached_property
     def candidate_simulations(self) -> tuple[FindingRecipeSetSimulation, ...]:
@@ -21840,6 +21964,15 @@ class CurrentSnapshotRecipeBatchEvaluation:
             index
             for index, simulation in enumerate(self.candidate_simulations)
             if simulation.assessment.proved
+        )
+
+    @cached_property
+    def ordered_participating_candidate_indices(self) -> tuple[int, ...]:
+        return tuple(
+            sorted(
+                self.participating_candidate_indices,
+                key=lambda index: self.candidates[index].execution_order_key,
+            )
         )
 
     @cached_property
@@ -22022,6 +22155,129 @@ class CurrentSnapshotRecipeBatchEvaluation:
             ),
         ).connected_components
 
+    @cached_property
+    def trajectory_batch_enumeration(self) -> FindingRecipeCandidateBatchEnumeration:
+        """Enumerate every pairwise-compatible batch up to the explicit budget."""
+
+        ordered_indices = self.ordered_participating_candidate_indices
+        pair_dispositions = {
+            assessment.edge: assessment.disposition
+            for assessment in self.pair_assessments
+        }
+        batches: list[tuple[int, ...]] = []
+        pending_batches = [
+            ((candidate_index,), ordered_indices[position + 1 :])
+            for position, candidate_index in reversed(tuple(enumerate(ordered_indices)))
+        ]
+        while pending_batches:
+            candidate_batch, remaining_indices = pending_batches.pop()
+            if len(batches) == self.frontier_budget.max_candidate_batches:
+                return FindingRecipeCandidateBatchEnumeration(
+                    candidate_index_batches=tuple(batches),
+                    truncated=True,
+                )
+            batches.append(candidate_batch)
+            compatible_extensions = tuple(
+                (position, candidate_index)
+                for position, candidate_index in enumerate(remaining_indices)
+                if all(
+                    pair_dispositions.get(tuple(sorted((selected, candidate_index))))
+                    is FindingRecipeCandidatePairDisposition.COMPATIBLE
+                    for selected in candidate_batch
+                    if tuple(sorted((selected, candidate_index))) in pair_dispositions
+                )
+            )
+            pending_batches.extend(
+                (
+                    (*candidate_batch, candidate_index),
+                    remaining_indices[position + 1 :],
+                )
+                for position, candidate_index in reversed(compatible_extensions)
+            )
+        return FindingRecipeCandidateBatchEnumeration(
+            candidate_index_batches=tuple(batches),
+            truncated=False,
+        )
+
+    @cached_property
+    def trajectory_frontier(self) -> FindingRecipeTrajectoryFrontier:
+        obstacles = [
+            FindingRecipeTrajectoryObstacle(
+                kind=FindingRecipeTrajectoryObstacleKind.CANDIDATE_SIMULATION,
+                finding_ids=(self.candidates[index].finding_id,),
+                reason=simulation.assessment.reason,
+            )
+            for index, simulation in enumerate(self.candidate_simulations)
+            if not simulation.assessment.proved
+        ]
+        obstacles.extend(
+            FindingRecipeTrajectoryObstacle(
+                kind=FindingRecipeTrajectoryObstacleKind.PAIR_COMPOSITION,
+                finding_ids=tuple(
+                    sorted(
+                        self.candidates[index].finding_id for index in assessment.edge
+                    )
+                ),
+                reason=assessment.reason,
+            )
+            for assessment in self.pair_assessments
+            if assessment.disposition is FindingRecipeCandidatePairDisposition.UNPROVED
+        )
+        branches: list[FindingRecipeTrajectoryBranch] = []
+        for (
+            candidate_indices
+        ) in self.trajectory_batch_enumeration.candidate_index_batches:
+            simulation = self.simulate_recipe_set(candidate_indices)
+            if simulation.assessment.disposition is FindingRecipeSetDisposition.CLEAN:
+                if simulation.document is None:
+                    raise RuntimeError(
+                        "clean recipe batch simulation lost its document"
+                    )
+                branches.append(
+                    FindingRecipeTrajectoryBranch(
+                        finding_ids=tuple(
+                            self.candidates[index].finding_id
+                            for index in candidate_indices
+                        ),
+                        assessment=simulation.assessment,
+                        document=simulation.document,
+                    )
+                )
+                continue
+            if (
+                simulation.assessment.disposition
+                is FindingRecipeSetDisposition.UNPROVED
+            ):
+                obstacles.append(
+                    FindingRecipeTrajectoryObstacle(
+                        kind=FindingRecipeTrajectoryObstacleKind.BATCH_SIMULATION,
+                        finding_ids=tuple(
+                            self.candidates[index].finding_id
+                            for index in candidate_indices
+                        ),
+                        reason=simulation.assessment.reason,
+                    )
+                )
+        if self.trajectory_batch_enumeration.truncated:
+            obstacles.append(
+                FindingRecipeTrajectoryObstacle(
+                    kind=FindingRecipeTrajectoryObstacleKind.ENUMERATION_BUDGET,
+                    finding_ids=tuple(
+                        self.candidates[index].finding_id
+                        for index in self.ordered_participating_candidate_indices
+                    ),
+                    reason=(
+                        "compatible candidate batches exceed the declared "
+                        f"limit of {self.frontier_budget.max_candidate_batches}"
+                    ),
+                )
+            )
+        return FindingRecipeTrajectoryFrontier(
+            budget=self.frontier_budget,
+            branches=tuple(branches),
+            obstacles=tuple(obstacles),
+        )
+
     def solve(self) -> CurrentSnapshotRecipeBatchResult:
         evaluations = list(self.preliminary_evaluations)
         eligible_indices = self.eligible_candidate_indices
@@ -22064,6 +22320,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
             return CurrentSnapshotRecipeBatchResult(
                 candidates=self.candidates,
                 evaluations=tuple(evaluations),
+                trajectory_frontier=self.trajectory_frontier,
             )
         batch_assessment = (
             self.candidate_simulations[batched_indices[0]].assessment
@@ -22077,6 +22334,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
             return CurrentSnapshotRecipeBatchResult(
                 candidates=self.candidates,
                 evaluations=tuple(evaluations),
+                trajectory_frontier=self.trajectory_frontier,
             )
 
         for index in singleton_indices:
@@ -22084,6 +22342,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         return CurrentSnapshotRecipeBatchResult(
             candidates=self.candidates,
             evaluations=tuple(evaluations),
+            trajectory_frontier=self.trajectory_frontier,
         )
 
     def unproved_reason(
@@ -22095,6 +22354,17 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
 
     def simulate_recipe_set(
+        self,
+        candidate_indices: tuple[int, ...],
+    ) -> FindingRecipeSetSimulation:
+        cached_simulation = self.recipe_set_simulation_cache.get(candidate_indices)
+        if cached_simulation is not None:
+            return cached_simulation
+        simulation = self._simulate_recipe_set(candidate_indices)
+        self.recipe_set_simulation_cache[candidate_indices] = simulation
+        return simulation
+
+    def _simulate_recipe_set(
         self,
         candidate_indices: tuple[int, ...],
     ) -> FindingRecipeSetSimulation:
@@ -22119,12 +22389,13 @@ class CurrentSnapshotRecipeBatchEvaluation:
             for index in candidate_indices
         ]
         try:
-            simulation = CodemodPlanDocument(
+            document = CodemodPlanDocument(
                 recipes=self.batch_projection.merged_recipes(
                     recipes,
                     self.source_snapshot,
                 )
-            ).simulate_snapshot(self.source_snapshot)
+            )
+            simulation = document.simulate_snapshot(self.source_snapshot)
         except (
             PhysicalSourceEditConflictError,
             PlannedRewriteConflictError,
@@ -22180,6 +22451,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                 rewritten_file_paths=tuple(sorted(rewritten_sources)),
                 rewritten_source_digest=source_digest,
             ),
+            document=document,
             rewritten_sources=rewritten_sources,
         )
 
@@ -22244,6 +22516,7 @@ def codemod_plan_from_findings(
     findings: Iterable[RefactorFinding],
     *,
     detector_ids: Iterable[str] = (),
+    frontier_budget: FindingRecipeFrontierBudget | None = None,
     selector_context: CodemodSelectorContext | None = None,
 ) -> FindingRecipePlan:
     """Build executable recipes for supported high-confidence findings."""
@@ -22251,6 +22524,11 @@ def codemod_plan_from_findings(
     return FindingRecipePlanBuilder(
         findings=tuple(findings),
         detector_ids=frozenset(detector_ids),
+        frontier_budget=(
+            frontier_budget
+            if frontier_budget is not None
+            else FindingRecipeFrontierBudget()
+        ),
     ).plan(selector_context=selector_context)
 
 

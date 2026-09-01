@@ -42,7 +42,20 @@ prove a recipe and carries that declaration's diagnostic.  The record's
 should inspect the structured obstacles instead of parsing that summary.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+
+Goal Trajectory Surface
+-----------------------
+
+The goal runner reports complete reachable-state evidence separately from the
+single replay sequence.  ``PROVED`` means that exhaustive exploration found one
+unique terminal source state.  Ambiguity or any frontier, depth, or state-budget
+obstacle keeps ``stages`` empty and prevents application.
+Caller-supplied architecture guards are evaluated at terminal states and stored
+on the final replay document; recipe-owned guards remain transition-local.
+
+.. automodule:: nominal_refactor_advisor.codemod_workflow
+   :members: CodemodRefactorGoalRunner, CodemodRefactorGoalReport, CodemodRefactorTrajectoryBudget, CodemodRefactorTrajectoryProof, CodemodRefactorTrajectoryStatus, CodemodRefactorTrajectoryObstacle
 
 
 Result Records And Taxonomy

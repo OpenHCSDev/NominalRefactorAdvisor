@@ -103,7 +103,12 @@ from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
-from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
+from nominal_refactor_advisor.codemod_workflow import (
+    CodemodProjectedScanMode,
+    CodemodRefactorTrajectoryBudget,
+    CodemodRefactorTrajectoryObstacleKind,
+    CodemodRefactorTrajectoryStatus,
+)
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -135,9 +140,12 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipePlanBuilder,
     FindingRecipePlanCandidate,
     CurrentSnapshotRecipeBatchEvaluation,
+    CurrentSnapshotRecipeBatchResult,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisStatus,
+    FindingRecipeFrontierBudget,
+    FindingRecipeTrajectoryObstacleKind,
     FindingEvidenceTargetSelector,
     ExecutableRecipeEvaluation,
     MissingRecipeSynthesizerEvaluation,
@@ -1380,16 +1388,19 @@ def _direct_recipe_batch_evaluation(
     candidates: tuple[FindingRecipePlanCandidate, ...],
     snapshot: CodemodSourceSnapshot | None,
 ) -> tuple[FindingRecipeSynthesisRecord, ...]:
+    return _direct_recipe_batch_result(candidates, snapshot).records
+
+
+def _direct_recipe_batch_result(
+    candidates: tuple[FindingRecipePlanCandidate, ...],
+    snapshot: CodemodSourceSnapshot | None,
+) -> CurrentSnapshotRecipeBatchResult:
     builder = FindingRecipePlanBuilder(())
-    return (
-        CurrentSnapshotRecipeBatchEvaluation(
-            candidates=candidates,
-            source_snapshot=snapshot,
-            batch_projection=builder,
-        )
-        .solve()
-        .records
-    )
+    return CurrentSnapshotRecipeBatchEvaluation(
+        candidates=candidates,
+        source_snapshot=snapshot,
+        batch_projection=builder,
+    ).solve()
 
 
 def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
@@ -1411,7 +1422,8 @@ def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_batch_evaluation(candidates, snapshot)
+    batch_result = _direct_recipe_batch_result(candidates, snapshot)
+    records = batch_result.records
     payloads = tuple(record.to_dict() for record in records)
 
     assert {record.status for record in records} == {
@@ -1433,6 +1445,11 @@ def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
         )
         for payload in payloads
     )
+    assert batch_result.trajectory_frontier.complete
+    assert {
+        frozenset(branch.candidate_indices)
+        for branch in batch_result.trajectory_frontier.branches
+    } == {frozenset((0,)), frozenset((1,))}
 
 
 def test_finding_recipe_batch_exposes_every_conflicting_branch(
@@ -1454,7 +1471,8 @@ def test_finding_recipe_batch_exposes_every_conflicting_branch(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_batch_evaluation(candidates, snapshot)
+    batch_result = _direct_recipe_batch_result(candidates, snapshot)
+    records = batch_result.records
     evidence = records[0].conflict_evidence
 
     assert evidence is not None
@@ -1464,6 +1482,8 @@ def test_finding_recipe_batch_exposes_every_conflicting_branch(
     )
     assert all(record.conflict_evidence is evidence for record in records)
     assert all(not record.candidate_recipes for record in records)
+    assert batch_result.trajectory_frontier.complete
+    assert len(batch_result.trajectory_frontier.branches) == 3
 
 
 def test_finding_recipe_batch_does_not_use_missing_cost_to_select_conflict(
@@ -1526,12 +1546,18 @@ def test_finding_recipe_batch_fails_closed_without_physical_snapshot(
         ),
     )
 
-    records = _direct_recipe_batch_evaluation(candidates, None)
+    batch_result = _direct_recipe_batch_result(candidates, None)
+    records = batch_result.records
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
     }
     assert all("requires a source snapshot" in record.reason for record in records)
+    assert not batch_result.trajectory_frontier.complete
+    assert batch_result.trajectory_frontier.branches == ()
+    assert {
+        obstacle.kind for obstacle in batch_result.trajectory_frontier.obstacles
+    } == {FindingRecipeTrajectoryObstacleKind.CANDIDATE_SIMULATION}
 
 
 def test_finding_recipe_batch_preserves_nominal_prefix_conflicts(
@@ -1657,6 +1683,55 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         "a = 2\nb = 2\n"
     )
+    assert batch_evaluation.trajectory_frontier.complete
+    assert {
+        frozenset(branch.candidate_indices)
+        for branch in batch_evaluation.trajectory_frontier.branches
+    } == {
+        frozenset((0,)),
+        frozenset((1,)),
+        frozenset((0, 1)),
+    }
+
+
+def test_finding_recipe_trajectory_frontier_fails_closed_at_enumeration_budget(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
+    candidates = (
+        _direct_recipe_candidate(
+            detector_id="budget_a",
+            file_path=module_path.as_posix(),
+            subject_name="Alpha",
+            old_source="a = 1",
+            new_source="a = 2",
+            before=5,
+            after=1,
+        ),
+        _direct_recipe_candidate(
+            detector_id="budget_b",
+            file_path=module_path.as_posix(),
+            subject_name="Beta",
+            old_source="b = 1",
+            new_source="b = 2",
+            before=5,
+            after=1,
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    batch_result = CurrentSnapshotRecipeBatchEvaluation(
+        candidates=candidates,
+        source_snapshot=snapshot,
+        batch_projection=FindingRecipePlanBuilder(()),
+        frontier_budget=FindingRecipeFrontierBudget(max_candidate_batches=2),
+    ).solve()
+
+    assert not batch_result.trajectory_frontier.complete
+    assert len(batch_result.trajectory_frontier.branches) == 2
+    assert {
+        obstacle.kind for obstacle in batch_result.trajectory_frontier.obstacles
+    } == {FindingRecipeTrajectoryObstacleKind.ENUMERATION_BUDGET}
 
 
 def test_finding_recipe_singleton_without_cost_is_only_a_snapshot_candidate(
@@ -1727,12 +1802,17 @@ def test_finding_recipe_batch_rejects_order_dependent_composition(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    records = _direct_recipe_batch_evaluation(candidates, snapshot)
+    batch_result = _direct_recipe_batch_result(candidates, snapshot)
+    records = batch_result.records
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
     }
     assert all("depends on source order" in record.reason for record in records)
+    assert not batch_result.trajectory_frontier.complete
+    assert {
+        obstacle.kind for obstacle in batch_result.trajectory_frontier.obstacles
+    } == {FindingRecipeTrajectoryObstacleKind.PAIR_COMPOSITION}
 
 
 def test_finding_recipe_batch_does_not_use_incomparable_costs_to_select_conflict(
@@ -1781,11 +1861,14 @@ def test_finding_recipe_batch_does_not_reject_candidate_on_local_cost(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    record = _direct_recipe_batch_evaluation((candidate,), snapshot)[0]
+    batch_result = _direct_recipe_batch_result((candidate,), snapshot)
+    record = batch_result.records[0]
 
     assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert len(record.candidate_recipes) == 1
     assert record.planning_horizon.requires_trajectory_proof
+    assert batch_result.trajectory_frontier.complete
+    assert len(batch_result.trajectory_frontier.branches) == 1
 
 
 def test_finding_recipe_batch_preserves_duplicate_finding_positions(
@@ -1929,7 +2012,8 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules, ())
-    records = _direct_recipe_batch_evaluation(candidates, snapshot)
+    batch_result = _direct_recipe_batch_result(candidates, snapshot)
+    records = batch_result.records
     builder = FindingRecipePlanBuilder(())
     plan = FindingRecipePlan(
         document=CodemodPlanDocument(
@@ -1942,6 +2026,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
                 snapshot,
             )
         ),
+        trajectory_frontier=batch_result.trajectory_frontier,
         report=FindingRecipeSynthesisReport(records),
     )
     execution = FindingRecipePlanSynthesisExecution(
@@ -13498,7 +13583,23 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
-            max_stages=2,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodWorkflowScan(
+                modules=modules,
+                findings=[finding],
+            ),
+        ).run()
+        state_limited_report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            migration_type=SemanticCarrierConcept,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(
+                max_depth=2,
+                max_states=1,
+            ),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
                 modules=modules,
@@ -13511,11 +13612,21 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stop_reason.completed is True
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.stage_count == 1
     assert report.total_rewrite_count == 1
     assert report.final_target_finding_ids == ()
+    assert report.trajectory_proof.status.proved is True
+    assert report.trajectory_proof.visited_state_count == 2
+    assert state_limited_report.stages == ()
+    assert (
+        state_limited_report.trajectory_proof.status
+        is CodemodRefactorTrajectoryStatus.INCOMPLETE
+    )
+    assert state_limited_report.trajectory_proof.obstacles[0].kind is (
+        CodemodRefactorTrajectoryObstacleKind.STATE_BUDGET
+    )
     stage = report.stages[0]
     assert stage.applied is False
     assert stage.progress.removed_target_finding_ids == (finding.stable_id,)
@@ -13558,7 +13669,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
 
 
-def test_unproved_migration_stops_before_application_and_fresh_rescan(
+def test_proved_migration_reports_divergent_post_apply_rescan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13642,7 +13753,7 @@ def test_unproved_migration_stops_before_application_and_fresh_rescan(
             parse_workers=1,
             dry_run=False,
             migration_type=SemanticCarrierConcept,
-            max_stages=2,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=initial_scan,
         ).run()
@@ -13653,15 +13764,18 @@ def test_unproved_migration_stops_before_application_and_fresh_rescan(
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
-    assert report.final_target_finding_ids == ()
+    assert report.stop_reason is (
+        CodemodWorkflowStopReason.APPLICATION_VERIFICATION_FAILED
+    )
+    assert report.final_target_finding_ids == (finding.stable_id,)
+    assert report.trajectory_proof.status.proved is True
     stage = report.stages[0]
-    assert stage.applied is False
-    assert stage.progress.achieved is True
-    assert stage.progress.made_progress is True
-    assert stage.progress.after_target_finding_ids == ()
+    assert stage.applied is True
+    assert stage.progress.achieved is False
+    assert stage.progress.made_progress is False
+    assert stage.progress.after_target_finding_ids == (finding.stable_id,)
     assert stage.finding_delta.finding_ids is stage.progress.finding_ids
-    assert "return 'old'" in module_path.read_text(encoding="utf-8")
+    assert "return 'new'" in module_path.read_text(encoding="utf-8")
 
 
 def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
@@ -13778,7 +13892,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
             parse_workers=1,
             dry_run=False,
             migration_type=SemanticCarrierConcept,
-            max_stages=2,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
                 modules=parse_python_modules(tmp_path),
@@ -13794,18 +13908,278 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
 
     assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.stop_reason.completed is False
-    assert report.stage_count == 1
-    assert report.stages[0].applied is False
+    assert report.stage_count == 0
+    assert (
+        report.trajectory_proof.status
+        is CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
+    )
+    assert len(report.trajectory_proof.terminals) == 2
     assert module_path.read_text(encoding="utf-8") == original_source
-    records = report.stages[0].class_plan_report.finding_plan.records
-    assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES,
+    assert report.replay_sequence.documents == ()
+
+
+def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
+
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "value = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    detector_ids = (
+        "trajectory_worsening_first_move",
+        "trajectory_attractive_cycle",
+        "trajectory_goal_continuation",
+        "trajectory_cycle_continuation",
+        "trajectory_guard_rejected_terminal",
+    )
+
+    def finding(
+        detector_id: str,
+        *,
+        before_cost: int,
+        after_cost: int,
+    ) -> RefactorFinding:
+        return _finding_spec(
+            PatternId.NOMINAL_BOUNDARY,
+            f"{detector_id} fixture",
+            "Reachable trajectories decide whether this migration is valid.",
+            "one globally proved terminal source state",
+            "a current-state move has no independent recommendation semantics",
+        ).build(
+            detector_id,
+            f"{detector_id} contributes one reachable migration branch.",
+            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            compression_certificate=CompressionCertificate(
+                before_cost=SemanticCostVector(residual_objects=before_cost),
+                after_cost=SemanticCostVector(residual_objects=after_cost),
+                semantic_axes=("value_authority",),
+            ),
+        )
+
+    worsening_first_move = finding(
+        detector_ids[0],
+        before_cost=10,
+        after_cost=12,
+    )
+    attractive_cycle = finding(
+        detector_ids[1],
+        before_cost=10,
+        after_cost=1,
+    )
+    continuation = finding(
+        detector_ids[2],
+        before_cost=12,
+        after_cost=0,
+    )
+    cycle_continuation = finding(
+        detector_ids[3],
+        before_cost=1,
+        after_cost=1,
+    )
+    guard_rejected_terminal = finding(
+        detector_ids[4],
+        before_cost=10,
+        after_cost=0,
+    )
+
+    class ValueTransitionSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        old_expression: str
+        new_expression: str
+
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe(type(self).__name__).with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source=f"value = {self.old_expression}",
+                        new_source=f"value = {self.new_expression}",
+                    )
+                )
+            )
+
+    class WorseningFirstMoveSynthesizer(ValueTransitionSynthesizer):
+        old_expression = "1"
+        new_expression = "temporary_call()"
+
+    class AttractiveCycleSynthesizer(ValueTransitionSynthesizer):
+        old_expression = "1"
+        new_expression = "3"
+
+    class GoalContinuationSynthesizer(ValueTransitionSynthesizer):
+        old_expression = "temporary_call()"
+        new_expression = "4"
+
+    class CycleContinuationSynthesizer(ValueTransitionSynthesizer):
+        old_expression = "3"
+        new_expression = "1"
+
+    class GuardRejectedTerminalSynthesizer(ValueTransitionSynthesizer):
+        old_expression = "1"
+        new_expression = "forbidden_call()"
+
+    findings_by_source = {
+        "value = 1\n": (worsening_first_move, attractive_cycle),
+        "value = temporary_call()\n": (continuation,),
+        "value = 3\n": (cycle_continuation,),
+        "value = 4\n": (),
+        "value = forbidden_call()\n": (),
     }
-    assert all(record.conflict_evidence is not None for record in records)
-    assert all(not record.candidate_recipes for record in records)
+    terminal_guard_suite = ArchitectureGuardSuite(
+        (
+            ArchitectureGuardRule(
+                rule_id="no-residual-temporary-call",
+                forbidden_call_names=("temporary_call", "forbidden_call"),
+                file_path_suffixes=("pkg/mod.py",),
+            ),
+        )
+    )
+
+    def projected_target_scan(
+        self: CodemodRefactorGoalRunner,
+        scan: CodemodWorkflowScan,
+        simulation: CodemodSimulationReport,
+        target_findings: tuple[RefactorFinding, ...],
+    ) -> CodemodWorkflowScan:
+        del self, target_findings
+        modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=(tmp_path,),
+        ).modules_after_projection()
+        rewritten_source = simulation.rewritten_sources[module_path.as_posix()]
+        return CodemodWorkflowScan(
+            modules=list(modules),
+            findings=list(findings_by_source[rewritten_source]),
+            scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
+        )
+
+    def exact_scan(
+        self: CodemodRefactorGoalRunner,
+        scan: CodemodWorkflowScan,
+    ) -> CodemodWorkflowScan:
+        del self
+        return replace(scan, scan_mode=CodemodProjectedScanMode.EXACT)
+
+    synthesizer_types = (
+        WorseningFirstMoveSynthesizer,
+        AttractiveCycleSynthesizer,
+        GoalContinuationSynthesizer,
+        CycleContinuationSynthesizer,
+        GuardRejectedTerminalSynthesizer,
+    )
+    previous_synthesizers = {
+        detector_id: FindingRecipeSynthesizer.__registry__.get(detector_id)
+        for detector_id in detector_ids
+    }
+    FindingRecipeSynthesizer.__registry__.update(
+        dict(zip(detector_ids, synthesizer_types, strict=True))
+    )
+    monkeypatch.setattr(
+        CodemodRefactorGoalRunner,
+        "projected_target_scan",
+        projected_target_scan,
+    )
+    monkeypatch.setattr(CodemodRefactorGoalRunner, "exact_scan", exact_scan)
+
+    def run_goal(
+        initial_findings: tuple[RefactorFinding, ...],
+    ):
+        return CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            migration_type=SemanticCarrierConcept,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
+            guard_suite=terminal_guard_suite,
+            initial_scan=CodemodWorkflowScan(
+                modules=parse_python_modules(tmp_path),
+                findings=list(initial_findings),
+            ),
+        ).run()
+
+    try:
+        reports = tuple(
+            run_goal(initial_findings)
+            for initial_findings in (
+                (
+                    worsening_first_move,
+                    attractive_cycle,
+                    guard_rejected_terminal,
+                ),
+                (
+                    guard_rejected_terminal,
+                    attractive_cycle,
+                    worsening_first_move,
+                ),
+            )
+        )
+        rejected_report = run_goal((guard_rejected_terminal,))
+    finally:
+        for detector_id, previous in previous_synthesizers.items():
+            if previous is None:
+                FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            else:
+                FindingRecipeSynthesizer.__registry__[detector_id] = previous
+
+    for report in reports:
+        assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+        assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PROVED
+        assert report.trajectory_proof.visited_state_count == 5
+        assert report.trajectory_proof.transition_count == 5
+        assert len(report.trajectory_proof.guard_rejected_terminals) == 1
+        assert report.trajectory_proof.dead_ends == ()
+        assert report.stage_count == 2
+        assert (
+            report.stages[0].simulation.simulation.rewritten_sources[
+                module_path.as_posix()
+            ]
+            == "value = temporary_call()\n"
+        )
+        assert (
+            report.stages[1].simulation.simulation.rewritten_sources[
+                module_path.as_posix()
+            ]
+            == "value = 4\n"
+        )
+        assert report.stages[0].simulation.document.guard_suite.is_empty
+        assert report.stages[-1].simulation.document.guard_suite == (
+            terminal_guard_suite
+        )
+    assert rejected_report.stages == ()
+    assert rejected_report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
+    assert (
+        rejected_report.trajectory_proof.status
+        is CodemodRefactorTrajectoryStatus.NO_TERMINAL_STATE
+    )
+    assert len(rejected_report.trajectory_proof.guard_rejected_terminals) == 1
+    assert module_path.read_text(encoding="utf-8") == original_source
 
 
-def test_class_family_migration_stops_before_unproved_serial_trajectory(
+def test_class_family_migration_proves_complete_serial_trajectory(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
@@ -13824,25 +14198,28 @@ def test_class_family_migration_stops_before_unproved_serial_trajectory(
         parse_workers=1,
         dry_run=True,
         migration_type=ClassFamilyAuthorityConcept,
-        max_stages=3,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
-    assert report.stage_count == 1
+    assert report.stop_reason.completed is True
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stage_count == 2
     first_stage = report.stages[0]
     first_source = first_stage.simulation.simulation.rewritten_sources[
         module_path.as_posix()
     ]
     assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in first_source
     assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
-    assert report.replay_sequence.documents == (first_stage.simulation.document,)
+    assert report.replay_sequence.documents == tuple(
+        stage.simulation.document for stage in report.stages
+    )
+    assert report.trajectory_proof.status.proved is True
     assert module_path.read_text(encoding="utf-8") == _staged_class_family_source()
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
 
 
-def test_class_family_migration_does_not_commit_unproved_first_stage(
+def test_class_family_migration_commits_only_after_complete_trajectory_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13868,16 +14245,17 @@ def test_class_family_migration_does_not_commit_unproved_first_stage(
         parse_workers=1,
         dry_run=False,
         migration_type=ClassFamilyAuthorityConcept,
-        max_stages=3,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
     final_source = module_path.read_text(encoding="utf-8")
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
-    assert report.stage_count == 1
-    assert report.stages[0].applied is False
-    assert applied_reports == []
-    assert final_source == original_source
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stage_count == 2
+    assert all(stage.applied for stage in report.stages)
+    assert len(applied_reports) == 1
+    assert final_source != original_source
+    assert report.trajectory_proof.status.proved is True
 
 
 def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
@@ -13907,13 +14285,16 @@ def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
         parse_workers=1,
         dry_run=False,
         migration_type=ClassFamilyAuthorityConcept,
-        max_stages=1,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=1),
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
     assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
-    assert report.stage_count == 1
-    assert report.stages[0].applied is False
+    assert report.stage_count == 0
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
+    assert report.trajectory_proof.obstacles[0].kind is (
+        CodemodRefactorTrajectoryObstacleKind.DEPTH_BUDGET
+    )
     assert module_path.read_text(encoding="utf-8") == original_source
 
 
@@ -13995,15 +14376,15 @@ def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
         parse_workers=1,
         dry_run=True,
         migration_type=ClassFamilyAuthorityConcept,
-        max_stages=3,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
     semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
-    assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stop_reason.completed is True
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert exact_scan_count == 2
-    assert len(detector_rosters) == report.stage_count == 1
+    assert len(detector_rosters) == report.stage_count == 2
     assert all(
         semantic_mirror_ids <= frozenset(detector_roster)
         for detector_roster in detector_rosters
@@ -14098,7 +14479,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
-            max_stages=2,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
                 modules=modules,
@@ -14111,8 +14492,8 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stop_reason.completed is True
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.final_target_finding_ids == ()
     assert report.stages[0].progress.before_target_finding_ids == (
         report_finding.stable_id,
@@ -14187,7 +14568,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
                 findings=[finding],
             ),
             migration_type=SemanticCarrierConcept,
-            max_stages=1,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=1),
         ).run()
     finally:
         if previous_synthesizer is None:
@@ -14196,21 +14577,20 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
-    assert report.stage_count == 1
-    terminal_stage = report.stages[0]
-    terminal_synthesis = terminal_stage.class_plan_report.finding_plan.report
+    assert report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
+    assert report.stage_count == 0
+    assert len(report.trajectory_proof.dead_ends) == 1
+    terminal_plan = report.trajectory_proof.dead_ends[0].class_plan_report
+    terminal_synthesis = terminal_plan.finding_plan.report
     assert terminal_synthesis.rejected_count == 1
     assert terminal_synthesis.records[0].detector_id == detector_id
-    assert len(terminal_stage.class_plan_report.classes) == 1
-    assert len(terminal_stage.class_plan_report.classes[0].synthesis_records) == 1
-    assert terminal_stage.rewrite_count == 0
-    assert terminal_stage.simulation.document.has_recipes is False
+    assert len(terminal_plan.classes) == 1
+    assert len(terminal_plan.classes[0].synthesis_records) == 1
     assert report.replay_sequence.documents == ()
     payload = report.to_dict()
-    assert "terminal_synthesis_report" not in payload
-    assert "terminal_class_plan_report" not in payload
-    terminal_class_plan = payload["stages"][0]["class_plan_report"]
+    terminal_class_plan = payload["trajectory_proof"]["dead_ends"][0][
+        "class_plan_report"
+    ]
     assert (
         terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][0][
             "status"
@@ -14292,7 +14672,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
     assert "accepts guard-only --codemod-plan input" in result.stderr
 
 
-def test_module_cli_does_not_export_unproved_goal_replay_plan(
+def test_module_cli_exports_only_proved_goal_replay_plan(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -14302,20 +14682,18 @@ def test_module_cli_does_not_export_unproved_goal_replay_plan(
         "pkg/mod.py",
         _manual_class_registration_source(),
     )
-
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        tmp_path.as_posix(),
+        "--no-cache",
+        "--codemod-refactor-goal",
+        "auto_register_class_registry",
+        "--json",
+    ]
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-refactor-goal",
-            "auto_register_class_registry",
-            "--codemod-plan-out",
-            plan_path.as_posix(),
-            "--json",
-        ],
+        [*command, "--codemod-plan-out", plan_path.as_posix()],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -14323,17 +14701,39 @@ def test_module_cli_does_not_export_unproved_goal_replay_plan(
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 1, result.stderr
+    assert result.returncode == 0, result.stderr
     assert "completed" not in payload
     assert "achieved" not in payload
-    assert payload["stop_reason"] == "unproved_trajectory"
+    assert payload["stop_reason"] == "achieved"
+    assert payload["trajectory_proof"]["status"] == "proved"
     assert payload["stage_count"] == 1
     assert payload["total_rewrite_count"] == 1
     assert payload["stages"][0]["applied"] is False
-    assert not plan_path.exists()
+    assert plan_path.exists()
     assert payload["replay_sequence"]["stages"][0]["recipes"][0]["recipe_id"] == (
         "finding-backed-codemod-plan"
     )
+
+    incomplete_plan_path = tmp_path / "incomplete-goal-replay-plan.json"
+    incomplete_result = subprocess.run(
+        [
+            *command,
+            "--codemod-plan-out",
+            incomplete_plan_path.as_posix(),
+            "--codemod-goal-max-states",
+            "1",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    incomplete_payload = json.loads(incomplete_result.stdout)
+
+    assert incomplete_result.returncode == 1, incomplete_result.stderr
+    assert incomplete_payload["trajectory_proof"]["status"] == "incomplete"
+    assert incomplete_payload["stage_count"] == 0
+    assert not incomplete_plan_path.exists()
 
 
 def test_module_cli_simulates_projected_findings_for_created_files(

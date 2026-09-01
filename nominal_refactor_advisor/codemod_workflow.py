@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
+from typing import ClassVar
 
 from .analysis import (
     AnalysisPathScope,
@@ -21,8 +24,8 @@ from .analysis import (
 )
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
+    ArchitectureGuardReport,
     ArchitectureGuardSuite,
-    CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodJsonReport,
     CodemodPlanSequence,
@@ -32,6 +35,8 @@ from .codemod import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesisRecord,
+    FindingRecipeFrontierBudget,
+    FindingRecipeTrajectoryObstacle,
     JsonObject,
     RefactorConcept,
     module_name_from_source_path,
@@ -45,16 +50,82 @@ class CodemodWorkflowStopReason(StrEnum):
     """Terminal state for staged codemod workflows."""
 
     ACHIEVED = "achieved"
-    NO_EXECUTABLE_RECIPES = "no_executable_recipes"
-    EMPTY_REWRITE_BATCH = "empty_rewrite_batch"
     ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
-    NO_PROGRESS = "no_progress"
-    MAX_STAGES = "max_stages"
+    APPLICATION_VERIFICATION_FAILED = "application_verification_failed"
     UNPROVED_TRAJECTORY = "unproved_trajectory"
+    NO_PROVED_TRAJECTORY = "no_proved_trajectory"
 
     @property
     def completed(self) -> bool:
         return self is type(self).ACHIEVED
+
+
+class CodemodRefactorTrajectoryStatus(StrEnum):
+    """Proof status for exhaustive reachable-state exploration."""
+
+    PROVED = ("proved", CodemodWorkflowStopReason.ACHIEVED)
+    NO_TERMINAL_STATE = (
+        "no_terminal_state",
+        CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY,
+    )
+    AMBIGUOUS_TERMINAL_STATES = (
+        "ambiguous_terminal_states",
+        CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+    )
+    INCOMPLETE = (
+        "incomplete",
+        CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        stop_reason: CodemodWorkflowStopReason,
+    ) -> "CodemodRefactorTrajectoryStatus":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._stop_reason = stop_reason
+        return member
+
+    @property
+    def stop_reason(self) -> CodemodWorkflowStopReason:
+        return self._stop_reason
+
+    @property
+    def proved(self) -> bool:
+        return self is type(self).PROVED
+
+
+class CodemodRefactorTrajectoryObstacleKind(StrEnum):
+    """Typed source of incomplete reachable-state coverage."""
+
+    RECIPE_FRONTIER = "recipe_frontier"
+    DEPTH_BUDGET = "depth_budget"
+    STATE_BUDGET = "state_budget"
+
+
+@dataclass(frozen=True)
+class CodemodRefactorTrajectoryBudget(CodemodJsonReport):
+    """Single proof-search budget shared by frontier and graph exploration."""
+
+    max_depth: int = 8
+    max_states: int = 512
+    recipe_frontier: FindingRecipeFrontierBudget = field(
+        default_factory=FindingRecipeFrontierBudget
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_depth < 1:
+            raise ValueError("trajectory depth budget must be at least 1")
+        if self.max_states < 1:
+            raise ValueError("trajectory state budget must be at least 1")
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "max_depth": self.max_depth,
+            "max_states": self.max_states,
+            "recipe_frontier": self.recipe_frontier.to_dict(),
+        }
 
 
 class CodemodProjectedScanMode(StrEnum):
@@ -610,19 +681,228 @@ class CodemodRefactorGoalStage:
 
 
 @dataclass(frozen=True)
+class CodemodRefactorTrajectoryObstacle(CodemodJsonReport, ABC):
+    """Nominal proof obstacle for one unexhausted exact source state."""
+
+    kind: ClassVar[CodemodRefactorTrajectoryObstacleKind]
+    source_state_id: str
+    depth: int
+
+    @property
+    @abstractmethod
+    def reason(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def evidence_payload(self) -> JsonObject:
+        raise NotImplementedError
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "kind": self.kind.value,
+            "source_state_id": self.source_state_id,
+            "depth": self.depth,
+            "reason": self.reason,
+            **self.evidence_payload(),
+        }
+
+    def markdown_lines(self) -> tuple[str, ...]:
+        return (
+            "   - Trajectory obstacle: "
+            f"{self.kind.value} at depth {self.depth}: {self.reason}",
+        )
+
+
+@dataclass(frozen=True)
+class CodemodRefactorRecipeFrontierObstacle(CodemodRefactorTrajectoryObstacle):
+    """Preserve typed current-state frontier evidence that failed closed."""
+
+    kind = CodemodRefactorTrajectoryObstacleKind.RECIPE_FRONTIER
+    recipe_obstacles: tuple[FindingRecipeTrajectoryObstacle, ...]
+
+    @property
+    def reason(self) -> str:
+        return "the current-state recipe frontier is incomplete"
+
+    def evidence_payload(self) -> JsonObject:
+        return {
+            "recipe_obstacles": tuple(
+                obstacle.to_dict() for obstacle in self.recipe_obstacles
+            )
+        }
+
+    def markdown_lines(self) -> tuple[str, ...]:
+        return (
+            *super().markdown_lines(),
+            *(
+                "     - "
+                f"{obstacle.kind.value} [{', '.join(obstacle.finding_ids)}]: "
+                f"{obstacle.reason}"
+                for obstacle in self.recipe_obstacles
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CodemodRefactorDepthBudgetObstacle(CodemodRefactorTrajectoryObstacle):
+    """Record a reachable state beyond the declared proof depth."""
+
+    kind = CodemodRefactorTrajectoryObstacleKind.DEPTH_BUDGET
+    max_depth: int
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"reachable transitions exceed the declared depth limit of {self.max_depth}"
+        )
+
+    def evidence_payload(self) -> JsonObject:
+        return {"max_depth": self.max_depth}
+
+
+@dataclass(frozen=True)
+class CodemodRefactorStateBudgetObstacle(CodemodRefactorTrajectoryObstacle):
+    """Record a reachable state beyond the declared graph-size proof budget."""
+
+    kind = CodemodRefactorTrajectoryObstacleKind.STATE_BUDGET
+    max_states: int
+
+    @property
+    def reason(self) -> str:
+        return f"reachable source states exceed the declared limit of {self.max_states}"
+
+    def evidence_payload(self) -> JsonObject:
+        return {"max_states": self.max_states}
+
+
+@dataclass(frozen=True)
+class CodemodRefactorTrajectoryState:
+    """One exact in-memory source state and the path that first reached it."""
+
+    scan: "CodemodWorkflowScan" = field(compare=False, repr=False)
+    stages: tuple[CodemodRefactorGoalStage, ...] = ()
+
+    @property
+    def source_state_id(self) -> str:
+        return self.scan.source_snapshot.source_state_id
+
+    @property
+    def depth(self) -> int:
+        return len(self.stages)
+
+
+@dataclass(frozen=True)
+class CodemodRefactorTrajectoryTerminal:
+    """One exact goal state reached by a completely explored trajectory graph."""
+
+    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+
+    @property
+    def source_state_id(self) -> str:
+        return self.state.source_state_id
+
+    @property
+    def stages(self) -> tuple[CodemodRefactorGoalStage, ...]:
+        return self.state.stages
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_state_id": self.source_state_id,
+            "stage_count": len(self.stages),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGuardRejectedTerminal:
+    """One target-free source state rejected by terminal architecture guards."""
+
+    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    guard_report: ArchitectureGuardReport
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_state_id": self.state.source_state_id,
+            "stage_count": len(self.state.stages),
+            "guard_report": self.guard_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorTrajectoryDeadEnd:
+    """One fully explored non-goal state with no executable transition."""
+
+    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    class_plan_report: FindingRecipeClassPlanReport = field(
+        compare=False,
+        repr=False,
+    )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_state_id": self.state.source_state_id,
+            "depth": self.state.depth,
+            "class_plan_report": self.class_plan_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorTrajectoryProof:
+    """Complete reachable-state evidence with no local branch preference."""
+
+    initial_source_state_id: str
+    budget: CodemodRefactorTrajectoryBudget
+    visited_state_count: int
+    transition_count: int
+    terminals: tuple[CodemodRefactorTrajectoryTerminal, ...] = ()
+    guard_rejected_terminals: tuple[CodemodRefactorGuardRejectedTerminal, ...] = ()
+    dead_ends: tuple[CodemodRefactorTrajectoryDeadEnd, ...] = ()
+    obstacles: tuple[CodemodRefactorTrajectoryObstacle, ...] = ()
+
+    @property
+    def status(self) -> CodemodRefactorTrajectoryStatus:
+        if self.obstacles:
+            return CodemodRefactorTrajectoryStatus.INCOMPLETE
+        if not self.terminals:
+            return CodemodRefactorTrajectoryStatus.NO_TERMINAL_STATE
+        if len(self.terminals) > 1:
+            return CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
+        return CodemodRefactorTrajectoryStatus.PROVED
+
+    @property
+    def proved_terminal(self) -> CodemodRefactorTrajectoryTerminal:
+        if not self.status.proved:
+            raise TypeError("trajectory proof has no unique proved terminal state")
+        return self.terminals[0]
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "status": self.status.value,
+            "initial_source_state_id": self.initial_source_state_id,
+            "budget": self.budget.to_dict(),
+            "visited_state_count": self.visited_state_count,
+            "transition_count": self.transition_count,
+            "terminal_count": len(self.terminals),
+            "terminals": tuple(terminal.to_dict() for terminal in self.terminals),
+            "guard_rejected_terminal_count": len(self.guard_rejected_terminals),
+            "guard_rejected_terminals": tuple(
+                terminal.to_dict() for terminal in self.guard_rejected_terminals
+            ),
+            "dead_end_count": len(self.dead_ends),
+            "dead_ends": tuple(dead_end.to_dict() for dead_end in self.dead_ends),
+            "obstacles": tuple(obstacle.to_dict() for obstacle in self.obstacles),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodRefactorGoalReport:
     """Machine-readable result of a goal-directed staged codemod run."""
 
     stop_reason: CodemodWorkflowStopReason
     final_finding_count: int
+    final_target_finding_ids: tuple[str, ...]
     migration_type: type[RefactorConcept]
     stages: tuple[CodemodRefactorGoalStage, ...]
-
-    @property
-    def final_target_finding_ids(self) -> tuple[str, ...]:
-        if not self.stages:
-            return ()
-        return self.stages[-1].progress.after_target_finding_ids
+    trajectory_proof: CodemodRefactorTrajectoryProof
 
     @property
     def stage_count(self) -> int:
@@ -651,6 +931,17 @@ class CodemodRefactorGoalReport:
             f"   - Rewrites: {self.total_rewrite_count}",
             f"   - Final findings: {self.final_finding_count}",
             f"   - Remaining target findings: {len(self.final_target_finding_ids)}",
+            f"   - Trajectory proof: {self.trajectory_proof.status.value}",
+            (
+                "   - Reachable graph: "
+                f"states={self.trajectory_proof.visited_state_count}, "
+                f"transitions={self.trajectory_proof.transition_count}, "
+                f"terminals={len(self.trajectory_proof.terminals)}, "
+                "guard_rejected_terminals="
+                f"{len(self.trajectory_proof.guard_rejected_terminals)}, "
+                f"dead_ends={len(self.trajectory_proof.dead_ends)}, "
+                f"obstacles={len(self.trajectory_proof.obstacles)}"
+            ),
         ]
         for stage_number, stage in enumerate(self.stages, start=1):
             lines.append(
@@ -661,6 +952,8 @@ class CodemodRefactorGoalReport:
                 f"surviving_targets={stage.progress.surviving_target_finding_count}, "
                 f"applied={stage.applied}"
             )
+        for obstacle in self.trajectory_proof.obstacles:
+            lines.extend(obstacle.markdown_lines())
         return "\n".join(lines)
 
     def to_dict(self) -> JsonObject:
@@ -672,6 +965,7 @@ class CodemodRefactorGoalReport:
             "final_finding_count": self.final_finding_count,
             "final_target_finding_ids": self.final_target_finding_ids,
             "replay_sequence": self.replay_sequence.to_dict(),
+            "trajectory_proof": self.trajectory_proof.to_dict(),
             "stages": tuple(stage.to_dict() for stage in self.stages),
         }
 
@@ -1104,7 +1398,9 @@ class CodemodRefactorGoalRunner:
     guard_suite: ArchitectureGuardSuite
     initial_scan: CodemodWorkflowScan | None = None
     migration_type: type[RefactorConcept]
-    max_stages: int = 8
+    trajectory_budget: CodemodRefactorTrajectoryBudget = field(
+        default_factory=CodemodRefactorTrajectoryBudget
+    )
 
     def starting_scan(self) -> CodemodWorkflowScan:
         if self.initial_scan is None:
@@ -1198,97 +1494,204 @@ class CodemodRefactorGoalRunner:
         ).filter_findings(list(findings))
 
     def run(self) -> CodemodRefactorGoalReport:
-        if self.max_stages < 1:
-            raise ValueError("max_stages must be at least 1")
-        stages: list[CodemodRefactorGoalStage] = []
-        active_scan = self.starting_scan()
-        if not self.target_findings(active_scan):
+        starting_scan = self.starting_scan()
+        trajectory_proof = self.prove_trajectory(starting_scan)
+        if not trajectory_proof.status.proved:
             return self.report(
                 (),
-                active_scan,
-                CodemodWorkflowStopReason.ACHIEVED,
+                starting_scan,
+                trajectory_proof.status.stop_reason,
+                trajectory_proof,
             )
-        starting_snapshot = active_scan.source_snapshot
-        for _stage in range(self.max_stages):
-            snapshot = active_scan.source_snapshot
+        terminal = trajectory_proof.proved_terminal
+        if not terminal.stages:
+            return self.report(
+                (),
+                terminal.state.scan,
+                CodemodWorkflowStopReason.ACHIEVED,
+                trajectory_proof,
+            )
+        return self.achieved_report(
+            stages=terminal.stages,
+            projected_scan=terminal.state.scan,
+            starting_snapshot=starting_scan.source_snapshot,
+            trajectory_proof=trajectory_proof,
+        )
+
+    def prove_trajectory(
+        self,
+        starting_scan: CodemodWorkflowScan,
+    ) -> CodemodRefactorTrajectoryProof:
+        """Exhaust exact reachable source states without ranking local moves."""
+
+        initial_state = CodemodRefactorTrajectoryState(scan=starting_scan)
+        pending = deque((initial_state,))
+        visited_source_state_ids = {initial_state.source_state_id}
+        terminals_by_source_state_id: dict[
+            str,
+            CodemodRefactorTrajectoryTerminal,
+        ] = {}
+        guard_rejected_terminals: list[CodemodRefactorGuardRejectedTerminal] = []
+        dead_ends: list[CodemodRefactorTrajectoryDeadEnd] = []
+        obstacles: list[CodemodRefactorTrajectoryObstacle] = []
+        transition_count = 0
+
+        while pending:
+            state = pending.popleft()
+            active_scan = state.scan
             target_findings = self.target_findings(active_scan)
-            plan = snapshot.plan_from_findings(target_findings)
+            if not target_findings:
+                active_scan = self.exact_scan(active_scan)
+                target_findings = self.target_findings(active_scan)
+                state = replace(state, scan=active_scan)
+                if not target_findings:
+                    terminal_guard_report = (
+                        self.guard_suite.clean_report()
+                        if self.guard_suite.is_empty
+                        else self.guard_suite.evaluate(
+                            active_scan.source_index,
+                            active_scan.sources_by_file_path,
+                        )
+                    )
+                    if terminal_guard_report.is_clean:
+                        terminals_by_source_state_id[state.source_state_id] = (
+                            CodemodRefactorTrajectoryTerminal(state)
+                        )
+                    else:
+                        guard_rejected_terminals.append(
+                            CodemodRefactorGuardRejectedTerminal(
+                                state=state,
+                                guard_report=terminal_guard_report,
+                            )
+                        )
+                    continue
+
+            snapshot = active_scan.source_snapshot
+            plan = snapshot.plan_from_findings(
+                target_findings,
+                frontier_budget=self.trajectory_budget.recipe_frontier,
+            )
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
                 target_findings,
                 root=self.class_plan_root(),
                 finding_plan=plan,
             )
-            document = CodemodPlanDocument(
-                recipes=plan.document.recipes,
-                guard_suite=self.guard_suite.merge(plan.document.guard_suite),
-            )
-            simulation = document.simulate_snapshot(snapshot)
-            projected_scan = (
-                self.projected_target_scan(
+            frontier = plan.trajectory_frontier
+            if not frontier.complete:
+                obstacles.append(
+                    CodemodRefactorRecipeFrontierObstacle(
+                        source_state_id=state.source_state_id,
+                        depth=state.depth,
+                        recipe_obstacles=frontier.obstacles,
+                    )
+                )
+                continue
+            if not frontier.branches:
+                dead_ends.append(
+                    CodemodRefactorTrajectoryDeadEnd(
+                        state=state,
+                        class_plan_report=class_plan_report,
+                    )
+                )
+                continue
+            if state.depth >= self.trajectory_budget.max_depth:
+                obstacles.append(
+                    CodemodRefactorDepthBudgetObstacle(
+                        source_state_id=state.source_state_id,
+                        depth=state.depth,
+                        max_depth=self.trajectory_budget.max_depth,
+                    )
+                )
+                continue
+
+            valid_transition_count = 0
+            for branch in frontier.branches:
+                simulation = branch.document.simulate_snapshot(snapshot)
+                if (
+                    not simulation.is_clean
+                    or simulation.simulation.applied_rewrite_count == 0
+                ):
+                    continue
+                valid_transition_count += 1
+                transition_count += 1
+                projected_scan = self.projected_target_scan(
                     active_scan,
                     simulation.simulation,
                     target_findings,
                 )
-                if plan.document.has_recipes
-                else active_scan
-            )
-            if not self.target_findings(projected_scan):
-                projected_scan = self.exact_scan(projected_scan)
-            stage = self.stage(
-                active_scan,
-                projected_scan,
-                class_plan_report=class_plan_report,
-                simulation=simulation,
-            )
-            if plan.report.requires_trajectory_proof and not plan.document.has_recipes:
-                return self.report(
-                    (*stages, stage),
+                if not self.target_findings(projected_scan):
+                    projected_scan = self.exact_scan(projected_scan)
+                stage = self.stage(
+                    active_scan,
                     projected_scan,
-                    CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+                    class_plan_report=class_plan_report,
+                    simulation=simulation,
                 )
-            if not plan.document.has_recipes:
-                return self.report(
-                    (*stages, stage),
-                    active_scan,
-                    CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
+                next_state = CodemodRefactorTrajectoryState(
+                    scan=projected_scan,
+                    stages=(*state.stages, stage),
                 )
-            if stage.rewrite_count == 0:
-                return self.report(
-                    (*stages, stage),
-                    active_scan,
-                    CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
+                if next_state.source_state_id in visited_source_state_ids:
+                    continue
+                if len(visited_source_state_ids) >= self.trajectory_budget.max_states:
+                    obstacles.append(
+                        CodemodRefactorStateBudgetObstacle(
+                            source_state_id=state.source_state_id,
+                            depth=state.depth,
+                            max_states=self.trajectory_budget.max_states,
+                        )
+                    )
+                    continue
+                visited_source_state_ids.add(next_state.source_state_id)
+                pending.append(next_state)
+            if valid_transition_count == 0:
+                dead_ends.append(
+                    CodemodRefactorTrajectoryDeadEnd(
+                        state=state,
+                        class_plan_report=class_plan_report,
+                    )
                 )
-            if not stage.simulation.is_clean:
-                return self.report(
-                    (*stages, stage),
-                    active_scan,
-                    CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
-                )
-            next_scan = projected_scan
-            stages.append(stage)
-            if plan.report.requires_trajectory_proof:
-                return self.report(
-                    tuple(stages),
-                    next_scan,
-                    CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
-                )
-            if stage.progress.achieved:
-                return self.achieved_report(
-                    stages=tuple(stages),
-                    projected_scan=next_scan,
-                    starting_snapshot=starting_snapshot,
-                )
-            if not stage.progress.made_progress:
-                return self.report(
-                    tuple(stages),
-                    next_scan,
-                    CodemodWorkflowStopReason.NO_PROGRESS,
-                )
-            active_scan = next_scan
-        return self.report(
-            tuple(stages),
-            self.exact_scan(active_scan),
-            CodemodWorkflowStopReason.MAX_STAGES,
+
+        return CodemodRefactorTrajectoryProof(
+            initial_source_state_id=initial_state.source_state_id,
+            budget=self.trajectory_budget,
+            visited_state_count=len(visited_source_state_ids),
+            transition_count=transition_count,
+            terminals=tuple(
+                terminals_by_source_state_id[source_state_id]
+                for source_state_id in sorted(terminals_by_source_state_id)
+            ),
+            guard_rejected_terminals=tuple(guard_rejected_terminals),
+            dead_ends=tuple(dead_ends),
+            obstacles=tuple(obstacles),
+        )
+
+    def stages_with_terminal_guards(
+        self,
+        stages: tuple[CodemodRefactorGoalStage, ...],
+        starting_snapshot: CodemodSourceSnapshot,
+    ) -> tuple[CodemodRefactorGoalStage, ...] | None:
+        """Attach caller guards only to the final state and replay the path."""
+
+        if self.guard_suite.is_empty:
+            return stages
+        documents = tuple(stage.simulation.document for stage in stages)
+        terminal_document = replace(
+            documents[-1],
+            guard_suite=documents[-1].guard_suite.merge(self.guard_suite),
+        )
+        sequence_simulation = CodemodPlanSequence(
+            documents=(*documents[:-1], terminal_document),
+        ).simulate_snapshot(starting_snapshot)
+        if not sequence_simulation.is_clean:
+            return None
+        return tuple(
+            replace(stage, simulation=stage_report.document_simulation)
+            for stage, stage_report in zip(
+                stages,
+                sequence_simulation.stage_reports,
+                strict=True,
+            )
         )
 
     def achieved_report(
@@ -1297,13 +1700,26 @@ class CodemodRefactorGoalRunner:
         stages: tuple[CodemodRefactorGoalStage, ...],
         projected_scan: CodemodWorkflowScan,
         starting_snapshot: CodemodSourceSnapshot,
+        trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
         """Commit a fully proved migration sequence once, or return its dry run."""
 
-        projected_report = self.report(
+        guarded_stages = self.stages_with_terminal_guards(
             stages,
+            starting_snapshot,
+        )
+        if guarded_stages is None:
+            return self.report(
+                (),
+                projected_scan,
+                CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
+                trajectory_proof,
+            )
+        projected_report = self.report(
+            guarded_stages,
             projected_scan,
             CodemodWorkflowStopReason.ACHIEVED,
+            trajectory_proof,
         )
         if self.dry_run:
             return projected_report
@@ -1319,8 +1735,8 @@ class CodemodRefactorGoalRunner:
         committed_scan = self.fresh_scan()
         committed_target_findings = self.target_findings(committed_scan)
         applied_stages = (
-            *(replace(stage, applied=True) for stage in stages[:-1]),
-            stages[-1].with_applied_target_findings(committed_target_findings),
+            *(replace(stage, applied=True) for stage in guarded_stages[:-1]),
+            guarded_stages[-1].with_applied_target_findings(committed_target_findings),
         )
         return self.report(
             applied_stages,
@@ -1328,8 +1744,9 @@ class CodemodRefactorGoalRunner:
             (
                 CodemodWorkflowStopReason.ACHIEVED
                 if not committed_target_findings
-                else CodemodWorkflowStopReason.NO_PROGRESS
+                else CodemodWorkflowStopReason.APPLICATION_VERIFICATION_FAILED
             ),
+            trajectory_proof,
         )
 
     def target_findings(
@@ -1370,6 +1787,7 @@ class CodemodRefactorGoalRunner:
         stages: tuple[CodemodRefactorGoalStage, ...],
         scan: CodemodWorkflowScan,
         reason: CodemodWorkflowStopReason,
+        trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
         verified_scan = self.exact_scan(scan)
         return CodemodRefactorGoalReport(
@@ -1377,6 +1795,10 @@ class CodemodRefactorGoalRunner:
             stages=stages,
             stop_reason=reason,
             final_finding_count=len(verified_scan.findings),
+            final_target_finding_ids=tuple(
+                finding.stable_id for finding in self.target_findings(verified_scan)
+            ),
+            trajectory_proof=trajectory_proof,
         )
 
 
