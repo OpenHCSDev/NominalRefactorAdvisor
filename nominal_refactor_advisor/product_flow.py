@@ -696,6 +696,18 @@ class CompactLexicalMutation:
 
 
 @dataclass(frozen=True)
+class CompactExactLocalValueAlias:
+    """One exact local-name binding to an unchanged lexical value."""
+
+    source: LexicalValueReference
+    binding_mutation: CompactLexicalMutation
+
+    @property
+    def target(self) -> LexicalValueReference:
+        return self.binding_mutation.reference
+
+
+@dataclass(frozen=True)
 class CompactCallableReferenceUse:
     target: CompactCallTargetReference
     position: CompactFlowPosition
@@ -838,6 +850,7 @@ class CompactFunctionFlow:
     calls: tuple[CompactFunctionCall, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactLexicalMutation, ...]
+    exact_local_value_aliases: tuple[CompactExactLocalValueAlias, ...]
 
     def local_candidate_symbols(
         self,
@@ -1002,7 +1015,10 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.calls: list[CompactFunctionCall] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactLexicalMutation] = []
+        self.exact_local_value_aliases: list[CompactExactLocalValueAlias] = []
         self.loaded_value_root_names: set[str] = set()
+        self.global_binding_names: set[str] = set()
+        self.nonlocal_binding_names: set[str] = set()
         self.branch_path: tuple[CompactControlBranch, ...] = ()
         self.statement_index = 0
         self.event_index = 0
@@ -1018,6 +1034,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             calls=tuple(self.calls),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
+            exact_local_value_aliases=tuple(self.exact_local_value_aliases),
         )
 
     def _collect_statements(self, statements: list[ast.stmt]) -> None:
@@ -1058,15 +1075,15 @@ class _CompactFlowCollector(ast.NodeVisitor):
         reference: LexicalValueReference,
         node: ast.AST,
         kind: CompactMutationKind | None = None,
-    ) -> None:
-        self.mutations.append(
-            CompactLexicalMutation(
-                reference=reference,
-                kind=self.mutation_kind if kind is None else kind,
-                position=self._position(),
-                line=getattr(node, "lineno", 0),
-            )
+    ) -> CompactLexicalMutation:
+        mutation = CompactLexicalMutation(
+            reference=reference,
+            kind=self.mutation_kind if kind is None else kind,
+            position=self._position(),
+            line=getattr(node, "lineno", 0),
         )
+        self.mutations.append(mutation)
+        return mutation
 
     def _call_target(self, expression: ast.expr) -> CompactCallTargetReference:
         if isinstance(expression, ast.Name):
@@ -1204,7 +1221,21 @@ class _CompactFlowCollector(ast.NodeVisitor):
                     binding,
                 )
         self.visit(node.value)
-        self._visit_mutation_targets(node.targets, CompactMutationKind.ASSIGNMENT)
+        mutations = self._visit_mutation_targets(
+            node.targets,
+            CompactMutationKind.ASSIGNMENT,
+        )
+        source = LexicalValueReference.from_expression(node.value)
+        if self._is_exact_local_alias_assignment(node.targets, source):
+            assert source is not None
+            self.exact_local_value_aliases.extend(
+                CompactExactLocalValueAlias(
+                    source=source,
+                    binding_mutation=mutation,
+                )
+                for target, mutation in zip(node.targets, mutations, strict=True)
+                if isinstance(target, ast.Name)
+            )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.value, ast.Call):
@@ -1216,7 +1247,24 @@ class _CompactFlowCollector(ast.NodeVisitor):
                 )
         if node.value is not None:
             self.visit(node.value)
-        self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)
+        mutations = self._visit_mutation_targets(
+            (node.target,),
+            CompactMutationKind.ASSIGNMENT,
+        )
+        source = (
+            None
+            if node.value is None
+            else LexicalValueReference.from_expression(node.value)
+        )
+        if self._is_exact_local_alias_assignment((node.target,), source):
+            assert isinstance(node.target, ast.Name)
+            assert source is not None
+            self.exact_local_value_aliases.append(
+                CompactExactLocalValueAlias(
+                    source=source,
+                    binding_mutation=mutations[0],
+                )
+            )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self.visit(node.value)
@@ -1258,12 +1306,37 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self,
         targets: tuple[ast.expr, ...] | list[ast.expr],
         kind: CompactMutationKind,
-    ) -> None:
+    ) -> tuple[CompactLexicalMutation, ...]:
+        mutation_start = len(self.mutations)
         saved_kind = self.mutation_kind
         self.mutation_kind = kind
         for target in targets:
             self.visit(target)
         self.mutation_kind = saved_kind
+        return tuple(self.mutations[mutation_start:])
+
+    def _is_exact_local_alias_assignment(
+        self,
+        targets: tuple[ast.expr, ...] | list[ast.expr],
+        source: LexicalValueReference | None,
+    ) -> bool:
+        return bool(
+            self.owner.kind is CompactFlowOwnerKind.FUNCTION
+            and source is not None
+            and targets
+            and all(
+                isinstance(target, ast.Name)
+                and target.id not in self.global_binding_names
+                and target.id not in self.nonlocal_binding_names
+                for target in targets
+            )
+        )
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.global_binding_names.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocal_binding_names.update(node.names)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:

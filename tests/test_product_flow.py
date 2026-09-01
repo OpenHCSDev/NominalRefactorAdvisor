@@ -237,6 +237,43 @@ def test_control_positions_reject_branch_local_binding_as_post_branch_authority(
     assert not construction_call.position.dominates(consumer_call.position)
 
 
+def test_product_flow_projects_only_exact_local_value_alias_events() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "module_value = source\n"
+            "\n"
+            "def wrapper(source, owner):\n"
+            "    direct = source\n"
+            "    first = second = source\n"
+            "    annotated: object = direct\n"
+            "    transformed = normalize(source)\n"
+            "    owner.value = source\n"
+            "    global module_value\n"
+            "    module_value = source\n"
+            "    return direct, first, second, annotated\n"
+        )
+    )
+    module_flow = projection.flows[0]
+    wrapper = next(
+        flow for flow in projection.flows if flow.owner.qualname == "wrapper"
+    )
+
+    assert module_flow.exact_local_value_aliases == ()
+    assert tuple(
+        (alias.target.root_name, alias.source.root_name)
+        for alias in wrapper.exact_local_value_aliases
+    ) == (
+        ("direct", "source"),
+        ("first", "source"),
+        ("second", "source"),
+        ("annotated", "direct"),
+    )
+    assert all(
+        alias.binding_mutation in wrapper.mutations
+        for alias in wrapper.exact_local_value_aliases
+    )
+
+
 def test_function_binding_and_dynamic_call_shapes_remain_nominal() -> None:
     projection = compact_product_flow_projection(
         _parsed_module(
