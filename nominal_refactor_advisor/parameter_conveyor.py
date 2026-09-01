@@ -120,6 +120,12 @@ def _has_non_injective_field_binding(
     return bool(proof.non_injective_edge_ids)
 
 
+def _has_ambiguous_root_carrier(
+    proof: "ClosedParameterConveyorAuthorityProof",
+) -> bool:
+    return bool(proof.ambiguous_root_call_ids)
+
+
 def _has_incomplete_product_consumption(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
@@ -209,6 +215,11 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
         "non_injective_field_binding",
         "two authority fields map to the same callee parameter",
         _has_non_injective_field_binding,
+    )
+    AMBIGUOUS_ROOT_CARRIER = (
+        "ambiguous_root_carrier",
+        "a converted root call is dominated by more than one matching carrier",
+        _has_ambiguous_root_carrier,
     )
     INCOMPLETE_PRODUCT_CONSUMPTION = (
         "incomplete_product_consumption",
@@ -300,6 +311,7 @@ class ClosedParameterConveyorAuthorityProof:
     participant_symbols: tuple[str, ...]
     projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     non_injective_edge_ids: tuple[str, ...]
+    ambiguous_root_call_ids: tuple[str, ...]
     incompletely_consuming_participant_symbols: tuple[str, ...]
     unresolved_consumer_symbols: tuple[str, ...]
     dynamic_product_call_symbols: tuple[str, ...]
@@ -774,6 +786,13 @@ class ClosedParameterConveyorComponentBuilder:
         compression_delta = (len(seed.authority.field_names) - 1) * (
             len(participants) + len(edges)
         ) - import_cost
+        root_edges_by_call: dict[_CallIdentity, list[ConstructedProductCallEdge]] = (
+            defaultdict(list)
+        )
+        for root_edge in seed.root_edges:
+            root_edges_by_call[self.call_identity(root_edge.resolved_call)].append(
+                root_edge
+            )
         proof = ClosedParameterConveyorAuthorityProof(
             authority_symbols=authority_symbols,
             authority_field_names=seed.authority.field_names,
@@ -784,6 +803,11 @@ class ClosedParameterConveyorComponentBuilder:
                 for edge in edges
                 if len({binding.parameter_name for binding in edge.field_bindings})
                 != len(edge.field_bindings)
+            ),
+            ambiguous_root_call_ids=tuple(
+                self._edge_display_id(root_edges[0])
+                for root_edges in root_edges_by_call.values()
+                if len(root_edges) != 1
             ),
             incompletely_consuming_participant_symbols=tuple(
                 sorted(incomplete_consumption_symbols)
@@ -817,6 +841,7 @@ class ClosedParameterConveyorComponentBuilder:
                     participant.symbol
                     for participant in participants
                     if participant.declaration.signature_decorator_hazard
+                    or participant.context.flow.local_signature_is_observed
                     or participant.declaration.nominal_receiver_name is None
                     and participant.declaration.binding_kind.implicit_parameter_count
                 )

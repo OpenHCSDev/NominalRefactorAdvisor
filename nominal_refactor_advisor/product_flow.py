@@ -756,6 +756,64 @@ class CompactFunctionCall:
         )
 
 
+class CompactLocalSignatureObserver(StrEnum):
+    """Runtime operations which can observe a function's local signature."""
+
+    LOCAL_MAPPING = "local_mapping", (
+        ("locals",),
+        ("builtins", "locals"),
+    ), True
+    OBJECT_NAMESPACE = "object_namespace", (
+        ("vars",),
+        ("builtins", "vars"),
+    ), True
+    LOCAL_NAMES = "local_names", (
+        ("dir",),
+        ("builtins", "dir"),
+    ), True
+    DYNAMIC_EVALUATION = "dynamic_evaluation", (
+        ("eval",),
+        ("exec",),
+        ("builtins", "eval"),
+        ("builtins", "exec"),
+    ), False
+    FRAME_ACCESS = "frame_access", (
+        ("_getframe",),
+        ("currentframe",),
+        ("inspect", "currentframe"),
+        ("inspect", "stack"),
+        ("sys", "_getframe"),
+    ), False
+
+    def __new__(
+        cls,
+        value: str,
+        accepted_reference_parts: tuple[tuple[str, ...], ...],
+        requires_no_arguments: bool,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._accepted_reference_parts = accepted_reference_parts
+        member._requires_no_arguments = requires_no_arguments
+        return member
+
+    def observes(self, call: CompactFunctionCall) -> bool:
+        reference = call.target.lexical_reference
+        return bool(
+            reference is not None
+            and reference.parts in self._accepted_reference_parts
+            and (
+                not self._requires_no_arguments
+                or not call.positional_arguments
+                and not call.keyword_arguments
+            )
+        )
+
+    @classmethod
+    def observes_any(cls, calls: tuple[CompactFunctionCall, ...]) -> bool:
+        return any(observer.observes(call) for observer in cls for call in calls)
+
+
 @dataclass(frozen=True)
 class CompactProductConstruction:
     """Derived explicit-keyword construction bound to one lexical value."""
@@ -851,6 +909,10 @@ class CompactFunctionFlow:
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactLexicalMutation, ...]
     exact_local_value_aliases: tuple[CompactExactLocalValueAlias, ...]
+
+    @property
+    def local_signature_is_observed(self) -> bool:
+        return CompactLocalSignatureObserver.observes_any(self.calls)
 
     def local_candidate_symbols(
         self,

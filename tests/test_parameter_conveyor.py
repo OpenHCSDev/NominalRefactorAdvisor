@@ -348,6 +348,27 @@ def test_branch_local_carrier_does_not_claim_dominance() -> None:
     assert builder.proven_components() == ()
 
 
+def test_duplicate_dominating_carriers_block_local_root_selection() -> None:
+    builder = _builder(
+        _module(
+            "pkg.ambiguous_carrier",
+            _base_source().replace(
+                "    key = _CacheKey(left=left, right=right)\n",
+                "    first = _CacheKey(left=left, right=right)\n"
+                "    second = _CacheKey(left=left, right=right)\n",
+            ),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert len(component.root_edges) == 2
+    assert ClosedParameterConveyorAuthorityViolation.AMBIGUOUS_ROOT_CARRIER in (
+        component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
 def test_mutated_or_unconsumed_field_parameters_block_the_component() -> None:
     mutated = _builder(
         _module(
@@ -396,6 +417,27 @@ def test_dynamic_full_product_forwarding_blocks_the_component() -> None:
     component = builder.assessed_components()[0]
 
     assert ClosedParameterConveyorAuthorityViolation.DYNAMIC_CALL_TARGET in (
+        component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_local_signature_introspection_blocks_parameter_rewrite() -> None:
+    builder = _builder(
+        _module(
+            "pkg.locals_observed",
+            _base_source(
+                callee_body=(
+                    "    observed = locals()\n"
+                    "    return observed['left'], observed['right']\n"
+                )
+            ),
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert ClosedParameterConveyorAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
         component.proof.violations
     )
     assert builder.proven_components() == ()
