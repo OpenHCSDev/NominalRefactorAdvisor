@@ -1273,6 +1273,223 @@ class CompactClassFamilyIndex:
         return self.ancestors_by_symbol.get(class_symbol, ())
 
 
+ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[
+    ["ClosedLeafMethodAuthorityProof"],
+    bool,
+]
+CLASS_METHOD_OWNERSHIP_HOOK_NAMES = frozenset(("__init_subclass__",))
+
+
+def _has_too_few_closed_leaf_participants(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return len(proof.participant_symbol_set) < 2
+
+
+def _has_ambiguous_direct_method_authority(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return frozenset(proof.common_direct_base_symbols) != frozenset(
+        (proof.authority_symbol,)
+    )
+
+
+def _has_ambiguous_declared_method_authority(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return proof.common_declared_nominal_base_simple_names != frozenset(
+        (proof.authority_simple_name,)
+    )
+
+
+def _has_incomplete_direct_method_family(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return (
+        frozenset(proof.authority_direct_child_symbols) != proof.participant_symbol_set
+    )
+
+
+def _has_non_leaf_method_participant(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(proof.non_leaf_participant_symbols)
+
+
+def _has_incomplete_method_base_resolution(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(proof.incompletely_resolved_symbols)
+
+
+def _crosses_method_ownership_sensitive_declaration(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(proof.method_ownership_sensitive_symbols)
+
+
+def _has_existing_authority_method_member(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(
+        proof.promoted_method_name_set & proof.authority_lineage_member_name_set
+    )
+
+
+def _has_competing_ancestor_method_member(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(
+        proof.promoted_method_name_set
+        & frozenset(proof.competing_ancestor_member_names)
+    )
+
+
+def _has_undeclared_promoted_receiver_member(
+    proof: "ClosedLeafMethodAuthorityProof",
+) -> bool:
+    return bool(
+        frozenset(proof.receiver_member_names)
+        - (proof.authority_lineage_member_name_set | proof.promoted_method_name_set)
+    )
+
+
+class ClosedLeafMethodAuthorityViolation(StrEnum):
+    """One failed proof obligation for promoting leaf methods to an ancestor."""
+
+    TOO_FEW_PARTICIPANTS = (
+        "too_few_participants",
+        "the authority relation requires at least two participating leaves",
+        _has_too_few_closed_leaf_participants,
+    )
+    AMBIGUOUS_DIRECT_AUTHORITY = (
+        "ambiguous_direct_authority",
+        "the participants do not have exactly one resolved direct authority",
+        _has_ambiguous_direct_method_authority,
+    )
+    AMBIGUOUS_DECLARED_AUTHORITY = (
+        "ambiguous_declared_authority",
+        "the participants do not have exactly one declared nominal base",
+        _has_ambiguous_declared_method_authority,
+    )
+    INCOMPLETE_DIRECT_FAMILY = (
+        "incomplete_direct_family",
+        "the participants are not the complete direct-child family",
+        _has_incomplete_direct_method_family,
+    )
+    NON_LEAF_PARTICIPANT = (
+        "non_leaf_participant",
+        "at least one participant still owns a descendant branch",
+        _has_non_leaf_method_participant,
+    )
+    INCOMPLETE_BASE_RESOLUTION = (
+        "incomplete_base_resolution",
+        "a relevant nominal base cannot be resolved from the repository graph",
+        _has_incomplete_method_base_resolution,
+    )
+    METHOD_OWNERSHIP_SENSITIVE_DECLARATION = (
+        "method_ownership_sensitive_declaration",
+        "a class decorator or metaclass boundary can observe direct method ownership",
+        _crosses_method_ownership_sensitive_declaration,
+    )
+    EXISTING_AUTHORITY_MEMBER = (
+        "existing_authority_member",
+        "the authority lineage already binds a promoted member name",
+        _has_existing_authority_method_member,
+    )
+    COMPETING_ANCESTOR_MEMBER = (
+        "competing_ancestor_member",
+        "another participant ancestor binds a promoted member name",
+        _has_competing_ancestor_method_member,
+    )
+    UNDECLARED_RECEIVER_MEMBER = (
+        "undeclared_receiver_member",
+        "a promoted method requires a receiver member outside the authority contract",
+        _has_undeclared_promoted_receiver_member,
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        explanation: str,
+        predicate: ClosedLeafMethodAuthorityPredicate,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._explanation = explanation
+        member._predicate = predicate
+        return member
+
+    @property
+    def explanation(self) -> str:
+        return self._explanation
+
+    def is_violated_by(self, proof: "ClosedLeafMethodAuthorityProof") -> bool:
+        return self._predicate(proof)
+
+
+@dataclass(frozen=True)
+class ClosedLeafMethodAuthorityProof:
+    """Representation-independent proof of one exact method-promotion owner."""
+
+    authority_symbol: str
+    authority_simple_name: str
+    participant_symbols: tuple[str, ...]
+    common_direct_base_symbols: tuple[str, ...]
+    common_declared_nominal_base_names: tuple[str, ...]
+    authority_direct_child_symbols: tuple[str, ...]
+    non_leaf_participant_symbols: tuple[str, ...]
+    incompletely_resolved_symbols: tuple[str, ...]
+    method_ownership_sensitive_symbols: tuple[str, ...]
+    authority_lineage_member_names: tuple[str, ...]
+    competing_ancestor_member_names: tuple[str, ...]
+    promoted_method_names: tuple[str, ...]
+    receiver_member_names: tuple[str, ...]
+
+    @cached_property
+    def participant_symbol_set(self) -> frozenset[str]:
+        return frozenset(self.participant_symbols)
+
+    @cached_property
+    def promoted_method_name_set(self) -> frozenset[str]:
+        return frozenset(self.promoted_method_names)
+
+    @cached_property
+    def authority_lineage_member_name_set(self) -> frozenset[str]:
+        return frozenset(self.authority_lineage_member_names)
+
+    @cached_property
+    def common_declared_nominal_base_simple_names(self) -> frozenset[str]:
+        return frozenset(
+            name.rsplit(".", 1)[-1] for name in self.common_declared_nominal_base_names
+        )
+
+    @cached_property
+    def violations(self) -> tuple[ClosedLeafMethodAuthorityViolation, ...]:
+        return tuple(
+            violation
+            for violation in ClosedLeafMethodAuthorityViolation
+            if violation.is_violated_by(self)
+        )
+
+    @property
+    def is_proven(self) -> bool:
+        return not self.violations
+
+    @property
+    def rejection_reason(self) -> str:
+        return "; ".join(violation.explanation for violation in self.violations)
+
+
+def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
+    """Count domain-bearing direct bases under the canonical neutral-base policy."""
+
+    return sum(
+        ClassSymbolResolutionAuthority.establishes_nominal_family(base_name)
+        for base_name in declaration.declared_base_names
+    )
+
+
 @dataclass(frozen=True)
 class ClassFamilyIndex:
     classes_by_symbol: dict[str, IndexedClass]

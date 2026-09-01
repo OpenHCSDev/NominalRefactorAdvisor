@@ -66,6 +66,10 @@ does not establish that the candidate belongs to a globally complete refactor
 trajectory.  NRA therefore blocks one-shot plan export and source application
 while the planning horizon is ``current_snapshot`` or ``unproved``.
 
+Some findings intentionally have no recipe.  Repeated source proves that one
+maintenance object exists, but it does not necessarily prove where that object
+belongs.  NRA keeps such findings as evidence instead of inventing an authority.
+
 To prove a goal across reachable source states, run:
 
 .. code-block:: bash

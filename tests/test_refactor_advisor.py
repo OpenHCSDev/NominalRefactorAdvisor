@@ -181,7 +181,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceTargetOperation,
     ReplaceTextOperation,
     PromoteClassMethodsOperation,
-    PromoteExactTinyMethodRoleOperation,
+    PromoteExactLeafMethodsToAncestorOperation,
     RecipeCallReplacement,
     SemanticCarrierConcept,
     SourceEditOrigin,
@@ -3258,6 +3258,9 @@ def test_target_set_expression_selector_composes_union_intersection_and_exclusio
 
 
 _EXACT_TINY_METHOD_ROLE_DETECTOR_ID = "exact_tiny_method_role"
+_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID = (
+    "exact_leaf_method_ancestor_promotion"
+)
 _EXACT_TINY_METHOD_ROLE_CLASS_NAMES = (
     "Alpha",
     "Beta",
@@ -3329,6 +3332,16 @@ def _exact_tiny_method_role_findings(
         finding
         for finding in analyze_modules(modules)
         if finding.detector_id == _EXACT_TINY_METHOD_ROLE_DETECTOR_ID
+    )
+
+
+def _exact_leaf_method_ancestor_promotion_findings(
+    modules: list[ParsedModule],
+) -> tuple[RefactorFinding, ...]:
+    return tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == _EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID
     )
 
 
@@ -3406,7 +3419,7 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     build_source_index(parse_python_modules(tmp_path), ())
 
 
-def test_exact_tiny_method_role_promotes_applies_and_preserves_behavior(
+def test_exact_tiny_method_role_does_not_invent_an_authority(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -3418,8 +3431,6 @@ def test_exact_tiny_method_role_promotes_applies_and_preserves_behavior(
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = _exact_tiny_method_role_findings(modules)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
     assert len(findings) == 1
     finding = findings[0]
     assert finding.compression_certificate is not None
@@ -3428,57 +3439,19 @@ def test_exact_tiny_method_role_promotes_applies_and_preserves_behavior(
         f"{class_name}.render" for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
     )
 
-    plan = snapshot.plan_from_findings(
+    plan = CodemodSourceSnapshot.from_modules(modules, findings).plan_from_findings(
         findings,
         detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
     )
     record = plan.records[0]
-    operation = plan.document.recipes[0].operations[0].to_dict()
 
-    assert plan.expected_removed_finding_count == 1
-    assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-    assert record.executable_declaration_name == (
-        "ExactTinyMethodRoleFindingRecipeSynthesizer"
-    )
-    assert record.refactor_concept == "class_family_authority"
-    assert operation["operation"] == "promote_exact_tiny_method_role"
-    assert type(RefactorRecipeOperation.from_dict(operation)) is (
-        PromoteExactTinyMethodRoleOperation
-    )
-    assert operation["base_name"] == "SharedRenderMixin"
-    assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
-    assert operation["method_names"] == ("render",)
-
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert simulation.is_clean is True
-    assert rewritten.count("def render") == 1
-    assert "class SharedRenderMixin:\n    __slots__ = ()" in rewritten
-    assert _exact_tiny_method_runtime_observations(
-        rewritten,
-        ("render",),
-    ) == _exact_tiny_method_runtime_observations(source, ("render",))
-
-    rewritten_namespace: dict[str, object] = {}
-    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
-    mixin = rewritten_namespace["SharedRenderMixin"]
-    assert isinstance(mixin, type)
-    assert mixin.__dict__["__slots__"] == ()
-    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES:
-        class_type = rewritten_namespace[class_name]
-        assert isinstance(class_type, type)
-        assert "render" not in class_type.__dict__
-        assert class_type.__mro__[1] is mixin
-
-    assert simulation.document_simulation.apply() == (module_path.as_posix(),)
-    assert module_path.read_text(encoding="utf-8") == rewritten
-    reparsed_modules = parse_python_modules(tmp_path)
-    build_source_index(reparsed_modules, ())
-    assert _exact_tiny_method_role_findings(reparsed_modules) == ()
+    assert plan.expected_removed_finding_count == 0
+    assert record.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert plan.document.recipes == ()
+    assert module_path.read_text(encoding="utf-8") == source
 
 
-def test_exact_tiny_method_role_batches_same_cohort_methods(
+def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -3489,34 +3462,410 @@ def test_exact_tiny_method_role_batches_same_cohort_methods(
         "def slug(self, value):\n"
         "    normalized = self.render(value)\n"
         "    return f'{normalized}-slug'",
+        module_prefix="class CommonRole:\n    __slots__ = ()",
+        base_names_by_class=dict.fromkeys(
+            _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            "CommonRole",
+        ),
     )
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
-    findings = _exact_tiny_method_role_findings(modules)
+    findings = _exact_leaf_method_ancestor_promotion_findings(modules)
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
     plan = snapshot.plan_from_findings(
         findings,
-        detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
+        detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
     operation = plan.document.recipes[0].operations[0].to_dict()
     simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-    assert operation["base_name"] == "SharedRenderSlugMixin"
+    assert plan.report.application_blocked is True
+    assert plan.report.planning_horizon is (
+        FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
+    )
+    assert plan.trajectory_frontier.complete is True
+    assert plan.trajectory_frontier.branches
+    assert operation["operation"] == "promote_exact_leaf_methods_to_ancestor"
+    assert type(RefactorRecipeOperation.from_dict(operation)) is (
+        PromoteExactLeafMethodsToAncestorOperation
+    )
+    assert operation["authority_name"] == "CommonRole"
     assert operation["method_names"] == ("render", "slug")
     assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
     assert simulation.is_clean is True
     assert rewritten.count("def render") == 1
     assert rewritten.count("def slug") == 1
+    assert "class CommonRole:\n    __slots__ = ()\n\n    def render" in rewritten
     assert _exact_tiny_method_runtime_observations(
         rewritten,
         ("render", "slug"),
     ) == _exact_tiny_method_runtime_observations(
         source,
         ("render", "slug"),
+    )
+    rewritten_namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
+    authority = rewritten_namespace["CommonRole"]
+    assert isinstance(authority, type)
+    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES:
+        class_type = rewritten_namespace[class_name]
+        assert isinstance(class_type, type)
+        assert tuple(item.__name__ for item in class_type.__mro__) == (
+            class_name,
+            "CommonRole",
+            "object",
+        )
+        assert "render" not in class_type.__dict__
+        assert "slug" not in class_type.__dict__
+    simulation.document_simulation.apply()
+    assert (
+        _exact_leaf_method_ancestor_promotion_findings(parse_python_modules(tmp_path))
+        == ()
+    )
+
+
+def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
+    tmp_path: Path,
+) -> None:
+    marker_names = {
+        class_name: f"{class_name}Marker"
+        for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    }
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        module_prefix="\n\n".join(
+            (
+                "class CommonRole:\n    __slots__ = ()",
+                *(
+                    f"class {marker_name}:\n    __slots__ = ()"
+                    for marker_name in marker_names.values()
+                ),
+            )
+        ),
+        base_names_by_class={
+            class_name: f"CommonRole, {marker_names[class_name]}"
+            for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+        },
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = _exact_leaf_method_ancestor_promotion_findings(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    assert len(findings) == 1
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[
+        (tmp_path / "pkg/mod.py").as_posix()
+    ]
+
+    def mro_names(source_text: str) -> tuple[tuple[str, ...], ...]:
+        namespace: dict[str, object] = {}
+        exec(compile(source_text, "<closed-family-mi>", "exec"), namespace)
+        return tuple(
+            tuple(item.__name__ for item in namespace[class_name].__mro__)
+            for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+        )
+
+    assert simulation.is_clean is True
+    assert mro_names(rewritten) == mro_names(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            )
+            + "\nclass Extra(CommonRole):\n    pass\n",
+            id="incomplete-direct-family",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            )
+            + "\nclass AlphaChild(Alpha):\n    pass\n",
+            id="non-leaf-participant",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix=(
+                    "class CommonRole:\n    __slots__ = ()\n\n"
+                    "class ParallelRole:\n    __slots__ = ()"
+                ),
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole, ParallelRole",
+                ),
+            ),
+            id="ambiguous-common-authority",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return f'{self.prefix}:{normalized.lower()}'",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="receiver-contract-not-owned-by-authority",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix=(
+                    "class CommonRole:\n"
+                    "    def render(self, value):\n"
+                    "        return value\n"
+                ),
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="authority-member-collision",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class={
+                    class_name: f"CommonRole, External{class_name}"
+                    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+                },
+            ),
+            id="unresolved-secondary-bases",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="\n\n".join(
+                    (
+                        "class CommonRole:\n    __slots__ = ()",
+                        *(
+                            f"class {class_name}Marker:\n"
+                            "    def render(self, value):\n"
+                            f"        return {class_name!r}"
+                            for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+                        ),
+                    )
+                ),
+                base_names_by_class={
+                    class_name: f"CommonRole, {class_name}Marker"
+                    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+                },
+            ),
+            id="competing-ancestor-member",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix=(
+                    "def inspect_members(class_type):\n"
+                    "    return class_type\n\n\n"
+                    "@inspect_members\n"
+                    "class CommonRole:\n"
+                    "    __slots__ = ()"
+                ),
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="method-ownership-sensitive-decorator",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix=(
+                    "class CommonRole:\n"
+                    "    def __init_subclass__(cls):\n"
+                    "        super().__init_subclass__()"
+                ),
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="method-ownership-sensitive-init-subclass",
+        ),
+    ),
+)
+def test_exact_leaf_method_promotion_rejects_unproved_placements(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", source)
+
+    assert (
+        _exact_leaf_method_ancestor_promotion_findings(parse_python_modules(tmp_path))
+        == ()
+    )
+
+
+def test_exact_leaf_method_promotion_revalidates_a_stale_family(
+    tmp_path: Path,
+) -> None:
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        module_prefix="class CommonRole:\n    __slots__ = ()",
+        base_names_by_class=dict.fromkeys(
+            _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            "CommonRole",
+        ),
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    stale_findings = _exact_leaf_method_ancestor_promotion_findings(
+        parse_python_modules(tmp_path)
+    )
+    assert len(stale_findings) == 1
+
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        source + "\nclass Extra(CommonRole):\n    pass\n",
+    )
+    current_modules = parse_python_modules(tmp_path)
+    plan = CodemodSourceSnapshot.from_modules(
+        current_modules,
+        stale_findings,
+    ).plan_from_findings(
+        stale_findings,
+        detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
+    )
+
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "complete direct-child family" in plan.records[0].reason
+    assert plan.document.recipes == ()
+
+
+def test_exact_leaf_method_promotion_revalidates_declaration_hooks(
+    tmp_path: Path,
+) -> None:
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        module_prefix="class CommonRole:\n    __slots__ = ()",
+        base_names_by_class=dict.fromkeys(
+            _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            "CommonRole",
+        ),
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    stale_findings = _exact_leaf_method_ancestor_promotion_findings(
+        parse_python_modules(tmp_path)
+    )
+    assert len(stale_findings) == 1
+
+    decorated_source = source.replace(
+        "class CommonRole:",
+        "def inspect_members(class_type):\n"
+        "    return class_type\n\n\n"
+        "@inspect_members\n"
+        "class CommonRole:",
+        1,
+    )
+    _write_module(tmp_path, "pkg/mod.py", decorated_source)
+    current_modules = parse_python_modules(tmp_path)
+    plan = CodemodSourceSnapshot.from_modules(
+        current_modules,
+        stale_findings,
+    ).plan_from_findings(
+        stale_findings,
+        detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
+    )
+
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "class decorator or metaclass boundary" in plan.records[0].reason
+    assert plan.document.recipes == ()
+
+
+def test_exact_leaf_method_promotion_preserves_authority_method_comments(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = self.normalize(value)\n"
+        "    return normalized.lower()",
+        module_prefix=(
+            "class CommonRole:\n"
+            "    __slots__ = ()\n\n"
+            "    # Explain why normalization belongs here.\n"
+            "    def normalize(self, value):\n"
+            "        return value.strip()"
+        ),
+        base_names_by_class=dict.fromkeys(
+            _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            "CommonRole",
+        ),
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = _exact_leaf_method_ancestor_promotion_findings(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    assert len(findings) == 1
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert simulation.is_clean is True
+    assert (
+        "    # Explain why normalization belongs here.\n    def normalize(self, value):"
+    ) in rewritten
+    assert rewritten.index("    def render") < rewritten.index(
+        "    # Explain why normalization belongs here."
     )
 
 
@@ -3777,99 +4126,9 @@ def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> N
     assert module_path.read_text(encoding="utf-8") == source
 
 
-@pytest.mark.parametrize(
-    ("current_source", "reason_fragment"),
-    (
-        pytest.param(
-            _exact_tiny_method_role_source(
-                "def render(self, value):\n"
-                "    normalized = value.strip()\n"
-                "    return normalized.lower()",
-                module_prefix="class CommonRole:\n    __slots__ = ()",
-                base_names_by_class=dict.fromkeys(
-                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
-                    "CommonRole",
-                ),
-            ),
-            "nominal authority",
-            id="common-authority",
-        ),
-        pytest.param(
-            _exact_tiny_method_role_source(
-                "def render(self, value):\n"
-                "    parent = super()\n"
-                "    return parent.__thisclass__.__name__"
-            ),
-            "promotion hazards",
-            id="promotion-hazard",
-        ),
-        pytest.param(
-            _exact_tiny_method_role_source(
-                "def render(self, value):\n    owner = self\n    return owner.prefix"
-            ),
-            "receiver members",
-            id="receiver-alias-requirement",
-        ),
-        pytest.param(
-            _exact_tiny_method_role_source(
-                "def render(self, value):\n"
-                "    normalized = value.strip()\n"
-                "    return normalized.lower()"
-            ).replace(
-                "normalized = value.strip()",
-                "normalized = value.strip()  # leaf-specific explanation",
-                1,
-            ),
-            "exact source duplicates",
-            id="source-comment-drift",
-        ),
-        pytest.param(
-            _exact_tiny_method_role_source(
-                "def render(self, value):\n"
-                "    normalized = value.strip()\n"
-                "    return f'{self.prefix}:{normalized.lower()}'"
-            ),
-            "receiver members",
-            id="undeclared-receiver-requirement",
-        ),
-    ),
-)
-def test_exact_tiny_method_role_revalidates_stale_source_without_raising(
-    tmp_path: Path,
-    current_source: str,
-    reason_fragment: str,
-) -> None:
-    original_source = _exact_tiny_method_role_source(
-        "def render(self, value):\n"
-        "    normalized = value.strip()\n"
-        "    return normalized.lower()"
-    )
-    _write_module(tmp_path, "pkg/mod.py", original_source)
-    stale_findings = _exact_tiny_method_role_findings(parse_python_modules(tmp_path))
-    assert len(stale_findings) == 1
-
-    _write_module(tmp_path, "pkg/mod.py", current_source)
-    current_modules = parse_python_modules(tmp_path)
-    current_snapshot = CodemodSourceSnapshot.from_modules(
-        current_modules,
-        stale_findings,
-    )
-
-    plan = current_snapshot.plan_from_findings(
-        stale_findings,
-        detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
-    )
-    record = plan.records[0]
-
-    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    assert reason_fragment in record.reason
-    assert plan.document.recipes == ()
-
-
-def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
+def test_repeated_property_alias_findings_do_not_invent_a_mixin_authority(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -3893,49 +4152,19 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
         for finding in analyze_modules(modules)
         if finding.detector_id == "repeated_property_alias_hooks"
     )
-    source_index = build_source_index(modules, findings)
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    context = CodemodSelectorContext(
-        source_index=source_index,
-        sources_by_file_path=source_by_path,
-        class_family_index=build_class_family_index(modules),
-    )
-
     plan = codemod_plan_from_findings(
         findings,
         detector_ids=("repeated_property_alias_hooks",),
-        selector_context=context,
+        selector_context=CodemodSourceSnapshot.from_modules(
+            modules,
+            findings,
+        ),
     )
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.document_simulation.unified_diff(source_by_path)
 
-    assert plan.expected_removed_finding_count == 1
-    assert plan.records[0].refactor_concept == "class_family_authority"
-    operation = plan.document.recipes[0].operations[0].to_dict()
-    assert operation["operation"] == "promote_class_methods"
-    assert operation["method_names"] == ("observation_line",)
-    assert simulation.is_clean is True
-    assert "+class SharedObservationLineMixin:" in diff
-    assert (
-        "+class AlphaProjection(SharedObservationLineMixin, ProjectionTemplate):"
-        in diff
-    )
-    assert (
-        "+class BetaProjection(SharedObservationLineMixin, ProjectionTemplate):" in diff
-    )
-    simulation.document_simulation.apply()
-    rewritten = module_path.read_text()
-    assert rewritten.count("def observation_line") == 1
-    remaining = [
-        finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-        if finding.detector_id == "repeated_property_alias_hooks"
-    ]
-    assert remaining == []
+    assert len(findings) == 1
+    assert plan.expected_removed_finding_count == 0
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert plan.document.recipes == ()
 
 
 def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(

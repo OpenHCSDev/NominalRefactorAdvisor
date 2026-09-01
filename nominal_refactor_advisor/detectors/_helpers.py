@@ -20,6 +20,7 @@ from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
     ExactMethodRoleCompressionProfile,
+    ExistingAuthorityMethodPromotionCompressionProfile,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
 import re
@@ -33,6 +34,8 @@ from ._base import *
 from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
 from ..class_index import (
+    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
+    ClosedLeafMethodAuthorityProof,
     CompactClassMethod,
     CompactClassMethodSemanticProfile,
     CompactMethodSemanticCoordinate,
@@ -41,6 +44,7 @@ from ..class_index import (
     CompactModuleClassProjection,
     ClassSymbolResolutionAuthority,
     build_compact_class_family_index,
+    declared_nominal_base_count,
 )
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -4220,11 +4224,11 @@ def _compact_method_family_specific_method_plans(
     return _method_family_more_specific_method_plans(method_plans, class_index)
 
 
-_ExactTinyMethodRoleKey: TypeAlias = tuple[str, str, str]
+_ExactMethodOrbitKey: TypeAlias = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
-class _ExactTinyMethodRoleOrbit:
+class _CompactExactMethodOrbit:
     file_path: str
     method_name: str
     indexed_classes: tuple[CompactIndexedClass, ...]
@@ -4236,8 +4240,8 @@ class _ExactTinyMethodRoleOrbit:
 
 
 def _receiver_closed_exact_method_orbits(
-    orbits: tuple[_ExactTinyMethodRoleOrbit, ...],
-) -> tuple[_ExactTinyMethodRoleOrbit, ...]:
+    orbits: tuple[_CompactExactMethodOrbit, ...],
+) -> tuple[_CompactExactMethodOrbit, ...]:
     """Keep the greatest method set with no undeclared receiver requirements."""
 
     orbit_by_name = {orbit.method_name: orbit for orbit in orbits}
@@ -4266,12 +4270,12 @@ def _receiver_closed_exact_method_orbits(
     return tuple(orbit for orbit in orbits if orbit.method_name not in invalid_names)
 
 
-def _compact_exact_tiny_method_role_candidates(
+def _compact_promotion_safe_exact_method_orbits(
     projections: tuple[CompactModuleClassProjection, ...],
     class_index: CompactClassFamilyIndex,
-) -> tuple[ExactTinyMethodRoleCandidate, ...]:
+) -> tuple[_CompactExactMethodOrbit, ...]:
     methods_by_role: dict[
-        _ExactTinyMethodRoleKey,
+        _ExactMethodOrbitKey,
         list[tuple[CompactIndexedClass, CompactClassMethod]],
     ] = defaultdict(list)
     for projection in projections:
@@ -4279,23 +4283,13 @@ def _compact_exact_tiny_method_role_candidates(
             if method.exact_source_digest is None or method.promotion_hazards:
                 continue
             indexed_class = class_index.class_for(method.class_symbol)
-            if (
-                indexed_class is None
-                or "." in indexed_class.qualname
-                or indexed_class.class_keyword_names
-                or indexed_class.declares_autoregister_meta
-                or not indexed_class.class_decorators_are_promotion_safe
-                or not indexed_class.class_header_is_reconstructible
-            ):
+            if indexed_class is None or "." in indexed_class.qualname:
                 continue
             methods_by_role[
                 (projection.file_path, method.method_name, method.exact_source_digest)
             ].append((indexed_class, method))
 
-    orbits_by_cohort: dict[
-        tuple[str, tuple[str, ...]],
-        list[_ExactTinyMethodRoleOrbit],
-    ] = defaultdict(list)
+    orbits = []
     for (file_path, method_name, _shape), class_methods in methods_by_role.items():
         if len(class_methods) < 2:
             continue
@@ -4304,12 +4298,49 @@ def _compact_exact_tiny_method_role_candidates(
         )
         indexed_classes = tuple(item[0] for item in ordered)
         methods = tuple(item[1] for item in ordered)
+        if len(frozenset(method.line_count for method in methods)) != 1:
+            continue
+        orbits.append(
+            _CompactExactMethodOrbit(
+                file_path=file_path,
+                method_name=method_name,
+                indexed_classes=indexed_classes,
+                methods=methods,
+            )
+        )
+    return sorted_tuple(
+        orbits,
+        key=lambda orbit: (orbit.file_path, orbit.method_name, orbit.class_symbols),
+    )
+
+
+def _compact_exact_tiny_method_role_candidates(
+    exact_method_orbits: tuple[_CompactExactMethodOrbit, ...],
+    class_index: CompactClassFamilyIndex,
+) -> tuple[ExactTinyMethodRoleCandidate, ...]:
+    orbits_by_cohort: dict[
+        tuple[str, tuple[str, ...]],
+        list[_CompactExactMethodOrbit],
+    ] = defaultdict(list)
+    for orbit in exact_method_orbits:
+        file_path = orbit.file_path
+        method_name = orbit.method_name
+        indexed_classes = orbit.indexed_classes
+        methods = orbit.methods
         participant_symbols = frozenset(item.symbol for item in indexed_classes)
         ancestor_sets = tuple(
             frozenset(class_index.ancestor_symbols(item.symbol))
             for item in indexed_classes
         )
         if any(participant_symbols & ancestors for ancestors in ancestor_sets):
+            continue
+        if any(
+            indexed_class.class_keyword_names
+            or indexed_class.declares_autoregister_meta
+            or not indexed_class.class_decorators_are_promotion_safe
+            or not indexed_class.class_header_is_reconstructible
+            for indexed_class in indexed_classes
+        ):
             continue
         if any(
             ancestor.class_keyword_names or ancestor.declares_autoregister_meta
@@ -4341,14 +4372,6 @@ def _compact_exact_tiny_method_role_candidates(
             if (ancestor := class_index.class_for(ancestor_symbol)) is not None
         ):
             continue
-        if len(frozenset(method.line_count for method in methods)) != 1:
-            continue
-        orbit = _ExactTinyMethodRoleOrbit(
-            file_path=file_path,
-            method_name=method_name,
-            indexed_classes=indexed_classes,
-            methods=methods,
-        )
         orbits_by_cohort[(file_path, orbit.class_symbols)].append(orbit)
 
     candidates: list[ExactTinyMethodRoleCandidate] = []
@@ -4402,6 +4425,245 @@ def _compact_exact_tiny_method_role_candidates(
             candidate.line,
             candidate.method_names,
             candidate.class_names,
+        ),
+    )
+
+
+def _compact_declared_member_names(
+    indexed_class: CompactIndexedClass,
+) -> frozenset[str]:
+    return frozenset(
+        (
+            *indexed_class.method_names,
+            *(name for name, _value in indexed_class.direct_assignment_expressions),
+        )
+    )
+
+
+def _compact_closed_leaf_method_authority_proof(
+    authority_symbol: str,
+    orbits: tuple[_CompactExactMethodOrbit, ...],
+    class_index: CompactClassFamilyIndex,
+) -> ClosedLeafMethodAuthorityProof | None:
+    authority = class_index.class_for(authority_symbol)
+    if authority is None or "." in authority.qualname:
+        return None
+    participant_symbols = orbits[0].class_symbols
+    if any(orbit.class_symbols != participant_symbols for orbit in orbits):
+        return None
+    participants = tuple(
+        class_index.class_for(symbol) for symbol in participant_symbols
+    )
+    if any(participant is None for participant in participants):
+        return None
+    indexed_participants = tuple(
+        participant for participant in participants if participant is not None
+    )
+    if any(
+        participant.file_path != authority.file_path
+        for participant in indexed_participants
+    ):
+        return None
+
+    common_direct_base_symbols = tuple(
+        sorted(
+            set.intersection(
+                *(
+                    set(participant.resolved_base_symbols)
+                    for participant in indexed_participants
+                )
+            )
+        )
+    )
+    common_declared_nominal_base_names = tuple(
+        sorted(
+            set.intersection(
+                *(
+                    {
+                        base_name
+                        for base_name in participant.declared_base_names
+                        if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                            base_name
+                        )
+                    }
+                    for participant in indexed_participants
+                )
+            )
+        )
+    )
+    authority_lineage_symbols = frozenset(
+        (authority_symbol, *class_index.ancestor_symbols(authority_symbol))
+    )
+    participant_ancestor_symbols = frozenset(
+        ancestor_symbol
+        for participant_symbol in participant_symbols
+        for ancestor_symbol in class_index.ancestor_symbols(participant_symbol)
+    )
+    relevant_symbols = frozenset((*participant_symbols, *participant_ancestor_symbols))
+    directly_rewritten_symbols = frozenset((authority_symbol, *participant_symbols))
+    promoted_method_names = tuple(orbit.method_name for orbit in orbits)
+    receiver_member_names = tuple(
+        sorted(
+            {
+                member_name
+                for orbit in orbits
+                for method in orbit.methods
+                for member_name in method.receiver_member_names
+            }
+        )
+    )
+    return ClosedLeafMethodAuthorityProof(
+        authority_symbol=authority_symbol,
+        authority_simple_name=authority.simple_name,
+        participant_symbols=participant_symbols,
+        common_direct_base_symbols=common_direct_base_symbols,
+        common_declared_nominal_base_names=common_declared_nominal_base_names,
+        authority_direct_child_symbols=class_index.children_by_symbol.get(
+            authority_symbol,
+            (),
+        ),
+        non_leaf_participant_symbols=tuple(
+            symbol
+            for symbol in participant_symbols
+            if class_index.children_by_symbol.get(symbol)
+        ),
+        incompletely_resolved_symbols=tuple(
+            sorted(
+                symbol
+                for symbol in relevant_symbols
+                if (indexed_class := class_index.class_for(symbol)) is not None
+                and len(indexed_class.resolved_base_symbols)
+                != declared_nominal_base_count(indexed_class)
+            )
+        ),
+        method_ownership_sensitive_symbols=tuple(
+            sorted(
+                symbol
+                for symbol in relevant_symbols
+                if (indexed_class := class_index.class_for(symbol)) is not None
+                and (
+                    indexed_class.class_keyword_names
+                    or indexed_class.declares_autoregister_meta
+                    or bool(
+                        _compact_declared_member_names(indexed_class)
+                        & CLASS_METHOD_OWNERSHIP_HOOK_NAMES
+                    )
+                    or (
+                        symbol in directly_rewritten_symbols
+                        and not indexed_class.class_decorators_are_promotion_safe
+                    )
+                )
+            )
+        ),
+        authority_lineage_member_names=tuple(
+            sorted(
+                {
+                    member_name
+                    for symbol in authority_lineage_symbols
+                    if (indexed_class := class_index.class_for(symbol)) is not None
+                    for member_name in _compact_declared_member_names(indexed_class)
+                }
+            )
+        ),
+        competing_ancestor_member_names=tuple(
+            sorted(
+                {
+                    member_name
+                    for symbol in participant_ancestor_symbols
+                    - authority_lineage_symbols
+                    if (indexed_class := class_index.class_for(symbol)) is not None
+                    for member_name in _compact_declared_member_names(indexed_class)
+                }
+            )
+        ),
+        promoted_method_names=promoted_method_names,
+        receiver_member_names=receiver_member_names,
+    )
+
+
+def _compact_exact_leaf_method_ancestor_promotion_candidates(
+    exact_method_orbits: tuple[_CompactExactMethodOrbit, ...],
+    class_index: CompactClassFamilyIndex,
+) -> tuple[ExactLeafMethodAncestorPromotionCandidate, ...]:
+    orbits_by_family: dict[
+        tuple[str, tuple[str, ...]],
+        list[_CompactExactMethodOrbit],
+    ] = defaultdict(list)
+    for orbit in exact_method_orbits:
+        common_direct_base_symbols = set.intersection(
+            *(
+                set(indexed_class.resolved_base_symbols)
+                for indexed_class in orbit.indexed_classes
+            )
+        )
+        if len(common_direct_base_symbols) != 1:
+            continue
+        authority_symbol = next(iter(common_direct_base_symbols))
+        orbits_by_family[(authority_symbol, orbit.class_symbols)].append(orbit)
+
+    candidates = []
+    for (
+        authority_symbol,
+        _participant_symbols,
+    ), family_orbits in orbits_by_family.items():
+        orbits = tuple(sorted(family_orbits, key=lambda orbit: orbit.method_name))
+        proof = _compact_closed_leaf_method_authority_proof(
+            authority_symbol,
+            orbits,
+            class_index,
+        )
+        if proof is None or not proof.is_proven:
+            continue
+        authority = class_index.class_for(authority_symbol)
+        if authority is None:
+            continue
+        indexed_classes = orbits[0].indexed_classes
+        method_line_count = sum(orbit.methods[0].line_count for orbit in orbits)
+        certificate = ExistingAuthorityMethodPromotionCompressionProfile(
+            class_count=len(indexed_classes),
+            method_line_count=method_line_count,
+        ).compression_certificate
+        if not certificate.pays_rent:
+            continue
+        line_numbers = tuple(
+            method.line for orbit in orbits for method in orbit.methods
+        )
+        method_symbols = tuple(
+            f"{indexed_class.qualname}.{orbit.method_name}"
+            for orbit in orbits
+            for indexed_class in orbit.indexed_classes
+        )
+        candidates.append(
+            ExactLeafMethodAncestorPromotionCandidate(
+                file_path=authority.file_path,
+                line=authority.line,
+                authority_symbol=authority.symbol,
+                authority_name=authority.qualname,
+                authority_line=authority.line,
+                method_names=proof.promoted_method_names,
+                participant_class_symbols=proof.participant_symbols,
+                participant_class_names=tuple(
+                    indexed_class.qualname for indexed_class in indexed_classes
+                ),
+                method_symbols=method_symbols,
+                file_paths=(authority.file_path,) * len(method_symbols),
+                line_numbers=line_numbers,
+                line_count=sum(
+                    method.line_count for orbit in orbits for method in orbit.methods
+                ),
+                statement_count=sum(
+                    orbit.methods[0].statement_count for orbit in orbits
+                ),
+                method_line_count=method_line_count,
+                compression_certificate=certificate,
+            )
+        )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.authority_symbol,
+            candidate.method_names,
         ),
     )
 
@@ -4492,6 +4754,10 @@ def _compact_global_inheritance_candidates(
 @dataclass(frozen=True)
 class CompactMethodFamilyContext:
     exact_method_candidates: tuple[ExactTinyMethodRoleCandidate, ...]
+    exact_ancestor_promotion_candidates: tuple[
+        ExactLeafMethodAncestorPromotionCandidate,
+        ...,
+    ]
     method_candidates: tuple[SemanticOverlapMethodCandidate, ...]
     family_candidates: tuple[SemanticOverlapMethodFamilyCandidate, ...]
     global_candidates: tuple[OverlappingInheritanceFamiliesCandidate, ...]
@@ -4510,10 +4776,20 @@ class CompactMethodFamilyContext:
             projections, class_index
         )
         family_plans = _method_family_plans(method_plans)
+        exact_method_orbits = _compact_promotion_safe_exact_method_orbits(
+            projections,
+            class_index,
+        )
         return cls(
             exact_method_candidates=_compact_exact_tiny_method_role_candidates(
-                projections,
+                exact_method_orbits,
                 class_index,
+            ),
+            exact_ancestor_promotion_candidates=(
+                _compact_exact_leaf_method_ancestor_promotion_candidates(
+                    exact_method_orbits,
+                    class_index,
+                )
             ),
             method_candidates=_compact_semantic_overlap_method_candidates(
                 method_plans, family_plans

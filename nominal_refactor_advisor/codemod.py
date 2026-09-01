@@ -58,6 +58,8 @@ from .ast_tools import (
     walk_function_body_nodes,
 )
 from .class_index import (
+    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
+    ClosedLeafMethodAuthorityProof,
     ClassMethodPromotionSafeDecorator,
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
@@ -67,6 +69,7 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
+    declared_nominal_base_count,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -81,12 +84,12 @@ from .models import (
     AutoRegisterMetaRentMetrics,
     BranchCountMetrics,
     EnvironmentBooleanDriftMetrics,
+    ExactLeafMethodAncestorPromotionMetrics,
     EvidenceSymbol,
     FindingMetrics,
     MappingMetrics,
     RefactorFinding,
     RegistrationMetrics,
-    RepeatedMethodMetrics,
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
@@ -4857,6 +4860,58 @@ class ModuleImportInsertionPoint:
 
 
 @dataclass(frozen=True)
+class ClassBodyInsertionPoint:
+    """Exact source offset for adding methods without stealing attached comments."""
+
+    source: str
+    node: ast.ClassDef
+
+    @property
+    def before_first_method_offset(self) -> int:
+        geometry = SourceTextGeometry(self.source)
+        first_method = next(
+            (
+                statement
+                for statement in self.node.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            ),
+            None,
+        )
+        if first_method is None:
+            return (
+                geometry.line_offsets[self.node.end_lineno]
+                if self.node.end_lineno is not None
+                and self.node.end_lineno < len(geometry.line_offsets)
+                else geometry.end_offset
+            )
+        insertion_line = ClassHeaderSourceSpan.statement_start_line(first_method)
+        source_lines = geometry.lines
+        method_indent = " " * first_method.col_offset
+        while insertion_line > self.node.lineno + 1:
+            preceding_line = source_lines[insertion_line - 2]
+            if not (
+                preceding_line.startswith(method_indent)
+                and preceding_line.removeprefix(method_indent).startswith("#")
+            ):
+                break
+            insertion_line -= 1
+        return geometry.line_offsets[insertion_line - 1]
+
+    def member_source(self, members: tuple[str, ...]) -> str:
+        """Render class members at this point with stable class-body spacing."""
+
+        prefix = self.source[: self.before_first_method_offset]
+        if prefix.endswith("\n\n"):
+            leading_separator = ""
+        elif prefix.endswith("\n"):
+            leading_separator = "\n"
+        else:
+            leading_separator = "\n\n"
+        body = "\n\n".join(member.rstrip("\r\n") for member in members)
+        return f"{leading_separator}{body}\n\n"
+
+
+@dataclass(frozen=True)
 class SourceTargetEditor:
     """Line-oriented editor for one source-index target span."""
 
@@ -5557,8 +5612,6 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     base_name: str
     class_names: tuple[str, ...]
 
-    member_role: ClassVar[str] = "member"
-
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         inherited_field_names = frozenset(
@@ -5619,8 +5672,6 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
             member_names=self.member_names,
             statement_type=self.statement_type,
             rationale=self.rationale,
-            inserted_base_role=self.member_role,
-            deleted_member_role=self.member_role,
         ).source_edits(targets)
 
     def resolved_targets(
@@ -5684,7 +5735,6 @@ class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
     """Shared mechanics for nominal class-method promotion policies."""
 
     method_names: tuple[str, ...]
-    member_role: ClassVar[str] = "method"
 
     @property
     def member_names(self) -> tuple[str, ...]:
@@ -5696,10 +5746,11 @@ class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
 
     def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
         super().validate_targets(targets)
-        if any("." in target.qualname for target in targets.targets):
-            raise self.failed_preflight(
-                "Method promotion requires top-level class targets"
-            )
+        declaration_failure = targets.exact_method_declaration_failure(
+            self.method_names
+        )
+        if declaration_failure is not None:
+            raise self.failed_preflight(declaration_failure)
         insertion_module = targets.module_nodes_by_file_path[
             targets.insertion_target.file_path
         ]
@@ -5771,37 +5822,6 @@ class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
                 raise self.failed_preflight(
                     "Method promotion cannot cross a custom metaclass boundary"
                 )
-        for class_target in targets.targets:
-            module = targets.module_nodes_by_file_path[class_target.file_path]
-            source_lines = tuple(
-                targets.source_for(class_target.file_path).splitlines(keepends=True)
-            )
-            module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                module.body
-            )
-            class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                class_target.node.body
-            )
-            for statement in class_target.node.body:
-                if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
-                if statement.name not in self.method_names:
-                    continue
-                profile = ClassMethodPromotionSafetyProfile.from_method(
-                    statement,
-                    module_bound_names,
-                    class_bound_names,
-                    source_lines=source_lines,
-                )
-                if profile.hazards:
-                    raise self.failed_preflight(
-                        f"Method {class_target.qualname}.{statement.name} has "
-                        f"promotion hazards {tuple(hazard.value for hazard in profile.hazards)!r}"
-                    )
-        if not targets.methods_match_exactly(self.method_names):
-            raise self.failed_preflight(
-                "Method promotion requires one exact declaration source per method role"
-            )
         self.validate_nominal_authority(targets)
 
     @abstractmethod
@@ -5824,32 +5844,6 @@ class PromoteClassMethodsOperation(ClassMethodPromotionOperation):
         """Permit callers to select a new authority after explicit review."""
 
         del targets
-
-
-@dataclass(frozen=True, kw_only=True)
-class PromoteExactTinyMethodRoleOperation(ClassMethodPromotionOperation):
-    """Promote exact tiny roles only when no nominal authority already exists."""
-
-    def validate_nominal_authority(
-        self,
-        targets: "ClassMemberPromotionTargets",
-    ) -> None:
-        undeclared_receiver_members = targets.receiver_member_names(
-            self.method_names
-        ) - frozenset(self.method_names)
-        if undeclared_receiver_members:
-            raise self.failed_preflight(
-                "Exact method roles require receiver members not declared by the "
-                f"promoted role set: {tuple(sorted(undeclared_receiver_members))!r}"
-            )
-        if targets.shared_resolved_ancestor_symbols:
-            raise self.failed_preflight(
-                "Exact method roles already share a resolved nominal authority"
-            )
-        if targets.shared_declared_nominal_base_names:
-            raise self.failed_preflight(
-                "Exact method roles already share a declared nominal authority"
-            )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -6096,6 +6090,48 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             return frozenset()
         return frozenset(set.intersection(*base_name_sets))
 
+    def exact_method_declaration_failure(
+        self,
+        method_names: tuple[str, ...],
+    ) -> str | None:
+        """Return the first source-level obstacle shared by method promotions."""
+
+        if any("." in target.qualname for target in self.targets):
+            return "Method promotion requires top-level class targets"
+        for class_target in self.targets:
+            module = self.module_nodes_by_file_path[class_target.file_path]
+            source_lines = tuple(
+                self.source_for(class_target.file_path).splitlines(keepends=True)
+            )
+            module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                module.body
+            )
+            class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                class_target.node.body
+            )
+            for statement in class_target.node.body:
+                if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if statement.name not in method_names:
+                    continue
+                profile = ClassMethodPromotionSafetyProfile.from_method(
+                    statement,
+                    module_bound_names,
+                    class_bound_names,
+                    source_lines=source_lines,
+                )
+                if profile.hazards:
+                    return (
+                        f"Method {class_target.qualname}.{statement.name} has "
+                        "promotion hazards "
+                        f"{tuple(hazard.value for hazard in profile.hazards)!r}"
+                    )
+        if not self.methods_match_exactly(method_names):
+            return (
+                "Method promotion requires one exact declaration source per method role"
+            )
+        return None
+
     def methods_match_exactly(self, method_names: tuple[str, ...]) -> bool:
         """Prove one complete declaration source for every promoted method role."""
 
@@ -6138,12 +6174,285 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
 
 
 @dataclass(frozen=True)
-class ClassMemberPromotionSpec:
+class ExistingAncestorMethodPromotionTargets:
+    """Resolved existing authority and complete leaf family for method promotion."""
+
+    authority: ResolvedClassTarget
+    participants: ClassMemberPromotionTargets
+
+    @classmethod
+    def resolve(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str | None,
+        authority_name: str,
+        class_names: tuple[str, ...],
+    ) -> "ExistingAncestorMethodPromotionTargets":
+        resolved = ClassMemberPromotionTargets.resolve(
+            context,
+            source_path=source_path,
+            class_names=(authority_name, *class_names),
+        )
+        return cls(
+            authority=resolved.targets[0],
+            participants=replace(resolved, targets=resolved.targets[1:]),
+        )
+
+    @property
+    def class_index(self) -> ClassFamilyIndex:
+        return self.participants.required_class_family_index
+
+    @cached_property
+    def authority_symbol(self) -> str:
+        symbol = self.class_index.symbol_for(
+            file_path=self.authority.file_path,
+            qualname=self.authority.qualname,
+        )
+        if symbol is None:
+            raise ValueError("Existing method authority is absent from the class index")
+        return symbol
+
+    @cached_property
+    def authority_class(self) -> IndexedClass:
+        indexed_class = self.class_index.class_for(self.authority_symbol)
+        if indexed_class is None:
+            raise ValueError("Existing method authority is absent from the class index")
+        return indexed_class
+
+    @cached_property
+    def participant_symbols(self) -> tuple[str, ...]:
+        return self.participants.required_class_symbols
+
+    @cached_property
+    def participant_classes(self) -> tuple[IndexedClass, ...]:
+        return self.participants.indexed_classes
+
+    @staticmethod
+    def declared_member_names(indexed_class: IndexedClass) -> frozenset[str]:
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(indexed_class.node.body)
+
+    def class_decorators_are_method_ownership_neutral(
+        self,
+        indexed_class: IndexedClass,
+    ) -> bool:
+        module = self.participants.module_nodes_by_file_path[indexed_class.file_path]
+        return all(
+            any(
+                safe_decorator.is_proven_reference(module, decorator)
+                for safe_decorator in ClassMethodPromotionSafeDecorator
+            )
+            for decorator in indexed_class.node.decorator_list
+        )
+
+    def proof(self, method_names: tuple[str, ...]) -> ClosedLeafMethodAuthorityProof:
+        common_direct_base_symbols = tuple(
+            sorted(
+                set.intersection(
+                    *(
+                        set(indexed_class.resolved_base_symbols)
+                        for indexed_class in self.participant_classes
+                    )
+                )
+            )
+        )
+        common_declared_nominal_base_names = tuple(
+            sorted(
+                set.intersection(
+                    *(
+                        {
+                            base_name
+                            for base_name in indexed_class.declared_base_names
+                            if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                                base_name
+                            )
+                        }
+                        for indexed_class in self.participant_classes
+                    )
+                )
+            )
+        )
+        authority_lineage_symbols = frozenset(
+            (
+                self.authority_symbol,
+                *self.class_index.ancestor_symbols(self.authority_symbol),
+            )
+        )
+        participant_ancestor_symbols = frozenset(
+            ancestor_symbol
+            for participant_symbol in self.participant_symbols
+            for ancestor_symbol in self.class_index.ancestor_symbols(participant_symbol)
+        )
+        relevant_symbols = frozenset(
+            (*self.participant_symbols, *participant_ancestor_symbols)
+        )
+        directly_rewritten_symbols = frozenset(
+            (self.authority_symbol, *self.participant_symbols)
+        )
+        return ClosedLeafMethodAuthorityProof(
+            authority_symbol=self.authority_symbol,
+            authority_simple_name=self.authority_class.simple_name,
+            participant_symbols=self.participant_symbols,
+            common_direct_base_symbols=common_direct_base_symbols,
+            common_declared_nominal_base_names=(common_declared_nominal_base_names),
+            authority_direct_child_symbols=self.class_index.children_by_symbol.get(
+                self.authority_symbol,
+                (),
+            ),
+            non_leaf_participant_symbols=tuple(
+                symbol
+                for symbol in self.participant_symbols
+                if self.class_index.children_by_symbol.get(symbol)
+            ),
+            incompletely_resolved_symbols=tuple(
+                sorted(
+                    symbol
+                    for symbol in relevant_symbols
+                    if (indexed_class := self.class_index.class_for(symbol)) is not None
+                    and len(indexed_class.resolved_base_symbols)
+                    != declared_nominal_base_count(indexed_class)
+                )
+            ),
+            method_ownership_sensitive_symbols=tuple(
+                sorted(
+                    symbol
+                    for symbol in relevant_symbols
+                    if (indexed_class := self.class_index.class_for(symbol)) is not None
+                    and (
+                        indexed_class.node.keywords
+                        or indexed_class.declares_autoregister_meta
+                        or bool(
+                            self.declared_member_names(indexed_class)
+                            & CLASS_METHOD_OWNERSHIP_HOOK_NAMES
+                        )
+                        or (
+                            symbol in directly_rewritten_symbols
+                            and not self.class_decorators_are_method_ownership_neutral(
+                                indexed_class
+                            )
+                        )
+                    )
+                )
+            ),
+            authority_lineage_member_names=tuple(
+                sorted(
+                    {
+                        member_name
+                        for symbol in authority_lineage_symbols
+                        if (indexed_class := self.class_index.class_for(symbol))
+                        is not None
+                        for member_name in self.declared_member_names(indexed_class)
+                    }
+                )
+            ),
+            competing_ancestor_member_names=tuple(
+                sorted(
+                    {
+                        member_name
+                        for symbol in participant_ancestor_symbols
+                        - authority_lineage_symbols
+                        if (indexed_class := self.class_index.class_for(symbol))
+                        is not None
+                        for member_name in self.declared_member_names(indexed_class)
+                    }
+                )
+            ),
+            promoted_method_names=method_names,
+            receiver_member_names=tuple(
+                sorted(self.participants.receiver_member_names(method_names))
+            ),
+        )
+
+    def validation_failure(self, method_names: tuple[str, ...]) -> str | None:
+        if not self.participants.targets:
+            return "Existing-ancestor method promotion requires participating leaves"
+        if "." in self.authority.qualname:
+            return "Existing-ancestor method promotion requires a top-level authority"
+        if any(
+            target.file_path != self.authority.file_path
+            for target in self.participants.targets
+        ):
+            return "Existing-ancestor method promotion requires one source file"
+        declaration_failure = self.participants.exact_method_declaration_failure(
+            method_names
+        )
+        if declaration_failure is not None:
+            return declaration_failure
+        proof = self.proof(method_names)
+        if not proof.is_proven:
+            return proof.rejection_reason
+        return None
+
+
+@dataclass(frozen=True)
+class ClassMemberSetSpec:
+    """One typed set of class-body members."""
+
+    member_names: tuple[str, ...]
+    statement_type: type["ClassMemberPromotionStatement"]
+
+
+@dataclass(frozen=True)
+class ClassMemberPromotionSpec(ClassMemberSetSpec):
     """Shared member-promotion identity used by plans and generated bases."""
 
     base_name: str
-    member_names: tuple[str, ...]
-    statement_type: type["ClassMemberPromotionStatement"]
+
+
+@dataclass(frozen=True)
+class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
+    """Delete promoted members from their former concrete owners."""
+
+    rationale: str
+
+    def source_edits(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        replacements = []
+        for class_target in targets.targets:
+            promoted_statements = self.promoted_statements(class_target.node)
+            if not promoted_statements:
+                continue
+            promoted_statement_ids = frozenset(
+                id(statement) for statement in promoted_statements
+            )
+            class_would_be_empty = not any(
+                id(statement) not in promoted_statement_ids
+                for statement in class_target.node.body
+            )
+            for index, statement in enumerate(promoted_statements):
+                member_statement = self.statement_type(statement)
+                replacements.append(
+                    SourceSpanReplacement(
+                        file_path=class_target.file_path,
+                        start_line=member_statement.start_line,
+                        end_line=member_statement.end_line,
+                        replacement_lines=self.replacement_lines_for_deleted_member(
+                            class_would_be_empty,
+                            index,
+                        ),
+                        rationale=self.rationale
+                        or (f"Delete promoted member from {class_target.qualname!r}."),
+                    )
+                )
+        return tuple(replacements)
+
+    def promoted_statements(self, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
+        return tuple(
+            statement
+            for statement in node.body
+            if self.statement_type(statement).name in self.member_names
+        )
+
+    @staticmethod
+    def replacement_lines_for_deleted_member(
+        class_would_be_empty: bool,
+        deletion_index: int,
+    ) -> tuple[str, ...]:
+        if class_would_be_empty and deletion_index == 0:
+            return ("    pass\n",)
+        return ()
 
 
 @dataclass(frozen=True)
@@ -6151,8 +6460,6 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
     """Line replacements for promoting class members into one shared base."""
 
     rationale: str
-    inserted_base_role: str
-    deleted_member_role: str
 
     def source_edits(
         self,
@@ -6161,7 +6468,11 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
         return (
             self.base_insertion_replacement(targets),
             *self.base_addition_replacements(targets),
-            *self.member_deletion_replacements(targets),
+            *ClassMemberDeletionReplacementPlan(
+                member_names=self.member_names,
+                statement_type=self.statement_type,
+                rationale=self.rationale,
+            ).source_edits(targets),
         )
 
     def base_insertion_replacement(
@@ -6181,7 +6492,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
             insertion_line=targets.insertion_line,
             inserted_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
             rationale=self.rationale
-            or f"Insert promoted {self.inserted_base_role} base {self.base_name!r}.",
+            or f"Insert promoted-member base {self.base_name!r}.",
         )
 
     def base_addition_replacements(
@@ -6210,68 +6521,16 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
             )
         return tuple(replacements)
 
-    def member_deletion_replacements(
-        self,
-        targets: ClassMemberPromotionTargets,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        replacements = []
-        for class_target in targets.targets:
-            promoted_statements = self.promoted_statements(class_target.node)
-            if not promoted_statements:
-                continue
-            promoted_statement_ids = frozenset(
-                id(statement) for statement in promoted_statements
-            )
-            class_would_be_empty = not any(
-                id(statement) not in promoted_statement_ids
-                for statement in class_target.node.body
-            )
-            for index, statement in enumerate(promoted_statements):
-                member_statement = self.statement_type(statement)
-                replacements.append(
-                    SourceSpanReplacement(
-                        file_path=class_target.file_path,
-                        start_line=member_statement.start_line,
-                        end_line=member_statement.end_line,
-                        replacement_lines=self.replacement_lines_for_deleted_member(
-                            class_would_be_empty,
-                            index,
-                        ),
-                        rationale=self.rationale
-                        or (
-                            f"Delete promoted {self.deleted_member_role} "
-                            f"from {class_target.qualname!r}."
-                        ),
-                    )
-                )
-        return tuple(replacements)
-
-    def promoted_statements(self, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
-        return tuple(
-            statement
-            for statement in node.body
-            if self.statement_type(statement).name in self.member_names
-        )
-
-    @staticmethod
-    def replacement_lines_for_deleted_member(
-        class_would_be_empty: bool,
-        deletion_index: int,
-    ) -> tuple[str, ...]:
-        if class_would_be_empty and deletion_index == 0:
-            return ("    pass\n",)
-        return ()
-
 
 @dataclass(frozen=True)
-class ClassMemberPromotedBase(ClassMemberPromotionSpec):
-    """Source for a base class containing promoted class members."""
+class ClassMemberSourceSelection(ClassMemberSetSpec):
+    """Exact source for a proved set of class-body members."""
 
     source_text: str
     source_class: ast.ClassDef
 
-    @property
-    def source(self) -> str:
+    @cached_property
+    def member_sources(self) -> tuple[str, ...]:
         members = tuple(
             SourceNodeSpan(
                 statement,
@@ -6285,7 +6544,169 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
                 f"Could not find promoted members {self.member_names!r} "
                 f"on {self.source_class.name!r}"
             )
+        return members
+
+
+@dataclass(frozen=True)
+class ClassMemberPromotedBase(ClassMemberPromotionSpec):
+    """Source for a base class containing promoted class members."""
+
+    source_text: str
+    source_class: ast.ClassDef
+
+    @property
+    def source(self) -> str:
+        members = ClassMemberSourceSelection(
+            member_names=self.member_names,
+            statement_type=self.statement_type,
+            source_text=self.source_text,
+            source_class=self.source_class,
+        ).member_sources
         return f"class {self.base_name}:\n    __slots__ = ()\n\n{''.join(members)}"
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
+    """Move a complete exact leaf-method set to its proved existing authority."""
+
+    authority_name: str
+    class_names: tuple[str, ...]
+    method_names: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return PayloadBindingSet.from_field_codecs(
+            authority_name=RequiredStringPayloadValueCodec(),
+            class_names=StringArrayPayloadValueCodec(),
+            method_names=StringArrayPayloadValueCodec(),
+        )
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        context = (
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                source_by_path,
+            )
+            if selector_context is None
+            else selector_context
+        )
+        targets = self.resolved_targets(context, source_index)
+        failure = targets.validation_failure(self.method_names)
+        if failure is not None:
+            raise self.failed_preflight(failure)
+        return (
+            self.authority_replacement(targets),
+            *ClassMemberDeletionReplacementPlan(
+                member_names=self.method_names,
+                statement_type=ClassMethodPromotionStatement,
+                rationale=self.rationale,
+            ).source_edits(targets.participants),
+        )
+
+    def resolved_targets(
+        self,
+        context: CodemodSelectorContext,
+        source_index: SourceIndex,
+    ) -> ExistingAncestorMethodPromotionTargets:
+        try:
+            return ExistingAncestorMethodPromotionTargets.resolve(
+                context,
+                source_path=self.target.optional_file_path(source_index),
+                authority_name=self.authority_name,
+                class_names=self.class_names,
+            )
+        except ValueError as error:
+            raise self.failed_preflight(str(error)) from error
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        context = (
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                source_by_path,
+            )
+            if selector_context is None
+            else selector_context
+        )
+        try:
+            targets = self.resolved_targets(context, source_index)
+            failure = targets.validation_failure(self.method_names)
+            if failure is not None:
+                raise self.failed_preflight(failure)
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return ()
+
+    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
+        return CodemodOperationPreflightError(
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.FAILED,
+                message=message,
+                details={
+                    "authority_name": self.authority_name,
+                    "class_names": self.class_names,
+                    "method_names": self.method_names,
+                },
+            )
+        )
+
+    def authority_replacement(
+        self,
+        targets: ExistingAncestorMethodPromotionTargets,
+    ) -> SourceSpanReplacement:
+        authority = targets.authority
+        source = targets.participants.source_for(authority.file_path)
+        source_class = targets.participants.targets[0].node
+        member_sources = ClassMemberSourceSelection(
+            member_names=self.method_names,
+            statement_type=ClassMethodPromotionStatement,
+            source_text=source,
+            source_class=source_class,
+        ).member_sources
+        insertion_point = ClassBodyInsertionPoint(
+            source,
+            authority.node,
+        )
+        insertion_offset = insertion_point.before_first_method_offset
+        insertion_source = insertion_point.member_source(member_sources)
+        replacement_source = SourceTextGeometry(source).target_source_with_replacements(
+            authority.target,
+            (
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=insertion_offset,
+                    end_offset=insertion_offset,
+                    replacement_source=insertion_source,
+                ),
+            ),
+        )
+        return SourceSpanReplacement(
+            file_path=authority.file_path,
+            start_line=authority.target.line,
+            end_line=authority.target.end_line,
+            replacement_lines=SourceTargetEditor.source_lines(replacement_source),
+            rationale=self.rationale
+            or f"Move exact shared methods to {authority.qualname!r}.",
+        )
 
 
 @dataclass(frozen=True)
@@ -14685,7 +15106,10 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             constructor_name=constructor_name,
             method=method,
         )
-        insertion_offset = self.class_method_insertion_offset(source, node)
+        insertion_offset = ClassBodyInsertionPoint(
+            source,
+            node,
+        ).before_first_method_offset
         return SourceTextGeometry(source).target_source_with_replacements(
             target,
             (
@@ -14720,21 +15144,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             "        return cls(\n"
             f"{''.join(constructor_lines)}"
             "        )\n\n"
-        )
-
-    @staticmethod
-    def class_method_insertion_offset(source: str, node: ast.ClassDef) -> int:
-        geometry = SourceTextGeometry(source)
-        for statement in node.body:
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                return geometry.line_offsets[
-                    ClassHeaderSourceSpan.statement_start_line(statement) - 1
-                ]
-        return (
-            geometry.line_offsets[node.end_lineno]
-            if node.end_lineno is not None
-            and node.end_lineno < len(geometry.line_offsets)
-            else geometry.end_offset
         )
 
     def call_rewrites(
@@ -14912,13 +15321,13 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return geometry.segment_for_node(value)
 
 
-class RepeatedMethodPromotionFindingRecipeSynthesizer(
-    SingleSourcePathFindingMixin,
+class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
     FindingRecipeSynthesizer,
     ClassFamilyAuthorityConcept,
-    ABC,
 ):
-    """Build method-promotion recipes for exact repeated method findings."""
+    """Promote exact methods only to a source-proven existing authority."""
+
+    detector_id = "exact_leaf_method_ancestor_promotion"
 
     def evaluate_recipe_for_finding(
         self,
@@ -14926,202 +15335,97 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return RejectedRecipeEvaluation(
-                reason="method-promotion recipes require a source selector context",
-                executable_declaration_type=type(self),
+            return self.rejected_evaluation(
+                "closed-family method promotion requires source context"
             )
-        source_path = self.source_path(finding)
-        if source_path is None:
-            return RejectedRecipeEvaluation(
-                reason="method-promotion finding spans more than one source file",
-                executable_declaration_type=type(self),
+        metrics = finding.metrics
+        if not isinstance(metrics, ExactLeafMethodAncestorPromotionMetrics):
+            return self.rejected_evaluation(
+                "closed-family method promotion lacks typed authority facts"
             )
-        names = self.class_and_method_names_or_none(finding)
-        if names is None:
-            return RejectedRecipeEvaluation(
-                reason=("finding metrics do not expose class-qualified method symbols"),
-                executable_declaration_type=type(self),
-            )
-        class_names, method_names = names
-        targets = ClassMemberPromotionTargets.resolve_or_none(
-            context,
-            source_path=source_path,
-            class_names=class_names,
+        class_index = context.required_class_family_index
+        authority = class_index.class_for(metrics.authority_symbol)
+        participants = tuple(
+            class_index.class_for(symbol)
+            for symbol in metrics.participant_class_symbols
         )
-        if targets is None:
-            return RejectedRecipeEvaluation(
-                reason=(
-                    ClassMemberPromotionTargets.unresolved_class_target_reason(
-                        context,
-                        source_path=source_path,
-                        class_names=class_names,
-                    )
-                ),
-                executable_declaration_type=type(self),
+        if authority is None or any(
+            participant is None for participant in participants
+        ):
+            return self.rejected_evaluation(
+                "closed-family method promotion targets are no longer indexed"
             )
-        if not targets.methods_match_exactly(method_names):
-            return RejectedRecipeEvaluation(
-                reason="method declarations are not exact source duplicates",
-                executable_declaration_type=type(self),
-            )
-        if not targets.supports_base_rewrites():
-            return RejectedRecipeEvaluation(
-                reason="method-promotion target has unsupported class header",
-                executable_declaration_type=type(self),
-            )
-        if self.direct_bases_define_methods(targets, method_names, context):
-            return RejectedRecipeEvaluation(
-                reason=(
-                    "a direct base already defines at least one promoted method name"
-                ),
-                executable_declaration_type=type(self),
-            )
-        promotion = RepeatedMethodPromotionPlan(
-            source_path=source_path,
-            class_names=class_names,
-            method_names=method_names,
+        indexed_participants = tuple(
+            participant for participant in participants if participant is not None
         )
-        operation = self.promotion_operation(promotion)
-        return ExecutableRecipeEvaluation(
-            executable_recipe=RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-promote-class-methods",
-                reason="Promote exact repeated class methods to a shared mixin.",
-            ).with_operation(operation),
-            executable_declaration_type=type(self),
+        if any(
+            participant.file_path != authority.file_path
+            for participant in indexed_participants
+        ):
+            return self.rejected_evaluation(
+                "closed-family method promotion no longer occupies one source file"
+            )
+        authority_target = ClassMemberPromotionTargets.optional_class_target(
+            context.source_index,
+            context.ast_target_nodes_by_id,
+            source_path=authority.file_path,
+            class_name=authority.qualname,
         )
-
-    def promotion_operation(
-        self,
-        promotion: "RepeatedMethodPromotionPlan",
-    ) -> PromoteClassMethodsOperation:
-        return PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=promotion.source_path),
-            base_name=self.base_name_for_methods(promotion.method_names),
-            class_names=tuple(promotion.class_names),
-            method_names=tuple(promotion.method_names),
+        if authority_target is None:
+            return self.rejected_evaluation(
+                "closed-family method authority has no unique source target"
+            )
+        operation = PromoteExactLeafMethodsToAncestorOperation(
+            target=SourceRewriteTarget(file_path=authority.file_path),
+            authority_name=authority.qualname,
+            class_names=tuple(
+                participant.qualname for participant in indexed_participants
+            ),
+            method_names=metrics.method_names,
             rationale="",
         )
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-promote-exact-leaf-methods",
+                reason=(
+                    "Move the complete exact method set to its proved existing "
+                    "nominal authority."
+                ),
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(authority_target.target)
+            )
+            .with_operation(operation)
+        )
+        return self.executable_evaluation(recipe)
 
     def action_keys_for_finding(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        source_path = self.source_path(finding)
-        if source_path is None:
+        metrics = finding.metrics
+        if not isinstance(metrics, ExactLeafMethodAncestorPromotionMetrics):
+            return ()
+        authority_location = next(
+            (
+                evidence
+                for evidence in finding.evidence
+                if EvidenceSymbol(evidence.symbol).subject
+                == metrics.authority_symbol.rsplit(".", 1)[-1]
+            ),
+            None,
+        )
+        if authority_location is None:
             return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
             (
-                (source_path, method_symbol)
-                for method_symbol in self.method_symbols(finding)
+                (authority_location.file_path, metrics.authority_symbol),
+                *(
+                    (authority_location.file_path, method_symbol)
+                    for method_symbol in metrics.method_symbols
+                ),
             ),
-        )
-
-    @staticmethod
-    def method_symbols(finding: RefactorFinding) -> tuple[str, ...]:
-        if not isinstance(finding.metrics, RepeatedMethodMetrics):
-            return ()
-        return finding.metrics.method_symbols
-
-    def class_and_method_names(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        class_names = []
-        method_names = []
-        for method_symbol in self.method_symbols(finding):
-            if "." not in method_symbol:
-                return (), ()
-            class_name, method_name = method_symbol.rsplit(".", 1)
-            if not class_name or not method_name:
-                return (), ()
-            class_names.append(class_name)
-            method_names.append(method_name)
-        return tuple(dict.fromkeys(class_names)), tuple(dict.fromkeys(method_names))
-
-    def class_and_method_names_or_none(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-        class_names, method_names = self.class_and_method_names(finding)
-        if not class_names or not method_names:
-            return None
-        return class_names, method_names
-
-    @staticmethod
-    def direct_bases_define_methods(
-        targets: ClassMemberPromotionTargets,
-        method_names: tuple[str, ...],
-        context: CodemodSelectorContext,
-    ) -> bool:
-        class_index = context.required_class_family_index
-        for class_target in targets.targets:
-            symbol = class_index.symbol_for(
-                file_path=class_target.file_path,
-                qualname=class_target.qualname,
-            )
-            if symbol is None:
-                return True
-            indexed_class = class_index.class_for(symbol)
-            if indexed_class is None:
-                return True
-            if len(indexed_class.resolved_base_symbols) != len(
-                indexed_class.declared_base_names
-            ):
-                return True
-            for base_symbol in indexed_class.resolved_base_symbols:
-                base_class = class_index.class_for(base_symbol)
-                if base_class is None:
-                    return True
-                if any(
-                    ClassMethodPromotionStatement(statement).name in method_names
-                    for statement in base_class.node.body
-                ):
-                    return True
-        return False
-
-    @staticmethod
-    def base_name_for_methods(method_names: tuple[str, ...]) -> str:
-        method_name = "".join(_pascal_case_identifier(name) for name in method_names)
-        if not method_name:
-            method_name = "Member"
-        return f"Shared{method_name}Mixin"
-
-
-@dataclass(frozen=True)
-class RepeatedMethodPromotionPlan:
-    """Concrete repeated-method promotion proven executable for one finding."""
-
-    source_path: str
-    class_names: tuple[str, ...]
-    method_names: tuple[str, ...]
-
-
-class RepeatedPropertyAliasHooksFindingRecipeSynthesizer(
-    RepeatedMethodPromotionFindingRecipeSynthesizer
-):
-    """Build executable recipes for exact repeated property aliases."""
-
-    detector_id = "repeated_property_alias_hooks"
-
-
-class ExactTinyMethodRoleFindingRecipeSynthesizer(
-    RepeatedMethodPromotionFindingRecipeSynthesizer
-):
-    """Promote a fully verified exact tiny method role into one mixin."""
-
-    detector_id = "exact_tiny_method_role"
-
-    def promotion_operation(
-        self,
-        promotion: RepeatedMethodPromotionPlan,
-    ) -> PromoteExactTinyMethodRoleOperation:
-        return PromoteExactTinyMethodRoleOperation(
-            target=SourceRewriteTarget(file_path=promotion.source_path),
-            base_name=self.base_name_for_methods(promotion.method_names),
-            class_names=tuple(promotion.class_names),
-            method_names=tuple(promotion.method_names),
-            rationale="",
         )
 
 
@@ -17867,12 +18171,10 @@ class DataclassAuthorityMappingRecipeBuilder(
     ) -> str | None:
         source = self.sources_by_file_path[authority.source_path]
         geometry = SourceTextGeometry(source)
-        insertion_offset = (
-            RepeatedBuilderCallFindingRecipeSynthesizer.class_method_insertion_offset(
-                source,
-                authority.node,
-            )
-        )
+        insertion_offset = ClassBodyInsertionPoint(
+            source,
+            authority.node,
+        ).before_first_method_offset
         return geometry.target_source_with_replacements(
             authority.target,
             (

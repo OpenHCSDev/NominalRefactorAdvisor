@@ -41,8 +41,17 @@ prove a recipe and carries that declaration's diagnostic.  The record's
 ``reason`` is a concise summary; consumers that need diagnostic proof detail
 should inspect the structured obstacles instead of parsing that summary.
 
+Exact repeated methods without a proved owner remain evidence-only findings.
+The ``exact_leaf_method_ancestor_promotion`` detector emits a codemod candidate
+only when one existing direct authority is unique, every direct child
+participates and is a leaf, the method source is exact and promotion-safe, all
+receiver requirements belong to the authority contract, no competing ancestor
+binds the promoted names, no decorator or class-creation hook can observe the
+ownership move, and the complete method batch pays compression rent.  The
+codemod preflight reconstructs the same proof from the current full AST.
+
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

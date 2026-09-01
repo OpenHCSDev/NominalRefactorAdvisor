@@ -362,6 +362,15 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
+class ExactLeafMethodAncestorPromotionMetrics(RepeatedMethodMetrics):
+    """Typed execution facts for one closed-family method promotion."""
+
+    authority_symbol: str = ""
+    participant_class_symbols: tuple[str, ...] = ()
+    method_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics, ABC):
     """Typed evidence shared by environment-boolean drift shapes."""
 

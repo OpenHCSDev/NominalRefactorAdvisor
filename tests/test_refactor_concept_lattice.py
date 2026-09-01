@@ -42,7 +42,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.RepeatedMethodPromotionFindingRecipeSynthesizer: (
+    codemod.ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
     codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
@@ -319,9 +319,10 @@ def test_source_payload_operations_share_the_source_declaration() -> None:
     assert not hasattr(codemod, "StringPayloadOperation")
     for operation_type, field_names in expected_bindings.items():
         assert issubclass(operation_type, codemod.SourcePayloadOperation)
-        assert tuple(
-            binding.field_name for binding in operation_type.payload_bindings()
-        ) == field_names
+        assert (
+            tuple(binding.field_name for binding in operation_type.payload_bindings())
+            == field_names
+        )
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:

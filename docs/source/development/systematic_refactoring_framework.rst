@@ -62,6 +62,24 @@ Typical examples:
 - use type registration instead of handwritten subclass rosters
 - use a dataclass row authority instead of parallel dicts keyed by the same enum
 
+Prove The Trajectory, Not The Next Move
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A locally valid edit is not necessarily a valid recommendation.  Selecting the
+largest immediate compression can trap the refactor in a state whose remaining
+authority cannot be proved.
+
+Treat each executable recipe as a transition in a reachable source-state graph:
+
+- enumerate every clean compatible transition rather than ranking one locally
+- rescan after each transition because the next semantic surface is state-dependent
+- reject incomplete searches and distinct terminal states
+- apply a sequence only when complete exploration proves one terminal source state
+
+Detection may still report repeated structure when authority placement is
+unknown.  That is architectural evidence, not permission to fabricate a mixin,
+registry, or carrier.
+
 Refactoring Loop
 ----------------
 

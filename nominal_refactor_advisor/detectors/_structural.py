@@ -276,6 +276,18 @@ class _CompactExactTinyMethodRoleDetectorBase(
         return context.exact_method_candidates
 
 
+class _CompactExactLeafMethodAncestorPromotionDetectorBase(
+    _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionCandidate]
+):
+    def _candidates_from_compact_context(
+        self,
+        context: CompactMethodFamilyContext,
+        config: DetectorConfig,
+    ) -> Sequence[ExactLeafMethodAncestorPromotionCandidate]:
+        del config
+        return context.exact_ancestor_promotion_candidates
+
+
 class _CompactSemanticOverlapMethodFamilyDetectorBase(
     _CompactMethodFamilyDetectorBase[SemanticOverlapMethodFamilyCandidate]
 ):
@@ -346,6 +358,47 @@ declare_candidate_rule_detector(
     ),
     detector_name="ExactTinyMethodRoleDetector",
     detector_base=_CompactExactTinyMethodRoleDetectorBase,
+)
+
+
+declare_candidate_rule_detector(
+    ExactLeafMethodAncestorPromotionCandidate,
+    high_confidence_certified_spec(
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Closed leaf family repeats methods owned by its direct authority",
+        "Every direct leaf of one resolved nominal authority owns the same complete promotion-safe method set. The complete direct-child relation, exact source identity, receiver contract, and absence of competing ancestor definitions prove the existing authority as the unique promotion target.",
+        "the existing direct authority owns each exact shared method once",
+        "all direct children are leaves, the authority is unique, and the complete exact method batch is closed over authority-declared receiver members",
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    ),
+    summary=lambda candidate: (
+        f"{candidate.participant_class_names} repeat exact methods "
+        f"{candidate.method_names} across every direct leaf of "
+        f"`{candidate.authority_name}`; the closed inheritance relation proves "
+        "that existing class as the unique owner."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: ExactLeafMethodAncestorPromotionMetrics(
+        duplicate_site_count=len(candidate.participant_class_symbols),
+        statement_count=candidate.statement_count,
+        class_count=len(candidate.participant_class_symbols),
+        method_symbols=candidate.method_symbols,
+        authority_symbol=candidate.authority_symbol,
+        participant_class_symbols=candidate.participant_class_symbols,
+        method_names=candidate.method_names,
+    ),
+    detector_name="ExactLeafMethodAncestorPromotionDetector",
+    detector_base=_CompactExactLeafMethodAncestorPromotionDetectorBase,
 )
 
 

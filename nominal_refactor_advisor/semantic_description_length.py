@@ -330,3 +330,27 @@ class ExactMethodRoleCompressionProfile(SemanticDescription):
     @property
     def description_cost(self) -> SemanticCostVector:
         return self.compression_certificate.description_cost
+
+
+@dataclass(frozen=True)
+class ExistingAuthorityMethodPromotionCompressionProfile(SemanticDescription):
+    """MDL proof for centralizing exact methods on an already-proved authority."""
+
+    class_count: int
+    method_line_count: int
+
+    @property
+    def compression_certificate(self) -> CompressionCertificate:
+        return CompressionCertificate.from_object_family(
+            manual_object_count=self.class_count * self.method_line_count,
+            replacement_shape=ObjectFamilyShape(
+                shared_objects=("existing_authority_method_ownership",),
+            ),
+            residual_object_count=self.method_line_count,
+            provenance_object_count=1,
+            independent_source_count=self.class_count,
+        )
+
+    @property
+    def description_cost(self) -> SemanticCostVector:
+        return self.compression_certificate.description_cost
