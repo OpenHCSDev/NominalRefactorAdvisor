@@ -14165,6 +14165,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowScan
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
+    from nominal_refactor_advisor import FindingRecipeProofObstacle
     from nominal_refactor_advisor import NominalBoundaryConcept
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
@@ -14197,6 +14198,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
     assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
     assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"
+    assert FindingRecipeProofObstacle.__name__ == "FindingRecipeProofObstacle"
     assert not hasattr(nra, "CodemodGuardedWorkflowRequest")
     assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
     assert (

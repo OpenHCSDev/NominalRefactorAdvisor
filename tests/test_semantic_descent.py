@@ -1874,8 +1874,22 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "class/key pairs are incomplete" in plan.records[0].reason
+    record = plan.records[0]
+    obstacles_by_declaration = {
+        obstacle.executable_declaration_name: obstacle.reason
+        for obstacle in record.proof_obstacles
+    }
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert record.reason == (
+        "no class-family recipe declaration proved an executable exact derivation"
+    )
+    assert "class/key pairs are incomplete" in obstacles_by_declaration[
+        "AutoregisterInstanceViewRecipeBuilder"
+    ]
+    assert record.to_dict()["proof_obstacles"] == tuple(
+        obstacle.to_dict() for obstacle in record.proof_obstacles
+    )
 
 
 def test_dataclass_template_keywords_do_not_invent_dsl_action(
@@ -2602,14 +2616,25 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-        assert plan.records[0].status.value == "rejected_by_safety_check"
-        assert not plan.records[0].recipe_id
-        assert "could not be derived by inferred builders" in plan.records[0].reason
+        record = plan.records[0]
+        obstacles_by_declaration = {
+            obstacle.executable_declaration_name: obstacle.reason
+            for obstacle in record.proof_obstacles
+        }
+
+        assert record.status.value == "rejected_by_safety_check"
+        assert not record.recipe_id
+        assert record.reason == (
+            "no inferred mapping recipe builder proved an executable exact "
+            "derivation"
+        )
         assert (
             "dataclass payload projection requires one contiguous, exhaustive"
-            in plan.records[0].reason
+            in obstacles_by_declaration[
+                "DataclassPayloadProjectionMappingRecipeBuilder"
+            ]
         )
-        assert "enum subset projection requires" in plan.records[0].reason
+        assert "EnumSubsetSemanticMirrorRecipeBuilder" not in obstacles_by_declaration
 
 
 def test_semantic_mirror_constructor_projection_uses_dataclass_method(
@@ -2792,6 +2817,53 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     assert operations[2]["source"] == (
         "_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()"
     )
+
+
+def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    (package_dir / "taxonomy.py").write_text(
+        "from enum import StrEnum\n"
+        "\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n"
+        "    LOW = 'low'\n"
+        "\n"
+        "    @classmethod\n"
+        "    def actionable_confidence_levels(cls):\n"
+        "        return frozenset((cls.HIGH.value,))\n",
+        encoding="utf-8",
+    )
+    (package_dir / "codemod.py").write_text(
+        "import pkg.taxonomy\n"
+        "\n"
+        "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
+        "frozenset(('high', 'medium'))\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_mapping_name == "_ACTIONABLE_CONFIDENCE_LEVELS"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    record = codemod_plan_from_findings(
+        (finding,),
+        selector_context=snapshot,
+    ).records[0]
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert tuple(
+        obstacle.executable_declaration_name for obstacle in record.proof_obstacles
+    ) == ("EnumSubsetSemanticMirrorRecipeBuilder",)
 
 
 def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
@@ -2998,8 +3070,16 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "no complete runtime member query" in plan.records[0].reason
+    record = plan.records[0]
+    obstacles_by_declaration = {
+        obstacle.executable_declaration_name: obstacle.reason
+        for obstacle in record.proof_obstacles
+    }
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert "no complete runtime member query" in obstacles_by_declaration[
+        "ClassFamilyCollectionSemanticMirrorRecipeBuilder"
+    ]
     assert plan.document.recipes == ()
 
 

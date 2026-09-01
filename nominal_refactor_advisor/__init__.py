@@ -40,6 +40,7 @@ from .codemod import (
     DeleteClassAssignmentsOperation,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
+    FindingRecipeProofObstacle,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisReport,
     FindingRecipeSynthesisStatus,
