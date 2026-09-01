@@ -275,7 +275,7 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
 def test_plan_declarations_reject_obsolete_or_unknown_fields() -> None:
     with pytest.raises(
         ValueError,
-        match=r"Unsupported refactor recipe field\(s\): 'rewrites'",
+        match=r"Unsupported RefactorRecipe payload field\(s\): 'rewrites'",
     ):
         CodemodPlanDocument.from_json_value(
             {
@@ -315,7 +315,10 @@ def test_plan_declarations_reject_obsolete_or_unknown_fields() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"Unsupported refactor recipe operation field\(s\): 'legacy_target'",
+        match=(
+            r"Unsupported ReplaceTargetOperation payload field\(s\): "
+            r"'legacy_target'"
+        ),
     ):
         CodemodPlanDocument.from_json_value(
             {

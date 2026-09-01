@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
-from enum import Enum, StrEnum
+from enum import StrEnum
 from functools import cached_property, lru_cache
 from itertools import combinations
 from pathlib import Path
@@ -181,34 +181,6 @@ SourceTargetIdentityValueT = TypeVar(
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
-
-
-class CodemodPayloadRole(Enum):
-    """Nominal owner of one codemod payload boundary's diagnostics."""
-
-    SOURCE_REWRITE_CONTRIBUTOR = "source rewrite contributor"
-    ARCHITECTURE_GUARD = "architecture guard"
-    TARGET_SELECTOR = "target selector"
-    CALL_REPLACEMENT = "call replacement"
-    REFACTOR_RECIPE_OPERATION = "refactor recipe operation"
-    REFACTOR_RECIPE = "refactor recipe"
-    PLAN_DOCUMENT = "plan document"
-    PLAN_SEQUENCE = "plan sequence"
-
-    def object_fields(self, value: JsonValue) -> Mapping[str, JsonValue]:
-        """Read an object payload or raise this boundary's own diagnostic."""
-
-        if not isinstance(value, Mapping):
-            raise ValueError(f"{self.value} must be an object")
-        return cast(Mapping[str, JsonValue], value)
-
-    def unsupported_fields_error(self, fields: tuple[str, ...]) -> ValueError:
-        """Build this boundary's unsupported-field diagnostic."""
-
-        return ValueError(
-            f"Unsupported {self.value} field(s): "
-            f"{', '.join(repr(field) for field in fields)}"
-        )
 
 
 class RewriteOperation(StrEnum):
@@ -918,19 +890,6 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
                 f"[{self.plan_item_index}]"
             )
 
-    @classmethod
-    def from_json_value(
-        cls,
-        value: JsonValue,
-    ) -> "SourceRewriteContributor":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.SOURCE_REWRITE_CONTRIBUTOR,
-        )
-        contributor = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(contributor.to_dict())
-        return contributor
-
 
 @dataclass(frozen=True, kw_only=True)
 class SourceRewriteDelta(ReplacementSource):
@@ -973,16 +932,6 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
         EmptyDefaultStringPayloadValueCodec(),
         default="",
     )
-
-    @classmethod
-    def from_json_value(cls, value: JsonValue) -> "ArchitectureGuardRule":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.ARCHITECTURE_GUARD,
-        )
-        rule = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(rule.to_dict())
-        return rule
 
     def applies_to_file(self, file_path: str) -> bool:
         return not self.file_path_suffixes or any(
@@ -2961,21 +2910,16 @@ class CodemodTargetSelector(
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodTargetSelector":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.TARGET_SELECTOR,
-        )
+        payload = cls.payload_fields(value)
         selector_key = RequiredStringPayloadValueCodec().read(
-            payload.fields,
+            payload,
             "selector",
         )
-        if selector_key is None:
-            raise ValueError("Expected non-empty string field 'selector'")
         selector_type = cls.__registry__.get(selector_key)
         if selector_type is None:
             raise ValueError(f"Unsupported target selector: {selector_key}")
-        selector = selector_type.from_selector_payload(payload.fields)
-        payload.require_supported_fields(selector.to_dict())
+        selector = selector_type.from_selector_payload(payload)
+        selector.require_supported_payload_fields(payload)
         return selector
 
     @classmethod
@@ -3489,33 +3433,6 @@ def _call_surface_name(node: ast.AST) -> str:
 
 
 @dataclass(frozen=True)
-class CodemodPayload:
-    """Typed reader and declaration-derived field gate for codemod payloads."""
-
-    fields: Mapping[str, JsonValue]
-    role: CodemodPayloadRole
-
-    @classmethod
-    def from_json_value(
-        cls,
-        value: JsonValue,
-        *,
-        role: CodemodPayloadRole,
-    ) -> "CodemodPayload":
-        return cls(role.object_fields(value), role)
-
-    def require_supported_fields(
-        self,
-        canonical_payload: Mapping[str, JsonValue],
-    ) -> None:
-        """Reject fields absent from the nominal declaration's own projection."""
-
-        unsupported_fields = tuple(sorted(set(self.fields) - set(canonical_payload)))
-        if unsupported_fields:
-            raise self.role.unsupported_fields_error(unsupported_fields)
-
-
-@dataclass(frozen=True)
 class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
     """One exact call-site replacement inside an authority extraction recipe."""
 
@@ -3524,15 +3441,12 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.CALL_REPLACEMENT,
-        )
+        payload = cls.payload_fields(value)
         replacement = cls(
-            target=SourceRewriteTarget.from_mapping(payload.fields),
-            **cls.payload_bindings().constructor_kwargs(payload.fields),
+            target=SourceRewriteTarget.from_mapping(payload),
+            **cls.payload_bindings().constructor_kwargs(payload),
         )
-        payload.require_supported_fields(replacement.to_dict())
+        replacement.require_supported_payload_fields(payload)
         return replacement
 
     def to_dict(self) -> JsonObject:
@@ -4641,34 +4555,25 @@ class RefactorRecipeOperation(
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "RefactorRecipeOperation":
-        return cls.from_dict(
-            CodemodPayload.from_json_value(
-                value,
-                role=CodemodPayloadRole.REFACTOR_RECIPE_OPERATION,
-            ).fields
-        )
+        return cls.from_dict(cls.payload_fields(value))
 
     @classmethod
     def from_dict(
         cls,
         payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperation":
-        plan_payload = CodemodPayload(
-            payload,
-            CodemodPayloadRole.REFACTOR_RECIPE_OPERATION,
-        )
         operation_key = RequiredStringPayloadValueCodec().read(
-            plan_payload.fields,
+            payload,
             "operation",
         )
         operation_type = cls.__registry__.get(operation_key)
         if operation_type is None or not issubclass(operation_type, cls):
             raise ValueError(f"Unsupported recipe operation: {operation_key}")
         operation = operation_type.from_operation_payload(
-            SourceRewriteTarget.from_mapping(plan_payload.fields),
-            plan_payload,
+            SourceRewriteTarget.from_mapping(payload),
+            payload,
         )
-        plan_payload.require_supported_fields(operation.to_dict())
+        operation.require_supported_payload_fields(payload)
         return operation
 
     def to_dict(self) -> JsonObject:
@@ -4682,11 +4587,11 @@ class RefactorRecipeOperation(
     def from_operation_payload(
         cls,
         target: SourceRewriteTarget,
-        payload: CodemodPayload,
+        payload: Mapping[str, JsonValue],
     ) -> "RefactorRecipeOperation":
         return cls(
             target=target,
-            **cls.payload_bindings().constructor_kwargs(payload.fields),
+            **cls.payload_bindings().constructor_kwargs(payload),
         )
 
     def operation_payload(self) -> JsonObject:
@@ -10972,16 +10877,6 @@ class RefactorRecipe(CodemodPayloadRecord):
     )
 
     @classmethod
-    def from_json_value(cls, value: JsonValue) -> "RefactorRecipe":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.REFACTOR_RECIPE,
-        )
-        recipe = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(recipe.to_dict())
-        return recipe
-
-    @classmethod
     def compose(
         cls,
         recipes: Iterable["RefactorRecipe"],
@@ -11355,19 +11250,6 @@ class CodemodPlanDocument(CodemodPayloadRecord):
             guard_suite=ArchitectureGuardSuite((guard,)),
         )
 
-    @classmethod
-    def from_json_value(
-        cls,
-        value: JsonValue,
-    ) -> "CodemodPlanDocument":
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.PLAN_DOCUMENT,
-        )
-        document = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(document.to_dict())
-        return document
-
     @property
     def has_recipes(self) -> bool:
         return bool(self.recipes)
@@ -11551,13 +11433,7 @@ class CodemodPlanSequence(CodemodPayloadRecord):
     def from_json_value(cls, value: JsonValue) -> "CodemodPlanSequence":
         if not cls.is_sequence_payload(value):
             return cls.from_document(CodemodPlanDocument.from_json_value(value))
-        payload = CodemodPayload.from_json_value(
-            value,
-            role=CodemodPayloadRole.PLAN_SEQUENCE,
-        )
-        sequence = cls(**cls.payload_bindings().constructor_kwargs(payload.fields))
-        payload.require_supported_fields(sequence.to_dict())
-        return sequence
+        return super().from_json_value(value)
 
     @classmethod
     def compose(

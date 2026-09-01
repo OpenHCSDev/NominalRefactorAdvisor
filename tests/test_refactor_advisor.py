@@ -11220,7 +11220,10 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
 
 
 def test_codemod_plan_document_rejects_parallel_authority_boundary_lane() -> None:
-    with pytest.raises(ValueError, match="Unsupported plan document field"):
+    with pytest.raises(
+        ValueError,
+        match="Unsupported CodemodPlanDocument payload field",
+    ):
         CodemodPlanDocument.from_json_value({"authority_boundaries": []})
 
 

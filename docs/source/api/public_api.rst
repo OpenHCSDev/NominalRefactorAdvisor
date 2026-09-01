@@ -39,7 +39,10 @@ Codemod operations, selectors, and payload records declare wire semantics with
 ``DataclassPayloadProjection`` derives each binding catalogue and JSON
 projection from those declarations.  Common target fields use
 ``codemod_envelope_field`` when their enclosing record owns their flattened
-projection.  No parallel schema is maintained.
+projection.  ``CodemodPayloadRecord`` inherits object decoding and unknown-field
+rejection from the same nominal declaration; polymorphic record families only
+specialize discriminator dispatch.  No parallel schema, payload carrier, or
+boundary-role catalogue is maintained.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
    :members: DataclassPayloadProjection, CodemodPayloadRecord, codemod_payload_field, codemod_envelope_field, PayloadValueCodec, PayloadBindingSet

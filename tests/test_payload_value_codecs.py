@@ -7,13 +7,12 @@ import pytest
 from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     AuthorityClaimPayloadValueCodec,
-    CodemodPayload,
-    CodemodPayloadRole,
     CodemodTargetSelector,
     MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RecipeCallReplacement,
+    RefactorRecipe,
     RefactorRecipeOperation,
     ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
@@ -23,6 +22,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
+    CodemodPayloadRecord,
     DefaultedStringPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     IntegerPayloadValueCodec,
@@ -122,22 +122,23 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
 
 
-def test_payload_roles_own_boundary_diagnostics() -> None:
-    with pytest.raises(ValueError, match="target selector must be an object"):
-        CodemodPayload.from_json_value(
-            (),
-            role=CodemodPayloadRole.TARGET_SELECTOR,
-        )
-
-    payload = CodemodPayload.from_json_value(
-        {"legacy": True},
-        role=CodemodPayloadRole.REFACTOR_RECIPE,
-    )
+def test_payload_records_own_boundary_diagnostics() -> None:
     with pytest.raises(
         ValueError,
-        match=r"Unsupported refactor recipe field\(s\): 'legacy'",
+        match="CodemodTargetSelector payload must be an object",
     ):
-        payload.require_supported_fields({})
+        CodemodTargetSelector.from_json_value(())
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported RefactorRecipe payload field\(s\): 'legacy'",
+    ):
+        RefactorRecipe.from_json_value(
+            {
+                "recipe_id": "declaration-owned-boundary",
+                "legacy": True,
+            }
+        )
 
 
 def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
@@ -149,15 +150,10 @@ def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
         DefaultedStringPayloadValueCodec("default").read({"name": ""}, "name")
 
 
-def test_codemod_payload_has_no_parallel_value_decoding_api() -> None:
-    assert not {
-        "required_string",
-        "optional_string",
-        "string_or_empty",
-        "array",
-        "string_tuple",
-        "source_target",
-    }.intersection(CodemodPayload.__dict__)
+def test_payload_records_have_no_parallel_role_or_carrier() -> None:
+    assert "from_json_value" in CodemodPayloadRecord.__dict__
+    assert not hasattr(codemod_module, "CodemodPayload")
+    assert not hasattr(codemod_module, "CodemodPayloadRole")
 
 
 def test_optional_array_codec_leaves_own_missing_value_semantics() -> None:

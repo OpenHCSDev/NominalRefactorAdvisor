@@ -52,9 +52,34 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
     """Nominal JSON record that owns both decoding and encoding semantics."""
 
     @classmethod
-    @abstractmethod
+    def payload_fields(cls, value: JsonValue) -> Mapping[str, JsonValue]:
+        """Read this nominal record's object payload."""
+
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{cls.__name__} payload must be an object")
+        return cast(Mapping[str, JsonValue], value)
+
+    def require_supported_payload_fields(
+        self,
+        payload: Mapping[str, JsonValue],
+    ) -> None:
+        """Reject fields absent from this record's declaration-derived projection."""
+
+        unsupported_fields = tuple(sorted(set(payload) - set(self.to_dict())))
+        if unsupported_fields:
+            raise ValueError(
+                f"Unsupported {type(self).__name__} payload field(s): "
+                f"{', '.join(repr(field) for field in unsupported_fields)}"
+            )
+
+    @classmethod
     def from_json_value(cls, value: JsonValue) -> Self:
-        raise NotImplementedError
+        """Decode one record through its declaration-owned field bindings."""
+
+        payload = cls.payload_fields(value)
+        record = cls(**cls.payload_bindings().constructor_kwargs(payload))
+        record.require_supported_payload_fields(payload)
+        return record
 
 
 class PayloadValueCodec(Generic[PayloadValueT], ABC):
