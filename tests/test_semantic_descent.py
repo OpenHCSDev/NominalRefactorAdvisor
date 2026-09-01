@@ -2010,6 +2010,132 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     }
 
 
+def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class PhaseRecord:\n"
+        "    run_id: str\n"
+        "    seconds: float\n"
+        "\n"
+        "def field_names():\n"
+        "    fieldnames = ('run_id', 'seconds')\n"
+        "    return fieldnames\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "PhaseRecord"
+        and item.metrics.plan_mapping_name == "fieldnames"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].executable_declaration_name
+        == "DataclassFieldNameCollectionProjectionMappingRecipeBuilder"
+    )
+    assert plan.records[0].refactor_concept == "dataclass_payload_projection"
+    assert simulation.is_clean is True
+    assert "import dataclasses" in rewritten_source
+    assert (
+        "tuple(field.name for field in dataclasses.fields(PhaseRecord))"
+        in rewritten_source
+    )
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    assert namespace["field_names"]() == ("run_id", "seconds")
+
+
+def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class PhaseRecord:\n"
+        "    run_id: str\n"
+        "    seconds: float\n"
+        "\n"
+        "def field_names():\n"
+        "    fieldnames = ('seconds', 'run_id')\n"
+        "    return fieldnames\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "PhaseRecord"
+        and item.metrics.plan_mapping_name == "fieldnames"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.document.recipes == ()
+
+
+def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
+    tmp_path: Path,
+) -> None:
+    package_path = tmp_path / "pkg"
+    package_path.mkdir(parents=True)
+    (package_path / "model.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class PhaseRecord:\n"
+        "    run_id: str\n"
+        "    seconds: float\n",
+        encoding="utf-8",
+    )
+    (package_path / "report.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from .model import PhaseRecord\n"
+        "\n"
+        "def field_names():\n"
+        "    fieldnames = ('run_id', 'seconds')\n"
+        "    return fieldnames\n",
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "PhaseRecord"
+        and item.metrics.plan_mapping_name == "fieldnames"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.document.recipes == ()
+
+
 def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe(
     tmp_path: Path,
 ) -> None:

@@ -48,6 +48,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
+    codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder: (
+        codemod.DataclassPayloadProjectionConcept
+    ),
     codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
@@ -73,6 +76,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
 EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
     {
         codemod.DataclassConstructorProjectionMappingRecipeBuilder,
+        codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
         codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
     }

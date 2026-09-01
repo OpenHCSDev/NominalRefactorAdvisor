@@ -16837,6 +16837,95 @@ class DataclassKeyValueElementRunProjection:
 
 
 @dataclass(frozen=True)
+class DataclassFieldNameCollectionProjectionTarget(FunctionProjectionTarget):
+    """One local collection that exhaustively names dataclass fields."""
+
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    collection_node: ast.Tuple | ast.List
+
+    @classmethod
+    def from_function_location(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        binding_name: str,
+        line: int,
+        field_names: frozenset[str],
+    ) -> "DataclassFieldNameCollectionProjectionTarget | None":
+        target = _source_index_target_for_line(
+            context.source_index,
+            source_path,
+            line,
+        )
+        if target is None:
+            return None
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        collections = tuple(
+            collection
+            for statement in ast.walk(node)
+            for collection in cls.bound_collection(statement, binding_name, line)
+            if len(collection.elts) == len(field_names)
+            and frozenset(cls.string_elements(collection)) == field_names
+        )
+        if len(collections) != 1:
+            return None
+        return cls(
+            source_path=source_path,
+            function_qualname=target.qualname,
+            target=target,
+            node=node,
+            collection_node=collections[0],
+        )
+
+    @staticmethod
+    def bound_collection(
+        statement: ast.AST,
+        binding_name: str,
+        line: int,
+    ) -> tuple[ast.Tuple | ast.List, ...]:
+        if not isinstance(statement, ast.stmt) or statement.lineno != line:
+            return ()
+        pair = SingleAssignmentAndValueNameProjection(statement).pair
+        if (
+            pair is None
+            or pair[0] != binding_name
+            or not isinstance(pair[1], ast.Tuple | ast.List)
+        ):
+            return ()
+        return (pair[1],)
+
+    @staticmethod
+    def string_elements(collection: ast.Tuple | ast.List) -> tuple[str, ...]:
+        if not all(
+            isinstance(element, ast.Constant) and isinstance(element.value, str)
+            for element in collection.elts
+        ):
+            return ()
+        return tuple(cast(ast.Constant, element).value for element in collection.elts)
+
+    def derived_source(
+        self,
+        dataclasses_reference: "DataclassesModuleReference",
+        authority: DataclassPayloadAuthorityTarget,
+    ) -> str:
+        field_projection = (
+            f"field.name for field in {dataclasses_reference.expression}.fields("
+            f"{authority.class_name})"
+        )
+        if isinstance(self.collection_node, ast.Tuple):
+            return f"tuple({field_projection})"
+        return f"[{field_projection}]"
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return self.string_elements(self.collection_node)
+
+
+@dataclass(frozen=True)
 class DataclassesModuleReference:
     """Collision-checked module reference for public dataclass reflection."""
 
@@ -16847,7 +16936,10 @@ class DataclassesModuleReference:
     def from_projection(
         cls,
         context: CodemodSelectorContext,
-        projection: ReturnCollectionProjectionTarget,
+        projection: (
+            ReturnCollectionProjectionTarget
+            | DataclassFieldNameCollectionProjectionTarget
+        ),
     ) -> "DataclassesModuleReference | None":
         module = context.module_nodes_by_file_path.get(projection.source_path)
         source = context.sources_by_file_path.get(projection.source_path)
@@ -17324,6 +17416,97 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         return replacement_span.replacement(
             source,
             replacement_source,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
+    DataclassAuthorityMappingRecipeBuilder[
+        DataclassFieldNameCollectionProjectionTarget,
+        DataclassProjectionRecipeParts,
+    ],
+    InferredSemanticMirrorMappingRecipeBuilder,
+    DataclassPayloadProjectionConcept,
+):
+    """Derive an exhaustive local field-name collection from a dataclass."""
+
+    finding: RefactorFinding
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "dataclass field-name projection requires mapping metrics"
+        if self.parts is not None:
+            return "dataclass field-name projection has an executable recipe"
+        return (
+            "dataclass field-name projection requires one local tuple or list that "
+            "exhaustively names direct dataclass fields in declaration order, with "
+            "the authority already available at runtime"
+        )
+
+    def resolved_target_matches_fields(
+        self,
+        resolved_target: ResolvedClassTarget,
+        field_names: frozenset[str],
+    ) -> bool:
+        return self.resolved_target_is_exhaustive_dataclass(
+            resolved_target,
+            field_names,
+        )
+
+    def projection_target(
+        self,
+        seed: SemanticMirrorRecipeSeedLocations,
+        source_path: str,
+    ) -> DataclassFieldNameCollectionProjectionTarget | None:
+        return DataclassFieldNameCollectionProjectionTarget.from_function_location(
+            self,
+            source_path=source_path,
+            binding_name=seed.projection_subject(),
+            line=seed.projection_line(),
+            field_names=frozenset(self.finding.metrics.plan_field_names),
+        )
+
+    def recipe_parts(
+        self,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassFieldNameCollectionProjectionTarget,
+    ) -> DataclassProjectionRecipeParts | None:
+        if projection.field_names != authority.field_names:
+            return None
+        authority_import = self.authority_import_requirement(
+            authority,
+            projection,
+        )
+        dataclasses_reference = DataclassesModuleReference.from_projection(
+            self,
+            projection,
+        )
+        if (
+            authority_import is None
+            or authority_import.import_source is not None
+            or dataclasses_reference is None
+        ):
+            return None
+        source = self.sources_by_file_path[projection.source_path]
+        old_source = SourceTextGeometry(source).segment_for_node(
+            projection.collection_node
+        )
+        if old_source is None:
+            return None
+        return DataclassProjectionRecipeParts(
+            projection=projection,
+            authority=authority,
+            projection_old_source=old_source,
+            projection_new_source=projection.derived_source(
+                dataclasses_reference,
+                authority,
+            ),
+            import_source=authority_import.import_source,
+            support_import_sources=(
+                (dataclasses_reference.import_source,)
+                if dataclasses_reference.import_source is not None
+                else ()
+            ),
         )
 
 
