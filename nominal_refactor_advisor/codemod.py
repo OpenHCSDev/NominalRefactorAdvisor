@@ -20444,7 +20444,12 @@ class LiteralDispatchFindingRecipeSynthesizer(
         if len(action_keys) != 1:
             return None
         action_key = action_keys[0]
-        target_digest = self.function_target_digest(action_key, context)
+        target_digest = self.evidence_target_digest(
+            finding,
+            action_key,
+            context,
+            node_kinds=(AstTargetNodeKind.FUNCTION,),
+        )
         if target_digest is None:
             return None
         node = context.ast_target_nodes_by_id[target_digest.target_id]
@@ -20455,27 +20460,21 @@ class LiteralDispatchFindingRecipeSynthesizer(
         return target_digest, node
 
     @staticmethod
-    def function_target_digest(
+    def evidence_target_digest(
+        finding: RefactorFinding,
         action_key: "FindingRecipeActionKey",
         context: CodemodSelectorContext,
+        *,
+        node_kinds: tuple[AstTargetNodeKind, ...],
     ) -> AstTargetDigest | None:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.FUNCTION,),
-            file_paths=(action_key.file_path,),
-            qualnames=(action_key.subject_name,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        return context.source_index.target_by_id[target_ids[0]]
-
-    @staticmethod
-    def function_or_method_target_digest(
-        action_key: "FindingRecipeActionKey",
-        context: CodemodSelectorContext,
-    ) -> AstTargetDigest | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            action_key.file_path,
-            action_key.subject_name,
+        target_ids = TargetSetExpressionSelector(
+            include=(FindingEvidenceTargetSelector.from_findings((finding,)),),
+            require=(
+                SourceIndexTargetSelector(
+                    node_kinds=node_kinds,
+                    file_paths=(action_key.file_path,),
+                ),
+            ),
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
@@ -20551,19 +20550,12 @@ class LiteralDispatchFindingRecipeSynthesizer(
         if context is None:
             return "literal dispatch synthesis requires a source selector context"
         action_key = action_keys[0]
-        exact_target = self.function_target_digest(action_key, context)
-        if exact_target is not None:
-            node = context.ast_target_nodes_by_id[exact_target.target_id]
-            if isinstance(node, ast.FunctionDef):
-                extraction = self.extraction_for(finding, node)
-                if extraction is None:
-                    return (
-                        f"{exact_target.qualname!r} is not a mechanically supported "
-                        "literal-return dispatch; extract the closed-axis authority "
-                        "with the replacement scaffold before simulating."
-                    )
-            return "literal dispatch target is not an AST function"
-        target = self.function_or_method_target_digest(action_key, context)
+        target = self.evidence_target_digest(
+            finding,
+            action_key,
+            context,
+            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
+        )
         if target is None:
             return (
                 f"no function or method target matched dispatch action "
@@ -20575,7 +20567,16 @@ class LiteralDispatchFindingRecipeSynthesizer(
                 f"method target {target.qualname!r} requires extracting or owning "
                 "the closed-axis authority at the class boundary first."
             )
-        return f"dispatch target {target.qualname!r} is not a module function"
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef):
+            return "literal dispatch target is not an AST function"
+        if self.extraction_for(finding, node) is None:
+            return (
+                f"{target.qualname!r} is not a mechanically supported "
+                "literal-return dispatch; extract the closed-axis authority "
+                "with the replacement scaffold before simulating."
+            )
+        return "literal dispatch target has an executable authority recipe"
 
 
 class NumericLiteralDispatchFindingRecipeSynthesizer(

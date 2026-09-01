@@ -17044,6 +17044,68 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     assert finding.certification == "certified"
 
 
+def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef render(pattern_id, value):\n"
+        "    if pattern_id == 3:\n"
+        "        return value + 1\n"
+        "    elif pattern_id == 5:\n"
+        "        return value + 2\n"
+        "    raise ValueError(pattern_id)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "numeric_literal_dispatch"
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.PLANNED
+    assert plan.document.recipes[0].operations[0].target.qualname == "render"
+
+
+def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Renderer:\n"
+        "    def render(self, pattern_id, value):\n"
+        "        if pattern_id == 3:\n"
+        "            return value + 1\n"
+        "        elif pattern_id == 5:\n"
+        "            return value + 2\n"
+        "        raise ValueError(pattern_id)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "numeric_literal_dispatch"
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert (
+        plan.records[0].reason
+        == "dispatch_to_polymorphism currently rewrites module functions; "
+        "method target 'Renderer.render' requires extracting or owning the "
+        "closed-axis authority at the class boundary first."
+    )
+
+
 def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
