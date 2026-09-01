@@ -1453,7 +1453,8 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
         "    file_paths: tuple[str, ...] = ()\n"
         "    qualnames: tuple[str, ...] = ()\n"
         "\n"
-        "    def select(self):\n"
+        "    @property\n"
+        "    def selected_qualnames(self):\n"
         "        return self.qualnames\n"
         "\n"
         "class SelectorBuilder:\n"
@@ -1496,6 +1497,8 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     assert "qualname: str" in rewritten
     assert "file_paths=(file_path,)" in rewritten
     assert "file_paths=(source_path,)" not in rewritten
+    assert "    @classmethod\n    def for_function_or_method(" in rewritten
+    assert "    @property\n    @classmethod" not in rewritten
     assert rewritten.count("TargetSelector.for_function_or_method(") == 3
     assert simulation.is_clean is True
 

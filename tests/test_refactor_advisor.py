@@ -9657,7 +9657,14 @@ class RuntimePlan:
     theorem_handles: tuple[str, ...]
 
 
-def alpha(candidate):
+@dataclass(frozen=True)
+class PlanSource:
+    pose_id: str
+    score: float
+    theorem_handles: tuple[str, ...]
+
+
+def alpha(candidate: PlanSource):
     return RuntimePlan(
         pose_id=candidate.pose_id,
         score=candidate.score,
@@ -9665,7 +9672,7 @@ def alpha(candidate):
     )
 
 
-def beta(entry):
+def beta(entry: PlanSource):
     return RuntimePlan(
         pose_id=entry.pose_id,
         score=entry.score,
@@ -9709,7 +9716,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     assert resolution["claim"]["claimed_symbol"] == "RuntimePlan"
     assert resolution["status"] == "resolved"
     assert "def from_source(" in rewritten
-    assert "source: object" in rewritten
+    assert "source: PlanSource" in rewritten
     assert "theorem_handles=tuple(source.theorem_handles)" in rewritten
     assert "RuntimePlan.from_source(source=candidate)" in rewritten
     assert "RuntimePlan.from_source(source=entry)" in rewritten
@@ -9717,6 +9724,36 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
         for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
+@pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))
+def test_repeated_builder_rejects_unproved_source_projection_type(
+    tmp_path: Path,
+    annotation_source: str,
+) -> None:
+    source = (
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION
+        .replace("candidate: PlanSource", f"candidate{annotation_source}")
+        .replace("entry: PlanSource", f"entry{annotation_source}")
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "requires a source projection or invariant selector axis" in (
+        plan.records[0].reason
     )
 
 
@@ -9776,6 +9813,42 @@ def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> Non
             finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
             for finding in analyze_path(tmp_path)
         )
+    )
+
+
+def test_repeated_builder_counts_method_receiver_as_source_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Projection:\n"
+        "    node: object\n"
+        "    source: str\n"
+        "\n"
+        "\n"
+        "def left(target, targets):\n"
+        "    return Projection(\n"
+        "        node=target.node,\n"
+        "        source=targets.source_for(target.file_path),\n"
+        "    )\n"
+        "\n"
+        "\n"
+        "def right(target, targets):\n"
+        "    return Projection(\n"
+        "        node=target.node,\n"
+        "        source=targets.source_for(target.file_path),\n"
+        "    )\n",
+    )
+
+    findings = analyze_modules(
+        parse_python_modules(tmp_path),
+        DetectorConfig(min_builder_keywords=2),
+    )
+
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in findings
     )
 
 

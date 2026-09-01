@@ -44,6 +44,7 @@ from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     ROOT_NAME_PROJECTION,
     BuiltinCallName,
@@ -52,6 +53,7 @@ from .ast_tools import (
     SourceModule,
     SourceModuleBatchParser,
     python_module_name_is_importable,
+    walk_function_body_nodes,
 )
 from .class_index import (
     ClassFamilyIndex,
@@ -13324,10 +13326,32 @@ class RepeatedBuilderSourceProjectionAuthorityMethod(
 
 
 @dataclass(frozen=True)
+class RepeatedBuilderCallSite:
+    """One matching constructor call together with its lexical owner."""
+
+    call: ast.Call
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+
+    def root_parameter_annotation(self, root_name: str) -> str | None:
+        for parameter in (
+            *self.function.args.posonlyargs,
+            *self.function.args.args,
+            *self.function.args.kwonlyargs,
+        ):
+            if parameter.arg != root_name or parameter.annotation is None:
+                continue
+            return NOMINAL_ANNOTATION_SOURCE_AUTHORITY.source_or_none(
+                parameter.annotation
+            )
+        return None
+
+
+@dataclass(frozen=True)
 class RepeatedBuilderSourceProjectionTemplate:
     """One constructor call normalized by replacing its source root with `source`."""
 
     root_name: str
+    source_annotation: str
     normalized_value_fingerprints: tuple[str, ...]
     value_sources_by_field: tuple[tuple[str, str], ...]
 
@@ -13470,7 +13494,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 None,
                 "repeated-builder authority extraction requires typed constructor fields",
             )
-        matching_calls = self.matching_calls(
+        matching_call_sites = self.matching_call_sites(
             context,
             source_path=source_path,
             constructor_name=constructor_name,
@@ -13480,7 +13504,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         method = self.authority_method_or_none(
             metrics,
             field_annotations,
-            matching_calls,
+            matching_call_sites,
         )
         if method is None:
             return (
@@ -13657,13 +13681,14 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         cls,
         metrics: MappingMetrics,
         field_annotations: tuple[tuple[str, str], ...],
-        matching_calls: tuple[ast.Call, ...],
+        matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
+        matching_calls = tuple(site.call for site in matching_call_sites)
         return (
             cls.source_projection_authority_method_or_none(
                 metrics,
                 field_annotations,
-                matching_calls,
+                matching_call_sites,
             )
             or cls.invariant_selector_authority_method_or_none(
                 metrics,
@@ -13677,13 +13702,14 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         cls,
         metrics: MappingMetrics,
         field_annotations: tuple[tuple[str, str], ...],
-        matching_calls: tuple[ast.Call, ...],
+        matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
         field_names = tuple(field_name for field_name, _annotation in field_annotations)
+        matching_calls = tuple(site.call for site in matching_call_sites)
         return (
-            Maybe.of(matching_calls)
+            Maybe.of(matching_call_sites)
             .filter(bool)
-            .project(lambda calls: cls.source_projection_templates(calls, field_names))
+            .project(lambda sites: cls.source_projection_templates(sites, field_names))
             .filter(cls.source_projection_templates_share_shape)
             .combine(
                 lambda templates: cls.source_projection_anchor_field_name(
@@ -13714,7 +13740,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             parameters=(
                 RepeatedBuilderAuthorityParameter(
                     name=parameter_name,
-                    annotation="object",
+                    annotation=templates[0].source_annotation,
                     source_field_name=source_field_name,
                     value_projection=RepeatedBuilderParameterProjection.ROOT_NAME,
                 ),
@@ -13731,11 +13757,12 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def source_projection_templates(
         cls,
-        calls: tuple[ast.Call, ...],
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
         field_names: tuple[str, ...],
     ) -> tuple[RepeatedBuilderSourceProjectionTemplate, ...] | None:
         templates = tuple(
-            cls.source_projection_template_for_call(call, field_names) for call in calls
+            cls.source_projection_template_for_call(site, field_names)
+            for site in call_sites
         )
         if any(template is None for template in templates):
             return None
@@ -13748,20 +13775,35 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         template_fingerprints = tuple(
             template.normalized_value_fingerprints for template in templates
         )
-        return len(set(template_fingerprints)) == 1
+        source_annotations = tuple(template.source_annotation for template in templates)
+        return (
+            len(set(template_fingerprints)) == 1
+            and len(set(source_annotations)) == 1
+        )
 
     @classmethod
     def source_projection_template_for_call(
         cls,
-        call: ast.Call,
+        call_site: RepeatedBuilderCallSite,
         field_names: tuple[str, ...],
     ) -> RepeatedBuilderSourceProjectionTemplate | None:
         return (
-            Maybe.of(cls.call_source_root_name(call))
+            Maybe.of(cls.call_source_root_name(call_site.call))
             .combine(
-                lambda root_name: cls.call_keyword_values_by_field(call, field_names),
-                lambda root_name, values_by_field: cls.source_projection_template(
+                call_site.root_parameter_annotation,
+                lambda root_name, source_annotation: (
                     root_name,
+                    source_annotation,
+                ),
+            )
+            .combine(
+                lambda _source: cls.call_keyword_values_by_field(
+                    call_site.call,
+                    field_names,
+                ),
+                lambda root_name, values_by_field: cls.source_projection_template(
+                    root_name[0],
+                    root_name[1],
                     field_names,
                     values_by_field,
                 ),
@@ -13773,6 +13815,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     def source_projection_template(
         cls,
         root_name: str,
+        source_annotation: str,
         field_names: tuple[str, ...],
         values_by_field: Mapping[str, ast.expr],
     ) -> RepeatedBuilderSourceProjectionTemplate:
@@ -13782,6 +13825,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         )
         return RepeatedBuilderSourceProjectionTemplate(
             root_name=root_name,
+            source_annotation=source_annotation,
             normalized_value_fingerprints=tuple(
                 ast.dump(value, include_attributes=False) for value in normalized_values
             ),
@@ -14160,7 +14204,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         geometry = SourceTextGeometry(source)
         for statement in node.body:
             if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                return geometry.line_offsets[statement.lineno - 1]
+                return geometry.line_offsets[
+                    ClassHeaderSpanSourceAuthority.body_start_line(statement) - 1
+                ]
         return (
             geometry.line_offsets[node.end_lineno]
             if node.end_lineno is not None
@@ -14271,7 +14317,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         )
 
     @classmethod
-    def matching_calls(
+    def matching_call_sites(
         cls,
         context: CodemodSelectorContext,
         *,
@@ -14279,8 +14325,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         constructor_name: str,
         field_names: tuple[str, ...],
         evidence_symbols: tuple[str, ...],
-    ) -> tuple[ast.Call, ...]:
-        calls: list[ast.Call] = []
+    ) -> tuple[RepeatedBuilderCallSite, ...]:
+        call_sites: list[RepeatedBuilderCallSite] = []
         target_qualnames = sorted_tuple(
             {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
         )
@@ -14289,9 +14335,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             if target is None:
                 return ()
             _target_digest, target_node = target
-            calls.extend(
-                call
-                for call in ast.walk(target_node)
+            call_sites.extend(
+                RepeatedBuilderCallSite(call=call, function=target_node)
+                for call in walk_function_body_nodes(target_node)
                 if isinstance(call, ast.Call)
                 and cls.constructor_call_matches(
                     call,
@@ -14299,7 +14345,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                     field_names=field_names,
                 )
             )
-        return tuple(calls)
+        return tuple(call_sites)
 
     @staticmethod
     def constructor_call_matches(

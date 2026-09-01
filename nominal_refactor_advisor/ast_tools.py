@@ -4027,10 +4027,12 @@ class RootNameProjection:
 
         class Visitor(ast.NodeVisitor):
             def visit_Call(self, node: ast.Call) -> None:
+                if isinstance(node.func, ast.Attribute):
+                    self.visit(node.func.value)
                 for argument in node.args:
                     self.visit(argument)
-                for keyword in node.keywords:
-                    self.visit(keyword.value)
+                for keyword_node in node.keywords:
+                    self.visit(keyword_node.value)
 
             def visit_Attribute(self, node: ast.Attribute) -> None:
                 current: ast.AST = node
