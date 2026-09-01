@@ -718,13 +718,20 @@ def _canonicalize_ast_line_numbers(
                 attributes["end_lineno"] = canonical_end_line_number
 
 
-def _effective_parse_workers(parse_workers: int) -> int:
-    if parse_workers <= 0:
-        cpu_count = os.cpu_count()
-        if cpu_count is None:
-            cpu_count = 1
-        return min(_MAX_AUTO_PARSE_WORKERS, cpu_count)
-    return max(1, parse_workers)
+@dataclass(frozen=True)
+class PythonParseWorkerPolicy:
+    """Resolve a requested Python parse-worker count once for every parser."""
+
+    requested_count: int
+
+    @property
+    def worker_count(self) -> int:
+        if self.requested_count <= 0:
+            cpu_count = os.cpu_count()
+            if cpu_count is None:
+                cpu_count = 1
+            return min(_MAX_AUTO_PARSE_WORKERS, cpu_count)
+        return max(1, self.requested_count)
 
 
 @dataclass(frozen=True)
@@ -783,6 +790,27 @@ class SourceModule(SourceFileIdentity):
             source=self.source,
             family_cache_dir=self.family_cache_dir,
         )
+
+    def parse(self) -> ParsedModule:
+        """Parse this exact in-memory source into its nominal module record."""
+
+        return self.parsed_module(ast.parse(self.source, filename=str(self.path)))
+
+
+@dataclass(frozen=True)
+class SourceModuleBatchParser:
+    """Parse exact in-memory source modules with the shared worker policy."""
+
+    source_modules: tuple[SourceModule, ...]
+    parse_workers: int = _DEFAULT_PARSE_WORKERS
+
+    def parsed_modules(self) -> tuple[ParsedModule, ...]:
+        worker_count = PythonParseWorkerPolicy(self.parse_workers).worker_count
+        with _suspend_cyclic_gc():
+            if worker_count <= 1 or len(self.source_modules) <= 1:
+                return tuple(module.parse() for module in self.source_modules)
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                return tuple(executor.map(SourceModule.parse, self.source_modules))
 
 
 def retains_python_ast(
@@ -2135,7 +2163,7 @@ def _parse_module_roots(
 def _parse_module_roots_concurrently(
     root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
-    parse_workers = _effective_parse_workers(root_parser.parse_workers)
+    parse_workers = PythonParseWorkerPolicy(root_parser.parse_workers).worker_count
 
     def parse_path(path: Path) -> ParsedModule:
         return _parse_source_module(path, context=root_parser)
@@ -2346,7 +2374,10 @@ class PythonModuleRootParser(PythonModuleParseContext):
             for path in paths
             if path.is_file() and self.source_policy.allows_file_path(path)
         )
-        if _effective_parse_workers(self.parse_workers) <= 1 or len(allowed_paths) <= 1:
+        if (
+            PythonParseWorkerPolicy(self.parse_workers).worker_count <= 1
+            or len(allowed_paths) <= 1
+        ):
             return _parse_module_roots(self, allowed_paths)
         return _parse_module_roots_concurrently(self, allowed_paths)
 

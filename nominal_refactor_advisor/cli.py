@@ -4010,7 +4010,8 @@ def _main_without_deadline() -> int:
             and source_snapshot_cache_eligibility.can_use_cached_source_context
         ):
             source_snapshot = cached_source_context.snapshot_for_findings(
-                findings
+                findings,
+                parse_workers=args.parse_workers,
             )
         elif source_snapshot_cache_eligibility.can_use_cached_source_context:
             source_context = CodemodSourceContext.from_modules(modules, findings)
@@ -4018,9 +4019,7 @@ def _main_without_deadline() -> int:
                 analysis_cache_identity,
                 source_context,
             )
-            source_snapshot = source_context.snapshot_for_findings(
-                findings
-            )
+            source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         else:
             source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)

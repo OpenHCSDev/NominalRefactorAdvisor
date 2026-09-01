@@ -49,6 +49,8 @@ from .ast_tools import (
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
+    SourceModule,
+    SourceModuleBatchParser,
     python_module_name_is_importable,
 )
 from .class_index import (
@@ -1888,8 +1890,13 @@ class CodemodSourceContext:
     def snapshot_for_findings(
         self,
         findings: Iterable[RefactorFinding],
+        *,
+        parse_workers: int = 1,
     ) -> "CodemodSourceSnapshot":
-        module_tuple = self.parsed_modules_for_findings(tuple(findings))
+        module_tuple = self.parsed_modules_for_findings(
+            tuple(findings),
+            parse_workers=parse_workers,
+        )
         return CodemodSourceSnapshot(
             source_index=self.source_index,
             sources_by_file_path=dict(self.sources_by_file_path),
@@ -1909,11 +1916,20 @@ class CodemodSourceContext:
     def parsed_modules_for_findings(
         self,
         findings: tuple[RefactorFinding, ...],
+        *,
+        parse_workers: int = 1,
     ) -> tuple[ParsedModule, ...]:
-        return tuple(
-            _parsed_module_from_source(file_path, self.sources_by_file_path[file_path])
-            for file_path in self.source_paths_for_findings(findings)
-        )
+        return SourceModuleBatchParser(
+            source_modules=tuple(
+                SourceModule(
+                    path=Path(file_path),
+                    module_name=module_name_from_source_path(file_path),
+                    source=self.sources_by_file_path[file_path],
+                )
+                for file_path in self.source_paths_for_findings(findings)
+            ),
+            parse_workers=parse_workers,
+        ).parsed_modules()
 
     def source_paths_for_findings(
         self,

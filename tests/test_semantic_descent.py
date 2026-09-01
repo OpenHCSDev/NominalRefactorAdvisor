@@ -1112,9 +1112,17 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
         modules,
         (alpha_finding, beta_finding),
     )
-    snapshot = context.snapshot_for_findings((alpha_finding,))
+    snapshot = context.snapshot_for_findings((alpha_finding,), parse_workers=4)
+    parallel_snapshot = context.snapshot_for_findings(
+        (beta_finding, alpha_finding),
+        parse_workers=4,
+    )
 
     assert tuple(snapshot.module_node_cache or {}) == (alpha_path.as_posix(),)
+    assert tuple(parallel_snapshot.module_node_cache or {}) == (
+        alpha_path.as_posix(),
+        beta_path.as_posix(),
+    )
     assert {
         snapshot.source_index.target_by_id[target_id].file_path
         for target_id in snapshot.ast_target_node_cache or {}
