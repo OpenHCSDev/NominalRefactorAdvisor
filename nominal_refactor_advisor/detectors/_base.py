@@ -465,9 +465,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
     genericity: ClassVar[str] = "generic"
-    ssot_authority_boundary: ClassVar[bool] = False
-    semantic_mirror_role: ClassVar[bool] = False
-    semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -510,16 +507,16 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def ssot_authority_detector_ids(cls) -> frozenset[str]:
-        return cls._detector_ids_for_role_attribute(
+        return cls._detector_ids_for_nominal_relation(
             cls.registered_detector_types(),
-            "ssot_authority_boundary",
+            SsotAuthorityBoundaryDetector,
         )
 
     @classmethod
     def semantic_mirror_detector_ids(cls) -> frozenset[str]:
-        return cls._detector_ids_for_role_attribute(
+        return cls._detector_ids_for_nominal_relation(
             cls.registered_detector_types(),
-            "semantic_mirror_role",
+            SemanticMirrorIssueDetector,
         )
 
     @classmethod
@@ -528,20 +525,21 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             detector_id: detector_type.semantic_mirror_authority_evidence_index
             for detector_type in cls.registered_detector_types()
             for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None and detector_type.semantic_mirror_role
+            if detector_id is not None
+            and issubclass(detector_type, SemanticMirrorIssueDetector)
         }
 
     @staticmethod
     @lru_cache(maxsize=None)
-    def _detector_ids_for_role_attribute(
+    def _detector_ids_for_nominal_relation(
         detector_types: tuple[type["IssueDetector"], ...],
-        role_attribute: str,
+        relation_type: type["IssueDetector"],
     ) -> frozenset[str]:
         return frozenset(
             detector_id
             for detector_type in detector_types
             for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None and bool(getattr(detector_type, role_attribute))
+            if detector_id is not None and issubclass(detector_type, relation_type)
         )
 
     @classmethod
@@ -607,11 +605,14 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
-class SemanticMirrorIssueDetector(IssueDetector):
+class SsotAuthorityBoundaryDetector(IssueDetector):
+    """Nominal detector relation whose findings open an SSOT proof boundary."""
+
+
+class SemanticMirrorIssueDetector(SsotAuthorityBoundaryDetector):
     """Detector base for semantic mirrors that need authority-boundary priority."""
 
-    ssot_authority_boundary: ClassVar[bool] = True
-    semantic_mirror_role: ClassVar[bool] = True
+    semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
 
 
 class PerModuleIssueDetector(IssueDetector):

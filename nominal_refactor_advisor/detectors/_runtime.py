@@ -2015,10 +2015,10 @@ class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]
 class RepeatedBuilderCallDetector(
     CompactModuleProjectionDetectorMixin[BuilderCallShape],
     FlattenedModuleCollectorCandidateDetector[BuilderCallShape],
+    SsotAuthorityBoundaryDetector,
 ):
     module_projection_family = RepeatedBuilderCallShapeProjectionFamily
     detector_id = "repeated_builder_calls"
-    ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated field assignment should become an authoritative builder",

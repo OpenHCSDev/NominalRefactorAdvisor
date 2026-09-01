@@ -26,16 +26,31 @@ def test_detector_registry_lazy_discovery_imports_private_collectors() -> None:
     assert "Failed to load registry module" not in result.stderr
 
 
-def test_semantic_mirror_detector_role_is_inherited_by_mirror_families() -> None:
-    from nominal_refactor_advisor.detectors import IssueDetector
+def test_authority_boundary_relations_are_inherited_by_detector_families() -> None:
+    from nominal_refactor_advisor.detectors import (
+        IssueDetector,
+        SemanticMirrorIssueDetector,
+        SsotAuthorityBoundaryDetector,
+    )
 
-    role_ids = IssueDetector.semantic_mirror_detector_ids()
-    authority_evidence_indices = IssueDetector.semantic_mirror_authority_evidence_indices()
+    semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
+    ssot_authority_ids = IssueDetector.ssot_authority_detector_ids()
+    authority_evidence_indices = (
+        IssueDetector.semantic_mirror_authority_evidence_indices()
+    )
 
-    assert "semantic_mirror_issue" not in role_ids
-    assert "per_module_semantic_mirror_issue" not in role_ids
-    assert {
-        "formal_boundary_external_string_registry_mirror",
-        "semantic_mirror_without_descent",
-    } <= role_ids
+    assert issubclass(SsotAuthorityBoundaryDetector, IssueDetector)
+    assert issubclass(SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
+    assert "semantic_mirror_issue" not in semantic_mirror_ids
+    assert "per_module_semantic_mirror_issue" not in semantic_mirror_ids
+    assert (
+        {
+            "formal_boundary_external_string_registry_mirror",
+            "semantic_mirror_without_descent",
+        }
+        <= semantic_mirror_ids
+        <= ssot_authority_ids
+    )
+    assert "repeated_builder_calls" in ssot_authority_ids
+    assert "repeated_builder_calls" not in semantic_mirror_ids
     assert authority_evidence_indices["semantic_mirror_without_descent"] == 1
