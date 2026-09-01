@@ -173,6 +173,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceTargetOperation,
     ReplaceTextOperation,
     PromoteClassMethodsOperation,
+    PromoteExactTinyMethodRoleOperation,
     RecipeCallReplacement,
     SemanticCarrierConcept,
     SourceEditOrigin,
@@ -1291,6 +1292,31 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
     assert missing.executable_declaration_name == "ExecutableRecipeEvaluation"
     assert duplicate.executable_declaration_name == "ExecutableRecipeEvaluation"
     assert unique is evaluation
+
+
+def test_executable_recipe_evaluation_does_not_hide_programming_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluation = ExecutableRecipeEvaluation(
+        executable_recipe=RefactorRecipe("programming-error-fixture"),
+        executable_declaration_type=ExecutableRecipeEvaluation,
+    )
+
+    def raise_programming_error(
+        recipe: RefactorRecipe,
+        context: CodemodSelectorContext | None,
+    ) -> bool:
+        del recipe, context
+        raise ValueError("unexpected implementation defect")
+
+    monkeypatch.setattr(
+        RefactorRecipe,
+        "has_effective_rewrites",
+        raise_programming_error,
+    )
+
+    with pytest.raises(ValueError, match="unexpected implementation defect"):
+        evaluation.terminal_evaluation(None)
 
 
 def test_authority_inference_updates_the_terminal_evaluation_recipe(
@@ -2500,6 +2526,105 @@ def test_target_set_expression_selector_composes_union_intersection_and_exclusio
     ) == ("Alpha.run",)
 
 
+_EXACT_TINY_METHOD_ROLE_DETECTOR_ID = "exact_tiny_method_role"
+_EXACT_TINY_METHOD_ROLE_CLASS_NAMES = (
+    "Alpha",
+    "Beta",
+    "Gamma",
+    "Delta",
+    "Epsilon",
+    "Zeta",
+)
+
+
+def _indented_class_source(source: str) -> str:
+    return "\n".join(f"    {line}" for line in source.splitlines())
+
+
+def _exact_tiny_method_role_source(
+    *method_sources: str,
+    module_prefix: str = "",
+    class_declaration_source: str = "",
+    base_names_by_class: Mapping[str, str] | None = None,
+) -> str:
+    base_names = base_names_by_class or {}
+    class_sources = []
+    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES:
+        base_name = base_names.get(class_name)
+        base_clause = f"({base_name})" if base_name is not None else ""
+        body_sources = (
+            "__slots__ = ()",
+            f"prefix = {class_name.lower()!r}",
+            *((class_declaration_source,) if class_declaration_source else ()),
+            *method_sources,
+        )
+        class_sources.append(
+            f"class {class_name}{base_clause}:\n"
+            + "\n".join(_indented_class_source(source) for source in body_sources)
+        )
+    source_parts = (
+        *((module_prefix.rstrip(),) if module_prefix else ()),
+        *class_sources,
+    )
+    return "\n\n".join(source_parts) + "\n"
+
+
+def _exact_tiny_method_role_commented_header_source(method_source: str) -> str:
+    base_names = {
+        class_name: f"{class_name}Base"
+        for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    }
+    source = _exact_tiny_method_role_source(
+        method_source,
+        module_prefix="\n\n".join(
+            f"class {base_name}:\n    pass" for base_name in base_names.values()
+        ),
+        base_names_by_class=base_names,
+    )
+    for class_name, base_name in base_names.items():
+        source = source.replace(
+            f"class {class_name}({base_name}):",
+            f"class {class_name}(\n"
+            f"    {base_name},  # preserve this base rationale\n"
+            "):",
+        )
+    return source
+
+
+def _exact_tiny_method_role_findings(
+    modules: list[ParsedModule],
+) -> tuple[RefactorFinding, ...]:
+    return tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == _EXACT_TINY_METHOD_ROLE_DETECTOR_ID
+    )
+
+
+def _exact_tiny_method_runtime_observations(
+    source: str,
+    method_names: tuple[str, ...],
+) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<exact-tiny-method-role>", "exec"), namespace)
+    observations = []
+    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES:
+        class_type = namespace[class_name]
+        assert isinstance(class_type, type)
+        instance = class_type()
+        observations.append(
+            (
+                class_name,
+                tuple(
+                    getattr(instance, method_name)(" Value ")
+                    for method_name in method_names
+                ),
+                hasattr(instance, "__dict__"),
+            )
+        )
+    return tuple(observations)
+
+
 def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
@@ -2534,6 +2659,9 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
 
     operation = recipe.operations[0].to_dict()
     assert operation["operation"] == "promote_class_methods"
+    assert type(RefactorRecipeOperation.from_dict(operation)) is (
+        PromoteClassMethodsOperation
+    )
     assert operation["method_names"] == ("emit",)
     assert simulation.is_clean is True
     assert "+class SharedEmitMixin:" in diff
@@ -2545,6 +2673,470 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     assert "class Alpha(SharedEmitMixin):\n    pass\n" in rewritten
     assert "class Beta(SharedEmitMixin):\n    pass\n" in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_exact_tiny_method_role_promotes_applies_and_preserves_behavior(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = _exact_tiny_method_role_findings(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent is True
+    assert finding.metrics.method_symbols == tuple(
+        f"{class_name}.render" for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    )
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
+    )
+    record = plan.records[0]
+    operation = plan.document.recipes[0].operations[0].to_dict()
+
+    assert plan.expected_removed_finding_count == 1
+    assert record.status is FindingRecipeSynthesisStatus.PLANNED
+    assert record.executable_declaration_name == (
+        "ExactTinyMethodRoleFindingRecipeSynthesizer"
+    )
+    assert record.refactor_concept == "class_family_authority"
+    assert operation["operation"] == "promote_exact_tiny_method_role"
+    assert type(RefactorRecipeOperation.from_dict(operation)) is (
+        PromoteExactTinyMethodRoleOperation
+    )
+    assert operation["base_name"] == "SharedRenderMixin"
+    assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    assert operation["method_names"] == ("render",)
+
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert simulation.is_clean is True
+    assert rewritten.count("def render") == 1
+    assert "class SharedRenderMixin:\n    __slots__ = ()" in rewritten
+    assert _exact_tiny_method_runtime_observations(
+        rewritten,
+        ("render",),
+    ) == _exact_tiny_method_runtime_observations(source, ("render",))
+
+    rewritten_namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
+    mixin = rewritten_namespace["SharedRenderMixin"]
+    assert isinstance(mixin, type)
+    assert mixin.__dict__["__slots__"] == ()
+    for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES:
+        class_type = rewritten_namespace[class_name]
+        assert isinstance(class_type, type)
+        assert "render" not in class_type.__dict__
+        assert class_type.__mro__[1] is mixin
+
+    assert simulation.document_simulation.apply() == (module_path.as_posix(),)
+    assert module_path.read_text(encoding="utf-8") == rewritten
+    reparsed_modules = parse_python_modules(tmp_path)
+    build_source_index(reparsed_modules, ())
+    assert _exact_tiny_method_role_findings(reparsed_modules) == ()
+
+
+def test_exact_tiny_method_role_batches_same_cohort_methods(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        "def slug(self, value):\n"
+        "    normalized = self.render(value)\n"
+        "    return f'{normalized}-slug'",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = _exact_tiny_method_role_findings(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    assert len(findings) == 1
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
+    )
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.PLANNED
+    assert operation["base_name"] == "SharedRenderSlugMixin"
+    assert operation["method_names"] == ("render", "slug")
+    assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    assert simulation.is_clean is True
+    assert rewritten.count("def render") == 1
+    assert rewritten.count("def slug") == 1
+    assert _exact_tiny_method_runtime_observations(
+        rewritten,
+        ("render", "slug"),
+    ) == _exact_tiny_method_runtime_observations(
+        source,
+        ("render", "slug"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_prefix", "class_declaration_source", "method_source"),
+    (
+        pytest.param(
+            "",
+            "",
+            "def render(self, value):\n"
+            "    parent = super()\n"
+            "    return parent.__thisclass__.__name__",
+            id="direct-super",
+        ),
+        pytest.param(
+            "",
+            "",
+            "def render(self, value):\n"
+            "    parent = super\n"
+            "    return parent().__thisclass__.__name__",
+            id="aliased-super",
+        ),
+        pytest.param(
+            "",
+            "",
+            "def render(self, value):\n"
+            "    owner = __class__\n"
+            "    return owner.__name__",
+            id="class-cell",
+        ),
+        pytest.param(
+            "",
+            "",
+            "def render(self, value):\n    secret = self.__secret\n    return secret",
+            id="private-name-mangling",
+        ),
+        pytest.param(
+            "def trace(function):\n    return function",
+            "",
+            "@trace\n"
+            "def render(self, value):\n"
+            "    normalized = value.strip()\n"
+            "    return normalized.lower()",
+            id="custom-decorator",
+        ),
+        pytest.param(
+            "",
+            "",
+            "def __str__(self):\n    value = self.prefix\n    return value",
+            id="namespace-sensitive-dunder",
+        ),
+        pytest.param(
+            "def make_default():\n    return object()",
+            "",
+            "def render(self, value=make_default()):\n"
+            "    normalized = str(value)\n"
+            "    return normalized.lower()",
+            id="evaluated-default",
+        ),
+        pytest.param(
+            "",
+            "Token = str",
+            "def render(self, value: Token):\n"
+            "    normalized = value.strip()\n"
+            "    return normalized.lower()",
+            id="class-local-annotation",
+        ),
+    ),
+)
+def test_exact_tiny_method_role_excludes_promotion_hazards(
+    tmp_path: Path,
+    module_prefix: str,
+    class_declaration_source: str,
+    method_source: str,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _exact_tiny_method_role_source(
+            method_source,
+            module_prefix=module_prefix,
+            class_declaration_source=class_declaration_source,
+        ),
+    )
+
+    assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
+
+
+@pytest.mark.parametrize(
+    "method_source",
+    (
+        pytest.param(
+            "def render(self, value):\n"
+            "    normalized = value.strip()\n"
+            "    return f'{self.prefix}:{normalized.lower()}'",
+            id="direct-receiver-member",
+        ),
+        pytest.param(
+            "def render(self, value):\n"
+            "    owner = self\n"
+            "    return owner.prefix",
+            id="aliased-receiver-member",
+        ),
+    ),
+)
+def test_exact_tiny_method_role_excludes_undeclared_receiver_requirements(
+    tmp_path: Path,
+    method_source: str,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _exact_tiny_method_role_source(method_source),
+    )
+
+    assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
+
+
+def test_method_promotion_rejects_lossy_commented_class_headers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_commented_header_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+
+    assert _exact_tiny_method_role_findings(modules) == ()
+
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    recipe = RefactorRecipe(recipe_id="commented-header-promotion").with_operation(
+        PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            base_name="SharedRenderMixin",
+            class_names=_EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            method_names=("render",),
+        )
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="lossless class-header rewrites",
+    ):
+        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+
+    assert module_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="shared-common-authority",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix=(
+                    "class CommonRole:\n"
+                    "    def render(self, value):\n"
+                    "        return value"
+                ),
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            id="ancestor-owned-method",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                base_names_by_class={"Beta": "Alpha"},
+            ),
+            id="participant-ancestor",
+        ),
+    ),
+)
+def test_exact_tiny_method_role_excludes_existing_authority(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", source)
+
+    assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
+
+
+def test_promote_class_methods_rejects_generated_base_binding_collision(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        module_prefix="SharedRenderMixin = 'keep'",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    recipe = RefactorRecipe(recipe_id="base-binding-collision").with_operation(
+        PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            base_name="SharedRenderMixin",
+            class_names=_EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+            method_names=("render",),
+        )
+    )
+
+    with pytest.raises(
+        ValueError, match="base name 'SharedRenderMixin' is already bound"
+    ):
+        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+
+    assert module_path.read_text(encoding="utf-8") == source
+
+
+def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = (
+        "class Outer:\n"
+        "    class Alpha:\n"
+        "        def render(self, value):\n"
+        "            normalized = value.strip()\n"
+        "            return normalized.lower()\n\n"
+        "    class Beta:\n"
+        "        def render(self, value):\n"
+        "            normalized = value.strip()\n"
+        "            return normalized.lower()\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    recipe = RefactorRecipe(recipe_id="nested-method-promotion").with_operation(
+        PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            base_name="SharedRenderMixin",
+            class_names=("Outer.Alpha", "Outer.Beta"),
+            method_names=("render",),
+        )
+    )
+
+    with pytest.raises(ValueError, match="top-level class targets"):
+        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+
+    assert module_path.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize(
+    ("current_source", "reason_fragment"),
+    (
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()",
+                module_prefix="class CommonRole:\n    __slots__ = ()",
+                base_names_by_class=dict.fromkeys(
+                    _EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
+                    "CommonRole",
+                ),
+            ),
+            "nominal authority",
+            id="common-authority",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    parent = super()\n"
+                "    return parent.__thisclass__.__name__"
+            ),
+            "promotion hazards",
+            id="promotion-hazard",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    owner = self\n"
+                "    return owner.prefix"
+            ),
+            "receiver members",
+            id="receiver-alias-requirement",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return normalized.lower()"
+            ).replace(
+                "normalized = value.strip()",
+                "normalized = value.strip()  # leaf-specific explanation",
+                1,
+            ),
+            "exact source duplicates",
+            id="source-comment-drift",
+        ),
+        pytest.param(
+            _exact_tiny_method_role_source(
+                "def render(self, value):\n"
+                "    normalized = value.strip()\n"
+                "    return f'{self.prefix}:{normalized.lower()}'"
+            ),
+            "receiver members",
+            id="undeclared-receiver-requirement",
+        ),
+    ),
+)
+def test_exact_tiny_method_role_revalidates_stale_source_without_raising(
+    tmp_path: Path,
+    current_source: str,
+    reason_fragment: str,
+) -> None:
+    original_source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()"
+    )
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    stale_findings = _exact_tiny_method_role_findings(parse_python_modules(tmp_path))
+    assert len(stale_findings) == 1
+
+    _write_module(tmp_path, "pkg/mod.py", current_source)
+    current_modules = parse_python_modules(tmp_path)
+    current_snapshot = CodemodSourceSnapshot.from_modules(
+        current_modules,
+        stale_findings,
+    )
+
+    plan = current_snapshot.plan_from_findings(
+        stale_findings,
+        detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
+    )
+    record = plan.records[0]
+
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert reason_fragment in record.reason
+    assert plan.document.recipes == ()
 
 
 def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(

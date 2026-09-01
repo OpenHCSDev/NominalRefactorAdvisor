@@ -33,6 +33,8 @@ from ._structural_step_regex_extractor import *
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
+
+
 def _reflective_self_attribute_compression_certificate(
     candidate: ReflectiveSelfAttributeCandidate,
 ) -> CompressionCertificate:
@@ -416,6 +418,18 @@ class _CompactSemanticOverlapABCOptimizationDetectorBase(
         return context.method_candidates
 
 
+class _CompactExactTinyMethodRoleDetectorBase(
+    _CompactABCOptimizerDetectorBase[ExactTinyMethodRoleCandidate]
+):
+    def _candidates_from_compact_context(
+        self,
+        context: CompactABCOptimizerContext,
+        config: DetectorConfig,
+    ) -> Sequence[ExactTinyMethodRoleCandidate]:
+        del config
+        return context.exact_method_candidates
+
+
 class _CompactSemanticOverlapABCFamilyOptimizationDetectorBase(
     _CompactABCOptimizerDetectorBase[SemanticOverlapABCFamilyOptimizationCandidate]
 ):
@@ -450,6 +464,51 @@ class _CompactSemanticOverlapABCResidueAxisCatalogDetectorBase(
     ) -> Sequence[SemanticOverlapABCResidueAxisCatalogCandidate]:
         del config
         return context.residue_axis_candidates
+
+
+declare_candidate_rule_detector(
+    ExactTinyMethodRoleCandidate,
+    high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Exact tiny method roles should acquire one nominal mixin",
+        "Several classes without one nominal ancestor own the same complete tiny method declaration. The exact method role is one maintenance object and should be inherited from one mixin when the added inheritance wiring pays rent.",
+        "one nominal mixin owns the exact method role and participants inherit it",
+        "unrelated classes repeat the same promotion-safe method declaration and the exact-role compression certificate pays rent",
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.REPEATED_METHOD_ROLES,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    ),
+    summary=lambda candidate: (
+        f"{candidate.method_names} are repeated exactly across {candidate.class_names} "
+        f"without one nominal ancestor; promote the {candidate.statement_count} shared "
+        "statements to one mixin."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=lambda candidate: (
+        f"class Shared{''.join(_camel_case(name) for name in candidate.method_names)}Mixin:\n"
+        + "\n".join(f"    def {name}(self): ..." for name in candidate.method_names)
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Promote the exact {candidate.method_names} declarations from "
+        f"{candidate.class_names} into one shared mixin and inherit it."
+    ),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(candidate.class_names),
+        statement_count=candidate.statement_count,
+        class_count=len(candidate.class_names),
+        method_symbols=candidate.method_symbols,
+    ),
+    detector_name="ExactTinyMethodRoleDetector",
+    detector_base=_CompactExactTinyMethodRoleDetectorBase,
+)
 
 
 declare_candidate_rule_detector(

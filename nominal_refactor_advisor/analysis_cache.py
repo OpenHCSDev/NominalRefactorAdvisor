@@ -171,8 +171,19 @@ class AnalysisFindingSummaryLookup:
     summary: FindingSummary | None = None
 
 
+class ReprCacheTokenMixin:
+    """Derive a stable cache token from one immutable identity representation."""
+
+    __slots__ = ()
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True)
-class AnalysisExecutionPlanCacheIdentity:
+class AnalysisExecutionPlanCacheIdentity(ReprCacheTokenMixin):
     """Invalidation identity for one authoritative execution plan."""
 
     analysis_cache_token: str
@@ -195,11 +206,6 @@ class AnalysisExecutionPlanCacheIdentity:
                 str(report_root.resolve()) for report_root in report_roots
             ),
         )
-
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -486,7 +492,7 @@ class ModuleSourceSignature:
 
 
 @dataclass(frozen=True)
-class GlobalModuleContextSignature:
+class GlobalModuleContextSignature(ReprCacheTokenMixin):
     """Semantic source identity for detector shards that need the whole module graph."""
 
     source_files: tuple[ModuleSourceSignature, ...]
@@ -508,11 +514,6 @@ class GlobalModuleContextSignature:
                 for module in modules
             )
         )
-
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -797,7 +798,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PerModuleAnalysisCacheFamilyIdentity:
+class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
     """Stable container identity for independently valid local detector bundles."""
 
     config: DetectorConfigSignature
@@ -860,14 +861,12 @@ class PerModuleAnalysisCacheFamilyIdentity:
             presentation_roots=presentation_root_texts(effective_roots),
         )
 
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
 
 @dataclass(frozen=True, kw_only=True)
-class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
+class ContextualModuleAnalysisCacheIdentity(
+    ReprCacheTokenMixin,
+    AnalysisCacheEntryContext,
+):
     """Invalidation identity for one context-dependent module detector shard."""
 
     source_file: ModuleSourceSignature
@@ -901,14 +900,12 @@ class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
             presentation_roots=presentation_root_texts(effective_roots),
         )
 
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
 
 @dataclass(frozen=True, kw_only=True)
-class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
+class GlobalDetectorAnalysisCacheIdentity(
+    ReprCacheTokenMixin,
+    AnalysisCacheEntryContext,
+):
     """Invalidation identity for one global detector keyed by semantic context."""
 
     context_signature: str
@@ -934,14 +931,12 @@ class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
             presentation_roots=presentation_root_texts(presentation_roots),
         )
 
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
 
 @dataclass(frozen=True, kw_only=True)
-class GlobalDetectorFamilyAnalysisCacheIdentity(AnalysisCacheEntryContext):
+class GlobalDetectorFamilyAnalysisCacheIdentity(
+    ReprCacheTokenMixin,
+    AnalysisCacheEntryContext,
+):
     """Report-independent output identity for one exact global detector family."""
 
     context_signature: str
@@ -966,11 +961,6 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(AnalysisCacheEntryContext):
             context_signature=context_signature,
             presentation_roots=presentation_root_texts(presentation_roots),
         )
-
-    @property
-    def cache_token(self) -> str:
-        payload = repr(self).encode("utf-8")
-        return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
 AnalysisCacheEntryIdentity: TypeAlias = (

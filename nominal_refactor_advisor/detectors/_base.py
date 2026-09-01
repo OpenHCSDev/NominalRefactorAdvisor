@@ -9876,6 +9876,29 @@ class ABCOptimizerLineCompressionSurface:
 
 
 @dataclass(frozen=True)
+class ExactTinyMethodRoleCandidate(
+    ABCOptimizerLineCompressionSurface,
+    LineWitnessCandidate,
+):
+    """Exact tiny behavior repeated across classes without one nominal ancestor."""
+
+    method_names: tuple[str, ...]
+    class_symbols: tuple[str, ...]
+    class_names: tuple[str, ...]
+    method_symbols: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    statement_count: int
+    method_line_count: int
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
 class ABCOptimizerMethodFamilyEvidenceSurface(ABCOptimizerLineCompressionSurface):
     method_names: tuple[str, ...]
     method_symbols: tuple[str, ...]

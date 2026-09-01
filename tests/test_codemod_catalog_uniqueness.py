@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from nominal_refactor_advisor.codemod import (
@@ -24,6 +26,17 @@ def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
         constructor_argument_name=constructor_argument_name,
         codec=RequiredStringPayloadValueCodec(),
     )
+
+
+def _concrete_operation_descendants() -> frozenset[type[RefactorRecipeOperation]]:
+    descendants: set[type[RefactorRecipeOperation]] = set()
+    pending = list(RefactorRecipeOperation.__subclasses__())
+    while pending:
+        operation_type = pending.pop()
+        pending.extend(operation_type.__subclasses__())
+        if not inspect.isabstract(operation_type):
+            descendants.add(operation_type)
+    return frozenset(descendants)
 
 
 def test_payload_binding_set_rejects_duplicate_payload_field_names() -> None:
@@ -82,6 +95,22 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
         assert len(
             {binding.constructor_argument_name for binding in binding_set}
         ) == len(binding_set)
+
+
+def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> None:
+    registered_operations = dict(RefactorRecipeOperation.__registry__.items())
+    concrete_operation_types = _concrete_operation_descendants()
+    operation_keys = {
+        operation_type: operation_type.operation_key()
+        for operation_type in concrete_operation_types
+    }
+
+    assert len(frozenset(operation_keys.values())) == len(concrete_operation_types)
+    assert len(registered_operations) == len(concrete_operation_types)
+    assert all(
+        registered_operations.get(operation_key) is operation_type
+        for operation_type, operation_key in operation_keys.items()
+    )
 
 
 def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:

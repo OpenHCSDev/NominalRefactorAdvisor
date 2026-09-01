@@ -3036,7 +3036,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     family = class_index_module.CompactModuleClassProjectionFamily
     demand = class_index_module.CompactClassProjectionDemand(
-        abc_method_names=frozenset(),
+        class_method_names=frozenset(),
         header_core_only=True,
     )
     full_items = tuple(family.collect(parsed_module))
@@ -5152,6 +5152,229 @@ def _write_compact_abc_optimizer_fixture(package_root: Path) -> None:
     )
 
 
+def _compact_class_methods_for_source(
+    package_root: Path,
+    source: str,
+) -> tuple[class_index_module.CompactClassMethod, ...]:
+    package_root.mkdir()
+    (package_root / "methods.py").write_text(source, encoding="utf-8")
+    parsed_module = parse_python_modules(
+        package_root,
+        use_parse_cache=False,
+    )[0]
+    projections = collect_family_items(
+        parsed_module,
+        class_index_module.CompactModuleClassProjectionFamily,
+    )
+    return projections[0].class_methods
+
+
+def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "methods.py"
+    module_path.write_text(
+        "class Alpha:\n"
+        "    @property\n"
+        "    def cache_token(self) -> str:\n"
+        "        payload = repr(self).encode('utf-8')\n"
+        "        return digest(payload)\n"
+        "class Beta:\n"
+        "    @property\n"
+        "    def cache_token(self) -> str:\n"
+        "        payload = repr(self).encode('utf-8')\n"
+        "        return digest(payload)\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    family = class_index_module.CompactModuleClassProjectionFamily
+    cold_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    cold = collect_family_items(cold_module, family)
+    cold_methods = cold[0].class_methods
+
+    assert len(cold_methods) == 2
+    assert cold_methods[0].exact_source_digest == cold_methods[1].exact_source_digest
+    assert cold_methods[0].promotion_hazards == ()
+    assert tuple((cache_dir / "collected-family").glob("*.pickle"))
+
+    release_module_analysis_memory()
+    warm_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
+    cached = warm_module.collected_family_cache.load_items(family)
+    warm = collect_family_items(warm_module, family)
+
+    assert cached == tuple(cold)
+    assert warm == cold
+
+
+def test_compact_class_method_exact_source_covers_declaration_body_and_comments(
+    tmp_path: Path,
+) -> None:
+    methods = _compact_class_methods_for_source(
+        tmp_path / "pkg",
+        "class Alpha:\n"
+        "    def project(self, value: int) -> str:\n"
+        "        return str(value)\n"
+        "class Beta:\n"
+        "    def project(self, value: int) -> str:\n"
+        "        return str(value)\n"
+        "class DifferentAnnotation:\n"
+        "    def project(self, value: str) -> str:\n"
+        "        return str(value)\n"
+        "class DifferentDecorator:\n"
+        "    @staticmethod\n"
+        "    def project(value: int) -> str:\n"
+        "        return str(value)\n"
+        "class DifferentBody:\n"
+        "    def project(self, value: int) -> str:\n"
+        "        return repr(value)\n"
+        "class DifferentComment:\n"
+        "    def project(self, value: int) -> str:\n"
+        "        return str(value)  # preserved explanation\n",
+    )
+    digest_by_class = {
+        method.class_symbol.rsplit(".", 1)[-1]: method.exact_source_digest
+        for method in methods
+    }
+
+    assert digest_by_class["Alpha"] == digest_by_class["Beta"]
+    assert len(set(digest_by_class.values())) == 5
+    assert all(digest is not None for digest in digest_by_class.values())
+
+
+def test_compact_class_method_collection_bounds_unrelated_long_methods(
+    tmp_path: Path,
+) -> None:
+    methods = _compact_class_methods_for_source(
+        tmp_path / "pkg",
+        "class Root:\n"
+        "    pass\n"
+        "class TinyStandalone:\n"
+        "    def role(self):\n"
+        "        value = 1\n"
+        "        return value\n"
+        "class LongStandalone:\n"
+        "    def role(self):\n"
+        "        left = 1\n"
+        "        right = 2\n"
+        "        return left + right\n"
+        "class LongFamilyMember(Root):\n"
+        "    def role(self):\n"
+        "        left = 1\n"
+        "        right = 2\n"
+        "        return left + right\n",
+    )
+    methods_by_class = {
+        method.class_symbol.rsplit(".", 1)[-1]: method for method in methods
+    }
+
+    assert tuple(methods_by_class) == ("TinyStandalone", "LongFamilyMember")
+    assert methods_by_class["TinyStandalone"].exact_source_digest is not None
+    assert methods_by_class["TinyStandalone"].body_statement_count == 2
+    assert methods_by_class["TinyStandalone"].statement_sources == ()
+    assert methods_by_class["LongFamilyMember"].exact_source_digest is None
+    assert methods_by_class["LongFamilyMember"].body_statement_count == 3
+    assert methods_by_class["LongFamilyMember"].statement_count == 3
+    assert len(methods_by_class["LongFamilyMember"].statement_sources) == 3
+
+
+def test_compact_class_method_promotion_hazards_are_nominal_facts(
+    tmp_path: Path,
+) -> None:
+    methods = _compact_class_methods_for_source(
+        tmp_path / "pkg",
+        "def memoize(function):\n"
+        "    return function\n"
+        "def custom_property(function):\n"
+        "    return function\n"
+        "def build_default():\n"
+        "    return object()\n"
+        "class Base:\n"
+        "    pass\n"
+        "class SafeProperty:\n"
+        "    @property\n"
+        "    def role(self):\n"
+        "        return self.value\n"
+        "class SafeBuiltinAnnotation:\n"
+        "    def role(self, value: int) -> str:\n"
+        "        return str(value)\n"
+        "class SuperReference(Base):\n"
+        "    def role(self):\n"
+        "        return super().role()\n"
+        "class AliasedSuperReference:\n"
+        "    def role(self):\n"
+        "        parent = super\n"
+        "        return parent().role()\n"
+        "class ClassCellReference:\n"
+        "    def role(self):\n"
+        "        return __class__.__name__\n"
+        "class PrivateName:\n"
+        "    def role(self):\n"
+        "        return self.__value\n"
+        "class CustomDecorator:\n"
+        "    @memoize\n"
+        "    def role(self):\n"
+        "        return self.value\n"
+        "class PositionalDefault:\n"
+        "    def role(self, value=build_default()):\n"
+        "        return value\n"
+        "class KeywordDefault:\n"
+        "    def role(self, *, value=build_default()):\n"
+        "        return value\n"
+        "class ClassLocalAnnotation:\n"
+        "    Alias = int\n"
+        "    def role(self, value: Alias) -> Alias:\n"
+        "        return value\n"
+        "class ClassLocalDecorator:\n"
+        "    property = custom_property\n"
+        "    @property\n"
+        "    def role(self):\n"
+        "        return self.value\n"
+        "class DirectNamespaceSensitive:\n"
+        "    def __repr__(self):\n"
+        "        return 'value'\n"
+        "class AttachedLeadingComment:\n"
+        "    # explanation belongs to the method\n"
+        "    def role(self):\n"
+        "        return self.value\n"
+        "class ReceiverAlias:\n"
+        "    def role(self):\n"
+        "        owner = self\n"
+        "        return owner.value\n",
+    )
+    hazards_by_class = {
+        method.class_symbol.rsplit(".", 1)[-1]: method.promotion_hazards
+        for method in methods
+    }
+    receiver_members_by_class = {
+        method.class_symbol.rsplit(".", 1)[-1]: method.receiver_member_names
+        for method in methods
+    }
+    hazard = class_index_module.MethodPromotionHazard
+
+    assert hazards_by_class == {
+        "SafeProperty": (),
+        "SafeBuiltinAnnotation": (),
+        "SuperReference": (hazard.SUPER_REFERENCE,),
+        "AliasedSuperReference": (hazard.SUPER_REFERENCE,),
+        "ClassCellReference": (hazard.CLASS_CELL_REFERENCE,),
+        "PrivateName": (hazard.PRIVATE_NAME_MANGLING,),
+        "CustomDecorator": (hazard.CUSTOM_METHOD_DECORATOR,),
+        "PositionalDefault": (hazard.EVALUATED_DEFAULT,),
+        "KeywordDefault": (hazard.EVALUATED_DEFAULT,),
+        "ClassLocalAnnotation": (hazard.CLASS_LOCAL_ANNOTATION_REFERENCE,),
+        "ClassLocalDecorator": (hazard.CUSTOM_METHOD_DECORATOR,),
+        "DirectNamespaceSensitive": (hazard.DIRECT_NAMESPACE_SENSITIVE_METHOD,),
+        "AttachedLeadingComment": (hazard.ATTACHED_LEADING_COMMENT,),
+        "ReceiverAlias": (),
+    }
+    assert receiver_members_by_class["SafeProperty"] == frozenset(("value",))
+    assert receiver_members_by_class["SafeBuiltinAnnotation"] == frozenset()
+    assert receiver_members_by_class["ReceiverAlias"] == frozenset(("value",))
+    assert all(method.statement_sources == () for method in methods)
+
+
 def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     tmp_path: Path,
 ) -> None:
@@ -5231,8 +5454,8 @@ def test_compact_abc_optimizer_candidates_preserve_semantics_without_ast_shadow(
     )
     assert not hasattr(class_index_module, "_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
     assert not hasattr(helper_detectors, "_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
-    assert not hasattr(class_index_module.CompactABCOptimizerMethod, "skeleton_blob")
-    assert not hasattr(class_index_module.CompactABCOptimizerMethod, "coordinates_blob")
+    assert not hasattr(class_index_module.CompactClassMethod, "skeleton_blob")
+    assert not hasattr(class_index_module.CompactClassMethod, "coordinates_blob")
 
 
 def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
@@ -5250,7 +5473,7 @@ def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
     )
     profile_derivations: list[tuple[str, ...]] = []
     original_derivation = (
-        class_index_module._compact_abc_optimizer_statements_from_sources
+        class_index_module._compact_class_method_statements_from_sources
     )
 
     def recording_derivation(statement_sources):
@@ -5259,7 +5482,7 @@ def test_compact_abc_optimizer_profiles_are_derived_after_the_family_join(
 
     monkeypatch.setattr(
         class_index_module,
-        "_compact_abc_optimizer_statements_from_sources",
+        "_compact_class_method_statements_from_sources",
         recording_derivation,
     )
 

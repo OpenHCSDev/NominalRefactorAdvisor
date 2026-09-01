@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
+import io
 import re
-from collections import defaultdict
+import tokenize
+from collections import defaultdict, deque
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import ClassVar, Self, TypeAlias
+from typing import Callable, ClassVar, Self, TypeAlias
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
@@ -122,6 +125,61 @@ class CompactClassHeader(ClassDeclaration):
 
 
 @dataclass(frozen=True)
+class ClassHeaderSourceSpan:
+    """Exact source span and reconstruction safety for one class header."""
+
+    node: ast.ClassDef
+    source_lines: tuple[str, ...]
+
+    @classmethod
+    def from_source(cls, node: ast.ClassDef, source: str) -> "ClassHeaderSourceSpan":
+        return cls(node=node, source_lines=tuple(source.splitlines(keepends=True)))
+
+    @property
+    def start_line(self) -> int:
+        return self.node.lineno
+
+    @property
+    def end_line(self) -> int:
+        return (
+            min(self.statement_start_line(statement) for statement in self.node.body)
+            - 1
+        )
+
+    @staticmethod
+    def statement_start_line(statement: ast.stmt) -> int:
+        if not isinstance(
+            statement,
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        ):
+            return statement.lineno
+        decorator_lines = tuple(
+            decorator.lineno
+            for decorator in statement.decorator_list
+            if decorator.lineno
+        )
+        return min((*decorator_lines, statement.lineno))
+
+    @property
+    def source(self) -> str:
+        return "".join(self.source_lines[self.start_line - 1 : self.end_line])
+
+    @cached_property
+    def contains_comment(self) -> bool:
+        if "#" not in self.source:
+            return False
+        try:
+            tokens = tokenize.generate_tokens(io.StringIO(self.source).readline)
+            return any(token.type == tokenize.COMMENT for token in tokens)
+        except tokenize.TokenError:
+            return True
+
+    @property
+    def is_reconstructible(self) -> bool:
+        return not self.contains_comment
+
+
+@dataclass(frozen=True)
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
@@ -131,6 +189,9 @@ class CompactIndexedClass(CompactClassHeader):
     direct_constant_string_assignments: tuple[tuple[str, str], ...] = ()
     direct_non_none_assignment_names: tuple[str, ...] = ()
     metaclass_names: tuple[str, ...] = ()
+    class_keyword_names: tuple[str, ...] = ()
+    class_decorators_are_promotion_safe: bool = True
+    class_header_is_reconstructible: bool = True
     keyed_family_key_type_name: str | None = None
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
@@ -216,7 +277,7 @@ class CompactModuleClassProjection(
     manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
     nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
     pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
-    abc_optimizer_methods: tuple["CompactABCOptimizerMethod", ...] = ()
+    class_methods: tuple["CompactClassMethod", ...] = ()
 
     def header_core(self) -> "CompactModuleClassProjection":
         """Project only the class declarations required by the family index."""
@@ -285,49 +346,359 @@ class CompactPassThroughNominalWrapper:
     forwarded_member_names: tuple[str, ...]
 
 
-CompactABCSemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
+CompactMethodSemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
 
 
 @dataclass(frozen=True)
-class CompactABCOptimizerSemanticProfile:
-    """Semantic method body projected only after an inheritance-family join."""
+class CompactClassMethodSemanticProfile:
+    """Semantic body profile derived lazily from one compact class method."""
 
     skeleton: tuple[str, ...]
-    coordinates: tuple[CompactABCSemanticCoordinate, ...]
+    coordinates: tuple[CompactMethodSemanticCoordinate, ...]
 
 
 @dataclass(frozen=True)
-class CompactABCOptimizerMethod:
-    """Method source sufficient for lazy global ABC anti-unification."""
+class MethodPromotionInspection:
+    """Current method syntax and lexical bindings relevant to promotion safety."""
+
+    method: ast.FunctionDef | ast.AsyncFunctionDef
+    module_bound_names: frozenset[str]
+    class_bound_names: frozenset[str]
+    source_lines: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ClassMethodReceiverRequirements:
+    """Receiver members required directly or through local aliases."""
+
+    member_names: frozenset[str]
+
+    @classmethod
+    def from_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> "ClassMethodReceiverRequirements":
+        receiver_name = cls.receiver_name(method)
+        if receiver_name is None:
+            return cls(frozenset())
+        aliases = cls.receiver_aliases(method, receiver_name)
+        return cls(
+            frozenset(
+                node.attr
+                for node in ast.walk(method)
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in aliases
+            )
+        )
+
+    @staticmethod
+    def receiver_aliases(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+        receiver_name: str,
+    ) -> frozenset[str]:
+        alias_targets_by_source: dict[str, set[str]] = defaultdict(set)
+        for node in ast.walk(method):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+                alias_targets_by_source[node.value.id].update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+            elif (
+                isinstance(node, ast.AnnAssign | ast.NamedExpr)
+                and isinstance(node.target, ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                alias_targets_by_source[node.value.id].add(node.target.id)
+
+        aliases = {receiver_name}
+        pending = deque((receiver_name,))
+        while pending:
+            source_name = pending.popleft()
+            for target_name in alias_targets_by_source[source_name]:
+                if target_name in aliases:
+                    continue
+                aliases.add(target_name)
+                pending.append(target_name)
+        return frozenset(aliases)
+
+    @staticmethod
+    def receiver_name(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> str | None:
+        if any(
+            isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
+            for decorator in method.decorator_list
+        ):
+            return None
+        positional_parameters = (*method.args.posonlyargs, *method.args.args)
+        return positional_parameters[0].arg if positional_parameters else None
+
+
+MethodPromotionHazardPredicate: TypeAlias = Callable[[MethodPromotionInspection], bool]
+
+
+def _has_super_reference(inspection: MethodPromotionInspection) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == "super"
+        for node in ast.walk(inspection.method)
+    )
+
+
+def _has_class_cell_reference(inspection: MethodPromotionInspection) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == "__class__"
+        for node in ast.walk(inspection.method)
+    )
+
+
+def _has_private_name_mangling(inspection: MethodPromotionInspection) -> bool:
+    names = (
+        inspection.method.name,
+        *(
+            node.id
+            for node in ast.walk(inspection.method)
+            if isinstance(node, ast.Name)
+        ),
+        *(
+            node.attr
+            for node in ast.walk(inspection.method)
+            if isinstance(node, ast.Attribute)
+        ),
+    )
+    return any(name.startswith("__") and not name.endswith("__") for name in names)
+
+
+_PROMOTABLE_METHOD_DECORATOR_NAMES = frozenset(
+    ("classmethod", "property", "staticmethod")
+)
+
+
+class ClassMethodPromotionSafeDecorator(StrEnum):
+    """Class decorators proven not to depend on direct method ownership."""
+
+    DATACLASS = ("dataclass", frozenset(("dataclasses",)))
+    FINAL = ("final", frozenset(("typing", "typing_extensions")))
+
+    import_module_names: frozenset[str]
+
+    def __new__(
+        cls,
+        value: str,
+        import_module_names: frozenset[str],
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.import_module_names = import_module_names
+        return member
+
+    def is_proven_reference(self, module: ast.Module, decorator: ast.expr) -> bool:
+        reference = decorator.func if isinstance(decorator, ast.Call) else decorator
+        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(reference)
+        if parts is None or parts[-1] != self.value:
+            return False
+        return any(
+            self._import_proves_parts(statement, parts)
+            for statement in module.body
+            if isinstance(statement, ast.Import | ast.ImportFrom)
+        )
+
+    def _import_proves_parts(
+        self,
+        statement: ast.Import | ast.ImportFrom,
+        parts: tuple[str, ...],
+    ) -> bool:
+        if isinstance(statement, ast.ImportFrom):
+            return (
+                statement.level == 0
+                and statement.module in self.import_module_names
+                and len(parts) == 1
+                and any(
+                    alias.name == self.value
+                    and (alias.asname or alias.name) == parts[0]
+                    for alias in statement.names
+                )
+            )
+        return len(parts) == 2 and any(
+            alias.name in self.import_module_names
+            and (alias.asname or alias.name) == parts[0]
+            for alias in statement.names
+        )
+
+
+def _has_custom_method_decorator(inspection: MethodPromotionInspection) -> bool:
+    shadowed_names = inspection.module_bound_names | inspection.class_bound_names
+    return any(
+        not isinstance(decorator, ast.Name)
+        or decorator.id not in _PROMOTABLE_METHOD_DECORATOR_NAMES
+        or decorator.id in shadowed_names
+        for decorator in inspection.method.decorator_list
+    )
+
+
+def _is_direct_namespace_sensitive(inspection: MethodPromotionInspection) -> bool:
+    name = inspection.method.name
+    return name.startswith("__") and name.endswith("__")
+
+
+def _has_evaluated_default(inspection: MethodPromotionInspection) -> bool:
+    return bool(
+        inspection.method.args.defaults
+        or any(default is not None for default in inspection.method.args.kw_defaults)
+    )
+
+
+def _method_annotation_nodes(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.expr, ...]:
+    arguments = (
+        *method.args.posonlyargs,
+        *method.args.args,
+        *method.args.kwonlyargs,
+        *((method.args.vararg,) if method.args.vararg is not None else ()),
+        *((method.args.kwarg,) if method.args.kwarg is not None else ()),
+    )
+    return (
+        *(
+            argument.annotation
+            for argument in arguments
+            if argument.annotation is not None
+        ),
+        *((method.returns,) if method.returns is not None else ()),
+    )
+
+
+def _has_class_local_annotation_reference(
+    inspection: MethodPromotionInspection,
+) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id in inspection.class_bound_names
+        for annotation in _method_annotation_nodes(inspection.method)
+        for node in ast.walk(annotation)
+    )
+
+
+def _has_attached_leading_comment(inspection: MethodPromotionInspection) -> bool:
+    decorator_lines = tuple(
+        decorator.lineno
+        for decorator in inspection.method.decorator_list
+        if decorator.lineno
+    )
+    start_line = min((*decorator_lines, inspection.method.lineno))
+    if start_line <= 1 or start_line > len(inspection.source_lines):
+        return False
+    method_line = inspection.source_lines[start_line - 1]
+    preceding_line = inspection.source_lines[start_line - 2]
+    method_indent = method_line[: len(method_line) - len(method_line.lstrip())]
+    preceding_indent = preceding_line[
+        : len(preceding_line) - len(preceding_line.lstrip())
+    ]
+    return preceding_indent == method_indent and preceding_line.lstrip().startswith("#")
+
+
+class MethodPromotionHazard(StrEnum):
+    """One promotion hazard carrying its own syntax recognition behavior."""
+
+    SUPER_REFERENCE = ("super_reference", _has_super_reference)
+    CLASS_CELL_REFERENCE = ("class_cell_reference", _has_class_cell_reference)
+    PRIVATE_NAME_MANGLING = ("private_name_mangling", _has_private_name_mangling)
+    CUSTOM_METHOD_DECORATOR = (
+        "custom_method_decorator",
+        _has_custom_method_decorator,
+    )
+    DIRECT_NAMESPACE_SENSITIVE_METHOD = (
+        "direct_namespace_sensitive_method",
+        _is_direct_namespace_sensitive,
+    )
+    EVALUATED_DEFAULT = ("evaluated_default", _has_evaluated_default)
+    CLASS_LOCAL_ANNOTATION_REFERENCE = (
+        "class_local_annotation_reference",
+        _has_class_local_annotation_reference,
+    )
+    ATTACHED_LEADING_COMMENT = (
+        "attached_leading_comment",
+        _has_attached_leading_comment,
+    )
+
+    predicate: MethodPromotionHazardPredicate
+
+    def __new__(
+        cls,
+        value: str,
+        predicate: MethodPromotionHazardPredicate,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.predicate = predicate
+        return member
+
+    def is_present(self, inspection: MethodPromotionInspection) -> bool:
+        return self.predicate(inspection)
+
+
+@dataclass(frozen=True)
+class ClassMethodPromotionSafetyProfile:
+    """Complete promotion hazards derived from one current method declaration."""
+
+    hazards: tuple[MethodPromotionHazard, ...]
+
+    @classmethod
+    def from_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+        module_bound_names: frozenset[str],
+        class_bound_names: frozenset[str] = frozenset(),
+        *,
+        source_lines: tuple[str, ...],
+    ) -> "ClassMethodPromotionSafetyProfile":
+        inspection = MethodPromotionInspection(
+            method,
+            module_bound_names,
+            class_bound_names,
+            source_lines,
+        )
+        return cls(
+            tuple(
+                hazard
+                for hazard in MethodPromotionHazard
+                if hazard.is_present(inspection)
+            )
+        )
+
+
+@dataclass(frozen=True)
+class CompactClassMethod:
+    """AST-free method fact shared by exact promotion and anti-unification."""
 
     class_symbol: str
     method_name: str
     line: int
     line_count: int
+    body_statement_count: int
     statement_sources: tuple[str, ...]
+    exact_source_digest: str | None
+    promotion_hazards: tuple[MethodPromotionHazard, ...]
+    receiver_member_names: frozenset[str]
 
     @property
     def statement_count(self) -> int:
-        return len(self.statement_sources)
+        return self.body_statement_count
 
     @cached_property
-    def semantic_profile(self) -> CompactABCOptimizerSemanticProfile:
-        if self.statement_count < 3:
-            raise ValueError("ABC optimizer profiles require at least three statements")
-        statements = _compact_abc_optimizer_statements_from_sources(
+    def semantic_profile(self) -> CompactClassMethodSemanticProfile:
+        statements = _compact_class_method_statements_from_sources(
             self.statement_sources
         )
         coordinates = tuple(
             coordinate
             for statement_index, statement in enumerate(statements)
-            for coordinate in _compact_abc_optimizer_coordinates(
+            for coordinate in _compact_class_method_coordinates(
                 statement,
                 ("body", statement_index),
             )
         )
-        return CompactABCOptimizerSemanticProfile(
+        return CompactClassMethodSemanticProfile(
             skeleton=tuple(
-                _compact_abc_optimizer_statement_skeleton(statement)
+                _compact_class_method_statement_skeleton(statement)
                 for statement in statements
             ),
             coordinates=coordinates,
@@ -1085,7 +1456,7 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
 class CompactClassProjectionDemand:
     """Target-correlated filters for expensive class-family facets."""
 
-    abc_method_names: frozenset[str]
+    class_method_names: frozenset[str]
     include_autoregister_references: bool = True
     header_core_only: bool = False
 
@@ -1099,10 +1470,10 @@ def _class_report_demand(
         item for item in target_items if isinstance(item, CompactModuleClassProjection)
     )
     return CompactClassProjectionDemand(
-        abc_method_names=frozenset(
+        class_method_names=frozenset(
             method.method_name
             for projection in projections
-            for method in projection.abc_optimizer_methods
+            for method in projection.class_methods
         ),
         include_autoregister_references=any(
             projection.named_projection_surfaces
@@ -1128,10 +1499,10 @@ def _cached_class_demand_projection(
     projected = tuple(
         replace(
             item,
-            abc_optimizer_methods=tuple(
+            class_methods=tuple(
                 method
-                for method in item.abc_optimizer_methods
-                if method.method_name in demand.abc_method_names
+                for method in item.class_methods
+                if method.method_name in demand.class_method_names
             ),
             autoregister_function_references=(
                 item.autoregister_function_references
@@ -1290,6 +1661,21 @@ def _compact_indexed_classes(
                 if (terminal_name := _terminal_reference_name(keyword.value))
                 is not None
             ),
+            class_keyword_names=tuple(keyword.arg or "**" for keyword in node.keywords),
+            class_decorators_are_promotion_safe=all(
+                any(
+                    safe_decorator.is_proven_reference(
+                        parsed_module.module,
+                        decorator,
+                    )
+                    for safe_decorator in ClassMethodPromotionSafeDecorator
+                )
+                for decorator in node.decorator_list
+            ),
+            class_header_is_reconstructible=ClassHeaderSourceSpan.from_source(
+                node,
+                parsed_module.source,
+            ).is_reconstructible,
             keyed_family_key_type_name=_keyed_family_key_type_name(node),
             is_final=any(
                 (isinstance(decorator, ast.Name) and decorator.id == "final")
@@ -1414,10 +1800,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             for node in _walk_nodes(parsed_module.module)
             if isinstance(node, ast.ClassDef)
         )
-        abc_optimizer_methods = _compact_abc_optimizer_methods(
+        class_methods = _compact_class_methods(
             parsed_module,
             indexed_class_nodes,
-            method_names=(None if demand is None else demand.abc_method_names),
+            method_names=(None if demand is None else demand.class_method_names),
         )
         (
             nominal_wrapper_authorities,
@@ -1470,7 +1856,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 manual_family_rosters=_compact_manual_family_rosters(parsed_module),
                 nominal_wrapper_authorities=nominal_wrapper_authorities,
                 pass_through_nominal_wrappers=pass_through_nominal_wrappers,
-                abc_optimizer_methods=abc_optimizer_methods,
+                class_methods=class_methods,
             )
         ]
 
@@ -1960,7 +2346,7 @@ def _compact_class_field_type_map(
     return sorted_tuple(nominal_fields.items())
 
 
-class _CompactABCSemanticSkeletonNormalizer(ast.NodeTransformer):
+class _CompactClassMethodSemanticSkeletonNormalizer(ast.NodeTransformer):
     def visit_arg(self, node: ast.arg) -> ast.arg:
         del node
         return ast.arg(arg="ARG", annotation=None, type_comment=None)
@@ -1982,13 +2368,13 @@ class _CompactABCSemanticSkeletonNormalizer(ast.NodeTransformer):
         return ast.copy_location(ast.Constant(value="CONST"), node)
 
 
-def _compact_abc_optimizer_statement_skeleton(statement: ast.stmt) -> str:
-    normalized = _CompactABCSemanticSkeletonNormalizer().visit(statement)
+def _compact_class_method_statement_skeleton(statement: ast.stmt) -> str:
+    normalized = _CompactClassMethodSemanticSkeletonNormalizer().visit(statement)
     ast.fix_missing_locations(normalized)
     return ast.dump(normalized, include_attributes=False)
 
 
-def _compact_abc_optimizer_coordinates(
+def _compact_class_method_coordinates(
     node: ast.AST,
     path: tuple[object, ...] = (),
 ) -> tuple[tuple[tuple[str, ...], str, str], ...]:
@@ -2017,13 +2403,13 @@ def _compact_abc_optimizer_coordinates(
             continue
         if isinstance(value, ast.AST):
             coordinates.extend(
-                _compact_abc_optimizer_coordinates(value, (*path, field_name))
+                _compact_class_method_coordinates(value, (*path, field_name))
             )
         elif isinstance(value, list):
             for index, item in enumerate(value):
                 if isinstance(item, ast.AST):
                     coordinates.extend(
-                        _compact_abc_optimizer_coordinates(
+                        _compact_class_method_coordinates(
                             item,
                             (*path, field_name, index),
                         )
@@ -2031,7 +2417,7 @@ def _compact_abc_optimizer_coordinates(
     return tuple(coordinates)
 
 
-def _compact_abc_optimizer_statements_from_sources(
+def _compact_class_method_statements_from_sources(
     statement_sources: tuple[str, ...],
 ) -> tuple[ast.stmt, ...]:
     statements = tuple(ast.parse("\n".join(statement_sources)).body)
@@ -2040,45 +2426,98 @@ def _compact_abc_optimizer_statements_from_sources(
     return statements
 
 
-def _compact_abc_optimizer_class_is_eligible(node: ast.ClassDef) -> bool:
-    return any(
-        ClassSymbolResolutionAuthority.establishes_nominal_family(declared_name)
-        for base in node.bases
-        if (declared_name := ClassSymbolResolutionAuthority.declared_base_name(base))
-        is not None
-    )
-
-
-def _compact_abc_optimizer_method(
+def _compact_class_method(
     class_symbol: str,
     method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> CompactABCOptimizerMethod:
+    source_lines: tuple[str, ...],
+    module_bound_names: frozenset[str],
+    class_bound_names: frozenset[str],
+    *,
+    include_family_semantics: bool,
+) -> CompactClassMethod:
     body = _trim_leading_docstring(list(method.body))
-    return CompactABCOptimizerMethod(
+    decorator_lines = tuple(
+        decorator.lineno for decorator in method.decorator_list if decorator.lineno
+    )
+    start_line = min((*decorator_lines, method.lineno))
+    is_tiny_role = len(body) <= 2
+    safety_profile = (
+        ClassMethodPromotionSafetyProfile.from_method(
+            method,
+            module_bound_names,
+            class_bound_names,
+            source_lines=source_lines,
+        )
+        if is_tiny_role
+        else None
+    )
+    return CompactClassMethod(
         class_symbol=class_symbol,
         method_name=method.name,
-        line=method.lineno,
-        line_count=max(1, (method.end_lineno or method.lineno) - method.lineno + 1),
-        statement_sources=tuple(ast.unparse(statement) for statement in body),
+        line=start_line,
+        line_count=max(1, (method.end_lineno or method.lineno) - start_line + 1),
+        body_statement_count=len(body),
+        statement_sources=(
+            tuple(ast.unparse(statement) for statement in body)
+            if include_family_semantics and len(body) >= 3
+            else ()
+        ),
+        exact_source_digest=(
+            hashlib.blake2s(
+                "".join(
+                    source_lines[start_line - 1 : (method.end_lineno or method.lineno)]
+                ).encode("utf-8"),
+                digest_size=16,
+            ).hexdigest()
+            if is_tiny_role
+            else None
+        ),
+        promotion_hazards=() if safety_profile is None else safety_profile.hazards,
+        receiver_member_names=(
+            ClassMethodReceiverRequirements.from_method(method).member_names
+            if is_tiny_role
+            else frozenset()
+        ),
     )
 
 
-def _compact_abc_optimizer_methods(
+def _compact_class_methods(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
     *,
     method_names: frozenset[str] | None = None,
-) -> tuple[CompactABCOptimizerMethod, ...]:
-    methods: list[CompactABCOptimizerMethod] = []
+) -> tuple[CompactClassMethod, ...]:
+    methods: list[CompactClassMethod] = []
+    source_lines = tuple(parsed_module.source.splitlines(keepends=True))
+    module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        parsed_module.module.body
+    )
     for qualname, node in indexed_class_nodes:
         class_symbol = f"{parsed_module.module_name}.{qualname}"
-        if _compact_abc_optimizer_class_is_eligible(node):
-            methods.extend(
-                _compact_abc_optimizer_method(class_symbol, statement)
-                for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and (method_names is None or statement.name in method_names)
+        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        establishes_nominal_family = any(
+            ClassSymbolResolutionAuthority.establishes_nominal_family(declared_name)
+            for base in node.bases
+            if (
+                declared_name := ClassSymbolResolutionAuthority.declared_base_name(base)
             )
+            is not None
+        )
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if method_names is not None and statement.name not in method_names:
+                continue
+            method = _compact_class_method(
+                class_symbol,
+                statement,
+                source_lines,
+                module_bound_names,
+                class_bound_names,
+                include_family_semantics=establishes_nominal_family,
+            )
+            if establishes_nominal_family or method.statement_count <= 2:
+                methods.append(method)
     return tuple(methods)
 
 
