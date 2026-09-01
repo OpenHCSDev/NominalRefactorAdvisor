@@ -93,6 +93,14 @@ class CodemodFindingIdTransition:
     before_ids: tuple[str, ...]
     after_ids: tuple[str, ...]
 
+    def with_after_ids(
+        self,
+        after_ids: Iterable[str],
+    ) -> "CodemodFindingIdTransition":
+        """Project the same before-state onto one newly observed after-state."""
+
+        return replace(self, after_ids=tuple(after_ids))
+
     @property
     def removed_ids(self) -> tuple[str, ...]:
         after_ids = frozenset(self.after_ids)
@@ -565,6 +573,26 @@ class CodemodRefactorGoalStage:
     @property
     def rewrite_count(self) -> int:
         return self.simulation.simulation.applied_rewrite_count
+
+    def with_applied_target_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> "CodemodRefactorGoalStage":
+        """Record the exact post-commit target state on the final stage."""
+
+        after_ids = tuple(finding.stable_id for finding in findings)
+        return replace(
+            self,
+            progress=replace(
+                self.progress,
+                finding_ids=self.progress.finding_ids.with_after_ids(after_ids),
+            ),
+            finding_delta=replace(
+                self.finding_delta,
+                finding_ids=self.finding_delta.finding_ids.with_after_ids(after_ids),
+            ),
+            applied=True,
+        )
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1062,7 +1090,7 @@ class CodemodSimulationFindingProjection:
 
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner:
-    """Derive and execute stages until one semantic migration resolves."""
+    """Prove virtual stages, then commit one revision-checked migration batch."""
 
     resolved_dir: Path | None = None
     enabled: bool = False
@@ -1178,6 +1206,7 @@ class CodemodRefactorGoalRunner:
                 active_scan,
                 CodemodWorkflowStopReason.ACHIEVED,
             )
+        starting_snapshot = active_scan.source_snapshot
         for _stage in range(self.max_stages):
             snapshot = active_scan.source_snapshot
             target_findings = self.target_findings(active_scan)
@@ -1227,29 +1256,15 @@ class CodemodRefactorGoalRunner:
                     active_scan,
                     CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
                 )
-            if self.dry_run:
-                next_scan = projected_scan
-                recorded_stage = stage
-            else:
-                stage.simulation.apply()
-                next_scan = self.fresh_scan()
-                recorded_stage = replace(
-                    self.stage(
-                        active_scan,
-                        next_scan,
-                        class_plan_report=class_plan_report,
-                        simulation=simulation,
-                    ),
-                    applied=True,
+            next_scan = projected_scan
+            stages.append(stage)
+            if stage.progress.achieved:
+                return self.achieved_report(
+                    stages=tuple(stages),
+                    projected_scan=next_scan,
+                    starting_snapshot=starting_snapshot,
                 )
-            stages.append(recorded_stage)
-            if recorded_stage.progress.achieved:
-                return self.report(
-                    tuple(stages),
-                    next_scan,
-                    CodemodWorkflowStopReason.ACHIEVED,
-                )
-            if not recorded_stage.progress.made_progress:
+            if not stage.progress.made_progress:
                 return self.report(
                     tuple(stages),
                     next_scan,
@@ -1260,6 +1275,47 @@ class CodemodRefactorGoalRunner:
             tuple(stages),
             self.exact_scan(active_scan),
             CodemodWorkflowStopReason.MAX_STAGES,
+        )
+
+    def achieved_report(
+        self,
+        *,
+        stages: tuple[CodemodRefactorGoalStage, ...],
+        projected_scan: CodemodWorkflowScan,
+        starting_snapshot: CodemodSourceSnapshot,
+    ) -> CodemodRefactorGoalReport:
+        """Commit a fully proved migration sequence once, or return its dry run."""
+
+        projected_report = self.report(
+            stages,
+            projected_scan,
+            CodemodWorkflowStopReason.ACHIEVED,
+        )
+        if self.dry_run:
+            return projected_report
+        sequence_simulation = projected_report.replay_sequence.simulate_snapshot(
+            starting_snapshot
+        )
+        if not sequence_simulation.is_clean:
+            return replace(
+                projected_report,
+                stop_reason=CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
+            )
+        sequence_simulation.apply()
+        committed_scan = self.fresh_scan()
+        committed_target_findings = self.target_findings(committed_scan)
+        applied_stages = (
+            *(replace(stage, applied=True) for stage in stages[:-1]),
+            stages[-1].with_applied_target_findings(committed_target_findings),
+        )
+        return self.report(
+            applied_stages,
+            committed_scan,
+            (
+                CodemodWorkflowStopReason.ACHIEVED
+                if not committed_target_findings
+                else CodemodWorkflowStopReason.NO_PROGRESS
+            ),
         )
 
     def target_findings(

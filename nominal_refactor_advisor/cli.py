@@ -552,7 +552,9 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-refactor-goal",),
             value_type=str,
             help=(
-                "Run a goal-directed staged DSL refactor. Supported goals: "
+                "Prove dependent DSL stages in memory and, with --codemod-apply, "
+                "commit the completed sequence as one revision-checked transaction. "
+                "Supported goals: "
                 + ", ".join(
                     concept_type.concept_key()
                     for concept_type in RefactorConcept.declaration_types()

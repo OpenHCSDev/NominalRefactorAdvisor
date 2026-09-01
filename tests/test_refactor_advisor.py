@@ -13114,6 +13114,85 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
 
 
+def test_class_family_migration_commits_serial_stages_as_one_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nominal_refactor_advisor.codemod as codemod_module
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
+    applied_reports: list[CodemodSimulationReport] = []
+    real_apply = codemod_module.apply_codemod_simulation
+
+    def tracked_apply(report: CodemodSimulationReport) -> tuple[str, ...]:
+        applied_reports.append(report)
+        return real_apply(report)
+
+    monkeypatch.setattr(codemod_module, "apply_codemod_simulation", tracked_apply)
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=False,
+        migration_type=ClassFamilyAuthorityConcept,
+        max_stages=3,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    final_source = module_path.read_text(encoding="utf-8")
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stage_count == 2
+    assert all(stage.applied for stage in report.stages)
+    assert len(applied_reports) == 1
+    assert applied_reports[0].changed_file_paths == (module_path.as_posix(),)
+    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in final_source
+    assert (
+        "ALL_HANDLERS = tuple(RegisteredHandler.__registry__.values())"
+        in final_source
+    )
+
+
+def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nominal_refactor_advisor.codemod as codemod_module
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = _staged_class_family_source()
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    def unexpected_apply(_report: CodemodSimulationReport) -> tuple[str, ...]:
+        raise AssertionError("an incomplete migration must not write a partial stage")
+
+    monkeypatch.setattr(
+        codemod_module,
+        "apply_codemod_simulation",
+        unexpected_apply,
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=False,
+        migration_type=ClassFamilyAuthorityConcept,
+        max_stages=1,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert report.stop_reason is CodemodWorkflowStopReason.MAX_STAGES
+    assert report.stage_count == 1
+    assert report.stages[0].applied is False
+    assert module_path.read_text(encoding="utf-8") == original_source
+
+
 def test_class_family_name_projection_reads_registered_family_authority() -> None:
     from nominal_refactor_advisor.codemod import (
         ClassFamilyCollectionElementProjection,

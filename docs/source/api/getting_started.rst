@@ -50,6 +50,24 @@ scan is required:
    nominal-refactor-advisor changed_module.py --context-root path/to/package \
      --json --json-payload full
 
+Goal-Directed Codemod Batches
+-----------------------------
+
+A refactor concept can require one stage to declare an authority before a later
+stage can derive its consumers.  The goal runner discovers those dependent
+stages against in-memory source snapshots and emits their replay sequence:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/python/package \
+     --codemod-refactor-goal class_family_authority \
+     --codemod-plan-out refactor-sequence.json
+
+Add ``--codemod-apply`` to write the result.  The runner first proves the whole
+goal, preflights every stage, and validates the final guard suite.  It then
+installs the final source set as one revision-checked transaction.  An
+incomplete or guard-failing sequence leaves the checkout unchanged.
+
 The default persistent cache is maintained at most once per hour.  Retention
 keeps at most 128 recently used analysis roots, 4 GiB across those roots, 2 GiB
 within one active root, and four recent exact semantic-graph generations.
