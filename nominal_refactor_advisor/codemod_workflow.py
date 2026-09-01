@@ -5,12 +5,12 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Generic, Self, TypeVar
 
 from .analysis import (
     AnalysisPathScope,
@@ -42,8 +42,10 @@ from .codemod import (
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
-from .models import RefactorFinding
+from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
+
+IdentityT = TypeVar("IdentityT", bound=Hashable)
 
 
 class CodemodWorkflowStopReason(StrEnum):
@@ -170,53 +172,34 @@ class CodemodFindingClassStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class CodemodFindingIdTransition:
-    """Before/after id transition shared by finding and finding-class deltas."""
+class CodemodIdentityTransition(Generic[IdentityT]):
+    """Before/after transition algebra shared by nominal identity roles."""
 
-    before_ids: tuple[str, ...]
-    after_ids: tuple[str, ...]
-
-    @classmethod
-    def from_findings(
-        cls,
-        before_findings: Iterable[RefactorFinding],
-        after_findings: Iterable[RefactorFinding],
-    ) -> "CodemodFindingIdTransition":
-        """Project finding declarations onto their stable identity transition."""
-
-        return cls(
-            before_ids=tuple(finding.stable_id for finding in before_findings),
-            after_ids=tuple(finding.stable_id for finding in after_findings),
-        )
+    before_ids: tuple[IdentityT, ...]
+    after_ids: tuple[IdentityT, ...]
 
     def with_after_ids(
         self,
-        after_ids: Iterable[str],
-    ) -> "CodemodFindingIdTransition":
+        after_ids: Iterable[IdentityT],
+    ) -> Self:
         """Project the same before-state onto one newly observed after-state."""
 
         return replace(self, after_ids=tuple(after_ids))
 
     @property
-    def removed_ids(self) -> tuple[str, ...]:
+    def removed_ids(self) -> tuple[IdentityT, ...]:
         after_ids = frozenset(self.after_ids)
-        return tuple(
-            finding_id for finding_id in self.before_ids if finding_id not in after_ids
-        )
+        return tuple(item for item in self.before_ids if item not in after_ids)
 
     @property
-    def added_ids(self) -> tuple[str, ...]:
+    def added_ids(self) -> tuple[IdentityT, ...]:
         before_ids = frozenset(self.before_ids)
-        return tuple(
-            finding_id for finding_id in self.after_ids if finding_id not in before_ids
-        )
+        return tuple(item for item in self.after_ids if item not in before_ids)
 
     @property
-    def surviving_ids(self) -> tuple[str, ...]:
+    def surviving_ids(self) -> tuple[IdentityT, ...]:
         after_ids = frozenset(self.after_ids)
-        return tuple(
-            finding_id for finding_id in self.before_ids if finding_id in after_ids
-        )
+        return tuple(item for item in self.before_ids if item in after_ids)
 
     @property
     def before_count(self) -> int:
@@ -234,6 +217,24 @@ class CodemodFindingIdTransition:
     def added_count(self) -> int:
         return len(self.added_ids)
 
+
+@dataclass(frozen=True)
+class CodemodFindingIdTransition(CodemodIdentityTransition[str]):
+    """Finding identity transition for codemod delta reports."""
+
+    @classmethod
+    def from_findings(
+        cls,
+        before_findings: Iterable[RefactorFinding],
+        after_findings: Iterable[RefactorFinding],
+    ) -> "CodemodFindingIdTransition":
+        """Project finding declarations onto their stable identity transition."""
+
+        return cls(
+            before_ids=tuple(finding.stable_id for finding in before_findings),
+            after_ids=tuple(finding.stable_id for finding in after_findings),
+        )
+
     def to_dict(self) -> JsonObject:
         return {
             "before_finding_ids": self.before_ids,
@@ -244,6 +245,34 @@ class CodemodFindingIdTransition:
             "after_finding_count": self.after_count,
             "removed_finding_count": self.removed_count,
             "added_finding_count": self.added_count,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodDetectorIdTransition(CodemodIdentityTransition[str]):
+    """Detector provenance before and after one semantic obligation transition."""
+
+    @classmethod
+    def from_findings(
+        cls,
+        before_findings: Iterable[RefactorFinding],
+        after_findings: Iterable[RefactorFinding],
+    ) -> "CodemodDetectorIdTransition":
+        return cls(
+            before_ids=tuple(
+                dict.fromkeys(finding.detector_id for finding in before_findings)
+            ),
+            after_ids=tuple(
+                dict.fromkeys(finding.detector_id for finding in after_findings)
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "before_detector_ids": self.before_ids,
+            "after_detector_ids": self.after_ids,
+            "removed_detector_ids": self.removed_ids,
+            "added_detector_ids": self.added_ids,
         }
 
 
@@ -380,70 +409,11 @@ class CodemodFindingDelta:
 
 
 @dataclass(frozen=True)
-class CodemodFindingClassSignature:
-    """Detector-independent semantic identity for a class of equivalent findings."""
-
-    detector_id: str
-    pattern_id: int
-    title: str
-    capability_gap: str
-    relation_context: str
-
-    @classmethod
-    def from_finding(cls, finding: RefactorFinding) -> "CodemodFindingClassSignature":
-        return cls(
-            detector_id=finding.detector_id,
-            pattern_id=finding.pattern_id.value,
-            title=finding.title,
-            capability_gap=finding.capability_gap,
-            relation_context=finding.relation_context,
-        )
-
-    @property
-    def class_key(self) -> str:
-        return "|".join(
-            (
-                self.detector_id,
-                str(self.pattern_id),
-                self.title,
-                self.capability_gap,
-                self.relation_context,
-            )
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "class_key": self.class_key,
-            "detector_id": self.detector_id,
-            "pattern_id": self.pattern_id,
-            "title": self.title,
-            "capability_gap": self.capability_gap,
-            "relation_context": self.relation_context,
-        }
-
-    @classmethod
-    def group_findings(
-        cls,
-        findings: tuple[RefactorFinding, ...],
-    ) -> dict["CodemodFindingClassSignature", tuple[RefactorFinding, ...]]:
-        signatures = tuple(
-            dict.fromkeys(cls.from_finding(finding) for finding in findings)
-        )
-        return {
-            signature: tuple(
-                finding
-                for finding in findings
-                if cls.from_finding(finding) == signature
-            )
-            for signature in signatures
-        }
-
-
-@dataclass(frozen=True)
 class CodemodFindingClassChange(CodemodFindingDelta):
     """Before/after membership for one semantic finding class."""
 
-    signature: CodemodFindingClassSignature
+    obligation_class: FindingObligationClass
+    detector_ids: CodemodDetectorIdTransition
     expected_removed_finding_ids: tuple[str, ...] = ()
 
     @property
@@ -479,7 +449,8 @@ class CodemodFindingClassChange(CodemodFindingDelta):
     def to_dict(self) -> JsonObject:
         return JsonObject(
             **self.finding_ids.to_dict(),
-            signature=self.signature.to_dict(),
+            obligation_class=self.obligation_class.to_dict(),
+            detector_transition=self.detector_ids.to_dict(),
             status=self.status.value,
             finding_count_increase=self.finding_count_increase,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
@@ -502,45 +473,45 @@ class CodemodFindingClassDelta:
         expected_removed_finding_ids: tuple[str, ...] = (),
     ) -> "CodemodFindingClassDelta":
         expected_ids = frozenset(expected_removed_finding_ids)
-        before_findings_by_signature = CodemodFindingClassSignature.group_findings(
-            before_findings
-        )
-        after_findings_by_signature = CodemodFindingClassSignature.group_findings(
-            after_findings
-        )
-        signatures = tuple(
-            sorted(
-                set(before_findings_by_signature) | set(after_findings_by_signature),
-                key=lambda signature: signature.class_key,
-            )
-        )
-        return cls(
-            changes=tuple(
+        before_findings_by_class = cls.group_findings(before_findings)
+        after_findings_by_class = cls.group_findings(after_findings)
+        changes = []
+        for obligation_class in sorted(
+            set(before_findings_by_class) | set(after_findings_by_class)
+        ):
+            before_class_findings = before_findings_by_class.get(obligation_class, ())
+            after_class_findings = after_findings_by_class.get(obligation_class, ())
+            changes.append(
                 CodemodFindingClassChange(
-                    signature=signature,
-                    finding_ids=CodemodFindingIdTransition(
-                        before_ids=tuple(
-                            finding.stable_id
-                            for finding in before_findings_by_signature.get(
-                                signature, ()
-                            )
-                        ),
-                        after_ids=tuple(
-                            finding.stable_id
-                            for finding in after_findings_by_signature.get(
-                                signature, ()
-                            )
-                        ),
+                    obligation_class=obligation_class,
+                    detector_ids=CodemodDetectorIdTransition.from_findings(
+                        before_class_findings,
+                        after_class_findings,
+                    ),
+                    finding_ids=CodemodFindingIdTransition.from_findings(
+                        before_class_findings,
+                        after_class_findings,
                     ),
                     expected_removed_finding_ids=tuple(
                         finding.stable_id
-                        for finding in before_findings_by_signature.get(signature, ())
+                        for finding in before_class_findings
                         if finding.stable_id in expected_ids
                     ),
                 )
-                for signature in signatures
             )
-        )
+        return cls(changes=tuple(changes))
+
+    @staticmethod
+    def group_findings(
+        findings: tuple[RefactorFinding, ...],
+    ) -> dict[FindingObligationClass, tuple[RefactorFinding, ...]]:
+        grouped_findings: dict[FindingObligationClass, list[RefactorFinding]] = {}
+        for finding in findings:
+            grouped_findings.setdefault(finding.obligation_class, []).append(finding)
+        return {
+            obligation_class: tuple(class_findings)
+            for obligation_class, class_findings in grouped_findings.items()
+        }
 
     @property
     def change_count(self) -> int:

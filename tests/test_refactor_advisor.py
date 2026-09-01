@@ -13886,8 +13886,8 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     assert rejected_terminal.finding_count_increase == 1
     assert len(rejected_terminal.finding_class_changes) == 1
     finding_class_change = rejected_terminal.finding_class_changes[0]
-    assert finding_class_change.signature.detector_id == (
-        runtime_detectors.AutoRegisterMetaUnderRentedDetector.effective_detector_id()
+    assert finding_class_change.detector_ids.after_ids == (
+        runtime_detectors.AutoRegisterMetaUnderRentedDetector.effective_detector_id(),
     )
     assert finding_class_change.status is CodemodFindingClassStatus.INTRODUCED
     payload = report.to_dict()["trajectory_proof"]
@@ -15244,14 +15244,15 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
         ),
     )
     payload = delta.to_dict()
-    statuses_by_title = {
-        change["signature"]["title"]: change["status"] for change in payload["changes"]
+    statuses_by_gap = {
+        change["obligation_class"]["capability_gap"]: change["status"]
+        for change in payload["changes"]
     }
 
     assert payload["moved_class_count"] == 1
     assert payload["eliminated_class_count"] == 1
-    assert statuses_by_title["Semantic fact mirrors outside owner"] == "moved"
-    assert statuses_by_title["Manual registry mirrors class family"] == "eliminated"
+    assert statuses_by_gap["single nominal owner"] == "moved"
+    assert statuses_by_gap["derive registry from class family"] == "eliminated"
 
 
 def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
@@ -15283,6 +15284,63 @@ def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
     assert before.stable_id != after.stable_id
     assert delta.moved_class_count == 1
     assert delta.to_dict()["status_counts"] == {"moved": 1}
+
+
+def test_codemod_finding_class_delta_separates_obligation_from_detector_provenance(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
+
+    before_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Projection detector presentation",
+        "The first detector observed the unresolved relation.",
+        "one nominal owner",
+        "projection repeats a nominal authority without descent",
+    )
+    after_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Authority detector presentation",
+        "The second detector observed the same unresolved relation.",
+        "one nominal owner",
+        "projection repeats a nominal authority without descent",
+    )
+    source_path = tmp_path / "projection.py"
+    before = before_spec.build(
+        "projection_detector",
+        "Alpha exposes the unresolved relation.",
+        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+    )
+    after = after_spec.build(
+        "authority_detector",
+        "Beta exposes the unresolved relation.",
+        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+    )
+
+    delta = CodemodFindingClassDelta.from_findings((before,), (after,))
+
+    assert before.obligation_class == after.obligation_class
+    assert len(delta.changes) == 1
+    change = delta.changes[0]
+    assert change.obligation_class == before.obligation_class
+    assert change.status is CodemodFindingClassStatus.MOVED
+    assert change.detector_ids.before_ids == ("projection_detector",)
+    assert change.detector_ids.after_ids == ("authority_detector",)
+    assert change.detector_ids.removed_ids == ("projection_detector",)
+    assert change.detector_ids.added_ids == ("authority_detector",)
+    payload = change.to_dict()
+    assert payload["obligation_class"] == {
+        "pattern_id": PatternId.NOMINAL_BOUNDARY.value,
+        "capability_gap": "one nominal owner",
+        "relation_context": "projection repeats a nominal authority without descent",
+    }
+    assert payload["detector_transition"] == {
+        "before_detector_ids": ("projection_detector",),
+        "after_detector_ids": ("authority_detector",),
+        "removed_detector_ids": ("projection_detector",),
+        "added_detector_ids": ("authority_detector",),
+    }
 
 
 def test_codemod_finding_class_delta_reports_increased_obligations(
@@ -15689,9 +15747,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
     from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
     from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
+    from nominal_refactor_advisor import CodemodDetectorIdTransition
     from nominal_refactor_advisor import CodemodFindingClassChange
     from nominal_refactor_advisor import CodemodFindingClassDelta
-    from nominal_refactor_advisor import CodemodFindingClassSignature
     from nominal_refactor_advisor import CodemodFindingClassStatus
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFindingIdTransition
@@ -15711,6 +15769,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import FindingRecipeClassPlan
     from nominal_refactor_advisor import FindingRecipeClassPlanReport
     from nominal_refactor_advisor import FindingRecipeProofObstacle
+    from nominal_refactor_advisor import FindingObligationClass
     from nominal_refactor_advisor import NominalBoundaryConcept
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
@@ -15727,8 +15786,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
     assert issubclass(CodemodFindingClassChange, CodemodFindingDelta)
     assert CodemodFindingIdTransition.__name__ == "CodemodFindingIdTransition"
+    assert CodemodDetectorIdTransition.__name__ == "CodemodDetectorIdTransition"
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
-    assert CodemodFindingClassSignature.__name__ == "CodemodFindingClassSignature"
+    assert FindingObligationClass.__name__ == "FindingObligationClass"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
     assert not hasattr(nra, "CodemodPlanJsonParser")
     assert not hasattr(nra, "RefactorRecipeTargetShape")

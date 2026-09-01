@@ -730,6 +730,32 @@ class FindingSemantics(SemanticRecord):
     capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
     observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
 
+    @property
+    def obligation_class(self) -> "FindingObligationClass":
+        """Project the required relation independently of detector provenance."""
+
+        return FindingObligationClass.from_semantics(self)
+
+
+@dataclass(frozen=True, order=True)
+class FindingObligationClass(SemanticRecord):
+    """Canonical identity of one unresolved required-relation obligation."""
+
+    pattern_id: PatternId
+    capability_gap: str
+    relation_context: str
+
+    @classmethod
+    def from_semantics(
+        cls,
+        semantics: FindingSemantics,
+    ) -> "FindingObligationClass":
+        return cls(
+            pattern_id=semantics.pattern_id,
+            capability_gap=semantics.capability_gap,
+            relation_context=semantics.relation_context,
+        )
+
 
 @dataclass(frozen=True)
 class RefactorFinding(FindingSemantics):

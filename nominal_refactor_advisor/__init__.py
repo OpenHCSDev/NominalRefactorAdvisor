@@ -66,9 +66,9 @@ from .codemod_workflow import (
     CodemodClassPlanProjectedDelta,
     CodemodClassPlanProjectedDeltaReport,
     CodemodClassPlanSiteProjectedDelta,
+    CodemodDetectorIdTransition,
     CodemodFindingClassChange,
     CodemodFindingClassDelta,
-    CodemodFindingClassSignature,
     CodemodFindingClassStatus,
     CodemodFindingDelta,
     CodemodFindingIdTransition,
@@ -86,6 +86,7 @@ from .codemod_workflow import (
 from .models import (
     AnalysisReport,
     EvidenceSymbol,
+    FindingObligationClass,
     ImpactDelta,
     OutcomeEstimate,
     RefactorFinding,
