@@ -50,6 +50,7 @@ class CodemodWorkflowStopReason(StrEnum):
     ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
     NO_PROGRESS = "no_progress"
     MAX_STAGES = "max_stages"
+    UNPROVED_TRAJECTORY = "unproved_trajectory"
 
     @property
     def completed(self) -> bool:
@@ -1240,6 +1241,12 @@ class CodemodRefactorGoalRunner:
                 class_plan_report=class_plan_report,
                 simulation=simulation,
             )
+            if plan.report.requires_trajectory_proof and not plan.document.has_recipes:
+                return self.report(
+                    (*stages, stage),
+                    projected_scan,
+                    CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+                )
             if not plan.document.has_recipes:
                 return self.report(
                     (*stages, stage),
@@ -1260,6 +1267,12 @@ class CodemodRefactorGoalRunner:
                 )
             next_scan = projected_scan
             stages.append(stage)
+            if plan.report.requires_trajectory_proof:
+                return self.report(
+                    tuple(stages),
+                    next_scan,
+                    CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
+                )
             if stage.progress.achieved:
                 return self.achieved_report(
                     stages=tuple(stages),

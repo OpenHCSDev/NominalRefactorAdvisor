@@ -309,7 +309,7 @@ class CalibrationTargetResult(SemanticRecord):
             )
         if (
             self.target.require_payoff_guard
-            and not self.scan.economics.payoff_guard_passes
+            and not self.scan.economics.evidence_guard_passes
         ):
             reasons.append("payoff_guard")
         if (
@@ -495,8 +495,8 @@ def format_calibration_markdown(report: CalibrationReport) -> str:
             f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s"
         )
         lines.append(
-            "     payoff: "
-            f"{'pass' if economics.payoff_guard_passes else 'fail'}; "
+            "     evidence: "
+            f"{'pass' if economics.evidence_guard_passes else 'fail'}; "
             "semantic savings "
             f"{economics.certified_description_length_savings}; "
             "backend LOC "

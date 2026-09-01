@@ -35,8 +35,10 @@ from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from enum import Enum, StrEnum
 from functools import cached_property, lru_cache
+from itertools import combinations
+from math import prod
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
+from typing import ClassVar, Generic, Hashable, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -76,10 +78,12 @@ from .detectors._base import (
     IssueDetector,
 )
 from .descriptor_algebra import ConstantProperty
-from .impact_ranking import (
-    RefactorImpactKey,
-    RefactorImpactOpportunity,
-    RefactorImpactRankingReport,
+from .factorization import (
+    CompressibleExplanation,
+    DeclaredExplanationConflictGraph,
+    ExplanationConflictGraph,
+    MDLCompetition,
+    MDLCompetitionResult,
 )
 from .models import (
     AutoRegisterMetaRentMetrics,
@@ -87,7 +91,6 @@ from .models import (
     EnvironmentBooleanDriftMetrics,
     EvidenceSymbol,
     FindingMetrics,
-    ImpactDelta,
     MappingMetrics,
     RefactorFinding,
     RegistrationMetrics,
@@ -129,6 +132,7 @@ from .semantic_match import (
     loaded_nominal_descendants,
     single_item,
 )
+from .semantic_description_length import CompressionCertificate, SemanticCostVector
 from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
@@ -238,139 +242,66 @@ class CodemodBackend(StrEnum):
     LIBCST = "libcst"
 
 
-class CodemodCandidateOrigin(StrEnum):
-    """Where an advisor codemod candidate came from."""
-
-    IMPACT_OPPORTUNITY = "impact_opportunity"
-    TRAJECTORY_STEP = "trajectory_step"
-
-
-class CodemodSimulationStatus(StrEnum):
-    """Whether a candidate currently has source rewrites that can be simulated."""
-
-    REWRITE_PLAN_REQUIRED = "rewrite_plan_required"
-    READY_TO_SIMULATE = "ready_to_simulate"
-
-    @classmethod
-    def for_candidate(cls, candidate: "CodemodCandidate") -> "CodemodSimulationStatus":
-        if candidate.planned_rewrites:
-            return cls.READY_TO_SIMULATE
-        return cls.REWRITE_PLAN_REQUIRED
-
-
-class CodemodActionability(StrEnum):
-    """Agent-facing implementation posture for a codemod candidate."""
-
-    def __new__(
-        cls,
-        value: str,
-        unplanned_message: str,
-        ready_message: str,
-    ) -> "CodemodActionability":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._unplanned_message = unplanned_message
-        member._ready_message = ready_message
-        return member
-
-    SAFE_MECHANICAL = (
-        "safe_mechanical",
-        "Safe mechanical rewrite is available after reviewing the diff.",
-        "Safe mechanical rewrite is available after reviewing the diff.",
-    )
-    SIMULATABLE_REWRITE = (
-        "simulatable_rewrite",
-        "A caller-supplied semantic rewrite plan is available: simulate it, "
-        "inspect the diff, and apply only after the planned authority boundary "
-        "matches the source evidence.",
-        "A caller-supplied semantic rewrite plan is available: simulate it, "
-        "inspect the diff, and apply only after the planned authority boundary "
-        "matches the source evidence.",
-    )
-    SEMANTIC_AGENT_REFACTOR = (
-        "semantic_agent_refactor",
-        "Confidence is sufficient: inspect the source-index targets, design the "
-        "semantic authority boundary, and implement the refactor; stop only if "
-        "domain semantics are genuinely ambiguous.",
-        "Confidence is sufficient and a rewrite plan exists: simulate the plan, "
-        "inspect the diff, and carry the semantic refactor through unless source "
-        "evidence contradicts it.",
-    )
-    SEMANTIC_UNCERTAINTY_REVIEW = (
-        "semantic_uncertainty_review",
-        "Resolve the finding uncertainty before rewriting: inspect the evidence "
-        "and stop only while the semantic authority boundary is genuinely unclear.",
-        "Resolve the finding uncertainty before rewriting: inspect the evidence "
-        "and stop only while the semantic authority boundary is genuinely unclear.",
-    )
-
-    def agent_action(self, simulation_status: CodemodSimulationStatus) -> str:
-        if simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE:
-            return self._ready_message
-        return self._unplanned_message
-
-
-class CodemodAutomationLevel(StrEnum):
-    """How much executable authority the advisor has for a candidate."""
-
-    def __new__(
-        cls,
-        value: str,
-        default_actionability: CodemodActionability,
-        actionable_actionability: CodemodActionability,
-    ) -> "CodemodAutomationLevel":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._default_actionability = default_actionability
-        member._actionable_actionability = actionable_actionability
-        return member
-
-    SAFE_MECHANICAL = (
-        "safe_mechanical",
-        CodemodActionability.SAFE_MECHANICAL,
-        CodemodActionability.SAFE_MECHANICAL,
-    )
-    SIMULATABLE_REWRITE = (
-        "simulatable_rewrite",
-        CodemodActionability.SIMULATABLE_REWRITE,
-        CodemodActionability.SIMULATABLE_REWRITE,
-    )
-    SEMANTIC_AGENT_REQUIRED = (
-        "semantic_agent_required",
-        CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW,
-        CodemodActionability.SEMANTIC_AGENT_REFACTOR,
-    )
-
-    @property
-    def safe_to_apply(self) -> bool:
-        return self is CodemodAutomationLevel.SAFE_MECHANICAL
-
-    def actionability_for(
-        self,
-        candidate: "CodemodCandidate",
-        simulation_status: CodemodSimulationStatus,
-    ) -> CodemodActionability:
-        if (
-            candidate.has_actionable_semantic_confidence
-            or simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE
-        ):
-            return self._actionable_actionability
-        return self._default_actionability
-
-
 class FindingRecipeSynthesisDisposition(StrEnum):
     """Reporting disposition carried by each terminal synthesis status."""
 
-    PLANNED = "planned"
+    CANDIDATE = "candidate"
     REJECTED = "rejected"
     UNSUPPORTED = "unsupported"
     UNCOUNTED = "uncounted"
 
 
+class FindingRecipePlanningHorizon(StrEnum):
+    """Strongest horizon proved for an executable recipe choice."""
+
+    NONE = ("none", 0, "")
+    CURRENT_SNAPSHOT = (
+        "current_snapshot",
+        1,
+        "application requires a proof across reachable refactor trajectories",
+    )
+    UNPROVED = (
+        "unproved",
+        2,
+        "application is blocked because the recipe planning proof is incomplete",
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        proof_rank: int,
+        application_block_reason: str,
+    ) -> "FindingRecipePlanningHorizon":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._proof_rank = proof_rank
+        member._application_block_reason = application_block_reason
+        return member
+
+    @classmethod
+    def join(
+        cls,
+        horizons: Iterable["FindingRecipePlanningHorizon"],
+    ) -> "FindingRecipePlanningHorizon":
+        return max(horizons, key=lambda horizon: horizon._proof_rank, default=cls.NONE)
+
+    @property
+    def requires_trajectory_proof(self) -> bool:
+        return self is not type(self).NONE
+
+    @property
+    def application_block_reason(self) -> str:
+        return self._application_block_reason
+
+
 class FindingRecipeSynthesisStatus(StrEnum):
     """Recipe-synthesis outcome for one advisor finding."""
 
-    PLANNED = ("planned", "", FindingRecipeSynthesisDisposition.PLANNED)
+    EXECUTABLE_CANDIDATE = (
+        "executable_candidate",
+        "",
+        FindingRecipeSynthesisDisposition.CANDIDATE,
+    )
     NO_SYNTHESIZER = (
         "no_synthesizer",
         "no registered finding-to-recipe synthesizer",
@@ -381,10 +312,26 @@ class FindingRecipeSynthesisStatus(StrEnum):
         "executable recipe has no stable source action keys",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
-    DUPLICATE_ACTION_KEYS = (
-        "duplicate_action_keys",
-        "all source action keys were claimed by earlier recipes",
+    DOES_NOT_PAY_RENT = (
+        "does_not_pay_rent",
+        "the explicit certificate does not reduce local semantic cost and its "
+        "reachable trajectory effect is unproved",
         FindingRecipeSynthesisDisposition.UNCOUNTED,
+    )
+    DOMINATED_BY_CERTIFIED_PLAN = (
+        "dominated_by_certified_plan",
+        "a conflicting recipe has a strictly shorter certified end state",
+        FindingRecipeSynthesisDisposition.UNCOUNTED,
+    )
+    AMBIGUOUS_CERTIFIED_PLAN = (
+        "ambiguous_certified_plan",
+        "equal-cost conflicting recipes require an authority choice",
+        FindingRecipeSynthesisDisposition.UNSUPPORTED,
+    )
+    UNPROVED_RECIPE_PLAN = (
+        "unproved_recipe_plan",
+        "recipe compatibility, cost surface, or selected-set validity is unproved",
+        FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_EFFECTIVE_REWRITES = (
         "no_effective_rewrites",
@@ -414,8 +361,8 @@ class FindingRecipeSynthesisStatus(StrEnum):
         return self._default_reason
 
     @property
-    def planned(self) -> bool:
-        return self._disposition is FindingRecipeSynthesisDisposition.PLANNED
+    def candidate(self) -> bool:
+        return self._disposition is FindingRecipeSynthesisDisposition.CANDIDATE
 
     @property
     def rejected(self) -> bool:
@@ -643,9 +590,6 @@ ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
-UNKNOWN_CONFIDENCE_BASIS = "unknown"
-
-
 class AuthorityClaimPayload:
     """Payload field ownership for recipe authority claims."""
 
@@ -1015,55 +959,6 @@ class PlannedSourceRewrite(SourceRewriteDelta):
 
 
 @dataclass(frozen=True)
-class CodemodStrategy:
-    """Execution authority and rationale for one codemod candidate."""
-
-    strategy_id: str
-    automation_level: CodemodAutomationLevel
-    reason: str
-
-    @classmethod
-    def semantic_advisory(cls) -> "CodemodStrategy":
-        return cls(
-            strategy_id="semantic-structural-agent-refactor",
-            automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
-            reason=(
-                "Semantic structural findings identify source targets and refactor "
-                "shape, but the authority boundary must be designed from source "
-                "semantics rather than generated by a blind mechanical rewrite."
-            ),
-        )
-
-    @property
-    def safe_to_apply(self) -> bool:
-        return self.automation_level.safe_to_apply
-
-    def applicability_for(
-        self, candidate: "CodemodCandidate"
-    ) -> "CodemodApplicability":
-        simulation_status = CodemodSimulationStatus.for_candidate(candidate)
-        return CodemodApplicability(
-            strategy=self,
-            simulation_status=simulation_status,
-            actionability=self.automation_level.actionability_for(
-                candidate,
-                simulation_status,
-            ),
-            target_count=candidate.target_count,
-            planned_rewrite_count=len(candidate.planned_rewrites),
-            confidence_basis=candidate.confidence_basis,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "strategy_id": self.strategy_id,
-            "automation_level": self.automation_level.value,
-            "reason": self.reason,
-            "safe_to_apply": self.safe_to_apply,
-        }
-
-
-@dataclass(frozen=True)
 class ArchitectureGuardRule(CodemodPayloadRecord):
     """Caller-supplied invariant for a completed authority-boundary refactor."""
 
@@ -1343,37 +1238,6 @@ class AuthorityClaimSourceIndexResolver:
             if not target.is_module
             and claim.matches_file_qualname(target.file_path, target.qualname)
         )
-
-
-@dataclass(frozen=True)
-class CodemodApplicability:
-    """Concrete codemod applicability for one candidate."""
-
-    strategy: CodemodStrategy
-    simulation_status: CodemodSimulationStatus
-    actionability: CodemodActionability
-    target_count: int
-    planned_rewrite_count: int
-    confidence_basis: str
-
-    @property
-    def agent_action(self) -> str:
-        return self.actionability.agent_action(self.simulation_status)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.strategy.to_dict(),
-            "simulation_status": self.simulation_status.value,
-            "actionability": self.actionability.value,
-            "target_count": self.target_count,
-            "planned_rewrite_count": self.planned_rewrite_count,
-            "confidence_basis": self.confidence_basis,
-            "agent_action": self.agent_action,
-        }
-
-
-_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()
-_ACTIONABLE_CERTIFICATION_LEVELS = CertificationLevel.actionable_certification_levels()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1768,10 +1632,13 @@ class SourceModuleImportGraph:
             return None
         if not python_module_name_is_importable(imported_file.module_name):
             return None
-        module_reference = self.relative_module_reference(
-            importing_file,
-            imported_file,
-        ) or imported_file.module_name
+        module_reference = (
+            self.relative_module_reference(
+                importing_file,
+                imported_file,
+            )
+            or imported_file.module_name
+        )
         return f"from {module_reference} import {imported_name}\n"
 
     def relative_module_reference(
@@ -2031,9 +1898,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
         eligible_target_ids: Iterable[str] | None = None,
     ) -> str | None:
         eligible_ids = (
-            set(eligible_target_ids)
-            if eligible_target_ids is not None
-            else None
+            set(eligible_target_ids) if eligible_target_ids is not None else None
         )
         if self.target_id is not None:
             if self.target_id in source_index.target_by_id and (
@@ -2069,10 +1934,7 @@ class SourceRewriteTarget(SourceTargetIdentity[str | None]):
             target.target_id
             for target in source_index.targets_by_file[file_path]
             if target.is_module
-            and (
-                eligible_target_ids is None
-                or target.target_id in eligible_target_ids
-            )
+            and (eligible_target_ids is None or target.target_id in eligible_target_ids)
         ]
         if len(matching_target_ids) != 1:
             return None
@@ -2189,6 +2051,16 @@ class CodemodSelectorContext:
                 candidate_set=SourcePathCandidateSet.from_paths(self.source_file_paths),
             ).required_path()
             for file_path in file_paths
+        )
+
+    def execution_snapshot(self) -> "CodemodSourceSnapshot":
+        """Project this semantic context into the executable source authority."""
+
+        return CodemodSourceSnapshot.from_indexed_sources(
+            self.source_index,
+            self.sources_by_file_path,
+            class_family_index=self.class_family_index,
+            ast_target_node_cache=self.ast_target_node_cache,
         )
 
     @property
@@ -2425,6 +2297,9 @@ class PositionalCallNameIndex:
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
+    def execution_snapshot(self) -> "CodemodSourceSnapshot":
+        return self
+
     @classmethod
     def from_source_mapping(
         cls,
@@ -2503,9 +2378,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             module_tuple,
             finding_tuple,
         )
-        module_node_cache = {
-            module.file_path: module.module for module in module_tuple
-        }
+        module_node_cache = {module.file_path: module.module for module in module_tuple}
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
@@ -2714,21 +2587,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodTargetSourceReport":
         return CodemodTargetSourceReport.from_selector_context(selector, self)
 
-    def simulate_candidates(
-        self,
-        candidates: Iterable["CodemodCandidate"],
-        *,
-        backend: "CodemodBackend" | None = None,
-    ) -> "CodemodSimulationReport":
-        return self.simulate_rewrites(
-            (
-                rewrite
-                for candidate in candidates
-                for rewrite in candidate.planned_rewrites
-            ),
-            backend=backend,
-        )
-
     def with_simulation(
         self,
         simulation: "CodemodSimulationReport",
@@ -2852,9 +2710,7 @@ class SelectionCountExpectation:
             raise ValueError(
                 f"Unsupported selection_count field(s): {', '.join(unknown_fields)}"
             )
-        expectation = cls(
-            **cls.payload_bindings().constructor_kwargs(payload)
-        )
+        expectation = cls(**cls.payload_bindings().constructor_kwargs(payload))
         expectation.validate_definition()
         return expectation
 
@@ -3010,9 +2866,7 @@ class StrEnumPayloadValueCodec(PayloadValueCodec[StrEnumT], Generic[StrEnumT]):
         try:
             return self.enum_type(value)
         except ValueError as error:
-            raise ValueError(
-                f"Unsupported {field_name!r} value: {value!r}"
-            ) from error
+            raise ValueError(f"Unsupported {field_name!r} value: {value!r}") from error
 
     def serialize(self, value: object) -> JsonValue:
         if not isinstance(value, self.enum_type):
@@ -3167,6 +3021,7 @@ class SelectorObjectPayloadValueCodec(PayloadValueCodec["CodemodTargetSelector"]
         if not isinstance(value, CodemodTargetSelector):
             raise TypeError("selector payload codec requires a target selector")
         return value.to_dict()
+
 
 @dataclass(frozen=True)
 class PayloadRecordArrayValueCodec(
@@ -4185,6 +4040,10 @@ class NominalSourceEdit(ABC):
         return SourceRewriteContributor.merge(*(edit.contributors for edit in edits))
 
 
+class PhysicalSourceEditConflictError(ValueError):
+    """Physical source edits cannot coexist in one nominal rewrite."""
+
+
 @dataclass(frozen=True, kw_only=True)
 class PhysicalSourceEdit(NominalSourceEdit, ABC):
     """Semantic edit whose absolute source-line geometry is resolved."""
@@ -4218,7 +4077,7 @@ class PhysicalSourceEdit(NominalSourceEdit, ABC):
         for index, first in enumerate(edits):
             for second in edits[index + 1 :]:
                 if first.file_path == second.file_path and first.conflicts_with(second):
-                    raise ValueError(
+                    raise PhysicalSourceEditConflictError(
                         "Physical source edits conflict in "
                         f"{first.file_path}:{first.start_line}-{first.end_line} and "
                         f"{second.start_line}-{second.end_line}"
@@ -4292,7 +4151,7 @@ class SourceSpanReplacement(PhysicalSourceEdit):
             replacement.replacement_lines != first.replacement_lines
             for replacement in replacements[1:]
         ):
-            raise ValueError(
+            raise PhysicalSourceEditConflictError(
                 "Conflicting source span replacements target "
                 f"{first.file_path}:{first.start_line}-{first.end_line}"
             )
@@ -4479,7 +4338,8 @@ class SourceLineDiffAuthority:
                         file_path=target.file_path,
                         insertion_line=target.line + source_start,
                         inserted_lines=candidate_lines[
-                            prefix_count + replacement_start : prefix_count
+                            prefix_count
+                            + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -4491,7 +4351,8 @@ class SourceLineDiffAuthority:
                         start_line=target.line + source_start,
                         end_line=target.line + source_end - 1,
                         replacement_lines=candidate_lines[
-                            prefix_count + replacement_start : prefix_count
+                            prefix_count
+                            + replacement_start : prefix_count
                             + replacement_end
                         ],
                         rationale=rationale,
@@ -6693,16 +6554,13 @@ class ExtractMethodsToClassOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBindingSet.from_field_codecs(
-                destination_class_name=RequiredStringPayloadValueCodec(),
-                method_names=StringArrayPayloadValueCodec(),
-            )
-            + PayloadBindingSet.from_field_codecs(
-                field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
-                class_base_names=OptionalStringArrayPayloadValueCodec(),
-                class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
-            )
+        return PayloadBindingSet.from_field_codecs(
+            destination_class_name=RequiredStringPayloadValueCodec(),
+            method_names=StringArrayPayloadValueCodec(),
+        ) + PayloadBindingSet.from_field_codecs(
+            field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
+            class_base_names=OptionalStringArrayPayloadValueCodec(),
+            class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
         )
 
     def source_edits_for_target_node(
@@ -6743,9 +6601,7 @@ class ExtractMethodsToClassOperation(
                 f"{self.destination_class_name!r}"
             )
         duplicate_method_names = tuple(
-            name
-            for name in self.method_names
-            if self.method_names.count(name) > 1
+            name for name in self.method_names if self.method_names.count(name) > 1
         )
         if duplicate_method_names:
             raise ValueError(
@@ -6803,9 +6659,7 @@ class ExtractMethodsToClassOperation(
         )
         if missing_names:
             raise ValueError(f"Source class does not define methods {missing_names!r}")
-        return tuple(
-            methods_by_name[method_name] for method_name in self.method_names
-        )
+        return tuple(methods_by_name[method_name] for method_name in self.method_names)
 
     def destination_class_insertion(
         self,
@@ -7424,9 +7278,7 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
     def payload_bindings(cls) -> OperationPayloadBindings:
         return super().payload_bindings() + (
             PayloadBindingSet.from_field_codecs(
-                call_replacements=PayloadRecordArrayValueCodec(
-                    RecipeCallReplacement
-                ),
+                call_replacements=PayloadRecordArrayValueCodec(RecipeCallReplacement),
             )
         )
 
@@ -8844,6 +8696,12 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
             replacement_import=ReplacementImportPayloadValueCodec(),
         )
 
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (
+            *super().referenced_source_targets(),
+            SourceRewriteTarget(file_path=self.destination_path),
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class MoveSymbolToModuleOperation(
@@ -9169,21 +9027,18 @@ class ExposeGlobalCandidateCacheContextOperation(
     @classmethod
     def payload_bindings(cls) -> OperationPayloadBindings:
         del cls
-        return (
-            PayloadBindingSet.from_field_codecs(
-                candidate_type_name=RequiredStringPayloadValueCodec(),
-                candidate_collector_name=RequiredStringPayloadValueCodec(),
-                candidate_collector_scope=StrEnumPayloadValueCodec(
-                    CandidateCollectorScope,
-                    CandidateCollectorScope.CROSS_MODULE,
-                ),
-                candidate_collector_uses_config=BooleanPayloadValueCodec(),
-                candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
-                base_name=OptionalStringPayloadValueCodec("IssueDetector"),
-            )
-            + PayloadBindingSet.from_field_codecs(
-                import_source=OptionalStringPayloadValueCodec(""),
-            )
+        return PayloadBindingSet.from_field_codecs(
+            candidate_type_name=RequiredStringPayloadValueCodec(),
+            candidate_collector_name=RequiredStringPayloadValueCodec(),
+            candidate_collector_scope=StrEnumPayloadValueCodec(
+                CandidateCollectorScope,
+                CandidateCollectorScope.CROSS_MODULE,
+            ),
+            candidate_collector_uses_config=BooleanPayloadValueCodec(),
+            candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
+            base_name=OptionalStringPayloadValueCodec("IssueDetector"),
+        ) + PayloadBindingSet.from_field_codecs(
+            import_source=OptionalStringPayloadValueCodec(""),
         )
 
     @property
@@ -10239,6 +10094,17 @@ class DispatchPolymorphismCase:
     literal_source: str
     return_statement: ast.Return
 
+    def class_name_for(self, base_name: str) -> str:
+        literal_name = self.literal_source.strip("'\"")
+        case_name = _pascal_case_identifier(literal_name)
+        if not case_name or not case_name.isidentifier():
+            digest = hashlib.blake2s(
+                self.literal_source.encode("utf-8"),
+                digest_size=3,
+            ).hexdigest()
+            case_name = f"Case{case_name or 'Value'}{digest}"
+        return f"{case_name}{base_name}"
+
 
 DispatchPolymorphismCases: TypeAlias = tuple[DispatchPolymorphismCase, ...]
 
@@ -10579,7 +10445,7 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
     def case_source(self, dispatch_case: DispatchPolymorphismCase) -> str:
         return "\n".join(
             (
-                f"class {self.case_class_name(dispatch_case.literal_source)}({self.base_name}):",
+                f"class {dispatch_case.class_name_for(self.base_name)}({self.base_name}):",
                 f"    {self.case_key_attribute} = {dispatch_case.literal_source}",
                 "",
                 f"    {self.apply_signature}:",
@@ -10591,14 +10457,6 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
     @staticmethod
     def return_statement_lines(statement: ast.Return) -> tuple[str, ...]:
         return tuple(f"        {line}" for line in ast.unparse(statement).splitlines())
-
-    def case_class_name(self, literal_source: str) -> str:
-        literal_name = literal_source.strip("'\"")
-        case_name = _pascal_case_identifier(literal_name)
-        if not case_name:
-            case_name = "Case"
-        return f"{case_name}{self.base_name}"
-
 
 @dataclass(frozen=True, kw_only=True)
 class DispatchToPolymorphismOperation(
@@ -10847,7 +10705,6 @@ class ReplaceFunctionBodyOperation(
         )
 
 
-
 @dataclass(frozen=True)
 class SourceLineSpan:
     start_line: int
@@ -10911,6 +10768,7 @@ class SourceLineSpan:
             replacement_lines=replacement_lines,
             rationale=rationale,
         )
+
 
 def _class_base_source_names(node: ast.ClassDef) -> frozenset[str]:
     return frozenset(ast.unparse(base) for base in node.bases)
@@ -12441,10 +12299,42 @@ class CodemodPlanSequenceContinuationReport:
 
 
 @dataclass(frozen=True)
-class FindingRecipeActionKey:
-    """Stable semantic key for one finding-backed recipe action."""
+class FindingRecipeActionIdentity(CodemodJsonReport):
+    """Detector-independent identity of one source semantic action."""
 
     subject_separator: ClassVar[str] = "::"
+
+    file_path: str
+    subject_name: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "file_path": self.file_path,
+            "subject_name": self.subject_name,
+        }
+
+    @classmethod
+    def child_subject(cls, parent_subject: str, child_subject: str) -> str:
+        return f"{parent_subject}{cls.subject_separator}{child_subject}"
+
+    def conflicts_with(self, other: "FindingRecipeActionIdentity") -> bool:
+        return self.file_path == other.file_path and self.subject_conflicts_with(
+            other.subject_name
+        )
+
+    def subject_conflicts_with(self, other_subject: str) -> bool:
+        if self.subject_name == other_subject:
+            return True
+        return self.subject_name.startswith(
+            f"{other_subject}{self.subject_separator}",
+        ) or other_subject.startswith(
+            f"{self.subject_name}{self.subject_separator}",
+        )
+
+
+@dataclass(frozen=True)
+class FindingRecipeActionKey(CodemodJsonReport):
+    """A detector claim projected onto one stable source action identity."""
 
     detector_id: str
     file_path: str
@@ -12468,27 +12358,146 @@ class FindingRecipeActionKey:
     def to_dict(self) -> JsonObject:
         return {
             "detector_id": self.detector_id,
-            "file_path": self.file_path,
-            "subject_name": self.subject_name,
+            **self.semantic_identity.to_dict(),
         }
+
+    @property
+    def semantic_identity(self) -> FindingRecipeActionIdentity:
+        return FindingRecipeActionIdentity(
+            file_path=self.file_path,
+            subject_name=self.subject_name,
+        )
 
     @classmethod
     def child_subject(cls, parent_subject: str, child_subject: str) -> str:
-        return f"{parent_subject}{cls.subject_separator}{child_subject}"
+        return FindingRecipeActionIdentity.child_subject(
+            parent_subject,
+            child_subject,
+        )
 
     def conflicts_with(self, other: "FindingRecipeActionKey") -> bool:
-        return self.file_path == other.file_path and self.subject_conflicts_with(
-            other.subject_name
-        )
+        return self.semantic_identity.conflicts_with(other.semantic_identity)
 
     def subject_conflicts_with(self, other_subject: str) -> bool:
-        if self.subject_name == other_subject:
-            return True
-        return self.subject_name.startswith(
-            f"{other_subject}{self.subject_separator}",
-        ) or other_subject.startswith(
-            f"{self.subject_name}{self.subject_separator}",
-        )
+        return self.semantic_identity.subject_conflicts_with(other_subject)
+
+
+class FindingRecipeCandidatePairDisposition(StrEnum):
+    """Physical and semantic compatibility of two executable recipes."""
+
+    COMPATIBLE = "compatible"
+    CONFLICTING = "conflicting"
+    UNPROVED = "unproved"
+
+
+@dataclass(frozen=True)
+class FindingRecipeCandidatePairAssessment(CodemodJsonReport):
+    """One pairwise compatibility proof used by plan competition."""
+
+    left_index: int
+    right_index: int
+    disposition: FindingRecipeCandidatePairDisposition
+    reason: str
+
+    @property
+    def edge(self) -> tuple[int, int]:
+        return (self.left_index, self.right_index)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "left_candidate_index": self.left_index,
+            "right_candidate_index": self.right_index,
+            "disposition": self.disposition.value,
+            "reason": self.reason,
+        }
+
+
+class FindingRecipeSetDisposition(StrEnum):
+    """Physical proof state of one recipe set simulation."""
+
+    NO_SELECTION = "no_selection"
+    CLEAN = "clean"
+    CONFLICTING = "conflicting"
+    UNPROVED = "unproved"
+
+    @property
+    def proved(self) -> bool:
+        return self in {type(self).NO_SELECTION, type(self).CLEAN}
+
+    @property
+    def conflicting(self) -> bool:
+        return self is type(self).CONFLICTING
+
+
+@dataclass(frozen=True)
+class FindingRecipeSetAssessment(CodemodJsonReport):
+    """Architecture-guarded simulation evidence for one recipe set."""
+
+    candidate_indices: tuple[int, ...]
+    disposition: FindingRecipeSetDisposition
+    reason: str
+    rewritten_file_paths: tuple[str, ...] = ()
+    rewritten_source_digest: str = ""
+
+    @property
+    def proved(self) -> bool:
+        return self.disposition.proved
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "candidate_indices": self.candidate_indices,
+            "disposition": self.disposition.value,
+            "reason": self.reason,
+            "rewritten_file_paths": self.rewritten_file_paths,
+            "rewritten_source_digest": self.rewritten_source_digest,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeSetSimulation:
+    """Internal source result paired with its public proof assessment."""
+
+    assessment: FindingRecipeSetAssessment
+    rewritten_sources: Mapping[str, str] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
+
+
+@dataclass(frozen=True)
+class FindingRecipeCandidateCertificateProof(CodemodJsonReport):
+    """Position-preserving certificate evidence for one competing candidate."""
+
+    candidate_index: int
+    finding_id: str
+    summary: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "candidate_index": self.candidate_index,
+            "finding_id": self.finding_id,
+            "summary": self.summary,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeCostSurface:
+    """Common semantic baseline required before recipe costs are comparable."""
+
+    action_identities: frozenset[FindingRecipeActionIdentity]
+    before_cost: SemanticCostVector
+    semantic_axes: frozenset[Hashable]
+
+    def mismatch_reason(self, other: "FindingRecipeCostSurface") -> str:
+        mismatches: list[str] = []
+        if self.action_identities != other.action_identities:
+            mismatches.append("source action identities")
+        if self.before_cost != other.before_cost:
+            mismatches.append("before-cost baseline")
+        if self.semantic_axes != other.semantic_axes:
+            mismatches.append("semantic axes")
+        return ", ".join(mismatches)
 
 
 @dataclass(frozen=True)
@@ -12542,14 +12551,6 @@ class FindingRecipeSynthesisRecord:
         return self.finding.capability_gap
 
     @property
-    def scaffold(self) -> str:
-        return self.finding.scaffold or ""
-
-    @property
-    def codemod_patch(self) -> str:
-        return self.finding.codemod_patch or ""
-
-    @property
     def reason(self) -> str:
         return self.evaluation.rejection_reason or self.status.default_reason
 
@@ -12566,8 +12567,8 @@ class FindingRecipeSynthesisRecord:
         return self.evaluation.recipe_payload
 
     @property
-    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
-        return self.evaluation.planned_recipes
+    def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
+        return self.evaluation.candidate_recipes
 
     @property
     def proof_obstacles(self) -> tuple[FindingRecipeProofObstacle, ...]:
@@ -12576,6 +12577,14 @@ class FindingRecipeSynthesisRecord:
     @property
     def executable_declaration_name(self) -> str:
         return self.evaluation.executable_declaration_name
+
+    @property
+    def competition_proof(self) -> FindingRecipePlanCompetitionProof | None:
+        return self.evaluation.competition_proof
+
+    @property
+    def planning_horizon(self) -> FindingRecipePlanningHorizon:
+        return self.evaluation.planning_horizon
 
     @property
     def refactor_concept(self) -> str:
@@ -12603,8 +12612,110 @@ class FindingRecipeSynthesisRecord:
             "proof_obstacles": tuple(
                 obstacle.to_dict() for obstacle in self.proof_obstacles
             ),
-            "scaffold": self.scaffold,
-            "codemod_patch": self.codemod_patch,
+            "competition_proof": (
+                self.competition_proof.to_dict()
+                if self.competition_proof is not None
+                else None
+            ),
+            "planning_horizon": self.planning_horizon.value,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanCandidate(CompressibleExplanation):
+    """One executable recipe competing in the current source snapshot."""
+
+    record: FindingRecipeSynthesisRecord
+
+    @property
+    def explanation_key(self) -> str:
+        return self.record.finding_id
+
+    @property
+    def covered_objects(self) -> frozenset[Hashable]:
+        return frozenset(
+            action_key.semantic_identity for action_key in self.record.action_keys
+        )
+
+    @property
+    def compression_certificate(self) -> CompressionCertificate:
+        certificate = self.record.finding.compression_certificate
+        if certificate is None:
+            raise TypeError(
+                "competing executable recipes require explicit compression proofs"
+            )
+        return certificate
+
+    @property
+    def has_compression_proof(self) -> bool:
+        return self.record.finding.compression_certificate is not None
+
+    @property
+    def cost_surface(self) -> FindingRecipeCostSurface | None:
+        certificate = self.record.finding.compression_certificate
+        if certificate is None:
+            return None
+        return FindingRecipeCostSurface(
+            action_identities=frozenset(
+                action_key.semantic_identity for action_key in self.record.action_keys
+            ),
+            before_cost=certificate.before_cost,
+            semantic_axes=frozenset(certificate.semantic_axes),
+        )
+
+    @property
+    def execution_order_key(
+        self,
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (action_key.file_path, action_key.subject_name)
+                for action_key in self.record.action_keys
+            )
+        )
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanCompetitionProof(CodemodJsonReport):
+    """Exact certified alternatives for one connected recipe conflict."""
+
+    component_candidate_indices: tuple[int, ...]
+    component_finding_ids: tuple[str, ...]
+    selected_candidate_indices: tuple[int, ...]
+    selected_finding_ids: tuple[str, ...]
+    alternative_candidate_index_witnesses: tuple[tuple[int, ...], ...]
+    alternative_finding_id_witnesses: tuple[tuple[str, ...], ...]
+    optimal_solution_count: int
+    certified_savings: int
+    candidate_certificates: tuple[FindingRecipeCandidateCertificateProof, ...]
+    candidate_assessments: tuple[FindingRecipeSetAssessment, ...]
+    pair_assessments: tuple[FindingRecipeCandidatePairAssessment, ...]
+    selected_set_assessment: FindingRecipeSetAssessment
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "component_candidate_indices": self.component_candidate_indices,
+            "component_finding_ids": self.component_finding_ids,
+            "selected_candidate_indices": self.selected_candidate_indices,
+            "selected_finding_ids": self.selected_finding_ids,
+            "alternative_candidate_index_witnesses": (
+                self.alternative_candidate_index_witnesses
+            ),
+            "alternative_finding_id_witnesses": (
+                self.alternative_finding_id_witnesses
+            ),
+            "optimal_solution_count": self.optimal_solution_count,
+            "certified_savings": self.certified_savings,
+            "candidate_certificates": tuple(
+                certificate.to_dict() for certificate in self.candidate_certificates
+            ),
+            "candidate_assessments": tuple(
+                assessment.to_dict() for assessment in self.candidate_assessments
+            ),
+            "pair_assessments": tuple(
+                assessment.to_dict() for assessment in self.pair_assessments
+            ),
+            "selected_set_assessment": self.selected_set_assessment.to_dict(),
         }
 
 
@@ -12616,8 +12727,8 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
 
     @property
-    def planned_count(self) -> int:
-        return sum(1 for record in self.records if record.status.planned)
+    def candidate_count(self) -> int:
+        return sum(1 for record in self.records if record.status.candidate)
 
     @property
     def rejected_count(self) -> int:
@@ -12627,13 +12738,24 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
     def unsupported_count(self) -> int:
         return sum(1 for record in self.records if record.status.unsupported)
 
+    @property
+    def requires_trajectory_proof(self) -> bool:
+        return self.planning_horizon.requires_trajectory_proof
+
+    @property
+    def planning_horizon(self) -> FindingRecipePlanningHorizon:
+        return FindingRecipePlanningHorizon.join(
+            record.planning_horizon for record in self.records
+        )
+
     def to_dict(self) -> JsonObject:
         record_payloads = tuple(record.to_dict() for record in self.records)
         return {
             "records": record_payloads,
-            "planned_count": self.planned_count,
+            "candidate_count": self.candidate_count,
             "rejected_count": self.rejected_count,
             "unsupported_count": self.unsupported_count,
+            "planning_horizon": self.planning_horizon.value,
             "status_counts": {
                 status.value: sum(
                     1 for record in self.records if record.status is status
@@ -12657,8 +12779,8 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
         return self.report.records
 
     @property
-    def planned_count(self) -> int:
-        return self.report.planned_count
+    def candidate_count(self) -> int:
+        return self.report.candidate_count
 
     @property
     def rejected_count(self) -> int:
@@ -12683,10 +12805,14 @@ class FindingRecipeEvaluation(ABC):
     rejection_reason = ConstantProperty[str]("")
     recipe_id = ConstantProperty[str]("")
     recipe_payload = ConstantProperty[JsonObject | None](None)
-    planned_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
+    candidate_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
     proof_obstacles = ConstantProperty[tuple[FindingRecipeProofObstacle, ...]](())
     refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
     executable_declaration_name = ConstantProperty[str]("")
+    competition_proof = ConstantProperty[FindingRecipePlanCompetitionProof | None](None)
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.NONE
+    )
 
     @property
     def required_recipe(self) -> RefactorRecipe:
@@ -12698,9 +12824,8 @@ class FindingRecipeEvaluation(ABC):
     def gated_by_action_keys(
         self,
         action_keys: tuple[FindingRecipeActionKey, ...],
-        seen_action_keys: frozenset[FindingRecipeActionKey],
     ) -> "FindingRecipeEvaluation":
-        del action_keys, seen_action_keys
+        del action_keys
         return self
 
     def gated_by_authority_claim(
@@ -12778,7 +12903,7 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
 class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     """Declaration-owned safety outcome with exactly one executable recipe."""
 
-    status = FindingRecipeSynthesisStatus.PLANNED
+    status = FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     executable_recipe: RefactorRecipe
 
     @property
@@ -12794,7 +12919,7 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         return self.executable_recipe.to_dict()
 
     @property
-    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
+    def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
         return (self.executable_recipe,)
 
     def with_recipe(self, recipe: RefactorRecipe) -> Self:
@@ -12803,19 +12928,9 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     def gated_by_action_keys(
         self,
         action_keys: tuple[FindingRecipeActionKey, ...],
-        seen_action_keys: frozenset[FindingRecipeActionKey],
     ) -> FindingRecipeEvaluation:
         if not action_keys:
             return MissingActionKeysRecipeEvaluation(
-                executable_recipe=self.executable_recipe,
-                executable_declaration_type=self.executable_declaration_type,
-            )
-        if any(
-            action_key.conflicts_with(seen_key)
-            for action_key in action_keys
-            for seen_key in seen_action_keys
-        ):
-            return DuplicateActionKeysRecipeEvaluation(
                 executable_recipe=self.executable_recipe,
                 executable_declaration_type=self.executable_declaration_type,
             )
@@ -12870,6 +12985,26 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CurrentSnapshotSelectedRecipeEvaluation(ExecutableRecipeEvaluation):
+    """Executable recipe whose selection is proved only for this source snapshot."""
+
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CertifiedPlanSelectedRecipeEvaluation(CurrentSnapshotSelectedRecipeEvaluation):
+    """Recipe selected by exact competition among current-snapshot candidates."""
+
+    proof: FindingRecipePlanCompetitionProof
+
+    @property
+    def competition_proof(self) -> FindingRecipePlanCompetitionProof:
+        return self.proof
+
+
+@dataclass(frozen=True, kw_only=True)
 class NonPlanningExecutableRecipeEvaluation(ExecutableRecipeEvaluation, ABC):
     """Evaluated executable recipe excluded from the emitted plan."""
 
@@ -12879,15 +13014,14 @@ class NonPlanningExecutableRecipeEvaluation(ExecutableRecipeEvaluation, ABC):
         raise NotImplementedError
 
     @property
-    def planned_recipes(self) -> tuple[RefactorRecipe, ...]:
+    def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
         return ()
 
     def gated_by_action_keys(
         self,
         action_keys: tuple[FindingRecipeActionKey, ...],
-        seen_action_keys: frozenset[FindingRecipeActionKey],
     ) -> FindingRecipeEvaluation:
-        del action_keys, seen_action_keys
+        del action_keys
         return self
 
     def gated_by_authority_claim(
@@ -12914,10 +13048,59 @@ class MissingActionKeysRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DuplicateActionKeysRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
-    """Executable recipe whose source identity conflicts with an earlier recipe."""
+class NonPayingRecipeEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable recipe whose explicit semantic compression does not pay rent."""
 
-    status = FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
+    status = FindingRecipeSynthesisStatus.DOES_NOT_PAY_RENT
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.UNPROVED
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CertifiedPlanCompetitionEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable recipe excluded by one typed current-snapshot proof."""
+
+    proof: FindingRecipePlanCompetitionProof
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
+    )
+
+    @property
+    def competition_proof(self) -> FindingRecipePlanCompetitionProof:
+        return self.proof
+
+
+@dataclass(frozen=True, kw_only=True)
+class DominatedByCertifiedPlanEvaluation(CertifiedPlanCompetitionEvaluation):
+    """Recipe absent from every strictly shorter certified optimum."""
+
+    status = FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN
+
+
+@dataclass(frozen=True, kw_only=True)
+class AmbiguousCertifiedPlanEvaluation(CertifiedPlanCompetitionEvaluation):
+    """Recipe belongs to an unresolved equal-cost conflict component."""
+
+    status = FindingRecipeSynthesisStatus.AMBIGUOUS_CERTIFIED_PLAN
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.UNPROVED
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class UnprovedRecipePlanEvaluation(NonPlanningExecutableRecipeEvaluation):
+    """Executable recipe whose plan-level comparison is not proved."""
+
+    status = FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
+        FindingRecipePlanningHorizon.UNPROVED
+    )
+    reason: str
+
+    @property
+    def rejection_reason(self) -> str:
+        return self.reason
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13038,7 +13221,6 @@ class FindingRecipeSynthesisAttempt:
 
     finding: RefactorFinding
     selector_context: CodemodSelectorContext | None
-    seen_action_keys: frozenset[FindingRecipeActionKey]
 
     def evaluate(self) -> FindingRecipeSynthesisRecord:
         synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
@@ -13052,7 +13234,7 @@ class FindingRecipeSynthesisAttempt:
                 self.selector_context,
             )
         evaluation = (
-            evaluation.gated_by_action_keys(action_keys, self.seen_action_keys)
+            evaluation.gated_by_action_keys(action_keys)
             .gated_by_authority_claim(
                 self.selector_context,
                 self.finding,
@@ -13075,7 +13257,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
         return tuple(
-            record.finding_id for record in self.records if record.planned_recipes
+            record.finding_id for record in self.records if record.candidate_recipes
         )
 
     @property
@@ -13226,7 +13408,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         return tuple(
             record.finding_id
             for record in self.synthesis_records
-            if record.planned_recipes
+            if record.candidate_recipes
         )
 
     @staticmethod
@@ -13234,7 +13416,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         records: Iterable[FindingRecipeSynthesisRecord],
     ) -> CodemodPlanDocument:
         recipes = tuple(
-            recipe for record in records for recipe in record.planned_recipes
+            recipe for record in records for recipe in record.candidate_recipes
         )
         if not recipes:
             return CodemodPlanDocument()
@@ -14037,17 +14219,14 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
         matching_calls = tuple(site.call for site in matching_call_sites)
-        return (
-            cls.source_projection_authority_method_or_none(
-                metrics,
-                field_annotations,
-                matching_call_sites,
-            )
-            or cls.invariant_selector_authority_method_or_none(
-                metrics,
-                field_annotations,
-                matching_calls,
-            )
+        return cls.source_projection_authority_method_or_none(
+            metrics,
+            field_annotations,
+            matching_call_sites,
+        ) or cls.invariant_selector_authority_method_or_none(
+            metrics,
+            field_annotations,
+            matching_calls,
         )
 
     @classmethod
@@ -14130,8 +14309,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         )
         source_annotations = tuple(template.source_annotation for template in templates)
         return (
-            len(set(template_fingerprints)) == 1
-            and len(set(source_annotations)) == 1
+            len(set(template_fingerprints)) == 1 and len(set(source_annotations)) == 1
         )
 
     @classmethod
@@ -14740,6 +14918,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 return None
             return next(iter(roots))
         return geometry.segment_for_node(value)
+
 
 class RepeatedMethodPromotionFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
@@ -15447,8 +15626,7 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
             )
             if (
                 len(node.bases) != 1
-                or direct_assignment_names
-                & AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
+                or direct_assignment_names & AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
                 or any(
                     isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
                     and statement.name == "__init_subclass__"
@@ -15564,15 +15742,12 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         values = tuple(
             pair[1]
             for statement in node.body
-            if (
-                pair := SingleAssignmentAndValueNameProjection(statement).pair
-            ) is not None
+            if (pair := SingleAssignmentAndValueNameProjection(statement).pair)
+            is not None
             and pair[0] == assignment_name
         )
         return (
-            values[0]
-            if len(values) == 1 and isinstance(values[0], ast.expr)
-            else None
+            values[0] if len(values) == 1 and isinstance(values[0], ast.expr) else None
         )
 
     @staticmethod
@@ -16020,6 +16195,7 @@ class SemanticMirrorRecipeEndpoint:
     def subject(self) -> str:
         return EvidenceSymbol(self.location.symbol).subject
 
+
 @dataclass(frozen=True)
 class SemanticMirrorRecipeSeedLocations:
     """Projection and authority locations shared by semantic mirror recipes."""
@@ -16080,6 +16256,7 @@ class SemanticMirrorRecipeSeedLocations:
 
     def authority_symbol(self) -> str:
         return self.authority_endpoint().symbol
+
 
 @dataclass(frozen=True)
 class SemanticMirrorImportBoundary:
@@ -17030,9 +17207,11 @@ class DataclassInstanceFieldProjection:
         authority: DataclassPayloadAuthorityTarget,
         field_values: tuple[ReturnFieldValue, ...],
     ) -> "DataclassInstanceFieldProjection | None":
-        if not field_values or tuple(
-            field.field_name for field in field_values
-        ) != authority.field_names:
+        if (
+            not field_values
+            or tuple(field.field_name for field in field_values)
+            != authority.field_names
+        ):
             return None
         owner_nodes: list[ast.expr] = []
         for field_value in field_values:
@@ -17514,9 +17693,7 @@ class DataclassAuthorityMappingRecipeBuilder(
     def is_applicable(self) -> bool:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return False
-        seed = FindingSemanticMirrorLocations(
-            self.finding
-        ).optional_seed_locations()
+        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
         if seed is None:
             return False
         resolved_target = self.resolved_authority_target(seed)
@@ -18247,9 +18424,9 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         )
         if replacement_span.contains_comment(source):
             return None
-        has_trailing_comma = source[
-            last_offsets[1] : sequence_offsets[1]
-        ].lstrip().startswith(",")
+        has_trailing_comma = (
+            source[last_offsets[1] : sequence_offsets[1]].lstrip().startswith(",")
+        )
         indentation = " " * element_run.first_element_node.col_offset
         continuation_indentation = f"{indentation}    "
         nested_indentation = f"{continuation_indentation}    "
@@ -18386,9 +18563,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         return any(
             field_names
             <= frozenset(
-                keyword.arg
-                for keyword in call.keywords
-                if keyword.arg is not None
+                keyword.arg for keyword in call.keywords if keyword.arg is not None
             )
             for call in ast.walk(function_return.return_node.value)
             if isinstance(call, ast.Call)
@@ -20060,7 +20235,7 @@ class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrate
                         manual_evaluation.required_executable_declaration_type,
                     ),
                 )
-                if manual_evaluation.planned_recipes
+                if manual_evaluation.candidate_recipes
                 else ()
             ),
         )
@@ -20080,7 +20255,7 @@ class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrate
                     manual_evaluation.required_executable_declaration_type
                 ),
                 reason=manual_evaluation.rejection_reason,
-            )
+            ),
         )
         return RejectedRecipeEvaluation(
             reason=(
@@ -20253,9 +20428,9 @@ class ContextualSemanticMirrorRecipeBuilder(
 ):
     """Shared lifecycle for semantic-mirror builders that require selector context."""
 
-    __registry__: ClassVar[
-        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]] = (
+        {}
+    )
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -20314,6 +20489,7 @@ class ContextualSemanticMirrorRecipeBuilder(
             module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
+
 
 @dataclass(frozen=True)
 class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLocation):
@@ -20470,9 +20646,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
             for descendant_symbol in self.class_family_index.descendant_symbols(
                 authority_symbol
             )
-            if (
-                descendant := self.class_family_index.class_for(descendant_symbol)
-            )
+            if (descendant := self.class_family_index.class_for(descendant_symbol))
             is not None
         )
         direct_member_names = frozenset(
@@ -20842,9 +21016,8 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
             if seed is not None
             else None
         )
-        if (
-            import_boundary is not None
-            and import_boundary.import_would_create_cycle(context)
+        if import_boundary is not None and import_boundary.import_would_create_cycle(
+            context
         ):
             reason = "semantic authority import would create a module cycle"
             return RejectedRecipeEvaluation(
@@ -20865,10 +21038,8 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
                 context,
             )
         )
-        proof_obstacles = (
-            InferredSemanticMirrorMappingRecipeBuilder.proof_obstacles(
-                resolved_builders,
-            )
+        proof_obstacles = InferredSemanticMirrorMappingRecipeBuilder.proof_obstacles(
+            resolved_builders,
         )
         if proof_obstacles:
             return RejectedRecipeEvaluation(
@@ -21331,7 +21502,7 @@ class ProjectedBatchRewriteSet:
 
 @dataclass(frozen=True)
 class FindingRecipePlanBuilder:
-    """Build a deduplicated codemod plan from advisor findings."""
+    """Build the shortest compatible executable plan from advisor findings."""
 
     findings: tuple[RefactorFinding, ...]
     detector_ids: frozenset[str] = frozenset()
@@ -21354,95 +21525,46 @@ class FindingRecipePlanBuilder:
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> FindingRecipePlan:
-        recipes = []
-        synthesis_records: list[FindingRecipeSynthesisRecord] = []
-        seen_action_keys: set[FindingRecipeActionKey] = set()
-        claimed_rewrites: list[PlannedSourceRewrite] = []
-        for finding in self.scoped_findings():
-            attempt = FindingRecipeSynthesisAttempt(
+        evaluated_records = tuple(
+            FindingRecipeSynthesisAttempt(
                 finding=finding,
                 selector_context=selector_context,
-                seen_action_keys=frozenset(seen_action_keys),
+            ).evaluate()
+            for finding in self.scoped_findings()
+        )
+        candidates = tuple(
+            FindingRecipePlanCandidate(record)
+            for record in evaluated_records
+            if record.candidate_recipes
+        )
+        competition_result = (
+            FindingRecipePlanCompetition(
+                candidates=candidates,
+                source_snapshot=(
+                    selector_context.execution_snapshot()
+                    if selector_context is not None
+                    else None
+                ),
+                batch_projection=self,
             )
-            result = attempt.evaluate()
-            if not result.planned_recipes:
-                synthesis_records.append(result)
-                continue
-            (recipe,) = result.planned_recipes
-            overlap_reason = self.overlap_rejection_reason(
-                recipe,
-                recipes,
-                claimed_rewrites,
-                selector_context,
-            )
-            if overlap_reason:
-                synthesis_records.append(
-                    replace(
-                        result,
-                        evaluation=RejectedRecipeEvaluation(
-                            reason=overlap_reason,
-                            executable_declaration_type=(
-                                result.evaluation.required_executable_declaration_type
-                            ),
-                        ),
-                    )
-                )
-                continue
-            synthesis_records.append(result)
-            recipes.append(recipe)
-            seen_action_keys.update(result.action_keys)
-            claimed_rewrites.extend(
-                self.planned_rewrites_for_recipe(recipe, selector_context)
-            )
+            .solve()
+        )
+        competition_records = iter(competition_result.records)
+        synthesis_records = tuple(
+            next(competition_records) if record.candidate_recipes else record
+            for record in evaluated_records
+        )
+        if next(competition_records, None) is not None:
+            raise RuntimeError("recipe competition record projection lost position")
         return FindingRecipePlan(
             document=CodemodPlanDocument(
-                recipes=self.merged_recipes(recipes, selector_context),
-            ),
-            report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
-        )
-
-    def overlap_rejection_reason(
-        self,
-        recipe: RefactorRecipe,
-        accepted_recipes: Iterable[RefactorRecipe],
-        claimed_rewrites: Iterable[PlannedSourceRewrite],
-        selector_context: CodemodSelectorContext | None,
-    ) -> str:
-        if selector_context is None:
-            return ""
-        planned_rewrites = self.planned_rewrites_for_recipe(recipe, selector_context)
-        if not planned_rewrites:
-            return ""
-        claimed_rewrite_tuple = tuple(claimed_rewrites)
-        for planned_rewrite in planned_rewrites:
-            planned_target = self.rewrite_target(planned_rewrite, selector_context)
-            for claimed_rewrite in claimed_rewrite_tuple:
-                claimed_target = self.rewrite_target(claimed_rewrite, selector_context)
-                if not PlannedRewriteSelectionAuthority.overlaps(
-                    planned_target,
-                    claimed_target,
-                ):
-                    continue
-                if not self.rewrites_have_line_conflict(
-                    planned_rewrite,
-                    claimed_rewrite,
+                recipes=self.merged_recipes(
+                    list(competition_result.candidate_recipes),
                     selector_context,
-                ):
-                    continue
-                if (
-                    self.projected_batch_recipe(
-                        (*tuple(accepted_recipes), recipe),
-                        selector_context,
-                    )
-                    is not None
-                ):
-                    return ""
-                return (
-                    "planned source rewrite overlaps an earlier synthesized recipe: "
-                    f"{planned_target.qualname!r} overlaps {claimed_target.qualname!r} "
-                    f"in {planned_target.file_path!r}"
-                )
-        return ""
+                ),
+            ),
+            report=FindingRecipeSynthesisReport(synthesis_records),
+        )
 
     def planned_rewrites_for_recipe(
         self,
@@ -21766,6 +21888,752 @@ class FindingRecipePlanBuilder:
         return not self.detector_ids or finding.detector_id in self.detector_ids
 
 
+@dataclass(frozen=True)
+class FindingRecipePlanCompetitionResult:
+    """Order-preserving recipe evaluations after exact global competition."""
+
+    candidates: tuple[FindingRecipePlanCandidate, ...]
+    evaluations: tuple[FindingRecipeEvaluation, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.candidates) != len(self.evaluations):
+            raise ValueError("recipe competition requires one evaluation per candidate")
+
+    @property
+    def records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
+        return tuple(
+            replace(candidate.record, evaluation=evaluation)
+            for candidate, evaluation in zip(
+                self.candidates,
+                self.evaluations,
+                strict=True,
+            )
+        )
+
+    @property
+    def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
+        return tuple(
+            evaluation.required_recipe
+            for candidate, evaluation in sorted(
+                zip(self.candidates, self.evaluations, strict=True),
+                key=lambda row: row[0].execution_order_key,
+            )
+            if evaluation.candidate_recipes
+        )
+
+
+@dataclass(frozen=True)
+class FindingRecipeComponentDecision:
+    """Exact position-preserving choice for one comparable conflict component."""
+
+    global_indices: tuple[int, ...]
+    local_result: "MDLCompetitionResult"
+    pair_assessments: tuple[FindingRecipeCandidatePairAssessment, ...]
+
+    @property
+    def selected_global_indices(self) -> tuple[int, ...]:
+        return tuple(
+            self.global_indices[local_index]
+            for local_index in self.local_result.selected_indices
+        )
+
+    @property
+    def ambiguous_global_indices(self) -> frozenset[int]:
+        return frozenset(
+            self.global_indices[local_index]
+            for ambiguity in self.local_result.ambiguities
+            for local_index in ambiguity.component_indices
+        )
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanCompetition:
+    """Select a globally shortest compatible current-snapshot recipe set."""
+
+    candidates: tuple[FindingRecipePlanCandidate, ...]
+    source_snapshot: CodemodSourceSnapshot | None
+    batch_projection: FindingRecipePlanBuilder = field(compare=False, repr=False)
+
+    @cached_property
+    def candidate_simulations(self) -> tuple[FindingRecipeSetSimulation, ...]:
+        return tuple(
+            self.simulate_recipe_set((index,))
+            for index in range(len(self.candidates))
+        )
+
+    @cached_property
+    def pair_assessments(self) -> tuple[FindingRecipeCandidatePairAssessment, ...]:
+        return tuple(
+            self.assess_pair(left_index, right_index)
+            for left_index, right_index in self.interacting_candidate_pairs
+        )
+
+    @cached_property
+    def precompetition_evaluations(self) -> tuple[FindingRecipeEvaluation, ...]:
+        evaluations: list[FindingRecipeEvaluation] = []
+        for index, candidate in enumerate(self.candidates):
+            simulation_assessment = self.candidate_simulations[index].assessment
+            if not simulation_assessment.proved:
+                evaluation = self.unproved_evaluation(
+                    index,
+                    simulation_assessment.reason,
+                )
+            elif candidate.has_compression_proof and not candidate.pays_rent:
+                evaluation = self.non_paying_evaluation(index)
+            else:
+                evaluation = candidate.record.evaluation
+            evaluations.append(evaluation)
+        return tuple(evaluations)
+
+    @cached_property
+    def competition_eligible_candidate_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, evaluation in enumerate(self.precompetition_evaluations)
+            if evaluation.candidate_recipes
+        )
+
+    @cached_property
+    def competition_participating_candidate_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, simulation in enumerate(self.candidate_simulations)
+            if simulation.assessment.proved
+        )
+
+    @cached_property
+    def physical_edits_by_candidate_index(
+        self,
+    ) -> dict[int, tuple[PhysicalSourceEdit, ...]]:
+        if self.source_snapshot is None:
+            return {}
+        return {
+            index: tuple(
+                source_edit
+                for rewrite in self.batch_projection.planned_rewrites_for_recipe(
+                    self.candidates[index].record.evaluation.required_recipe,
+                    self.source_snapshot,
+                )
+                for source_edit in self.batch_projection.rewrite_source_edits(
+                    rewrite,
+                    self.source_snapshot,
+                )
+            )
+            for index in self.competition_participating_candidate_indices
+        }
+
+    @cached_property
+    def interacting_candidate_pairs(self) -> tuple[tuple[int, int], ...]:
+        candidate_indices_by_file_path: dict[str, set[int]] = defaultdict(set)
+        for index in self.competition_participating_candidate_indices:
+            for action_key in self.candidates[index].record.action_keys:
+                candidate_indices_by_file_path[action_key.file_path].add(index)
+            for source_edit in self.physical_edits_by_candidate_index[index]:
+                candidate_indices_by_file_path[source_edit.file_path].add(index)
+        same_file_pairs = {
+            pair
+            for candidate_indices in candidate_indices_by_file_path.values()
+            for pair in combinations(sorted(candidate_indices), 2)
+        }
+        return tuple(
+            sorted(
+                pair
+                for pair in same_file_pairs
+                if self.candidates_have_nominal_conflict(*pair)
+                or self.candidates_have_physical_interaction(*pair)
+            )
+        )
+
+    def candidates_have_nominal_conflict(
+        self,
+        left_index: int,
+        right_index: int,
+    ) -> bool:
+        return any(
+            left_key.conflicts_with(right_key)
+            for left_key in self.candidates[left_index].record.action_keys
+            for right_key in self.candidates[right_index].record.action_keys
+        )
+
+    def candidates_have_physical_interaction(
+        self,
+        left_index: int,
+        right_index: int,
+    ) -> bool:
+        return any(
+            self.physical_edits_interact(left_edit, right_edit)
+            for left_edit in self.physical_edits_by_candidate_index[left_index]
+            for right_edit in self.physical_edits_by_candidate_index[right_index]
+        )
+
+    @staticmethod
+    def physical_edits_interact(
+        left: PhysicalSourceEdit,
+        right: PhysicalSourceEdit,
+    ) -> bool:
+        if left.file_path != right.file_path:
+            return False
+        if left.conflicts_with(right) or right.conflicts_with(left):
+            return True
+        return (
+            isinstance(left, SourceInsertion)
+            and isinstance(right, SourceInsertion)
+            and left.insertion_line == right.insertion_line
+        )
+
+    def assess_pair(
+        self,
+        left_index: int,
+        right_index: int,
+    ) -> FindingRecipeCandidatePairAssessment:
+        unproved_candidates = tuple(
+            simulation.assessment
+            for simulation in (
+                self.candidate_simulations[left_index],
+                self.candidate_simulations[right_index],
+            )
+            if not simulation.assessment.proved
+        )
+        if unproved_candidates:
+            return FindingRecipeCandidatePairAssessment(
+                left_index,
+                right_index,
+                FindingRecipeCandidatePairDisposition.UNPROVED,
+                "individual recipe simulation is unproved: "
+                + "; ".join(
+                    assessment.reason for assessment in unproved_candidates
+                ),
+            )
+        if self.candidates_have_nominal_conflict(left_index, right_index):
+            return FindingRecipeCandidatePairAssessment(
+                left_index,
+                right_index,
+                FindingRecipeCandidatePairDisposition.CONFLICTING,
+                "nominal source action identities conflict",
+            )
+        simulations = (
+            self.simulate_recipe_set((left_index, right_index)),
+            self.simulate_recipe_set((right_index, left_index)),
+        )
+        conflicting_compositions = tuple(
+            simulation.assessment
+            for simulation in simulations
+            if simulation.assessment.disposition.conflicting
+        )
+        if len(conflicting_compositions) == len(simulations):
+            return FindingRecipeCandidatePairAssessment(
+                left_index,
+                right_index,
+                FindingRecipeCandidatePairDisposition.CONFLICTING,
+                "recipe source edits conflict in both composition orders",
+            )
+        unproved_compositions = tuple(
+            simulation.assessment
+            for simulation in simulations
+            if not simulation.assessment.proved
+        )
+        if unproved_compositions:
+            return FindingRecipeCandidatePairAssessment(
+                left_index,
+                right_index,
+                FindingRecipeCandidatePairDisposition.UNPROVED,
+                "composed recipe simulation is unproved: "
+                + "; ".join(
+                    assessment.reason for assessment in unproved_compositions
+                ),
+            )
+        if (
+            simulations[0].rewritten_sources != simulations[1].rewritten_sources
+        ):
+            return FindingRecipeCandidatePairAssessment(
+                left_index,
+                right_index,
+                FindingRecipeCandidatePairDisposition.UNPROVED,
+                "recipe composition depends on source order",
+            )
+        return FindingRecipeCandidatePairAssessment(
+            left_index,
+            right_index,
+            FindingRecipeCandidatePairDisposition.COMPATIBLE,
+            "the nominal codemod document composes and simulates cleanly",
+        )
+
+    def components_for(
+        self,
+        candidate_indices: tuple[int, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        candidate_index_set = frozenset(candidate_indices)
+        ordered_indices = tuple(
+            sorted(
+                candidate_indices,
+                key=lambda index: self.candidates[index].execution_order_key,
+            )
+        )
+        adjacency = {
+            index: frozenset(
+                (
+                    assessment.right_index
+                    if assessment.left_index == index
+                    else assessment.left_index
+                )
+                for assessment in self.pair_assessments
+                if assessment.disposition
+                is not FindingRecipeCandidatePairDisposition.COMPATIBLE
+                and index in assessment.edge
+                and assessment.left_index in candidate_index_set
+                and assessment.right_index in candidate_index_set
+            )
+            for index in ordered_indices
+        }
+        return ExplanationConflictGraph.conflict_components(
+            ordered_indices,
+            adjacency,
+        )
+
+    def solve(self) -> FindingRecipePlanCompetitionResult:
+        evaluations = list(self.precompetition_evaluations)
+        eligible_indices = self.competition_eligible_candidate_indices
+        eligible_index_set = frozenset(eligible_indices)
+
+        decisions: list[FindingRecipeComponentDecision] = []
+        unresolved_indices: set[int] = set()
+        singleton_indices: set[int] = set()
+        for component in self.components_for(
+            self.competition_participating_candidate_indices
+        ):
+            if len(component) == 1:
+                if component[0] in eligible_index_set:
+                    singleton_indices.update(component)
+                continue
+            component_assessments = tuple(
+                assessment
+                for assessment in self.pair_assessments
+                if assessment.left_index in component
+                and assessment.right_index in component
+            )
+            unproved_assessments = tuple(
+                assessment
+                for assessment in component_assessments
+                if assessment.disposition
+                is FindingRecipeCandidatePairDisposition.UNPROVED
+            )
+            unproved_candidate_indices = tuple(
+                index for index in component if index not in eligible_index_set
+            )
+            missing_proof_indices = tuple(
+                index
+                for index in component
+                if not self.candidates[index].has_compression_proof
+            )
+            cost_surface_reason = self.cost_surface_mismatch_reason(component)
+            if (
+                unproved_assessments
+                or unproved_candidate_indices
+                or missing_proof_indices
+                or cost_surface_reason
+            ):
+                reason = self.unproved_reason(
+                    unproved_assessments,
+                    unproved_candidate_indices,
+                    missing_proof_indices,
+                    cost_surface_reason,
+                )
+                for index in component:
+                    evaluations[index] = self.unproved_evaluation(index, reason)
+                unresolved_indices.update(component)
+                continue
+            component_candidates = tuple(self.candidates[index] for index in component)
+            component_index_by_global = {
+                global_index: component_index
+                for component_index, global_index in enumerate(component)
+            }
+            conflict_edges = frozenset(
+                tuple(
+                    sorted(
+                        (
+                            component_index_by_global[assessment.left_index],
+                            component_index_by_global[assessment.right_index],
+                        )
+                    )
+                )
+                for assessment in component_assessments
+                if assessment.disposition
+                is FindingRecipeCandidatePairDisposition.CONFLICTING
+            )
+            result = MDLCompetition(
+                DeclaredExplanationConflictGraph(
+                    explanations=component_candidates,
+                    declared_conflict_edges=conflict_edges,
+                )
+            ).solve()
+            decisions.append(
+                FindingRecipeComponentDecision(
+                    global_indices=component,
+                    local_result=result,
+                    pair_assessments=component_assessments,
+                )
+            )
+
+        selected_indices = tuple(
+            sorted(
+                singleton_indices.union(
+                    index
+                    for decision in decisions
+                    for index in decision.selected_global_indices
+                ),
+                key=lambda index: self.candidates[index].execution_order_key,
+            )
+        )
+        selected_set_assessment = (
+            self.candidate_simulations[selected_indices[0]].assessment
+            if len(selected_indices) == 1
+            else self.simulate_recipe_set(selected_indices).assessment
+        )
+        if not selected_set_assessment.proved:
+            reason = selected_set_assessment.reason
+            for index in eligible_indices:
+                if index not in unresolved_indices:
+                    evaluations[index] = self.unproved_evaluation(index, reason)
+            return FindingRecipePlanCompetitionResult(
+                candidates=self.candidates,
+                evaluations=tuple(evaluations),
+            )
+
+        for index in singleton_indices:
+            evaluations[index] = self.current_snapshot_selected_evaluation(index)
+        for decision in decisions:
+            proof = self.competition_proof(decision, selected_set_assessment)
+            selected = frozenset(decision.selected_global_indices)
+            ambiguous = decision.ambiguous_global_indices
+            for index in decision.global_indices:
+                if index in selected:
+                    evaluations[index] = self.certified_selected_evaluation(
+                        index,
+                        proof,
+                    )
+                    continue
+                evaluations[index] = self.certified_exclusion_evaluation(
+                    index,
+                    proof,
+                    ambiguous=index in ambiguous,
+                )
+        return FindingRecipePlanCompetitionResult(
+            candidates=self.candidates,
+            evaluations=tuple(evaluations),
+        )
+
+    def unproved_reason(
+        self,
+        assessments: tuple[FindingRecipeCandidatePairAssessment, ...],
+        unproved_candidate_indices: tuple[int, ...],
+        missing_proof_indices: tuple[int, ...],
+        cost_surface_reason: str = "",
+    ) -> str:
+        clauses: list[str] = []
+        if assessments:
+            clauses.append(
+                "unproved pair compatibility: "
+                + "; ".join(assessment.reason for assessment in assessments)
+            )
+        if unproved_candidate_indices:
+            clauses.append(
+                "competing recipes lack a locally complete proof: "
+                + "; ".join(
+                    f"{self.candidates[index].explanation_key}: "
+                    f"{self.precompetition_evaluations[index].rejection_reason}"
+                    for index in unproved_candidate_indices
+                )
+            )
+        if missing_proof_indices:
+            clauses.append(
+                "missing explicit compression proofs for "
+                + ", ".join(
+                    self.candidates[index].explanation_key
+                    for index in missing_proof_indices
+                )
+            )
+        if cost_surface_reason:
+            clauses.append(cost_surface_reason)
+        return "; ".join(clauses)
+
+    def cost_surface_mismatch_reason(
+        self,
+        component: tuple[int, ...],
+    ) -> str:
+        surfaces = tuple(self.candidates[index].cost_surface for index in component)
+        if any(surface is None for surface in surfaces):
+            return ""
+        reference = surfaces[0]
+        if reference is None:
+            return ""
+        mismatches = tuple(
+            reference.mismatch_reason(surface)
+            for surface in surfaces[1:]
+            if surface is not None and surface != reference
+        )
+        if not mismatches:
+            return ""
+        return "compression proofs do not share one cost surface: " + "; ".join(
+            dict.fromkeys(mismatches)
+        )
+
+    def simulate_recipe_set(
+        self,
+        candidate_indices: tuple[int, ...],
+    ) -> FindingRecipeSetSimulation:
+        if not candidate_indices:
+            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
+                candidate_indices=(),
+                disposition=FindingRecipeSetDisposition.NO_SELECTION,
+                reason="the exact competition has no invariant executable selection",
+            ))
+        if self.source_snapshot is None:
+            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
+                candidate_indices=candidate_indices,
+                disposition=FindingRecipeSetDisposition.UNPROVED,
+                reason="recipe-set simulation requires a source snapshot",
+            ))
+        recipes = [
+            self.candidates[index].record.evaluation.required_recipe
+            for index in candidate_indices
+        ]
+        try:
+            simulation = CodemodPlanDocument(
+                recipes=self.batch_projection.merged_recipes(
+                    recipes,
+                    self.source_snapshot,
+                )
+            ).simulate_snapshot(self.source_snapshot)
+        except (
+            PhysicalSourceEditConflictError,
+            PlannedRewriteConflictError,
+        ) as error:
+            disposition = (
+                FindingRecipeSetDisposition.CONFLICTING
+                if len(candidate_indices) > 1
+                else FindingRecipeSetDisposition.UNPROVED
+            )
+            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
+                candidate_indices=candidate_indices,
+                disposition=disposition,
+                reason=f"recipe set has conflicting source edits: {error}",
+            ))
+        except (
+            CodemodOperationPreflightError,
+            SyntaxError,
+        ) as error:
+            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
+                candidate_indices=candidate_indices,
+                disposition=FindingRecipeSetDisposition.UNPROVED,
+                reason=f"recipe set cannot be simulated: {error}",
+            ))
+        if not simulation.is_clean:
+            return FindingRecipeSetSimulation(FindingRecipeSetAssessment(
+                candidate_indices=candidate_indices,
+                disposition=FindingRecipeSetDisposition.UNPROVED,
+                reason=(
+                    "recipe set violates "
+                    f"{simulation.architecture_guard_report.violation_count} "
+                    "architecture guard(s)"
+                ),
+            ))
+        rewritten_sources = simulation.simulation.rewritten_sources
+        source_digest = hashlib.blake2s(
+            "\0".join(
+                f"{file_path}\0{rewritten_sources[file_path]}"
+                for file_path in sorted(rewritten_sources)
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+        return FindingRecipeSetSimulation(
+            assessment=FindingRecipeSetAssessment(
+                candidate_indices=candidate_indices,
+                disposition=FindingRecipeSetDisposition.CLEAN,
+                reason="the recipe set simulates with clean architecture guards",
+                rewritten_file_paths=tuple(sorted(rewritten_sources)),
+                rewritten_source_digest=source_digest,
+            ),
+            rewritten_sources=rewritten_sources,
+        )
+
+    def non_paying_evaluation(self, index: int) -> NonPayingRecipeEvaluation:
+        evaluation = self.candidates[index].record.evaluation
+        return NonPayingRecipeEvaluation(
+            executable_recipe=evaluation.required_recipe,
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
+        )
+
+    def unproved_evaluation(
+        self,
+        index: int,
+        reason: str,
+    ) -> UnprovedRecipePlanEvaluation:
+        evaluation = self.candidates[index].record.evaluation
+        return UnprovedRecipePlanEvaluation(
+            executable_recipe=evaluation.required_recipe,
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
+            reason=reason,
+        )
+
+    def certified_exclusion_evaluation(
+        self,
+        index: int,
+        proof: FindingRecipePlanCompetitionProof,
+        *,
+        ambiguous: bool,
+    ) -> CertifiedPlanCompetitionEvaluation:
+        evaluation = self.candidates[index].record.evaluation
+        evaluation_type: type[CertifiedPlanCompetitionEvaluation] = (
+            AmbiguousCertifiedPlanEvaluation
+            if ambiguous
+            else DominatedByCertifiedPlanEvaluation
+        )
+        return evaluation_type(
+            executable_recipe=evaluation.required_recipe,
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
+            proof=proof,
+        )
+
+    def certified_selected_evaluation(
+        self,
+        index: int,
+        proof: FindingRecipePlanCompetitionProof,
+    ) -> CertifiedPlanSelectedRecipeEvaluation:
+        evaluation = self.candidates[index].record.evaluation
+        return CertifiedPlanSelectedRecipeEvaluation(
+            executable_recipe=evaluation.required_recipe,
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
+            proof=proof,
+        )
+
+    def current_snapshot_selected_evaluation(
+        self,
+        index: int,
+    ) -> CurrentSnapshotSelectedRecipeEvaluation:
+        evaluation = self.candidates[index].record.evaluation
+        return CurrentSnapshotSelectedRecipeEvaluation(
+            executable_recipe=evaluation.required_recipe,
+            executable_declaration_type=(
+                evaluation.required_executable_declaration_type
+            ),
+        )
+
+    def competition_proof(
+        self,
+        decision: FindingRecipeComponentDecision,
+        selected_set_assessment: FindingRecipeSetAssessment,
+    ) -> FindingRecipePlanCompetitionProof:
+        selected_candidate_indices = decision.selected_global_indices
+        selected_finding_ids = tuple(
+            self.candidates[index].explanation_key
+            for index in selected_candidate_indices
+        )
+        alternative_candidate_index_witnesses = tuple(
+            tuple(decision.global_indices[local_index] for local_index in witness)
+            for witness in self.alternative_local_index_witnesses(
+                decision.local_result
+            )
+        )
+        alternative_finding_id_witnesses = tuple(
+            tuple(
+                self.candidates[index].explanation_key
+                for index in alternative_indices
+            )
+            for alternative_indices in alternative_candidate_index_witnesses
+        )
+        ambiguous_local_indices = frozenset(
+            local_index
+            for ambiguity in decision.local_result.ambiguities
+            for local_index in ambiguity.component_indices
+        )
+        certified_savings = sum(
+            decision.local_result.conflict_graph.explanations[
+                local_index
+            ].certified_savings
+            for local_index in decision.local_result.selected_indices
+            if local_index not in ambiguous_local_indices
+        ) + sum(
+            ambiguity.certified_savings
+            for ambiguity in decision.local_result.ambiguities
+        )
+        return FindingRecipePlanCompetitionProof(
+            component_candidate_indices=decision.global_indices,
+            component_finding_ids=tuple(
+                self.candidates[index].explanation_key
+                for index in decision.global_indices
+            ),
+            selected_candidate_indices=selected_candidate_indices,
+            selected_finding_ids=selected_finding_ids,
+            alternative_candidate_index_witnesses=(
+                alternative_candidate_index_witnesses
+            ),
+            alternative_finding_id_witnesses=(
+                alternative_finding_id_witnesses
+            ),
+            optimal_solution_count=prod(
+                ambiguity.optimal_solution_count
+                for ambiguity in decision.local_result.ambiguities
+            ),
+            certified_savings=certified_savings,
+            candidate_certificates=tuple(
+                FindingRecipeCandidateCertificateProof(
+                    candidate_index=index,
+                    finding_id=self.candidates[index].explanation_key,
+                    summary=(
+                        self.candidates[
+                            index
+                        ].compression_certificate.rent_proof_summary
+                    ),
+                )
+                for index in decision.global_indices
+            ),
+            candidate_assessments=tuple(
+                self.candidate_simulations[index].assessment
+                for index in decision.global_indices
+            ),
+            pair_assessments=decision.pair_assessments,
+            selected_set_assessment=selected_set_assessment,
+        )
+
+    @staticmethod
+    def alternative_local_index_witnesses(
+        result: "MDLCompetitionResult",
+    ) -> tuple[tuple[int, ...], ...]:
+        if not result.ambiguities:
+            return (result.selected_indices,)
+        baseline_witnesses = tuple(
+            ambiguity.alternative_index_witnesses[0]
+            for ambiguity in result.ambiguities
+        )
+        witnesses: list[tuple[int, ...]] = []
+        for ambiguity_index, ambiguity in enumerate(result.ambiguities):
+            for alternative in ambiguity.alternative_index_witnesses:
+                witness = tuple(
+                    sorted(
+                        frozenset(result.selected_indices).union(
+                            local_index
+                            for index, baseline in enumerate(baseline_witnesses)
+                            for local_index in (
+                                alternative
+                                if index == ambiguity_index
+                                else baseline
+                            )
+                        )
+                    )
+                )
+                if witness not in witnesses:
+                    witnesses.append(witness)
+        return tuple(witnesses)
+
+
 def codemod_plan_from_findings(
     findings: Iterable[RefactorFinding],
     *,
@@ -21778,141 +22646,6 @@ def codemod_plan_from_findings(
         findings=tuple(findings),
         detector_ids=frozenset(detector_ids),
     ).plan(selector_context=selector_context)
-
-
-@dataclass(frozen=True)
-class CodemodCandidate:
-    """Impact-ranked rewrite candidate with optional executable rewrite plans."""
-
-    origin: CodemodCandidateOrigin = field(compare=False)
-    opportunity: RefactorImpactOpportunity
-    target_ids: tuple[str, ...]
-    planned_rewrites: tuple[PlannedSourceRewrite, ...] = ()
-    strategy: CodemodStrategy = field(default_factory=CodemodStrategy.semantic_advisory)
-
-    @property
-    def candidate_id(self) -> str:
-        return _candidate_id(self.opportunity, self.target_ids)
-
-    @property
-    def opportunity_key(self) -> RefactorImpactKey:
-        return self.opportunity.key
-
-    @property
-    def covered_finding_ids(self) -> tuple[str, ...]:
-        return self.opportunity.covered_finding_ids
-
-    @property
-    def predicted_removed_finding_count(self) -> int:
-        return self.opportunity.predicted_removed_finding_count
-
-    @property
-    def impact_delta(self) -> ImpactDelta:
-        return self.opportunity.impact_delta
-
-    @property
-    def load_bearing_score(self) -> int:
-        return self.opportunity.load_bearing_score
-
-    @property
-    def target_count(self) -> int:
-        return len(self.target_ids)
-
-    @property
-    def has_planned_rewrites(self) -> bool:
-        return bool(self.planned_rewrites)
-
-    @property
-    def has_actionable_semantic_confidence(self) -> bool:
-        confidence_levels = set(self.opportunity.confidence_levels)
-        certification_levels = set(self.opportunity.certification_levels)
-        if not confidence_levels or not certification_levels:
-            return False
-        return (
-            confidence_levels <= _ACTIONABLE_CONFIDENCE_LEVELS
-            and certification_levels <= _ACTIONABLE_CERTIFICATION_LEVELS
-        )
-
-    @property
-    def confidence_basis(self) -> str:
-        confidence_levels = ", ".join(self.opportunity.confidence_levels)
-        certification_levels = ", ".join(self.opportunity.certification_levels)
-        if not confidence_levels:
-            confidence_levels = UNKNOWN_CONFIDENCE_BASIS
-        if not certification_levels:
-            certification_levels = UNKNOWN_CONFIDENCE_BASIS
-        return f"confidence={confidence_levels}; certification={certification_levels}"
-
-    @property
-    def applicability(self) -> CodemodApplicability:
-        return self.strategy.applicability_for(self)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "candidate_id": self.candidate_id,
-            "origin": self.origin.value,
-            "opportunity_key": self.opportunity_key.to_dict(),
-            "target_ids": self.target_ids,
-            "covered_finding_ids": self.covered_finding_ids,
-            "predicted_removed_finding_count": self.predicted_removed_finding_count,
-            "load_bearing_score": self.load_bearing_score,
-            "has_planned_rewrites": self.has_planned_rewrites,
-            "planned_rewrite_count": len(self.planned_rewrites),
-            "applicability": self.applicability.to_dict(),
-        }
-
-    def with_planned_rewrites(
-        self, rewrites: Iterable[PlannedSourceRewrite]
-    ) -> "CodemodCandidate":
-        return replace(self, planned_rewrites=tuple(rewrites))
-
-    def with_replacement(
-        self,
-        target_id: str,
-        replacement_source: str,
-        *,
-        rationale: str = "",
-    ) -> "CodemodCandidate":
-        if target_id not in self.target_ids:
-            raise ValueError(
-                f"Target {target_id!r} is not covered by candidate {self.candidate_id}"
-            )
-        rewrite = PlannedSourceRewrite(
-            target_id=target_id,
-            replacement_source=replacement_source,
-            rationale=rationale,
-        )
-        return replace(self, planned_rewrites=(*self.planned_rewrites, rewrite))
-
-    def simulate(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        backend: CodemodBackend | None = None,
-    ) -> CodemodSimulationReport:
-        if not self.planned_rewrites:
-            raise ValueError(
-                f"Candidate {self.candidate_id} has no planned source rewrites"
-            )
-        return simulate_planned_rewrites(
-            source_index,
-            self.planned_rewrites,
-            source_by_path,
-            backend=backend,
-        )
-
-    def simulate_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        *,
-        backend: CodemodBackend | None = None,
-    ) -> CodemodSimulationReport:
-        if not self.planned_rewrites:
-            raise ValueError(
-                f"Candidate {self.candidate_id} has no planned source rewrites"
-            )
-        return snapshot.simulate_rewrites(self.planned_rewrites, backend=backend)
 
 
 @dataclass(frozen=True)
@@ -21943,23 +22676,6 @@ class AstExpressionProjection:
         if source_name != carrier_variable_name:
             return None
         return field_name
-
-
-def simulate_codemod_candidates(
-    candidates: Iterable[CodemodCandidate],
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    *,
-    backend: CodemodBackend | None = None,
-) -> CodemodSimulationReport:
-    """Simulate every planned rewrite attached to the supplied candidates."""
-
-    return simulate_planned_rewrites(
-        source_index,
-        (rewrite for candidate in candidates for rewrite in candidate.planned_rewrites),
-        source_by_path,
-        backend=backend,
-    )
 
 
 def format_codemod_unified_diff(
@@ -22158,48 +22874,6 @@ class CancelableCompositionSignal(SourceTargetSpan, ProductForwardIdentity):
     @property
     def target_ids(self) -> tuple[str, ...]:
         return (self.target_id,)
-
-
-def codemod_candidates_from_impact_ranking(
-    impact_ranking: RefactorImpactRankingReport,
-    source_index: SourceIndex,
-    *,
-    include_trajectory_steps: bool = True,
-) -> tuple[CodemodCandidate, ...]:
-    """Project impact-ranking opportunities into source-index codemod candidates."""
-
-    candidate_index = UniqueIdentityIndexAuthority[
-        str, CodemodCandidate, CodemodCandidate
-    ]()
-    candidate_collector = OpportunityCandidateCollector(source_index)
-    for opportunity in impact_ranking.opportunities:
-        candidate = candidate_collector.candidate_from_opportunity(
-            opportunity,
-            CodemodCandidateOrigin.IMPACT_OPPORTUNITY,
-        )
-        if candidate is not None:
-            candidate_index.add(candidate.candidate_id, candidate, candidate)
-
-    if include_trajectory_steps:
-        for trajectory in impact_ranking.trajectories:
-            for step in trajectory.steps:
-                candidate = candidate_collector.candidate_from_opportunity(
-                    step.opportunity,
-                    CodemodCandidateOrigin.TRAJECTORY_STEP,
-                )
-                if candidate is not None:
-                    candidate_index.add(candidate.candidate_id, candidate, candidate)
-
-    return sorted_tuple(
-        candidate_index.values_by_handle().values(),
-        key=lambda item: (
-            -item.load_bearing_score,
-            -item.predicted_removed_finding_count,
-            item.opportunity_key.kind,
-            item.opportunity_key.value,
-            item.target_ids,
-        ),
-    )
 
 
 def detect_cancelable_composition_signals(
@@ -22529,43 +23203,6 @@ class PlannedRewriteSelectionAuthority:
             and first.line <= second.end_line
             and second.line <= first.end_line
         )
-
-
-@dataclass(frozen=True)
-class OpportunityCandidateCollector:
-    """Project impact opportunities into codemod candidates."""
-
-    source_index: SourceIndex
-
-    def candidate_from_opportunity(
-        self,
-        opportunity: RefactorImpactOpportunity,
-        origin: CodemodCandidateOrigin,
-    ) -> CodemodCandidate | None:
-        target_ids = self.source_index.target_ids_for_finding_ids(
-            opportunity.covered_finding_ids
-        )
-        if not target_ids:
-            return None
-        return CodemodCandidate(
-            origin=origin,
-            opportunity=opportunity,
-            target_ids=target_ids,
-        )
-
-
-def _candidate_id(
-    opportunity: RefactorImpactOpportunity, target_ids: tuple[str, ...]
-) -> str:
-    payload = "|".join(
-        (
-            opportunity.key.kind,
-            opportunity.key.value,
-            *opportunity.covered_finding_ids,
-            *target_ids,
-        )
-    )
-    return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
 
 def _name_id(node: ast.expr) -> str | None:

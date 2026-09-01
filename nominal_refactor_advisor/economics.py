@@ -1,7 +1,7 @@
-"""Portfolio-level payoff accounting for refactor recommendations.
+"""Portfolio-level evidence accounting for structural refactor findings.
 
 The advisor should prove that abstraction work compounds instead of hiding cost
-in nicer names.  This module keeps recommendation payoff, semantic compression,
+in nicer names.  This module keeps observed payoff, semantic compression,
 and working-tree change budgets as separate dimensions so reports do not mix
 detector/test growth with backend savings.
 """
@@ -50,10 +50,6 @@ def _sum_impacts(impacts: Iterable[ImpactDelta]) -> ImpactDelta:
     return total
 
 
-def _finding_requires_payoff_proof(finding: RefactorFinding) -> bool:
-    return bool(finding.scaffold or finding.codemod_patch)
-
-
 def _finding_has_payoff_proof(finding: RefactorFinding) -> bool:
     certificate = finding.compression_certificate
     if certificate is not None and certificate.pays_rent:
@@ -100,8 +96,8 @@ def _git_root(start_path: Path) -> Path:
 
 
 @dataclass(frozen=True)
-class RecommendationEconomics(SemanticRecord):
-    """Aggregated proof that emitted recommendations carry payoff evidence."""
+class RefactorEvidenceEconomics(SemanticRecord):
+    """Aggregate the payoff evidence carried by structural findings."""
 
     finding_count: int = 0
     plan_count: int = 0
@@ -110,14 +106,14 @@ class RecommendationEconomics(SemanticRecord):
     proven_finding_count: int = 0
     loc_payoff_finding_count: int = 0
     semantic_payoff_finding_count: int = 0
-    unproven_infrastructure_finding_count: int = 0
-    unproven_infrastructure_detector_ids: tuple[str, ...] = field(default_factory=tuple)
+    unproved_finding_count: int = 0
+    unproved_detector_ids: tuple[str, ...] = field(default_factory=tuple)
     backend_lower_bound_removable_loc: int = 0
     backend_upper_bound_removable_loc: int = 0
     description_length_before: int = 0
     description_length_after: int = 0
     certified_description_length_savings: int = 0
-    payoff_guard_passes: bool = True
+    evidence_guard_passes: bool = True
     has_long_term_signal: bool = False
 
     @classmethod
@@ -125,7 +121,7 @@ class RecommendationEconomics(SemanticRecord):
         cls,
         findings: Iterable[RefactorFinding],
         plans: Iterable[RefactorPlan] = (),
-    ) -> "RecommendationEconomics":
+    ) -> "RefactorEvidenceEconomics":
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         certificates = tuple(
@@ -161,13 +157,10 @@ class RecommendationEconomics(SemanticRecord):
             description_length_after = outcome.description_length_after
             certified_description_length_savings = outcome.description_length_savings
 
-        unproven = tuple(
-            (
-                finding
-                for finding in finding_tuple
-                if _finding_requires_payoff_proof(finding)
-                and not _finding_has_payoff_proof(finding)
-            )
+        unproved = tuple(
+            finding
+            for finding in finding_tuple
+            if not _finding_has_payoff_proof(finding)
         )
         proven_finding_count = sum(
             (1 for finding in finding_tuple if _finding_has_payoff_proof(finding))
@@ -204,16 +197,16 @@ class RecommendationEconomics(SemanticRecord):
             proven_finding_count=proven_finding_count,
             loc_payoff_finding_count=loc_payoff_finding_count,
             semantic_payoff_finding_count=semantic_payoff_finding_count,
-            unproven_infrastructure_finding_count=len(unproven),
-            unproven_infrastructure_detector_ids=sorted_tuple(
-                {finding.detector_id for finding in unproven}
+            unproved_finding_count=len(unproved),
+            unproved_detector_ids=sorted_tuple(
+                {finding.detector_id for finding in unproved}
             ),
             backend_lower_bound_removable_loc=outcome.lower_bound_removable_loc,
             backend_upper_bound_removable_loc=outcome.upper_bound_removable_loc,
             description_length_before=description_length_before,
             description_length_after=description_length_after,
             certified_description_length_savings=certified_description_length_savings,
-            payoff_guard_passes=not unproven,
+            evidence_guard_passes=not unproved,
             has_long_term_signal=(
                 outcome.lower_bound_removable_loc > 0
                 or certified_description_length_savings > 0
@@ -235,7 +228,7 @@ class ScanEconomicsProof(SemanticRecord):
     plan_count: int
     detector_ids: tuple[str, ...] = field(default_factory=tuple)
     production_detector_ids: tuple[str, ...] = field(default_factory=tuple)
-    economics: RecommendationEconomics = field(default_factory=RecommendationEconomics)
+    economics: RefactorEvidenceEconomics = field(default_factory=RefactorEvidenceEconomics)
 
     @classmethod
     def from_findings_and_plans(
@@ -271,7 +264,7 @@ class ScanEconomicsProof(SemanticRecord):
             production_detector_ids=sorted_tuple(
                 {finding.detector_id for finding in production_findings}
             ),
-            economics=RecommendationEconomics.from_findings_and_plans(
+            economics=RefactorEvidenceEconomics.from_findings_and_plans(
                 finding_tuple, plan_tuple
             ),
         )
@@ -289,7 +282,7 @@ class ScanEconomicsProof(SemanticRecord):
         return (
             self.production_scan_clean
             and self.scan_budget_passes
-            and self.economics.payoff_guard_passes
+            and self.economics.evidence_guard_passes
         )
 
     @property
@@ -299,7 +292,7 @@ class ScanEconomicsProof(SemanticRecord):
             reasons.append(f"{self.label}_production_findings")
         if not self.scan_budget_passes:
             reasons.append(f"{self.label}_scan_budget")
-        if not self.economics.payoff_guard_passes:
+        if not self.economics.evidence_guard_passes:
             reasons.append(f"{self.label}_payoff_guard")
         return tuple(reasons)
 
@@ -317,7 +310,7 @@ class ScanEconomicsProof(SemanticRecord):
             "detector_ids": self.detector_ids,
             "production_detector_ids": self.production_detector_ids,
             "production_scan_clean": self.production_scan_clean,
-            "payoff_guard_passes": self.economics.payoff_guard_passes,
+            "evidence_guard_passes": self.economics.evidence_guard_passes,
             "proof_passes": self.proof_passes,
             "regression_reasons": self.regression_reasons,
             "economics": self.economics.to_dict(),

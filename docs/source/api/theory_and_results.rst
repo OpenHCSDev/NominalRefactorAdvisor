@@ -5,7 +5,7 @@ Result Records
 --------------
 
 .. automodule:: nominal_refactor_advisor.models
-   :members: AnalysisReport, RefactorPlan, RefactorActionKind, RefactorAction, RefactorFinding, FindingSpec, SourceLocation, ImpactDelta, OutcomeEstimate
+   :members: AnalysisReport, RefactorPlan, RefactorPatternEvidence, RefactorFinding, FindingSpec, SourceLocation, ImpactDelta, OutcomeEstimate
 
 
 Pattern Metadata

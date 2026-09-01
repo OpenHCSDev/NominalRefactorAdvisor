@@ -67,7 +67,6 @@ How To Read The Rest Of The Docs
 - Read :doc:`nominal_architecture_playbook` for the core conceptual model.
 - Read :doc:`agent_refactoring_crash_course` for the operational refactoring procedure.
 - Read :doc:`nominal_identity_case_studies` for worked examples of when nominal identity matters.
-- Read :doc:`advisor_self_audit_detection_plan` and :doc:`advisor_detection_edit_drafts` as historical implementation notes rather than current runtime reference.
 
 
 What This Page Deliberately Does Not Do

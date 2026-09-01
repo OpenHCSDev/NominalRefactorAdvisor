@@ -244,6 +244,28 @@ class AuthorityClaimStatus(StrEnum):
     DECLARED = "declared"
 
 
+class AuthorityClaimProvenance(StrEnum):
+    """Whether a graph authority can prove a source-level authority claim."""
+
+    def __new__(
+        cls,
+        value: str,
+        proves_claim: bool,
+    ) -> "AuthorityClaimProvenance":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._proves_claim = proves_claim
+        return member
+
+    SOURCE_DECLARATION = ("source_declaration", True)
+    DETECTOR_SOURCE_EVIDENCE = ("detector_source_evidence", True)
+    INFERRED_FROM_PROJECTION = ("inferred_from_projection", False)
+
+    @property
+    def proves_claim(self) -> bool:
+        return self._proves_claim
+
+
 class AuthorityProofEdgeKind(StrEnum):
     """Proof edge categories that make an authority claim non-prose."""
 
@@ -716,6 +738,9 @@ class SemanticAuthority(SemanticAuthorityReference):
     name: str
     location: SourceLocation
     fact_ids: tuple[str, ...]
+    claim_provenance: AuthorityClaimProvenance = (
+        AuthorityClaimProvenance.SOURCE_DECLARATION
+    )
 
 
 @dataclass(frozen=True)
@@ -979,7 +1004,22 @@ class AuthorityClaimResolver:
                 claim,
                 searched_symbols=searched_symbols,
             )
-        if len(candidates) > 1:
+        proved_candidates = tuple(
+            authority
+            for authority in candidates
+            if authority.claim_provenance.proves_claim
+        )
+        if not proved_candidates:
+            return AuthorityClaimResolution.unresolved(
+                claim,
+                searched_symbols=searched_symbols,
+                candidate_count=len(candidates),
+                reason=(
+                    "matching graph authorities were inferred from presentation "
+                    "evidence rather than proved by a source declaration"
+                ),
+            )
+        if len(proved_candidates) > 1:
             return AuthorityClaimResolution(
                 claim=claim,
                 status=AuthorityClaimStatus.AMBIGUOUS,
@@ -989,16 +1029,16 @@ class AuthorityClaimResolver:
                         AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
                         detail="multiple graph authorities match this claim",
                     )
-                    for authority in candidates
+                    for authority in proved_candidates
                 ),
                 discovery_required=AuthorityDiscoveryRequired(
                     claimed_symbol=claim.claimed_symbol,
                     searched_symbols=searched_symbols,
-                    candidate_count=len(candidates),
+                    candidate_count=len(proved_candidates),
                     reason="multiple source-backed authorities match the claim",
                 ),
             )
-        authority = candidates[0]
+        authority = proved_candidates[0]
         return AuthorityClaimResolution(
             claim=claim,
             status=AuthorityClaimStatus.RESOLVED,
@@ -2652,6 +2692,14 @@ class FindingBackedSemanticDescentGraphRequest:
         return graph
 
 
+@dataclass(frozen=True)
+class FindingBackedAuthorityEvidence:
+    """Authority location plus whether the detector actually observed its source."""
+
+    location: SourceLocation
+    claim_provenance: AuthorityClaimProvenance
+
+
 class FindingBackedAuthorityProjection:
     """Project detector finding evidence onto a nominal semantic authority."""
 
@@ -2661,14 +2709,14 @@ class FindingBackedAuthorityProjection:
         finding: RefactorFinding,
         authority_evidence_index_by_detector_id: Mapping[str, int | None],
     ) -> SemanticAuthority:
-        authority_location = cls.authority_location(
+        authority_evidence = cls.authority_evidence(
             finding,
             authority_evidence_index_by_detector_id,
         )
         authority_id = semantic_descent_finding_authority_id(finding)
         authority_name = FindingBackedAuthorityNameProjection.authority_name(
             finding,
-            authority_location,
+            authority_evidence.location,
             prefer_metric_authority=(
                 authority_evidence_index_by_detector_id.get(finding.detector_id) is None
             ),
@@ -2677,27 +2725,36 @@ class FindingBackedAuthorityProjection:
             authority_id=authority_id,
             kind=SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
             name=authority_name,
-            location=authority_location,
+            location=authority_evidence.location,
             fact_ids=tuple(
                 FindingBackedFactProjection.fact_id(authority_id, index)
                 for index, _fact_name in enumerate(
                     FindingBackedFactProjection.fact_names(finding)
                 )
             ),
+            claim_provenance=authority_evidence.claim_provenance,
         )
 
     @classmethod
-    def authority_location(
+    def authority_evidence(
         cls,
         finding: RefactorFinding,
         authority_evidence_index_by_detector_id: Mapping[str, int | None],
-    ) -> SourceLocation:
+    ) -> FindingBackedAuthorityEvidence:
         evidence_index = authority_evidence_index_by_detector_id.get(
             finding.detector_id
         )
         if evidence_index is not None and evidence_index < len(finding.evidence):
-            return finding.evidence[evidence_index]
-        return FindingBackedPresentationProjection.projection_location(finding)
+            return FindingBackedAuthorityEvidence(
+                location=finding.evidence[evidence_index],
+                claim_provenance=(
+                    AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
+                ),
+            )
+        return FindingBackedAuthorityEvidence(
+            location=FindingBackedPresentationProjection.projection_location(finding),
+            claim_provenance=AuthorityClaimProvenance.INFERRED_FROM_PROJECTION,
+        )
 
 
 class FindingBackedAuthorityNameProjection:

@@ -50,7 +50,6 @@ from ..constructor_algebra import (
 from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
 from ..observation_shapes import LineSymbolObservationMixin
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from ..registry_normal_form import RegistryNormalFormStage
 from ..semantic_match import (
     AstPredicateRule,
     Maybe,
@@ -469,7 +468,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     ssot_authority_boundary: ClassVar[bool] = False
     semantic_mirror_role: ClassVar[bool] = False
     semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
-    registry_normal_form_stage: ClassVar[type[RegistryNormalFormStage] | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -2011,7 +2009,6 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
         SourceModuleCandidateCollector[CandidateItemT] | None
     ) = None
     detector_priority: int | None = None
-    registry_normal_form_stage: type[RegistryNormalFormStage] | None = None
 
     @classmethod
     def from_kwargs(
@@ -2035,7 +2032,6 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
     candidate_collector: DetectorCollector[CandidateItemT]
     source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT]
     detector_priority: int | None
-    registry_normal_form_stage: type[RegistryNormalFormStage] | None
 
 
 DetectorNamespaceValue: TypeAlias = (
@@ -2045,7 +2041,6 @@ DetectorNamespaceValue: TypeAlias = (
     | CandidateFindingRenderer[CandidateItemT]
     | DetectorCollector[CandidateItemT]
     | SourceModuleCandidateCollector[CandidateItemT]
-    | type[RegistryNormalFormStage]
     | type[IssueDetector]
 )
 
@@ -2096,7 +2091,6 @@ class DetectorDeclaration(Generic[CandidateItemT]):
         | CandidateFindingRenderer[CandidateItemT]
         | DetectorCollector[CandidateItemT]
         | SourceModuleCandidateCollector[CandidateItemT]
-        | type[RegistryNormalFormStage],
     ]:
         namespace: dict[
             str,
@@ -2106,7 +2100,6 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             | CandidateFindingRenderer[CandidateItemT]
             | DetectorCollector[CandidateItemT]
             | SourceModuleCandidateCollector[CandidateItemT]
-            | type[RegistryNormalFormStage],
         ] = {
             "__module__": module_name,
             "__firstlineno__": firstlineno,
@@ -2121,10 +2114,6 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             )
         if self.options.detector_priority is not None:
             namespace["detector_priority"] = self.options.detector_priority
-        if self.options.registry_normal_form_stage is not None:
-            namespace["registry_normal_form_stage"] = (
-                self.options.registry_normal_form_stage
-            )
         return namespace
 
     def install(

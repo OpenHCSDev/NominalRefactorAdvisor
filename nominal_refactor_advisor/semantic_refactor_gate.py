@@ -1,4 +1,4 @@
-"""Authority-boundary-first gate for semantic refactor scans."""
+"""Authority-boundary proof gate for semantic refactor scans."""
 
 from __future__ import annotations
 
@@ -8,20 +8,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 
-from .codemod import (
-    CodemodActionability,
-    CodemodAutomationLevel,
-    CodemodCandidate,
-    JsonObject,
-)
+from .codemod import JsonObject
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
-from .impact_ranking import RefactorImpactRankingReport, RefactorImpactTrajectory
 from .models import RefactorFinding, SemanticRecord
 from .models import SourceLocation
 from .patterns import PatternId
 from .semantic_descent import (
     AuthorityClaim,
-    AuthorityClaimCarrier,
     AuthorityClaimResolution,
     AuthorityClaimResolver,
     AuthorityDiscoveryRequired,
@@ -32,126 +25,23 @@ from .semantic_descent import (
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
 
-SEMANTIC_REFACTOR_GATE_DISABLED_MESSAGE = (
-    "--no-impact-ranking disables the semantic refactor gate; pass "
-    "--raw-findings to explicitly audit raw findings without authority "
-    "boundary guidance."
-)
-
-
-class SemanticRefactorGateModeError(ValueError):
-    """Raised when a CLI mode would bypass authority-boundary guidance."""
-
-
-SSOT_AUTHORITY_BOUNDARY_TIER = "ssot_authority_boundary"
-ORDINARY_SEMANTIC_TIER = "ordinary_semantic"
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
-
-
-def priority_tier_for_detector_ids(detector_ids: tuple[str, ...]) -> str:
-    """Return the architectural priority tier for a detector family."""
-
-    detector_id_set = frozenset(detector_ids)
-    if detector_id_set & IssueDetector.ssot_authority_detector_ids():
-        return SSOT_AUTHORITY_BOUNDARY_TIER
-    return ORDINARY_SEMANTIC_TIER
 
 
 def detector_ids_have_semantic_mirror_role(detector_ids: tuple[str, ...]) -> bool:
     return bool(frozenset(detector_ids) & IssueDetector.semantic_mirror_detector_ids())
 
 
-def priority_tier_has_ssot_authority_role(priority_tier: str) -> bool:
-    return priority_tier == SSOT_AUTHORITY_BOUNDARY_TIER
-
-
 def ssot_authority_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorFinding, ...]:
-    """Findings that should drive authority-boundary work before cleanup."""
+    """Findings that create authority-boundary proof obligations."""
 
     return tuple(
         finding
         for finding in findings
         if finding.detector_id in IssueDetector.ssot_authority_detector_ids()
     )
-
-
-@dataclass(frozen=True)
-class SemanticRefactorGateMode(SemanticRecord):
-    """Advisor run mode policy for authority-boundary-first scans."""
-
-    load_bearing_ranking_enabled: bool
-    semantic_gate_report_enabled: bool
-    raw_findings: bool
-
-    @classmethod
-    def from_flags(
-        cls,
-        *,
-        include_impact_ranking: bool,
-        semantic_refactor_gate: bool,
-        raw_findings: bool,
-    ) -> "SemanticRefactorGateMode":
-        return cls(
-            load_bearing_ranking_enabled=include_impact_ranking,
-            semantic_gate_report_enabled=semantic_refactor_gate,
-            raw_findings=raw_findings,
-        )
-
-    def require_authority_boundary_mode(self) -> None:
-        if self.load_bearing_ranking_enabled:
-            return
-        if self.semantic_gate_report_enabled:
-            return
-        if self.raw_findings:
-            return
-        raise SemanticRefactorGateModeError(SEMANTIC_REFACTOR_GATE_DISABLED_MESSAGE)
-
-
-@dataclass(frozen=True)
-class SemanticRefactorGateTrajectory(SemanticRecord):
-    """First dynamic trajectory exposed by the semantic refactor gate."""
-
-    impact_trajectory: RefactorImpactTrajectory
-
-    @classmethod
-    def from_impact_ranking(
-        cls,
-        impact_ranking: RefactorImpactRankingReport | None,
-    ) -> "SemanticRefactorGateTrajectory | None":
-        if impact_ranking is None or not impact_ranking.trajectories:
-            return None
-        return cls(impact_trajectory=impact_ranking.trajectories[0])
-
-    @property
-    def sequence(self) -> tuple[str, ...]:
-        return tuple(f"{key.kind}:{key.label}" for key in self.impact_trajectory.keys)
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "sequence": self.sequence,
-                "predicted_removed_finding_count": (
-                    self.impact_trajectory.predicted_removed_finding_count
-                ),
-                "residual_finding_count": self.impact_trajectory.residual_finding_count,
-                "trajectory_score": self.impact_trajectory.trajectory_score,
-            }
-        )
-
-    def markdown_lines(self) -> tuple[str, ...]:
-        return (
-            (
-                "   - First trajectory: "
-                "removes "
-                f"{self.impact_trajectory.predicted_removed_finding_count} "
-                "finding(s), "
-                f"residual {self.impact_trajectory.residual_finding_count}, "
-                f"score {self.impact_trajectory.trajectory_score}"
-            ),
-            f"     sequence: {' -> '.join(self.sequence)}",
-        )
 
 
 @dataclass(frozen=True)
@@ -234,7 +124,7 @@ class DescentCertificateFindingAuthority:
             return certificate.missing_derivation_path
         if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
             return finding.relation_context
-        return SemanticRefactorGateWorkItem.descent_path_for_detectors(
+        return SemanticRefactorBoundaryEvidence.descent_path_for_detectors(
             (finding.detector_id,)
         )
 
@@ -243,7 +133,6 @@ class DescentCertificateFindingAuthority:
         finding: RefactorFinding,
     ) -> "SemanticRefactorFindingGroupKey":
         return SemanticRefactorFindingGroupKey(
-            priority_tier=priority_tier_for_detector_ids((finding.detector_id,)),
             authority_label=self.authority_label_for_finding(finding),
             descent_path=self.descent_path_for_finding(finding),
         )
@@ -317,26 +206,25 @@ class DescentCertificateFindingAuthority:
 
 
 @dataclass(frozen=True)
-class FindingRemovalPrediction:
-    """Nominal carrier for gate finding-removal estimates."""
+class FindingCoverage:
+    """Observed source-target and finding coverage for one evidence group."""
 
     target_count: int
-    removed_count: int
+    finding_count: int
 
     def to_payload_fields(self) -> JsonObject:
         return JsonObject(
             {
                 "target_count": self.target_count,
-                "predicted_removed_finding_count": self.removed_count,
+                "covered_finding_count": self.finding_count,
             }
         )
 
 
 @dataclass(frozen=True)
 class SemanticRefactorFindingGroupKey:
-    """Graph-derived identity for one semantic gate work item."""
+    """Graph-derived identity for one semantic boundary evidence group."""
 
-    priority_tier: str
     authority_label: str
     descent_path: str
 
@@ -368,131 +256,28 @@ class SemanticRefactorFindingGroupAuthority:
 
 
 @dataclass(frozen=True)
-class SemanticRefactorAuthorityTarget(AuthorityClaimCarrier):
-    """One load-bearing authority target exposed by the semantic refactor gate."""
+class SemanticRefactorBoundaryEvidence(SemanticRecord):
+    """One graph-backed authority-boundary evidence group."""
 
-    opportunity_kind: str
-    priority_tier: str
-    detector_ids: tuple[str, ...]
-    actionability: str
-    removal_prediction: FindingRemovalPrediction
-    strategy_id: str
-    agent_action: str
-
-    @classmethod
-    def from_candidate(
-        cls,
-        candidate: CodemodCandidate,
-    ) -> "SemanticRefactorAuthorityTarget":
-        applicability = candidate.applicability
-        return cls(
-            opportunity_kind=candidate.opportunity_key.kind,
-            authority_claim=AuthorityClaim(
-                claimed_symbol=candidate.opportunity_key.label
-            ),
-            priority_tier=priority_tier_for_detector_ids(
-                candidate.opportunity.detector_ids
-            ),
-            detector_ids=candidate.opportunity.detector_ids,
-            actionability=applicability.actionability.value,
-            removal_prediction=FindingRemovalPrediction(
-                target_count=candidate.target_count,
-                removed_count=candidate.predicted_removed_finding_count,
-            ),
-            strategy_id=applicability.strategy.strategy_id,
-            agent_action=applicability.agent_action,
-        )
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "opportunity_kind": self.opportunity_kind,
-                "authority_candidate": self.authority_claim.claimed_symbol,
-                "authority_claim": self.authority_claim.to_dict(),
-                "priority_tier": self.priority_tier,
-                "detector_ids": self.detector_ids,
-                "actionability": self.actionability,
-                **self.removal_prediction.to_payload_fields(),
-                "strategy_id": self.strategy_id,
-                "agent_action": self.agent_action,
-            }
-        )
-
-    def markdown_lines(self, index: int) -> tuple[str, ...]:
-        return (
-            (
-                f"     {index}. {self.opportunity_kind} "
-                f"`{self.authority_claim.claimed_symbol}` -> "
-                f"{self.removal_prediction.removed_count} finding(s), "
-                f"{self.removal_prediction.target_count} target(s), "
-                f"{self.actionability}, priority {self.priority_tier}"
-            ),
-            f"        detectors: {', '.join(self.detector_ids)}",
-            f"        agent action: {self.agent_action}",
-        )
-
-
-@dataclass(frozen=True)
-class SemanticRefactorGateWorkItem(SemanticRecord):
-    """One authority-boundary task that replaces raw finding iteration."""
-
-    source: str
     group_key: SemanticRefactorFindingGroupKey
     label: str
     authority_candidates: tuple[str, ...]
     detector_ids: tuple[str, ...]
-    actionability: str
     finding_ids: tuple[str, ...]
-    removal_prediction: FindingRemovalPrediction
+    finding_coverage: FindingCoverage
     certificate_count: int
     matched_fact_count: int
     authority_kinds: tuple[str, ...]
     projection_kinds: tuple[str, ...]
     authority_claims: tuple[AuthorityClaimResolution, ...]
-    agent_action: str
     evidence_symbols: tuple[str, ...]
     evidence_locations: tuple[SourceLocation, ...] = ()
-
-    @classmethod
-    def from_authority_target(
-        cls,
-        target: SemanticRefactorAuthorityTarget,
-    ) -> "SemanticRefactorGateWorkItem":
-        claim = target.authority_claim
-        return cls(
-            source="impact_candidate",
-            group_key=SemanticRefactorFindingGroupKey(
-                priority_tier=target.priority_tier,
-                authority_label=claim.claimed_symbol,
-                descent_path=cls.descent_path_for_detectors(target.detector_ids),
-            ),
-            label=claim.claimed_symbol,
-            authority_candidates=(claim.claimed_symbol,),
-            detector_ids=target.detector_ids,
-            actionability=target.actionability,
-            finding_ids=(),
-            removal_prediction=target.removal_prediction,
-            certificate_count=0,
-            matched_fact_count=0,
-            authority_kinds=(),
-            projection_kinds=(),
-            authority_claims=(
-                AuthorityClaimResolution.unresolved(
-                    claim,
-                    searched_symbols=(claim.claimed_symbol,),
-                    reason="impact candidate did not provide a graph authority proof",
-                ),
-            ),
-            agent_action=target.agent_action,
-            evidence_symbols=(),
-            evidence_locations=(),
-        )
 
     @classmethod
     def from_ssot_finding(
         cls,
         finding: RefactorFinding,
-    ) -> "SemanticRefactorGateWorkItem":
+    ) -> "SemanticRefactorBoundaryEvidence":
         return cls.from_ssot_finding_group(
             (finding,),
             finding_descent_graph=build_finding_backed_semantic_descent_graph(
@@ -511,7 +296,7 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         *,
         finding_descent_graph: SemanticDescentGraph,
         certificate_authority: DescentCertificateFindingAuthority | None = None,
-    ) -> "SemanticRefactorGateWorkItem":
+    ) -> "SemanticRefactorBoundaryEvidence":
         first_finding = findings[0]
         active_certificate_authority = (
             certificate_authority
@@ -538,16 +323,14 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         if len(authority_candidates) == 1:
             label = f"{authority_candidates[0]} semantic descent boundary"
         return cls(
-            source="ssot_finding",
             group_key=group_key,
             label=label,
             authority_candidates=authority_candidates,
             detector_ids=detector_ids,
-            actionability="semantic_agent_refactor",
             finding_ids=tuple(finding.stable_id for finding in findings),
-            removal_prediction=FindingRemovalPrediction(
+            finding_coverage=FindingCoverage(
                 target_count=max(1, len(evidence_symbols)),
-                removed_count=len(findings),
+                finding_count=len(findings),
             ),
             certificate_count=len(certificates),
             matched_fact_count=active_certificate_authority.matched_fact_count(
@@ -559,11 +342,6 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             ),
             authority_claims=active_certificate_authority.authority_claims_for_findings(
                 findings
-            ),
-            agent_action=(
-                "Design the nominal authority boundary named by this finding, "
-                "then derive the mirrored surface from that authority before "
-                "addressing lower-priority cleanup."
             ),
             evidence_symbols=evidence_symbols,
             evidence_locations=evidence_locations,
@@ -577,16 +355,13 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
                 "title": self.primary_title,
                 "summary": self.summary,
                 "relation_context": self.group_key.descent_path,
-                "source": self.source,
-                "priority_tier": self.group_key.priority_tier,
                 "label": self.label,
                 "authority_candidate": self.group_key.authority_label,
                 "authority_candidates": self.authority_candidates,
                 "missing_derivation_path": self.group_key.descent_path,
                 "detector_ids": self.detector_ids,
-                "actionability": self.actionability,
                 "finding_ids": self.finding_ids,
-                **self.removal_prediction.to_payload_fields(),
+                **self.finding_coverage.to_payload_fields(),
                 "certificate_count": self.certificate_count,
                 "matched_fact_count": self.matched_fact_count,
                 "authority_kinds": self.authority_kinds,
@@ -594,7 +369,6 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
                 "authority_claims": tuple(
                     claim.to_dict() for claim in self.authority_claims
                 ),
-                "agent_action": self.agent_action,
                 "evidence_symbols": self.evidence_symbols,
                 "authority_discovery_required": self.discovery_required,
             }
@@ -628,24 +402,10 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
     def summary(self) -> str:
         return (
             f"`{self.group_key.authority_label}` has "
-            f"{self.removal_prediction.removed_count} "
+            f"{self.finding_coverage.finding_count} "
             "raw mirror signal(s) from "
             f"{', '.join(self.detector_ids)}; missing derivation path: "
             f"{self.group_key.descent_path}."
-        )
-
-    @property
-    def priority_rank(self) -> tuple[int, int, int, int, int, int, str]:
-        return (
-            int(not detector_ids_have_semantic_mirror_role(self.detector_ids)),
-            int(
-                not priority_tier_has_ssot_authority_role(self.group_key.priority_tier)
-            ),
-            -self.matched_fact_count,
-            -self.certificate_count,
-            -self.removal_prediction.removed_count,
-            -self.removal_prediction.target_count,
-            self.label,
         )
 
     @property
@@ -671,13 +431,13 @@ class AuthorityDiscoveryRequiredFindingProjection:
     synthetic_file_path: str = "<semantic-refactor-gate>"
 
     @classmethod
-    def findings_for_work_queue(
+    def findings_for_boundary_evidence(
         cls,
-        work_queue: tuple[SemanticRefactorGateWorkItem, ...],
+        boundary_evidence: tuple[SemanticRefactorBoundaryEvidence, ...],
     ) -> tuple[RefactorFinding, ...]:
         return tuple(
             cls.finding_for_resolution(item, resolution)
-            for item in work_queue
+            for item in boundary_evidence
             for resolution in item.authority_claims
             if not resolution.is_actionable
         )
@@ -685,7 +445,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
     @classmethod
     def finding_for_resolution(
         cls,
-        item: SemanticRefactorGateWorkItem,
+        item: SemanticRefactorBoundaryEvidence,
         resolution: AuthorityClaimResolution,
     ) -> RefactorFinding:
         discovery = cls.discovery_for_resolution(resolution)
@@ -695,7 +455,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
             title="Authority discovery required",
             why=(
                 "Unknown authority is acceptable, but fabricated authority is not. "
-                "A refactor gate work item that names an authority must carry a "
+                "A refactor gate evidence group that names an authority must carry a "
                 "unique proof path or explicitly ask for discovery."
             ),
             capability_gap=(
@@ -738,7 +498,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
     @classmethod
     def evidence_for_resolution(
         cls,
-        item: SemanticRefactorGateWorkItem,
+        item: SemanticRefactorBoundaryEvidence,
         resolution: AuthorityClaimResolution,
     ) -> tuple[SourceLocation, ...]:
         proof_evidence = tuple(
@@ -776,29 +536,20 @@ class AuthorityDiscoveryRequiredFindingProjection:
 
 @dataclass(frozen=True)
 class SemanticRefactorGateReport(SemanticRecord):
-    """Authority-boundary-first report shape for semantic refactor scans."""
+    """Authority-boundary proof report for semantic refactor scans."""
 
     active: bool
     policy: str
     raw_findings_default: str
-    semantic_candidate_count: int
-    semantic_agent_refactor_count: int
-    semantic_uncertainty_review_count: int
     ssot_authority_finding_count: int
-    first_trajectory: SemanticRefactorGateTrajectory | None
-    authority_targets: tuple[SemanticRefactorAuthorityTarget, ...]
-    work_queue: tuple[SemanticRefactorGateWorkItem, ...]
+    boundary_evidence: tuple[SemanticRefactorBoundaryEvidence, ...]
     authority_discovery_findings: tuple[RefactorFinding, ...]
 
     @classmethod
-    def from_scan(
+    def from_findings(
         cls,
-        candidates: tuple[CodemodCandidate, ...],
-        *,
-        impact_ranking: RefactorImpactRankingReport | None,
         findings: tuple[RefactorFinding, ...] = (),
     ) -> "SemanticRefactorGateReport":
-        semantic_candidates = cls._semantic_candidates(candidates)
         ssot_findings = ssot_authority_findings(findings)
         finding_descent_graph = build_finding_backed_semantic_descent_graph(
             ssot_findings,
@@ -807,70 +558,31 @@ class SemanticRefactorGateReport(SemanticRecord):
                 IssueDetector.semantic_mirror_authority_evidence_indices()
             ),
         )
-        authority_targets = tuple(
-            SemanticRefactorAuthorityTarget.from_candidate(candidate)
-            for candidate in cls._priority_sorted_candidates(semantic_candidates)[:10]
-        )
-        work_queue = cls._work_queue(
-            authority_targets,
+        boundary_evidence = cls._boundary_evidence(
             ssot_findings,
             finding_descent_graph,
         )
         return cls(
-            active=bool(semantic_candidates or ssot_findings),
-            policy="authority_boundary_first",
+            active=bool(ssot_findings),
+            policy="authority_boundary_proof",
             raw_findings_default="suppressed_when_active",
-            semantic_candidate_count=len(semantic_candidates),
-            semantic_agent_refactor_count=cls._actionability_count(
-                semantic_candidates,
-                CodemodActionability.SEMANTIC_AGENT_REFACTOR,
-            ),
-            semantic_uncertainty_review_count=cls._actionability_count(
-                semantic_candidates,
-                CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW,
-            ),
             ssot_authority_finding_count=len(ssot_findings),
-            first_trajectory=SemanticRefactorGateTrajectory.from_impact_ranking(
-                impact_ranking
-            ),
-            authority_targets=authority_targets,
-            work_queue=work_queue,
+            boundary_evidence=boundary_evidence,
             authority_discovery_findings=(
-                AuthorityDiscoveryRequiredFindingProjection.findings_for_work_queue(
-                    work_queue
+                AuthorityDiscoveryRequiredFindingProjection.findings_for_boundary_evidence(
+                    boundary_evidence
                 )
             ),
-        )
-
-    @classmethod
-    def from_optional_scan(
-        cls,
-        candidates: tuple[CodemodCandidate, ...] | None,
-        *,
-        impact_ranking: RefactorImpactRankingReport | None,
-        findings: tuple[RefactorFinding, ...] = (),
-    ) -> "SemanticRefactorGateReport":
-        if candidates is None:
-            return cls.from_scan((), impact_ranking=impact_ranking, findings=findings)
-        return cls.from_scan(
-            candidates,
-            impact_ranking=impact_ranking,
-            findings=findings,
         )
 
     @classmethod
     def inactive(cls) -> "SemanticRefactorGateReport":
         return cls(
             active=False,
-            policy="authority_boundary_first",
+            policy="authority_boundary_proof",
             raw_findings_default="suppressed_when_active",
-            semantic_candidate_count=0,
-            semantic_agent_refactor_count=0,
-            semantic_uncertainty_review_count=0,
             ssot_authority_finding_count=0,
-            first_trajectory=None,
-            authority_targets=(),
-            work_queue=(),
+            boundary_evidence=(),
             authority_discovery_findings=(),
         )
 
@@ -880,21 +592,10 @@ class SemanticRefactorGateReport(SemanticRecord):
                 "active": self.active,
                 "policy": self.policy,
                 "raw_findings_default": self.raw_findings_default,
-                "semantic_candidate_count": self.semantic_candidate_count,
-                "semantic_agent_refactor_count": self.semantic_agent_refactor_count,
-                "semantic_uncertainty_review_count": (
-                    self.semantic_uncertainty_review_count
-                ),
                 "ssot_authority_finding_count": self.ssot_authority_finding_count,
-                "first_trajectory": (
-                    self.first_trajectory.to_dict()
-                    if self.first_trajectory is not None
-                    else None
+                "boundary_evidence": tuple(
+                    item.to_dict() for item in self.boundary_evidence
                 ),
-                "authority_targets": tuple(
-                    target.to_dict() for target in self.authority_targets
-                ),
-                "work_queue": tuple(item.to_dict() for item in self.work_queue),
                 "authority_discovery_findings": tuple(
                     finding.to_dict() for finding in self.authority_discovery_findings
                 ),
@@ -902,78 +603,43 @@ class SemanticRefactorGateReport(SemanticRecord):
         )
 
     @staticmethod
-    def _semantic_candidates(
-        candidates: tuple[CodemodCandidate, ...],
-    ) -> tuple[CodemodCandidate, ...]:
-        return tuple(
-            candidate
-            for candidate in candidates
-            if (
-                candidate.applicability.strategy.automation_level
-                is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-            )
-        )
-
-    @staticmethod
-    def _priority_sorted_candidates(
-        semantic_candidates: tuple[CodemodCandidate, ...],
-    ) -> tuple[CodemodCandidate, ...]:
-        return tuple(
-            sorted(
-                semantic_candidates,
-                key=lambda candidate: (
-                    priority_tier_for_detector_ids(candidate.opportunity.detector_ids)
-                    != SSOT_AUTHORITY_BOUNDARY_TIER
-                ),
-            )
-        )
-
-    @staticmethod
-    def _actionability_count(
-        semantic_candidates: tuple[CodemodCandidate, ...],
-        actionability: CodemodActionability,
-    ) -> int:
-        return sum(
-            (candidate.applicability.actionability is actionability)
-            for candidate in semantic_candidates
-        )
-
-    @staticmethod
-    def _work_queue(
-        authority_targets: tuple[SemanticRefactorAuthorityTarget, ...],
+    def _boundary_evidence(
         ssot_findings: tuple[RefactorFinding, ...],
         finding_descent_graph: SemanticDescentGraph,
-    ) -> tuple[SemanticRefactorGateWorkItem, ...]:
+    ) -> tuple[SemanticRefactorBoundaryEvidence, ...]:
         finding_group_authority = SemanticRefactorFindingGroupAuthority(
             finding_descent_graph
         )
         certificate_authority = DescentCertificateFindingAuthority(
             finding_descent_graph
         )
-        items = (
-            *(
-                SemanticRefactorGateWorkItem.from_authority_target(target)
-                for target in authority_targets
-            ),
-            *(
-                SemanticRefactorGateWorkItem.from_ssot_finding_group(
-                    group,
-                    finding_descent_graph=finding_descent_graph,
-                    certificate_authority=certificate_authority,
-                )
-                for group in finding_group_authority.groups(
-                    ssot_findings,
-                    certificate_authority=certificate_authority,
-                )
-            ),
+        items = tuple(
+            SemanticRefactorBoundaryEvidence.from_ssot_finding_group(
+                group,
+                finding_descent_graph=finding_descent_graph,
+                certificate_authority=certificate_authority,
+            )
+            for group in finding_group_authority.groups(
+                ssot_findings,
+                certificate_authority=certificate_authority,
+            )
         )
-        return tuple(sorted(items, key=lambda item: item.priority_rank))
+        return tuple(
+            sorted(
+                items,
+                key=lambda item: (
+                    item.group_key.authority_label,
+                    item.group_key.descent_path,
+                    item.finding_ids,
+                ),
+            )
+        )
 
     def finding_payload(self) -> list[JsonObject]:
         """Return the JSON `findings` surface when the gate is active."""
 
         return [
-            *(JsonObject(item.to_dict()) for item in self.work_queue),
+            *(JsonObject(item.to_dict()) for item in self.boundary_evidence),
             *(
                 JsonObject(finding.to_dict())
                 for finding in self.authority_discovery_findings
@@ -984,9 +650,8 @@ class SemanticRefactorGateReport(SemanticRecord):
     def count_line(self) -> str:
         return (
             "   - Gate counts: "
-            f"{self.semantic_candidate_count} semantic candidate(s); "
-            f"{self.semantic_agent_refactor_count} ready for agent refactor; "
-            f"{self.semantic_uncertainty_review_count} needing boundary review."
+            f"{len(self.boundary_evidence)} graph-backed boundary group(s); "
+            f"{len(self.authority_discovery_findings)} requiring authority discovery."
         )
 
     def markdown(self) -> str:
@@ -997,9 +662,7 @@ class SemanticRefactorGateReport(SemanticRecord):
             return ()
         return (
             *self._status_lines(),
-            *self._trajectory_lines(),
-            *self._target_lines(),
-            *self._work_queue_lines(),
+            *self._boundary_evidence_lines(),
             *self._authority_discovery_lines(),
             *self._footer_lines(),
         )
@@ -1007,58 +670,39 @@ class SemanticRefactorGateReport(SemanticRecord):
     def _status_lines(self) -> tuple[str, ...]:
         return (
             "Semantic refactor gate:",
-            "   - Status: ACTIVE. Raw findings are supporting evidence, not a work queue.",
+            "   - Status: ACTIVE. Raw findings are supporting evidence only.",
             (
-                "   - Required mode: choose one load-bearing authority boundary "
-                "from the trajectory/candidate groups before editing."
+                "   - Application gate: each touched projection requires a proved "
+                "descent from its load-bearing authority."
             ),
             (
-                "   - Forbidden mode: do not patch individual findings "
-                "independently or rerun until the first finding disappears."
+                "   - A boundary evidence group is not an application order or a "
+                "recommended first transformation."
             ),
-            "   - Priority: collapse the SSOT/authority boundary first.",
             self.count_line,
-            *self._priority_lines(),
+            *self._evidence_context_lines(),
         )
 
-    def _priority_lines(self) -> tuple[str, ...]:
+    def _evidence_context_lines(self) -> tuple[str, ...]:
         lines = []
         if self.ssot_authority_finding_count:
             lines.append(
                 "   - SSOT-critical signals: "
-                f"{self.ssot_authority_finding_count}; collapse the single "
-                "source of truth before cosmetic cleanup."
+                f"{self.ssot_authority_finding_count}."
             )
-        if self.ssot_authority_finding_count and not self.authority_targets:
+        if self.ssot_authority_finding_count:
             lines.append(
-                "   - No impact-ranked target was generated; inspect the "
-                "SSOT-critical raw finding evidence and design that authority "
-                "boundary first."
+                "   - Boundary groups come only from the semantic-descent graph; "
+                "structural-overlap ranking does not order these groups."
             )
         return tuple(lines)
 
-    def _trajectory_lines(self) -> tuple[str, ...]:
-        if self.first_trajectory is None:
+    def _boundary_evidence_lines(self) -> tuple[str, ...]:
+        if not self.boundary_evidence:
             return ()
-        return self.first_trajectory.markdown_lines()
-
-    def _target_lines(self) -> tuple[str, ...]:
-        if not self.authority_targets:
-            return ("   - Authority targets: none impact-ranked.",)
-        lines: list[str] = ["   - Authority targets:"]
-        for index, target in enumerate(self.authority_targets[:5], start=1):
-            lines.extend(target.markdown_lines(index))
-        return tuple(lines)
-
-    def _work_queue_lines(self) -> tuple[str, ...]:
-        if not self.work_queue:
-            return ()
-        lines = ["   - Primary work queue:"]
-        for index, item in enumerate(self.work_queue[:5], start=1):
-            lines.append(
-                f"     {index}. {item.label} -> {item.actionability}, "
-                f"priority {item.group_key.priority_tier}"
-            )
+        lines = ["   - Boundary evidence groups:"]
+        for item in self.boundary_evidence[:5]:
+            lines.append(f"     - {item.label}")
             lines.append(
                 f"        authority candidate: {item.group_key.authority_label}"
             )
@@ -1085,19 +729,10 @@ class SemanticRefactorGateReport(SemanticRecord):
         return tuple(lines)
 
     def _footer_lines(self) -> tuple[str, ...]:
-        if self.ssot_authority_finding_count and not self.authority_targets:
-            raw_findings_instruction = (
-                "--raw-findings to inspect SSOT-critical evidence before "
-                "designing the authority boundary."
-            )
-        else:
-            raw_findings_instruction = (
-                "--raw-findings only after selecting the authority boundary."
-            )
         return (
             (
                 "   - Raw findings: suppressed by default under this gate; use "
-                f"{raw_findings_instruction}"
+                "--raw-findings to inspect the evidence supporting these groups."
             ),
         )
 

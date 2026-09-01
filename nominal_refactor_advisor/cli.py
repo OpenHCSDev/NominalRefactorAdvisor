@@ -2,7 +2,7 @@
 
 This module contains the programmatic entrypoints used by tests and automation as
 well as the command-line interface used by developers. The public helpers are the
-recommended way to analyze a path or synthesize subsystem plans from findings.
+recommended way to analyse a path or inspect subsystem evidence clusters.
 """
 
 from __future__ import annotations
@@ -64,8 +64,6 @@ from .calibration import (
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
-    CodemodCandidate,
-    CodemodAutomationLevel,
     CodemodJsonReport,
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
@@ -75,7 +73,6 @@ from .codemod import (
     CodemodPlanSequenceSimulation,
     CodemodTargetSelector,
     CodemodSimulationReport,
-    CodemodSimulationStatus,
     CodemodSourceContext,
     CodemodSourceSnapshot,
     FindingRecipeClassPlanReport,
@@ -88,7 +85,6 @@ from .codemod import (
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
     codemod_class_plan_from_findings,
-    codemod_candidates_from_impact_ranking,
     evaluate_architecture_guards,
     module_name_from_source_path,
 )
@@ -105,7 +101,7 @@ from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,
-    RecommendationEconomics,
+    RefactorEvidenceEconomics,
     RepositoryChangeBudget,
     ScanEconomicsProof,
     build_economics_proof_report,
@@ -130,8 +126,6 @@ from .scan_prediction import (
     build_scan_prediction_report,
 )
 from .semantic_refactor_gate import (
-    SemanticRefactorGateMode,
-    SemanticRefactorGateModeError,
     SemanticRefactorGateReport,
     ssot_authority_findings,
 )
@@ -155,7 +149,6 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
 )
 CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
-CodemodCandidateSelection: TypeAlias = tuple[CodemodCandidate, ...] | None
 CodemodSelectorReportFactory: TypeAlias = Callable[
     [CodemodSourceSnapshot, CodemodTargetSelector],
     CodemodJsonReport,
@@ -236,7 +229,7 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Show full raw finding details even when semantic refactor gate "
                 "is active. Raw findings are supporting evidence, not the default "
-                "work queue."
+                "evidence surface."
             ),
         ),
         CliArgumentSpec(
@@ -302,20 +295,20 @@ _CLI_ARGUMENT_SPECS = (
         CliArgumentSpec(
             flags=("--include-plans",),
             action="store_true",
-            help="Also synthesize subsystem-level composed refactor plans.",
+            help="Also emit non-actionable subsystem structural hypotheses.",
         ),
         CliArgumentSpec(
             flags=("--include-execution-plan",),
             action="store_true",
             help=(
-                "Also emit graph-grounded execution classes that batch findings "
-                "into refactor work queues."
+                "Also emit graph-grounded classes derived from shared structural "
+                "evidence."
             ),
         ),
         CliArgumentSpec(
             flags=("--plans-only",),
             action="store_true",
-            help="Emit only subsystem-level composed refactor plans.",
+            help="Emit only subsystem-level structural hypotheses.",
         ),
         CliArgumentSpec(
             flags=("--include-economics",),
@@ -333,7 +326,10 @@ _CLI_ARGUMENT_SPECS = (
             dest="include_impact_ranking",
             default=None,
             default_supplied=True,
-            help="Rank load-bearing refactor opportunities and dynamic trajectories.",
+            help=(
+                "Report non-actionable structural-overlap evidence for groups of "
+                "findings and source targets."
+            ),
         ),
         CliArgumentSpec(
             flags=("--no-impact-ranking",),
@@ -342,9 +338,7 @@ _CLI_ARGUMENT_SPECS = (
             default=None,
             default_supplied=True,
             help=(
-                "Skip load-bearing refactor opportunity ranking. Requires "
-                "--raw-findings on normal scans because this disables the "
-                "semantic refactor gate."
+                "Skip the non-actionable structural-overlap evidence report."
             ),
         ),
         CliArgumentSpec(
@@ -394,18 +388,6 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=2,
             help="Minimum findings a refactor opportunity must cover.",
-        ),
-        CliArgumentSpec(
-            flags=("--impact-ranking-depth",),
-            value_type=int,
-            default=4,
-            help="Maximum dynamic impact trajectory depth.",
-        ),
-        CliArgumentSpec(
-            flags=("--impact-ranking-beam-width",),
-            value_type=int,
-            default=8,
-            help="Beam width for dynamic impact trajectory search.",
         ),
         CliArgumentSpec(
             flags=("--import-lean-export",),
@@ -627,7 +609,7 @@ class JsonFindingPayloadMode(Enum):
 
     full = "full"
     counts_only = "counts_only"
-    semantic_work_queue = "semantic_work_queue"
+    semantic_boundary_evidence = "semantic_boundary_evidence"
 
 
 class JsonFindingPayloadProjection:
@@ -692,10 +674,9 @@ class JsonPayloadSections:
     observation_fibers: bool = True
     semantic_descent_graph: bool = True
     semantic_refactor_gate: bool = True
-    candidate_payload: bool = True
     finding_recipe_plan: bool = True
     payload_timing: bool = False
-    default_impact_ranking: bool = True
+    default_impact_ranking: bool = False
     execution_plan_payload_mode: JsonExecutionPlanPayloadMode = (
         JsonExecutionPlanPayloadMode.FULL
     )
@@ -705,17 +686,12 @@ class JsonPayloadSections:
         return self.observation_graph or self.observation_fibers
 
     @property
-    def needs_candidate_projection(self) -> bool:
-        return self.semantic_refactor_gate or self.candidate_payload
-
-    @property
     def lightweight_status_payload(self) -> bool:
         return (
             not self.source_index
             and not self.needs_observation_graph
             and not self.semantic_descent_graph
             and not self.semantic_refactor_gate
-            and not self.candidate_payload
             and not self.finding_recipe_plan
             and not self.default_impact_ranking
         )
@@ -736,25 +712,10 @@ class JsonPayloadSourceSnapshotDemand:
     """Source-snapshot demand induced by one payload section policy."""
 
     sections: JsonPayloadSections
-    impact_ranking_report: RefactorImpactRankingReport | None
-    candidate_selection: CodemodCandidateSelection
-
-    @property
-    def needs_generated_candidate_selection(self) -> bool:
-        needs_generated_candidates = (
-            self.impact_ranking_report is not None
-            and self.candidate_selection is None
-            and self.sections.needs_candidate_projection
-        )
-        return needs_generated_candidates
 
     @property
     def needs_source_snapshot(self) -> bool:
-        return (
-            self.sections.source_index
-            or self.sections.finding_recipe_plan
-            or self.needs_generated_candidate_selection
-        )
+        return self.sections.source_index or self.sections.finding_recipe_plan
 
 
 class JsonPayloadProfile(Enum):
@@ -776,7 +737,6 @@ class JsonPayloadProfile(Enum):
         observation_fibers=False,
         semantic_descent_graph=False,
         semantic_refactor_gate=False,
-        candidate_payload=False,
         finding_recipe_plan=False,
         payload_timing=True,
         default_impact_ranking=False,
@@ -789,7 +749,6 @@ class JsonPayloadProfile(Enum):
         observation_fibers=False,
         semantic_descent_graph=False,
         semantic_refactor_gate=False,
-        candidate_payload=False,
         finding_recipe_plan=False,
         payload_timing=True,
         default_impact_ranking=False,
@@ -848,16 +807,7 @@ class JsonPayloadImpactRankingPolicy:
             return self.explicit_request
         if self.json_enabled:
             return self.payload_profile.sections.default_impact_ranking
-        return True
-
-    @property
-    def lightweight_profile_acknowledges_raw_findings(self) -> bool:
-        return (
-            self.json_enabled
-            and self.payload_profile.sections.lightweight_status_payload
-            and not self.include_impact_ranking
-        )
-
+        return False
 
 class JsonPreparseCachePayloadMode(Enum):
     """Pre-parse cache payload mode for JSON scans."""
@@ -1134,11 +1084,10 @@ class JsonPayloadBuilder:
     findings: list[RefactorFinding]
     plans: list[RefactorPlan]
     modules: list[ParsedModule]
-    economics: RecommendationEconomics | None = None
+    economics: RefactorEvidenceEconomics | None = None
     change_budget: RepositoryChangeBudget | None = None
     timing: ScanTiming | None = None
     impact_ranking: RefactorImpactRankingReport | None = None
-    codemod_candidates: CodemodCandidateSelection = None
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
@@ -1162,11 +1111,7 @@ class JsonPayloadBuilder:
         ).to_dict()
         if self.scan_status is not None:
             payload["scan_status"] = self.scan_status.to_dict()
-        snapshot_demand = JsonPayloadSourceSnapshotDemand(
-            sections=sections,
-            impact_ranking_report=self.impact_ranking,
-            candidate_selection=self.codemod_candidates,
-        )
+        snapshot_demand = JsonPayloadSourceSnapshotDemand(sections=sections)
         observation_graph_seconds = 0.0
         if sections.needs_observation_graph:
             started = perf_counter()
@@ -1236,35 +1181,24 @@ class JsonPayloadBuilder:
             payload["execution_plan"] = sections.execution_plan_payload_mode.payload(
                 self.execution_plan
             )
-        codemod_candidates = self.codemod_candidates
         if self.impact_ranking is not None:
             payload["impact_ranking"] = self.impact_ranking.to_dict()
-            if (
-                codemod_candidates is None
-                and source_snapshot is not None
-                and sections.needs_candidate_projection
-            ):
-                source_index = source_snapshot.source_index
-                codemod_candidates = codemod_candidates_from_impact_ranking(
-                    self.impact_ranking,
-                    source_index,
-                )
         semantic_refactor_gate_seconds = 0.0
         semantic_gate_report = SemanticRefactorGateReport.inactive()
         if sections.semantic_refactor_gate:
             started = perf_counter()
-            semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
-                codemod_candidates,
-                impact_ranking=self.impact_ranking,
-                findings=tuple(self.findings),
+            semantic_gate_report = SemanticRefactorGateReport.from_findings(
+                tuple(self.findings)
             )
             payload["semantic_refactor_gate"] = semantic_gate_report.to_dict()
             if semantic_gate_report.active:
                 payload["findings"] = semantic_gate_report.finding_payload()
                 payload["finding_payload_mode"] = (
-                    JsonFindingPayloadMode.semantic_work_queue.value
+                    JsonFindingPayloadMode.semantic_boundary_evidence.value
                 )
-                payload["active_finding_surface"] = "semantic_refactor_work_queue"
+                payload["active_finding_surface"] = (
+                    "semantic_refactor_boundary_evidence"
+                )
                 payload["raw_findings_default"] = (
                     semantic_gate_report.raw_findings_default
                 )
@@ -1276,10 +1210,6 @@ class JsonPayloadBuilder:
             semantic_refactor_gate_seconds = round(perf_counter() - started, 3)
         if not semantic_gate_report.active:
             payload["active_finding_surface"] = "raw_findings"
-        if sections.candidate_payload and codemod_candidates is not None:
-            payload["codemod_candidates"] = tuple(
-                candidate.to_dict() for candidate in codemod_candidates
-            )
         finding_recipe_plan_seconds = 0.0
         if sections.finding_recipe_plan and source_snapshot is not None:
             started = perf_counter()
@@ -1562,31 +1492,18 @@ def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
 
 def format_plans_markdown(plans: list[RefactorPlan]) -> str:
     if not plans:
-        return "No subsystem plans."
-    lines = ["Subsystem plans:"]
+        return "No subsystem structural hypotheses."
+    lines = ["Subsystem structural hypotheses (non-actionable):"]
     for index, plan in enumerate(plans, start=1):
-        pattern_sequence = plan.pattern_sequence
-        primary = pattern_sequence.primary_pattern_id
-        order = " -> ".join(
+        observed_patterns = ", ".join(
             (
-                f"Pattern {pattern_id.value}"
-                for pattern_id in pattern_sequence.ordered_pattern_ids
+                f"Pattern {pattern_id.value}: {pattern_id.display_name}"
+                for pattern_id in plan.pattern_evidence.pattern_ids
             )
         )
         lines.append(f"{index}. {plan.subsystem}")
         lines.append(f"   - Summary: {plan.summary}")
-        lines.append(
-            f"   - Primary pattern: Pattern {primary.value}: {primary.display_name}"
-        )
-        if pattern_sequence.secondary_pattern_ids:
-            secondary = ", ".join(
-                (
-                    f"Pattern {pattern_id.value}: {pattern_id.display_name}"
-                    for pattern_id in pattern_sequence.secondary_pattern_ids
-                )
-            )
-            lines.append(f"   - Secondary patterns: {secondary}")
-        lines.append(f"   - Application order: {order}")
+        lines.append(f"   - Observed patterns: {observed_patterns}")
         lines.append(f"   - Certification: {plan.certification}")
         lines.append(f"   - Partial view: {plan.current_partial_view}")
         lines.append(
@@ -1595,10 +1512,6 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
         lines.append(
             f"   - Missing capabilities: {', '.join(plan.missing_capabilities)}"
         )
-        lines.append(f"   - Canonical normal form: {plan.canonical_normal_form}")
-        lines.append(
-            f"   - Outcome: removable LOC {plan.outcome.lower_bound_removable_loc}-{plan.outcome.upper_bound_removable_loc}; loci {plan.outcome.loci_of_change_before}->{plan.outcome.loci_of_change_after}; mappings {plan.outcome.repeated_mappings_centralized}; dispatch {plan.outcome.dispatch_sites_eliminated}; registrations {plan.outcome.registration_sites_removed}; shared algorithms {plan.outcome.shared_algorithm_sites_centralized}"
-        )
         if plan.outcome.description_length_before:
             lines.append(
                 "   - Semantic description length: "
@@ -1606,38 +1519,6 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
                 f"{plan.outcome.description_length_after}; certified savings "
                 f"{plan.outcome.description_length_savings}"
             )
-        for trajectory in plan.trajectories:
-            lines.append(f"   - Local-minimum escape: {trajectory.escape_summary}")
-            if trajectory.debt_justifications:
-                lines.append(
-                    "   - Escape debt proof: "
-                    f"{'; '.join(trajectory.debt_justifications)}"
-                )
-            lines.append(
-                "   - Escape missing capabilities: "
-                f"{', '.join(trajectory.missing_capabilities)}"
-            )
-            lines.append(f"   - Escape trajectory: {' -> '.join(trajectory.steps)}")
-            lines.append(
-                "   - Counterfactual findings removed: "
-                f"{', '.join(trajectory.expected_removed_findings)}"
-            )
-            if trajectory.expected_emergent_findings:
-                lines.append(
-                    "   - Counterfactual findings unlocked: "
-                    f"{', '.join(trajectory.expected_emergent_findings)}"
-                )
-        for action in plan.actions:
-            lines.append(f"   - Action: {action.kind} -> {action.description}")
-            if action.statement_operation and action.statement_sites:
-                site_list = ", ".join(
-                    (f"{item.file_path}:{item.line}" for item in action.statement_sites)
-                )
-                lines.append(
-                    f"   - Action sites: {action.statement_operation} at {site_list}"
-                )
-        for step in plan.plan_steps:
-            lines.append(f"   - Plan step: {step}")
         for title in plan.supporting_findings[:5]:
             lines.append(f"   - Supporting finding: {title}")
         for item in plan.evidence:
@@ -1649,29 +1530,24 @@ def format_execution_plan_markdown(
     execution_plan: RefactorExecutionPlanReport,
 ) -> str:
     if not execution_plan.classes:
-        return "No graph execution classes."
+        return "No graph evidence classes."
     lines = [
-        "Graph execution classes:",
+        "Graph evidence classes (structural evidence only):",
         (
             "   - Summary: "
             f"{execution_plan.total_finding_count} finding(s), "
-            f"{execution_plan.connected_component_count} connected component(s), "
-            f"{execution_plan.parallel_group_count} parallel group(s)"
+            f"{execution_plan.connected_component_count} connected component(s)"
         ),
     ]
     for index, execution_class in enumerate(execution_plan.classes, start=1):
-        pattern_sequence = execution_class.pattern_sequence
-        primary = pattern_sequence.primary_pattern_id
-        order = " -> ".join(
+        observed_patterns = ", ".join(
             (
-                f"Pattern {pattern_id.value}"
-                for pattern_id in pattern_sequence.ordered_pattern_ids
+                f"Pattern {pattern_id.value}: {pattern_id.display_name}"
+                for pattern_id in execution_class.pattern_evidence.pattern_ids
             )
         )
         lines.append(f"{index}. {execution_class.subsystem}")
         lines.append(f"   - Class id: {execution_class.class_id}")
-        lines.append(f"   - Parallel group: {execution_class.parallel_group}")
-        lines.append(f"   - Batch priority: {execution_class.batch_priority}")
         lines.append(
             "   - Graph: "
             f"{execution_class.finding_count} finding(s), "
@@ -1685,12 +1561,7 @@ def format_execution_plan_markdown(
             f"{execution_class.evidence_site_count} evidence site(s), "
             f"{execution_class.symbol_root_count} symbol root(s)"
         )
-        lines.append(
-            f"   - Primary pattern: Pattern {primary.value}: {primary.display_name}"
-        )
-        lines.append(f"   - Application order: {order}")
-        lines.append(f"   - First batch move: {execution_class.first_batch_move}")
-        lines.append(f"   - Codemod hint: {execution_class.first_codemod_hint}")
+        lines.append(f"   - Observed patterns: {observed_patterns}")
         for title in execution_class.supporting_findings[:5]:
             lines.append(f"   - Supporting finding: {title}")
         for item in execution_class.evidence[:5]:
@@ -1732,12 +1603,12 @@ def format_timing_markdown(timing: ScanTiming) -> str:
 
 
 def format_economics_markdown(
-    economics: RecommendationEconomics,
+    economics: RefactorEvidenceEconomics,
     change_budget: RepositoryChangeBudget | None = None,
 ) -> str:
-    lines = ["Economics:"]
+    lines = ["Evidence economics:"]
     lines.append(
-        "   - Recommended backend LOC savings: "
+        "   - Observed backend LOC savings: "
         f"{economics.backend_lower_bound_removable_loc}-"
         f"{economics.backend_upper_bound_removable_loc}"
     )
@@ -1748,15 +1619,15 @@ def format_economics_markdown(
         f"{economics.certified_description_length_savings}"
     )
     lines.append(
-        "   - Payoff guard: "
-        f"{'pass' if economics.payoff_guard_passes else 'fail'}; "
+        "   - Evidence guard: "
+        f"{'pass' if economics.evidence_guard_passes else 'fail'}; "
         f"{economics.proven_finding_count}/{economics.finding_count} findings "
         "carry LOC or semantic proof"
     )
-    if economics.unproven_infrastructure_detector_ids:
+    if economics.unproved_detector_ids:
         lines.append(
-            "   - Unproven infrastructure detectors: "
-            f"{', '.join(economics.unproven_infrastructure_detector_ids)}"
+            "   - Detectors without payoff proof: "
+            f"{', '.join(economics.unproved_detector_ids)}"
         )
     if change_budget is not None:
         if change_budget.unavailable_reason is not None:
@@ -1791,11 +1662,14 @@ def format_impact_ranking_markdown(
     impact_ranking: RefactorImpactRankingReport,
 ) -> str:
     lines = [
-        "Impact ranking:",
+        "Structural-overlap evidence (non-actionable):",
         "   - Candidate keys: "
         f"{impact_ranking.candidate_key_count}; opportunities: "
-        f"{impact_ranking.opportunity_count}; trajectories: "
-        f"{impact_ranking.trajectory_count}",
+        f"{impact_ranking.opportunity_count}",
+        (
+            "   - These groups prioritize investigation only; they do not prove an "
+            "authority choice, finding removal, or a globally preferable trajectory."
+        ),
     ]
     for index, opportunity in enumerate(impact_ranking.opportunities[:10], start=1):
         lines.append(
@@ -1803,70 +1677,9 @@ def format_impact_ranking_markdown(
             f"`{opportunity.key.label}` -> "
             f"{opportunity.finding_count} finding(s), "
             f"{opportunity.detector_count} detector(s), "
-            f"{opportunity.file_count} file(s), score {opportunity.load_bearing_score}"
+            f"{opportunity.file_count} file(s)"
         )
         lines.append("     detectors: " + ", ".join(opportunity.detector_ids))
-    for index, trajectory in enumerate(impact_ranking.trajectories[:5], start=1):
-        keys = " -> ".join(f"{key.kind}:{key.label}" for key in trajectory.keys)
-        lines.append(
-            f"   - Trajectory {index}: removes "
-            f"{trajectory.predicted_removed_finding_count} finding(s), "
-            f"residual {trajectory.residual_finding_count}, "
-            f"blocked {trajectory.blocked_opportunity_count}, "
-            f"exposed {trajectory.exposed_opportunity_count}, "
-            f"score {trajectory.trajectory_score}"
-        )
-        lines.append(f"     sequence: {keys}")
-    return "\n".join(lines)
-
-
-def format_codemod_applicability_markdown(
-    candidates: tuple[CodemodCandidate, ...],
-) -> str:
-    lines = ["Refactor implementation guidance:"]
-    if not candidates:
-        lines.append("   - Candidates: 0")
-        return "\n".join(lines)
-
-    semantic_agent_count = sum(
-        (
-            candidate.applicability.strategy.automation_level
-            is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-            for candidate in candidates
-        )
-    )
-    safe_count = sum(
-        (candidate.applicability.strategy.safe_to_apply for candidate in candidates)
-    )
-    ready_count = sum(
-        (
-            candidate.applicability.simulation_status
-            is CodemodSimulationStatus.READY_TO_SIMULATE
-            for candidate in candidates
-        )
-    )
-    planned_count = sum((candidate.has_planned_rewrites for candidate in candidates))
-    lines.append(
-        "   - Candidates: "
-        f"{len(candidates)}; semantic agent work required: "
-        f"{semantic_agent_count}; safe mechanical available: {safe_count}; "
-        f"planned rewrites: {planned_count}; ready to simulate: {ready_count}"
-    )
-    for index, candidate in enumerate(candidates[:10], start=1):
-        applicability = candidate.applicability
-        lines.append(
-            f"   - Candidate {index}: {applicability.strategy.automation_level.value} "
-            f"`{candidate.opportunity_key.label}` -> "
-            f"{candidate.target_count} target(s), "
-            f"{candidate.predicted_removed_finding_count} finding(s), "
-            f"{applicability.planned_rewrite_count} planned rewrite(s), "
-            f"simulation {applicability.simulation_status.value}"
-        )
-        lines.append(f"     strategy: {applicability.strategy.strategy_id}")
-        lines.append(f"     actionability: {applicability.actionability.value}")
-        lines.append(f"     confidence basis: {applicability.confidence_basis}")
-        lines.append(f"     reason: {applicability.strategy.reason}")
-        lines.append(f"     agent action: {applicability.agent_action}")
     return "\n".join(lines)
 
 
@@ -1879,8 +1692,8 @@ def format_raw_findings_suppressed_markdown(findings: list[RefactorFinding]) -> 
                 "gate is active."
             ),
             (
-                "   - Use the gate, impact ranking, and implementation guidance "
-                "as the work queue."
+                "   - Use the gate to inspect authority proof obligations before "
+                "evaluating any transformation."
             ),
             (
                 "   - Use --raw-findings when the gate requests SSOT evidence "
@@ -1907,20 +1720,15 @@ class MarkdownReportRenderer(ABC):
         findings: list[RefactorFinding],
         plans: list[RefactorPlan] | None = None,
         execution_plan: RefactorExecutionPlanReport | None = None,
-        economics: RecommendationEconomics | None = None,
+        economics: RefactorEvidenceEconomics | None = None,
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
         impact_ranking: RefactorImpactRankingReport | None = None,
-        codemod_candidates: CodemodCandidateSelection = None,
         architecture_guard_report: ArchitectureGuardReport | None = None,
         raw_findings: bool = False,
     ) -> str:
         sections: list[str] = []
-        semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
-            codemod_candidates,
-            impact_ranking=impact_ranking,
-            findings=tuple(findings),
-        )
+        semantic_gate_report = SemanticRefactorGateReport.from_findings(tuple(findings))
         if semantic_gate_report.active:
             sections.append(semantic_gate_report.markdown())
         if not semantic_gate_report.active:
@@ -1936,8 +1744,6 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_economics_markdown(economics, change_budget))
         if impact_ranking is not None:
             sections.append(format_impact_ranking_markdown(impact_ranking))
-        if codemod_candidates is not None:
-            sections.append(format_codemod_applicability_markdown(codemod_candidates))
         if architecture_guard_report is not None:
             sections.append(
                 format_architecture_guard_markdown(architecture_guard_report)
@@ -1965,8 +1771,7 @@ class MarkdownReportRenderer(ABC):
             lines.append(f"   - Pattern {pattern.value}: {pattern.display_name}")
             lines.append(f"   - Summary: {finding.summary}")
             lines.append(f"   - Capability gap: {finding.capability_gap}")
-            lines.append(f"   - Prescription: {pattern.prescription}")
-            lines.append(f"   - Canonical shape: {pattern.canonical_shape}")
+            lines.append(f"   - Required relation: {pattern.required_relation}")
             lines.append(f"   - Why: {finding.why}")
             lines.append(f"   - Relation: {finding.relation_context}")
             lines.append(f"   - Confidence: {finding.confidence}")
@@ -1980,16 +1785,6 @@ class MarkdownReportRenderer(ABC):
                     "certified savings "
                     f"{certificate.certified_description_length_savings}"
                 )
-            for step in pattern.first_moves:
-                lines.append(f"   - First move: {step}")
-            for skeleton in pattern.example_skeletons:
-                lines.append(f"   - Example skeleton: {skeleton}")
-            if finding.scaffold:
-                lines.append(f"   - Suggested scaffold: {finding.scaffold}")
-            if finding.codemod_patch:
-                lines.append("   - Suggested patch:")
-                for patch_line in finding.codemod_patch.splitlines():
-                    lines.append(f"     {patch_line}")
             for item in finding.evidence:
                 lines.append(
                     f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`"
@@ -2020,7 +1815,7 @@ class MarkdownReportRenderer(ABC):
             f"{scan.test_only_finding_count} test-only; "
             f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
             f"     proof: {'pass' if scan.proof_passes else 'fail'}; "
-            f"payoff guard: {'pass' if scan.economics.payoff_guard_passes else 'fail'}",
+            f"evidence guard: {'pass' if scan.economics.evidence_guard_passes else 'fail'}",
         ]
         if scan.production_detector_ids:
             lines.append(
@@ -2188,10 +1983,6 @@ class CliCommand(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def requires_source_snapshot(cls) -> bool:
-        return False
-
-    @classmethod
-    def requires_semantic_gate_authority(cls) -> bool:
         return False
 
     @abstractmethod
@@ -2891,7 +2682,10 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
         file_path = self.unique_existing_file_path()
         if file_path is None:
             return None
-        return (file_path, Path(file_path).read_text(encoding="utf-8"))
+        return (
+            self.requested_path,
+            Path(file_path).read_text(encoding="utf-8"),
+        )
 
     def unique_existing_file_path(self) -> str | None:
         paths_by_resolved_path: dict[Path, str] = {}
@@ -2975,10 +2769,6 @@ class CodemodScanQueryCliCommand(
 
     @classmethod
     def requires_source_snapshot(cls) -> bool:
-        return True
-
-    @classmethod
-    def requires_semantic_gate_authority(cls) -> bool:
         return True
 
 
@@ -3127,10 +2917,29 @@ class CodemodSynthesisExecution(
         }
 
     def run(self) -> int:
-        write_cli_json_artifact(
-            self.plan_out,
-            self.finding_plan.document.to_dict(),
-        )
+        planning_horizon = self.finding_plan.report.planning_horizon
+        trajectory_proof_required = planning_horizon.requires_trajectory_proof
+        if not trajectory_proof_required:
+            write_cli_json_artifact(
+                self.plan_out,
+                self.finding_plan.document.to_dict(),
+            )
+        if (
+            self.execution_request.mode.applies_changes or self.plan_out is not None
+        ) and trajectory_proof_required:
+            print(
+                json.dumps(
+                    {
+                        **self.unexecuted_payload(),
+                        "application_blocked": True,
+                        "application_block_reason": (
+                            planning_horizon.application_block_reason
+                        ),
+                    },
+                    indent=2,
+                )
+            )
+            return 1
         if not self.execution_request.mode.requested:
             print(json.dumps(self.unexecuted_payload(), indent=2))
             return 0
@@ -3389,7 +3198,8 @@ class CodemodRefactorGoalCliCommand(
             max_stages=self.args.codemod_goal_max_stages,
         ).run()
         replay_plan_payload = report.replay_sequence.to_dict()
-        write_cli_json_artifact(self.args.codemod_plan_out, replay_plan_payload)
+        if report.stop_reason.completed:
+            write_cli_json_artifact(self.args.codemod_plan_out, replay_plan_payload)
         if self.args.json:
             print(json.dumps(report.to_dict(), indent=2))
         else:
@@ -3592,25 +3402,6 @@ def _main_without_deadline() -> int:
             report=proof_report,
             fail_on_proof_regression=args.fail_on_proof_regression,
         ).exit_code()
-
-    emitted_semantic_refactor_gate = (
-        args.json and json_payload_profile.sections.semantic_refactor_gate
-    ) or args.plans_only
-    try:
-        SemanticRefactorGateMode.from_flags(
-            include_impact_ranking=args.include_impact_ranking
-            or (
-                selected_command_type is not None
-                and selected_command_type.requires_semantic_gate_authority()
-            ),
-            semantic_refactor_gate=emitted_semantic_refactor_gate,
-            raw_findings=(
-                args.raw_findings
-                or impact_ranking_policy.lightweight_profile_acknowledges_raw_findings
-            ),
-        ).require_authority_boundary_mode()
-    except SemanticRefactorGateModeError as error:
-        parser.error(str(error))
 
     fast_codemod_source_snapshot = None
     if (
@@ -3988,7 +3779,7 @@ def _main_without_deadline() -> int:
         planning_seconds = round(perf_counter() - started, 3)
     include_economics = args.include_economics or args.include_change_budget
     economics = (
-        RecommendationEconomics.from_findings_and_plans(findings, plans or [])
+        RefactorEvidenceEconomics.from_findings_and_plans(findings, plans or [])
         if include_economics
         else None
     )
@@ -4049,19 +3840,12 @@ def _main_without_deadline() -> int:
             search_budget=RefactorImpactSearchBudget(
                 reported_opportunity_count=args.impact_ranking_max,
                 minimum_covered_findings=args.impact_ranking_min_findings,
-                trajectory_depth=args.impact_ranking_depth,
-                frontier_width=args.impact_ranking_beam_width,
             ),
-        )
-        codemod_candidates = codemod_candidates_from_impact_ranking(
-            impact_ranking,
-            source_index,
         )
         architecture_guard_report = architecture_guard_evaluator.report_for_snapshot(
             source_snapshot
         )
     else:
-        codemod_candidates = None
         if not codemod_plan_sequence.requires_source_snapshot:
             source_snapshot = None
     timing = ScanTiming(
@@ -4094,7 +3878,6 @@ def _main_without_deadline() -> int:
                     change_budget=change_budget,
                     timing=timing,
                     impact_ranking=impact_ranking,
-                    codemod_candidates=codemod_candidates,
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
                     source_snapshot=source_snapshot,
@@ -4113,10 +3896,8 @@ def _main_without_deadline() -> int:
     else:
         if args.plans_only:
             sections = []
-            semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
-                codemod_candidates,
-                impact_ranking=impact_ranking,
-                findings=tuple(findings),
+            semantic_gate_report = SemanticRefactorGateReport.from_findings(
+                tuple(findings)
             )
             if semantic_gate_report.active:
                 sections.append(semantic_gate_report.markdown())
@@ -4132,10 +3913,6 @@ def _main_without_deadline() -> int:
                 sections.append(format_economics_markdown(economics, change_budget))
             if impact_ranking is not None:
                 sections.append(format_impact_ranking_markdown(impact_ranking))
-            if codemod_candidates is not None:
-                sections.append(
-                    format_codemod_applicability_markdown(codemod_candidates)
-                )
             if architecture_guard_report is not None:
                 sections.append(
                     format_architecture_guard_markdown(architecture_guard_report)
@@ -4152,7 +3929,6 @@ def _main_without_deadline() -> int:
                     change_budget=change_budget,
                     timing=timing,
                     impact_ranking=impact_ranking,
-                    codemod_candidates=codemod_candidates,
                     architecture_guard_report=architecture_guard_report,
                     raw_findings=args.raw_findings,
                 )

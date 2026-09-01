@@ -24,14 +24,6 @@ from ..ast_tools import (
 )
 from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
 from ..native_syntax import NativePythonSyntaxIndex
-from ..registry_normal_form import (
-    CanonicalRegistryIdentityStage,
-    DerivedRegistryProjectionStage,
-    MetaclassRegisteredRegistryStage,
-    ProvenRegistryMaturityStage,
-    SingleRegistryAuthorityStage,
-    UnifiedRegistryAxisFamilyStage,
-)
 from ..taxonomy import CapabilityTag, ObservationTag
 
 from ._base import *
@@ -1800,7 +1792,6 @@ class ParallelKeyedAxisFamilyDetector(
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_family_axis_root
     )
-    registry_normal_form_stage = UnifiedRegistryAxisFamilyStage
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Parallel keyed families should collapse into one axis authority",
@@ -1874,7 +1865,6 @@ class ParallelKeyedTableAndFamilyDetector(
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_keyed_table_axis
     )
-    registry_normal_form_stage = SingleRegistryAuthorityStage
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Keyed table and keyed family should collapse into one auto-registered axis family",
@@ -3431,7 +3421,6 @@ declare_candidate_rule_detector(
         registry_name=candidate.class_name,
     ),
     detector_base=_CompactNonInjectiveTypeRegistryDetectorBase,
-    registry_normal_form_stage=CanonicalRegistryIdentityStage,
 )
 
 
@@ -3474,7 +3463,6 @@ declare_candidate_rule_detector(
         registry_name=candidate.class_name,
     ),
     detector_base=_CompactInjectiveTypeRegistryDetectorBase,
-    registry_normal_form_stage=MetaclassRegisteredRegistryStage,
 )
 
 
@@ -3649,7 +3637,6 @@ declare_candidate_rule_detector(
     ),
     metrics=_registry_maturity_fanout_metrics,
     detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
-    registry_normal_form_stage=ProvenRegistryMaturityStage,
 )
 
 

@@ -20,7 +20,7 @@ Emit JSON instead of Markdown:
 
    nominal-refactor-advisor path/to/python/package --json
 
-Include composed subsystem plans:
+Include graph-clustered structural hypotheses:
 
 .. code-block:: bash
 
@@ -50,23 +50,23 @@ scan is required:
    nominal-refactor-advisor changed_module.py --context-root path/to/package \
      --json --json-payload full
 
-Goal-Directed Codemod Batches
------------------------------
+Inspecting Bounded Codemod Candidates
+-------------------------------------
 
-A refactor concept can require one stage to declare an authority before a later
-stage can derive its consumers.  The goal runner discovers those dependent
-stages against in-memory source snapshots and emits their replay sequence:
+To inspect a declaration-owned recipe against the current source snapshot,
+request a simulation:
 
 .. code-block:: bash
 
    nominal-refactor-advisor path/to/python/package \
-     --codemod-refactor-goal class_family_authority \
-     --codemod-plan-out refactor-sequence.json
+     --codemod-synthesize-plan --codemod-simulate --json
 
-Add ``--codemod-apply`` to write the result.  The runner first proves the whole
-goal, preflights every stage, and validates the final guard suite.  It then
-installs the final source set as one revision-checked transaction.  An
-incomplete or guard-failing sequence leaves the checkout unchanged.
+This proves only that the candidate is coherent in the current snapshot.  It
+does not establish that the candidate belongs to a globally complete refactor
+trajectory.  NRA therefore blocks plan export and source application while the
+planning horizon is ``current_snapshot`` or ``unproved``.  A goal run reports
+``unproved_trajectory`` and leaves the checkout unchanged rather than choosing
+a locally attractive first move.
 
 The default persistent cache is maintained at most once per hour.  Retention
 keeps at most 128 recently used analysis roots, 4 GiB across those roots, 2 GiB
@@ -98,7 +98,7 @@ What Stays Stable
 For downstream use, treat these as the main supported surfaces:
 
 - ``analyze_path`` for finding generation
-- ``plan_path`` and ``build_refactor_plans`` for composed plan synthesis
+- ``plan_path`` and ``build_refactor_plans`` for non-actionable structural hypotheses
 - ``AnalysisReport``, ``RefactorFinding``, and ``RefactorPlan`` for results
 - ``PatternId`` for canonical pattern identity and metadata
 
@@ -115,10 +115,10 @@ Architecture Map
 
 - ``nominal_refactor_advisor.cli``: CLI entrypoints and output formatting
 - ``nominal_refactor_advisor.detectors``: registered detector family and finding synthesis
-- ``nominal_refactor_advisor.patterns``: canonical pattern metadata shared by findings, plans, and docs
+- ``nominal_refactor_advisor.patterns``: pattern metadata shared by findings, hypotheses, and docs
 - ``nominal_refactor_advisor.models``: result records and finding metrics
 - ``nominal_refactor_advisor.observation_*``: structural observation substrate
-- ``nominal_refactor_advisor.planner``: subsystem-level plan synthesis over findings
+- ``nominal_refactor_advisor.planner``: subsystem-level evidence clustering over findings
 
 Building Docs
 -------------

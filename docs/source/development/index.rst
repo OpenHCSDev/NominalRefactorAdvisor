@@ -29,8 +29,6 @@ Repository-Specific Notes
    :maxdepth: 1
 
    nominal_refactor_advisor
-   advisor_self_audit_detection_plan
-   advisor_detection_edit_drafts
 
 Conceptual Background
 ---------------------

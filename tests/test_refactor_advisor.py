@@ -101,7 +101,6 @@ from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import ProofExitCodeAuthority
 from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
-from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
@@ -112,8 +111,6 @@ from nominal_refactor_advisor.codemod import (
     AstTargetNodeIndex,
     AstTargetNodeIndexCache,
     AddClassBaseOperation,
-    CodemodActionability,
-    CodemodAutomationLevel,
     CodemodOperationPreflightError,
     CodemodBackend,
     CodemodPlanDocument,
@@ -128,14 +125,17 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationWriter,
     CodemodSourceRevision,
     CodemodSourceRevisionError,
-    CodemodSimulationStatus,
     CodemodSourceSnapshot,
-    CodemodStrategy,
     ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
     FindingRecipeAuthorityClaimGate,
+    FindingRecipeActionKey,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
+    FindingRecipePlanBuilder,
+    FindingRecipePlanCandidate,
+    FindingRecipePlanCompetition,
+    FindingRecipePlanningHorizon,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisStatus,
     FindingEvidenceTargetSelector,
@@ -185,7 +185,6 @@ from nominal_refactor_advisor.codemod import (
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
     codemod_class_plan_from_findings,
-    codemod_candidates_from_impact_ranking,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
@@ -198,15 +197,17 @@ from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
-    RecommendationEconomics,
+    RefactorEvidenceEconomics,
     RepositoryChangeBudget,
     ScanEconomicsProof,
 )
 from nominal_refactor_advisor.factorization import (
     AxisIndependenceModel,
-    ExplanationConflictGraph,
+    CoveredObjectExplanationConflictGraph,
+    DeclaredExplanationConflictGraph,
     FactorizationEngine,
     FactorizationLattice,
+    FactorizationLatticeNode,
     FactorizationOrbit,
     FactorizationPlan,
     FactorizationRow,
@@ -217,12 +218,7 @@ from nominal_refactor_advisor.factorization import (
     MDLCompetition,
     OwnershipClosure,
     OwnershipProjection,
-    RefactorMove,
-    RefactorPhase,
-    RefactorState,
-    RefactorTrajectorySearch,
     SemanticCompressionHypergraph,
-    SubmodularMDLCompetition,
 )
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
@@ -252,7 +248,6 @@ from nominal_refactor_advisor.observation_graph import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
-    _pattern_planning,
     build_refactor_execution_plan,
     build_refactor_plans,
 )
@@ -274,10 +269,8 @@ from nominal_refactor_advisor.semantic_descent import (
 )
 from nominal_refactor_advisor.semantic_refactor_gate import (
     AuthorityDiscoveryRequiredFindingProjection,
-    FindingRemovalPrediction,
-    SemanticRefactorAuthorityTarget,
     SemanticRefactorGateReport,
-    SemanticRefactorGateWorkItem,
+    SemanticRefactorBoundaryEvidence,
 )
 from nominal_refactor_advisor.semantic_shape_algebra import (
     ExhaustivePolicyCatalog,
@@ -306,7 +299,6 @@ from nominal_refactor_advisor.taxonomy import (
     CapabilityTag,
     ConfidenceLevel,
     ObservationTag,
-    SPECULATIVE,
 )
 
 _PACKAGE_SCAN_LABEL = "package"
@@ -359,6 +351,8 @@ def test_builtin_call_name_declares_collection_factory_names() -> None:
     assert BuiltinCallName.mutable_collection_factory_names() == frozenset(
         (BuiltinCallName.DICT, BuiltinCallName.LIST, BuiltinCallName.SET)
     )
+
+
 def _test_scan_economics_proof(
     label: str,
     path: Path,
@@ -437,7 +431,7 @@ def test_sorted_findings_authority_uses_detector_declared_priority() -> None:
     assert ordered[0].detector_id == "semantic_mirror_without_descent"
 
 
-def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
+def test_impact_ranking_reports_only_non_actionable_overlap_evidence() -> None:
     findings = cast(
         tuple,
         (
@@ -473,21 +467,15 @@ def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
         search_budget=RefactorImpactSearchBudget(
             reported_opportunity_count=10,
             minimum_covered_findings=2,
-            trajectory_depth=2,
-            frontier_width=4,
         ),
     )
 
     assert report.opportunity_count >= 2
-    assert report.trajectory_count >= 1
-    assert any(
-        trajectory.step_count == 2
-        and trajectory.predicted_removed_finding_count == len(findings)
-        for trajectory in report.trajectories
-    )
+    assert report.to_dict()["actionability"] == "structural_evidence_only"
+    assert "trajectories" not in report.to_dict()
 
 
-def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
+def test_impact_ranking_observations_are_input_order_invariant() -> None:
     findings = cast(
         tuple,
         (
@@ -523,129 +511,20 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
         search_budget=RefactorImpactSearchBudget(
             reported_opportunity_count=10,
             minimum_covered_findings=2,
-            trajectory_depth=2,
-            frontier_width=1,
         ),
     )
-
-    assert report.trajectory_count == 1
-    trajectory = report.trajectories[0]
-    assert trajectory.blocked_opportunity_count >= 1
-    assert trajectory.exposed_opportunity_count >= 1
-    assert any((step.second_order_signal_count for step in trajectory.steps))
-
-
-def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Collapse repeated class family",
-        "Repeated behavior has one grammar.",
-        "certified grammar compression",
-        "same orbit under renaming",
-    ).build(
-        "orbit_detector",
-        "manual family compresses through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
-    )
-    source_index = build_source_index(modules, (finding,))
-    impact_ranking = build_refactor_impact_ranking(
-        (finding,),
-        source_index,
+    reversed_report = build_refactor_impact_ranking(
+        tuple(reversed(findings)),
+        SourceIndex(),
         search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=5,
-            minimum_covered_findings=1,
-            trajectory_depth=1,
-            frontier_width=3,
+            reported_opportunity_count=10,
+            minimum_covered_findings=2,
         ),
     )
 
-    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
-    mechanical_strategy = CodemodStrategy(
-        strategy_id="mechanical-test-strategy",
-        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-        reason="test strategy proves candidate metadata is carried",
+    assert tuple(opportunity.key for opportunity in report.opportunities) == tuple(
+        opportunity.key for opportunity in reversed_report.opportunities
     )
-    mechanical_candidate = replace(
-        candidates[0],
-        strategy=mechanical_strategy,
-    )
-
-    candidate = candidates[0]
-    mechanical_applicability = mechanical_candidate.applicability
-    applicability = candidate.applicability
-    target_id = candidate.target_ids[0]
-    planned_candidate = candidate.with_replacement(
-        target_id,
-        "    def run(self, value):\n        return value + 1",
-        rationale="exercise source-index target simulation",
-    )
-    planned_applicability = planned_candidate.applicability
-    simulation = planned_candidate.simulate(
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        backend=CodemodBackend.AST_SPAN,
-    )
-
-    assert candidate.covered_finding_ids == (finding.stable_id,)
-    assert candidate.predicted_removed_finding_count == 1
-    assert candidate.impact_delta == impact_ranking.opportunities[0].impact_delta
-    assert (
-        applicability.strategy.automation_level
-        == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-    )
-    assert (
-        applicability.simulation_status == CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
-    )
-    assert applicability.strategy.safe_to_apply is False
-    assert (
-        mechanical_applicability.strategy.automation_level
-        == CodemodAutomationLevel.SAFE_MECHANICAL
-    )
-    assert mechanical_applicability.strategy.safe_to_apply is True
-    assert "safe_to_apply" not in CodemodStrategy.__dataclass_fields__
-    assert (
-        mechanical_applicability.actionability is CodemodActionability.SAFE_MECHANICAL
-    )
-    assert "Safe mechanical rewrite" in mechanical_applicability.agent_action
-    assert (
-        mechanical_applicability.to_dict()["strategy_id"]
-        == (mechanical_strategy.to_dict()["strategy_id"])
-    )
-    assert mechanical_applicability.to_dict()["safe_to_apply"] is True
-    assert planned_candidate.has_planned_rewrites
-    assert (
-        planned_applicability.simulation_status
-        == CodemodSimulationStatus.READY_TO_SIMULATE
-    )
-    assert (
-        planned_applicability.strategy.automation_level
-        == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-    )
-    assert (
-        planned_applicability.actionability
-        is CodemodActionability.SEMANTIC_AGENT_REFACTOR
-    )
-    assert "a rewrite plan exists" in planned_applicability.agent_action
-    assert (
-        planned_candidate.to_dict()["applicability"]["simulation_status"]
-        == "ready_to_simulate"
-    )
-    assert simulation.applied_rewrite_count == 1
-    assert simulation.changed_file_paths == (module_path.as_posix(),)
-    assert simulation.validated_file_paths == (module_path.as_posix(),)
-    assert simulation.parse_valid is True
-    assert simulation.to_dict()["parse_validation"]["parse_valid"] is True
-    assert simulation.parse_validation.to_dict()["backend"] == "ast_span"
-    assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
 
 
 def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overlap(
@@ -1177,7 +1056,8 @@ def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
     assert resolution["discovery_required"]["claimed_symbol"] == "MissingAuthority"
     assert finding["detector_id"] == "unresolved_authority_claim"
     assert "MissingAuthority" in finding["summary"]
-    assert "declare_authority" in finding["codemod_patch"]
+    assert "scaffold" not in finding
+    assert "codemod_patch" not in finding
 
 
 def test_codemod_preflight_accepts_declared_authority_claim(
@@ -1248,7 +1128,7 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
         ),
     )
 
-    assert evaluation.planned_recipes == ()
+    assert evaluation.candidate_recipes == ()
     assert "Authority Claim Gate" in evaluation.rejection_reason
     assert "AuthorityClaim" in evaluation.rejection_reason
 
@@ -1257,7 +1137,7 @@ def test_missing_recipe_synthesizer_is_a_nominal_terminal_outcome() -> None:
     evaluation = MissingRecipeSynthesizerEvaluation()
 
     assert evaluation.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
-    assert evaluation.planned_recipes == ()
+    assert evaluation.candidate_recipes == ()
 
 
 def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
@@ -1272,26 +1152,13 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
         file_path="pkg/mod.py",
         subject_name="Alpha",
     )
-    child_key = FindingRecipeActionKey(
-        detector_id="another_detector",
-        file_path="pkg/mod.py",
-        subject_name="Alpha::run",
-    )
-
-    missing = evaluation.gated_by_action_keys((), frozenset())
-    duplicate = evaluation.gated_by_action_keys(
-        (action_key,),
-        frozenset((child_key,)),
-    )
-    unique = evaluation.gated_by_action_keys((action_key,), frozenset())
+    missing = evaluation.gated_by_action_keys(())
+    identified = evaluation.gated_by_action_keys((action_key,))
 
     assert missing.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
-    assert duplicate.status is FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
     assert missing.recipe_id == "action-key-gate-fixture"
-    assert duplicate.recipe_id == "action-key-gate-fixture"
     assert missing.executable_declaration_name == "ExecutableRecipeEvaluation"
-    assert duplicate.executable_declaration_name == "ExecutableRecipeEvaluation"
-    assert unique is evaluation
+    assert identified is evaluation
 
 
 def test_executable_recipe_evaluation_does_not_hide_programming_errors(
@@ -1317,6 +1184,803 @@ def test_executable_recipe_evaluation_does_not_hide_programming_errors(
 
     with pytest.raises(ValueError, match="unexpected implementation defect"):
         evaluation.terminal_evaluation(None)
+
+
+def test_finding_recipe_plan_selects_global_mdl_winner_independent_of_input_order(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+
+    weak_detector_id = "weak_competing_recipe_test"
+    strong_detector_id = "strong_competing_recipe_test"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+
+    class WeakCompetingRecipeSynthesizer(FindingRecipeSynthesizer):
+        detector_id = "weak_competing_recipe_test"
+
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("weak-competing-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source="value = 1",
+                        new_source="value = 2",
+                    )
+                )
+            )
+
+    class StrongCompetingRecipeSynthesizer(FindingRecipeSynthesizer):
+        detector_id = "strong_competing_recipe_test"
+
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("strong-competing-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source="value = 1",
+                        new_source="value = 3",
+                    )
+                )
+            )
+
+    def finding(
+        detector_id: str,
+        *,
+        before: int,
+        after: int,
+    ) -> RefactorFinding:
+        return _finding_spec(
+            PatternId.NOMINAL_BOUNDARY,
+            f"{detector_id} fixture",
+            "Competing source changes require one globally selected result.",
+            "one certified end state",
+            "multiple executable rewrites target the same declaration",
+        ).build(
+            detector_id,
+            f"{detector_id} proposes a competing rewrite.",
+            (SourceLocation(module_path.as_posix(), 1, "value"),),
+                compression_certificate=CompressionCertificate(
+                    before_cost=SemanticCostVector(residual_objects=before),
+                    after_cost=SemanticCostVector(residual_objects=after),
+                    semantic_axes=(module_path.as_posix(), "value"),
+                ),
+            )
+
+    weak = finding(weak_detector_id, before=10, after=7)
+    strong = finding(strong_detector_id, before=10, after=1)
+
+    try:
+        snapshot = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path),
+            (weak, strong),
+        )
+        plans = tuple(
+            snapshot.plan_from_findings(findings)
+            for findings in ((weak, strong), (strong, weak))
+        )
+    finally:
+        FindingRecipeSynthesizer.__registry__.pop(weak_detector_id, None)
+        FindingRecipeSynthesizer.__registry__.pop(strong_detector_id, None)
+
+    for plan in plans:
+        records_by_detector = {record.detector_id: record for record in plan.records}
+        simulation = plan.simulate_snapshot(
+            snapshot,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+        assert records_by_detector[strong_detector_id].status is (
+            FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        )
+        assert records_by_detector[weak_detector_id].status is (
+            FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN
+        )
+        assert plan.expected_removed_finding_ids == (strong.stable_id,)
+        assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
+            "value = 3\n"
+        )
+        proof = records_by_detector[strong_detector_id].competition_proof
+        assert proof is not None
+        assert proof.selected_set_assessment.proved
+        assert proof.selected_set_assessment.rewritten_source_digest
+        assert proof.selected_candidate_indices
+    assert {
+        record.finding_id: (
+            record.status,
+            record.competition_proof.selected_finding_ids,
+            record.competition_proof.certified_savings,
+            record.competition_proof.selected_set_assessment.rewritten_source_digest,
+        )
+        for record in plans[0].records
+        if record.competition_proof is not None
+    } == {
+        record.finding_id: (
+            record.status,
+            record.competition_proof.selected_finding_ids,
+            record.competition_proof.certified_savings,
+            record.competition_proof.selected_set_assessment.rewritten_source_digest,
+        )
+        for record in plans[1].records
+        if record.competition_proof is not None
+    }
+
+
+def _direct_recipe_candidate(
+    *,
+    detector_id: str,
+    file_path: str,
+    subject_name: str,
+    old_source: str,
+    new_source: str,
+    before: int | None,
+    after: int | None,
+) -> FindingRecipePlanCandidate:
+    certificate = (
+        CompressionCertificate(
+            before_cost=SemanticCostVector(residual_objects=before),
+            after_cost=SemanticCostVector(residual_objects=after),
+            semantic_axes=(file_path, old_source),
+        )
+        if before is not None and after is not None
+        else None
+    )
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        f"{detector_id} fixture",
+        "Competing source changes require one global selection.",
+        "one certified end state",
+        "executable recipes claim related source semantics",
+    ).build(
+        detector_id,
+        f"{detector_id} proposes a source rewrite.",
+        (SourceLocation(file_path, 1, subject_name),),
+        compression_certificate=certificate,
+    )
+    recipe = RefactorRecipe(f"{detector_id}-recipe").with_operation(
+        ReplaceTextOperation(
+            target=SourceRewriteTarget(file_path=file_path),
+            old_source=old_source,
+            new_source=new_source,
+        )
+    )
+    return FindingRecipePlanCandidate(
+        FindingRecipeSynthesisRecord(
+            finding=finding,
+            evaluation=ExecutableRecipeEvaluation(
+                executable_recipe=recipe,
+                executable_declaration_type=FindingRecipePlanCompetition,
+            ),
+            action_keys=(
+                FindingRecipeActionKey(
+                    detector_id=detector_id,
+                    file_path=file_path,
+                    subject_name=subject_name,
+                ),
+            ),
+        )
+    )
+
+
+def _direct_recipe_competition(
+    candidates: tuple[FindingRecipePlanCandidate, ...],
+    snapshot: CodemodSourceSnapshot | None,
+) -> tuple[FindingRecipeSynthesisRecord, ...]:
+    builder = FindingRecipePlanBuilder(())
+    return (
+        FindingRecipePlanCompetition(
+            candidates=candidates,
+            source_snapshot=snapshot,
+            batch_projection=builder,
+        )
+        .solve()
+        .records
+    )
+
+
+def test_finding_recipe_competition_rejects_equal_cost_local_choice(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidates = tuple(
+        _direct_recipe_candidate(
+            detector_id=detector_id,
+            file_path=module_path.as_posix(),
+            subject_name="value",
+            old_source="value = 1",
+            new_source=f"value = {replacement}",
+            before=5,
+            after=1,
+        )
+        for detector_id, replacement in (("equal_left", 2), ("equal_right", 3))
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition(candidates, snapshot)
+    payloads = tuple(record.to_dict() for record in records)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.AMBIGUOUS_CERTIFIED_PLAN
+    }
+    assert all(not record.candidate_recipes for record in records)
+    assert all(payload["competition_proof"] is not None for payload in payloads)
+    assert {
+        tuple(payload["competition_proof"]["selected_finding_ids"])
+        for payload in payloads
+    } == {()}
+    assert all(
+        len(
+            payload["competition_proof"]["alternative_finding_id_witnesses"]
+        )
+        == 2
+        for payload in payloads
+    )
+    assert all(
+        payload["competition_proof"]["optimal_solution_count"] == 2
+        for payload in payloads
+    )
+
+
+def test_finding_recipe_competition_witnesses_every_ambiguous_candidate(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidates = tuple(
+        _direct_recipe_candidate(
+            detector_id=f"equal_{index}",
+            file_path=module_path.as_posix(),
+            subject_name="value",
+            old_source="value = 1",
+            new_source=f"value = {index + 2}",
+            before=5,
+            after=1,
+        )
+        for index in range(3)
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition(candidates, snapshot)
+    proof = records[0].competition_proof
+
+    assert proof is not None
+    assert proof.optimal_solution_count == 3
+    assert {
+        candidate_index
+        for witness in proof.alternative_candidate_index_witnesses
+        for candidate_index in witness
+    } == {0, 1, 2}
+
+
+def test_finding_recipe_competition_requires_explicit_cost_for_conflicts(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    proved = _direct_recipe_candidate(
+        detector_id="proved_cost",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=5,
+        after=1,
+    )
+    unproved = _direct_recipe_candidate(
+        detector_id="unproved_cost",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 3",
+        before=None,
+        after=None,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition((proved, unproved), snapshot)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all(
+        "missing explicit compression proofs" in record.reason for record in records
+    )
+    assert all(not record.candidate_recipes for record in records)
+
+
+def test_finding_recipe_competition_fails_closed_without_physical_snapshot(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
+    candidates = (
+        _direct_recipe_candidate(
+            detector_id="snapshot_left",
+            file_path=module_path.as_posix(),
+            subject_name="Alpha",
+            old_source="a = 1",
+            new_source="a = 2",
+            before=5,
+            after=1,
+        ),
+        _direct_recipe_candidate(
+            detector_id="snapshot_right",
+            file_path=module_path.as_posix(),
+            subject_name="Beta",
+            old_source="b = 1",
+            new_source="b = 2",
+            before=5,
+            after=1,
+        ),
+    )
+
+    records = _direct_recipe_competition(candidates, None)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all("requires a source snapshot" in record.reason for record in records)
+
+
+def test_finding_recipe_competition_refuses_incomparable_prefix_conflicts(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
+    parent = _direct_recipe_candidate(
+        detector_id="parent_action",
+        file_path=module_path.as_posix(),
+        subject_name="Alpha",
+        old_source="a = 1",
+        new_source="a = 2",
+        before=8,
+        after=1,
+    )
+    child = _direct_recipe_candidate(
+        detector_id="child_action",
+        file_path=module_path.as_posix(),
+        subject_name="Alpha::run",
+        old_source="b = 1",
+        new_source="b = 2",
+        before=4,
+        after=1,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition((child, parent), snapshot)
+    records_by_detector = {record.detector_id: record for record in records}
+
+    assert {record.status for record in records_by_detector.values()} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all(
+        "do not share one cost surface" in record.reason
+        for record in records_by_detector.values()
+    )
+
+
+def test_finding_recipe_competition_refuses_incomparable_physical_conflicts(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    weak = _direct_recipe_candidate(
+        detector_id="physical_weak",
+        file_path=module_path.as_posix(),
+        subject_name="Alpha",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=4,
+        after=1,
+    )
+    strong = _direct_recipe_candidate(
+        detector_id="physical_strong",
+        file_path=module_path.as_posix(),
+        subject_name="Beta",
+        old_source="value = 1",
+        new_source="value = 3",
+        before=8,
+        after=1,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition((weak, strong), snapshot)
+    records_by_detector = {record.detector_id: record for record in records}
+
+    assert {record.status for record in records_by_detector.values()} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all(
+        "do not share one cost surface" in record.reason
+        for record in records_by_detector.values()
+    )
+
+
+def test_finding_recipe_competition_co_selects_composable_disjoint_edits(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
+    candidates = (
+        _direct_recipe_candidate(
+            detector_id="disjoint_a",
+            file_path=module_path.as_posix(),
+            subject_name="Alpha",
+            old_source="a = 1",
+            new_source="a = 2",
+            before=5,
+            after=1,
+        ),
+        _direct_recipe_candidate(
+            detector_id="disjoint_b",
+            file_path=module_path.as_posix(),
+            subject_name="Beta",
+            old_source="b = 1",
+            new_source="b = 2",
+            before=5,
+            after=1,
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    builder = FindingRecipePlanBuilder(())
+    competition = FindingRecipePlanCompetition(
+        candidates=candidates,
+        source_snapshot=snapshot,
+        batch_projection=builder,
+    )
+    records = competition.solve().records
+    recipes = builder.merged_recipes(
+        [record.evaluation.required_recipe for record in records],
+        snapshot,
+    )
+
+    simulation = CodemodPlanDocument(recipes=recipes).simulate_snapshot(snapshot)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    }
+    assert {record.planning_horizon for record in records} == {
+        FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
+    }
+    assert competition.interacting_candidate_pairs == ()
+    assert competition.pair_assessments == ()
+    assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
+        "a = 2\nb = 2\n"
+    )
+
+
+def test_finding_recipe_singleton_without_cost_is_only_a_snapshot_candidate(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidate = _direct_recipe_candidate(
+        detector_id="unproved_singleton",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=None,
+        after=None,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    (record,) = _direct_recipe_competition((candidate,), snapshot)
+
+    assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert record.planning_horizon is FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
+    assert record.planning_horizon.requires_trajectory_proof
+
+
+def test_finding_recipe_competition_rejects_order_dependent_composition(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "import os\n\nvalue = 1\n")
+
+    def insertion_candidate(
+        detector_id: str,
+        subject_name: str,
+        source: str,
+    ) -> FindingRecipePlanCandidate:
+        candidate = _direct_recipe_candidate(
+            detector_id=detector_id,
+            file_path=module_path.as_posix(),
+            subject_name=subject_name,
+            old_source="value = 1",
+            new_source="value = 2",
+            before=5,
+            after=1,
+        )
+        return FindingRecipePlanCandidate(
+            replace(
+                candidate.record,
+                evaluation=ExecutableRecipeEvaluation(
+                    executable_recipe=RefactorRecipe(
+                        f"{detector_id}-recipe"
+                    ).with_operation(
+                        InsertAfterImportsOperation(
+                            target=SourceRewriteTarget(
+                                file_path=module_path.as_posix()
+                            ),
+                            source=source,
+                        )
+                    ),
+                    executable_declaration_type=FindingRecipePlanCompetition,
+                ),
+            )
+        )
+
+    candidates = (
+        insertion_candidate("order_left", "Alpha", "LEFT = 1\n"),
+        insertion_candidate("order_right", "Beta", "RIGHT = 1\n"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition(candidates, snapshot)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all("depends on source order" in record.reason for record in records)
+
+
+def test_finding_recipe_competition_rejects_incomparable_before_costs(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidates = tuple(
+        _direct_recipe_candidate(
+            detector_id=detector_id,
+            file_path=module_path.as_posix(),
+            subject_name="value",
+            old_source="value = 1",
+            new_source=f"value = {replacement}",
+            before=before,
+            after=1,
+        )
+        for detector_id, replacement, before in (
+            ("baseline_left", 2, 5),
+            ("baseline_right", 3, 8),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition(candidates, snapshot)
+
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    }
+    assert all("before-cost baseline" in record.reason for record in records)
+
+
+def test_finding_recipe_competition_rejects_non_paying_singleton(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    candidate = _direct_recipe_candidate(
+        detector_id="non_paying",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=1,
+        after=2,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    record = _direct_recipe_competition((candidate,), snapshot)[0]
+
+    assert record.status is FindingRecipeSynthesisStatus.DOES_NOT_PAY_RENT
+    assert record.candidate_recipes == ()
+    assert record.planning_horizon.requires_trajectory_proof
+
+
+def test_finding_recipe_competition_preserves_duplicate_finding_positions(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
+    weak = _direct_recipe_candidate(
+        detector_id="duplicate_weak",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 2",
+        before=10,
+        after=5,
+    )
+    strong = _direct_recipe_candidate(
+        detector_id="duplicate_strong",
+        file_path=module_path.as_posix(),
+        subject_name="value",
+        old_source="value = 1",
+        new_source="value = 3",
+        before=10,
+        after=1,
+    )
+    strong_with_duplicate_id = FindingRecipePlanCandidate(
+        replace(
+            strong.record,
+            finding=replace(
+                weak.record.finding,
+                compression_certificate=strong.record.finding.compression_certificate,
+            ),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition(
+        (weak, strong_with_duplicate_id),
+        snapshot,
+    )
+
+    assert records[0].finding_id == records[1].finding_id
+    assert tuple(record.status for record in records) == (
+        FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN,
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
+    )
+    proof = records[1].competition_proof
+    assert proof is not None
+    assert proof.selected_candidate_indices == (1,)
+
+
+def test_finding_recipe_competition_isolates_dirty_disjoint_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
+    clean = _direct_recipe_candidate(
+        detector_id="guard_clean",
+        file_path=module_path.as_posix(),
+        subject_name="Alpha",
+        old_source="a = 1",
+        new_source="a = 2",
+        before=5,
+        after=1,
+    )
+    dirty = _direct_recipe_candidate(
+        detector_id="guard_dirty",
+        file_path=module_path.as_posix(),
+        subject_name="Beta",
+        old_source="b = 1",
+        new_source="b = forbidden_call()",
+        before=5,
+        after=1,
+    )
+    dirty_recipe = replace(
+        dirty.record.evaluation.required_recipe,
+        guard_suite=ArchitectureGuardSuite(
+            (
+                ArchitectureGuardRule(
+                    rule_id="forbid-dirty-call",
+                    forbidden_call_names=("forbidden_call",),
+                    file_path_suffixes=("pkg/mod.py",),
+                ),
+            )
+        ),
+    )
+    dirty = FindingRecipePlanCandidate(
+        replace(
+            dirty.record,
+            evaluation=dirty.record.evaluation.with_recipe(dirty_recipe),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    records = _direct_recipe_competition((clean, dirty), snapshot)
+
+    records_by_detector = {record.detector_id: record for record in records}
+
+    assert (
+        records_by_detector["guard_clean"].status
+        is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    )
+    assert (
+        records_by_detector["guard_dirty"].status
+        is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    )
+    assert "violates 1 architecture guard" in records_by_detector["guard_dirty"].reason
+
+
+def test_synthesized_plan_apply_and_export_require_trajectory_proof(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from nominal_refactor_advisor.cli import CodemodExecutionMode
+    from nominal_refactor_advisor.cli import CodemodPlanExecutionRequest
+    from nominal_refactor_advisor.cli import FindingRecipePlanSynthesisExecution
+    from nominal_refactor_advisor.codemod import FindingRecipePlan
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesisReport
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+
+    module_path = tmp_path / "pkg/mod.py"
+    plan_path = tmp_path / "unproved-plan.json"
+    original_source = "value = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    candidates = tuple(
+        _direct_recipe_candidate(
+            detector_id=detector_id,
+            file_path=module_path.as_posix(),
+            subject_name="value",
+            old_source="value = 1",
+            new_source=f"value = {replacement}",
+            before=10,
+            after=after,
+        )
+        for detector_id, replacement, after in (
+            ("apply_weak", 2, 5),
+            ("apply_strong", 3, 1),
+        )
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, ())
+    records = _direct_recipe_competition(candidates, snapshot)
+    builder = FindingRecipePlanBuilder(())
+    plan = FindingRecipePlan(
+        document=CodemodPlanDocument(
+            recipes=builder.merged_recipes(
+                [
+                    record.evaluation.required_recipe
+                    for record in records
+                    if record.candidate_recipes
+                ],
+                snapshot,
+            )
+        ),
+        report=FindingRecipeSynthesisReport(records),
+    )
+    execution = FindingRecipePlanSynthesisExecution(
+        snapshot=snapshot,
+        execution_request=CodemodPlanExecutionRequest(
+            sequence=CodemodPlanSequence.from_document(plan.document),
+            mode=CodemodExecutionMode.APPLY,
+        ),
+        plan_out=plan_path,
+        workflow_scan=CodemodWorkflowScan(modules=modules, findings=[]),
+        plan=plan,
+    )
+
+    exit_code = execution.run()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["application_blocked"] is True
+    assert "reachable refactor trajectories" in payload["application_block_reason"]
+    assert not plan_path.exists()
+    assert module_path.read_text(encoding="utf-8") == original_source
 
 
 def test_authority_inference_updates_the_terminal_evaluation_recipe(
@@ -2271,7 +2935,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     assert record.recipe_id == "empty-generated-recipe"
     assert plan.document.recipes == ()
     assert plan.expected_removed_finding_ids == ()
-    assert plan.report.planned_count == 0
+    assert plan.report.candidate_count == 0
     assert plan.report.rejected_count == 1
     assert payload["synthesis_report"]["status_counts"] == {"no_effective_rewrites": 1}
 
@@ -2705,7 +3369,7 @@ def test_exact_tiny_method_role_promotes_applies_and_preserves_behavior(
     operation = plan.document.recipes[0].operations[0].to_dict()
 
     assert plan.expected_removed_finding_count == 1
-    assert record.status is FindingRecipeSynthesisStatus.PLANNED
+    assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert record.executable_declaration_name == (
         "ExactTinyMethodRoleFindingRecipeSynthesizer"
     )
@@ -2773,7 +3437,7 @@ def test_exact_tiny_method_role_batches_same_cohort_methods(
     simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.PLANNED
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert operation["base_name"] == "SharedRenderSlugMixin"
     assert operation["method_names"] == ("render", "slug")
     assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
@@ -2884,9 +3548,7 @@ def test_exact_tiny_method_role_excludes_promotion_hazards(
             id="direct-receiver-member",
         ),
         pytest.param(
-            "def render(self, value):\n"
-            "    owner = self\n"
-            "    return owner.prefix",
+            "def render(self, value):\n" "    owner = self\n" "    return owner.prefix",
             id="aliased-receiver-member",
         ),
     ),
@@ -3364,7 +4026,7 @@ def test_method_promotion_synthesis_rewrites_multiline_class_headers(
 
     assert len(plan.document.recipes) == 1
     assert plan.rejected_count == 0
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert simulation.is_clean is True
     assert "+class SharedEmitMixin:" in diff
     assert "+class Alpha(SharedEmitMixin, Marker):" in diff
@@ -4540,6 +5202,38 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
     }
 
 
+def test_exact_recipe_fast_snapshot_preserves_declared_relative_path_identity(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/source.py", "class Source:\n    pass\n")
+    _write_module(tmp_path, "pkg/destination.py", "")
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(recipe_id="relative-path-authority").with_operation(
+                    MoveSymbolsToModuleOperation(
+                        target=SourceRewriteTarget(file_path="pkg/source.py"),
+                        symbol_qualnames=("Source",),
+                        destination_path="pkg/destination.py",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    snapshot = CodemodRecipePlanFastSourceSnapshot(
+        sequence=sequence,
+        roots=(tmp_path,),
+        cwd=tmp_path,
+    ).optional_snapshot()
+
+    assert snapshot is not None
+    assert set(snapshot.sources_by_file_path) == {
+        "pkg/source.py",
+        "pkg/destination.py",
+    }
+
+
 def test_codemod_plan_document_simulates_and_applies_recipes(
     tmp_path: Path,
 ) -> None:
@@ -5016,7 +5710,8 @@ def test_factorization_engine_derives_shared_authority_and_residue_axes() -> Non
         )
     )
 
-    plan = engine.best_plan("ExporterABC")
+    plans = engine.candidate_plans("ExporterABC")
+    (plan,) = plans
 
     assert plan is not None
     assert plan.pays_rent
@@ -5047,7 +5742,6 @@ def test_factorization_engine_rejects_unpaid_singletons() -> None:
         ),
     )
 
-    assert FactorizationEngine.from_mappings(rows).best_plan("ExporterABC") is None
     assert FactorizationEngine.from_mappings(rows).candidate_plans("ExporterABC") == ()
 
 
@@ -5168,7 +5862,9 @@ def test_mdl_competition_suppresses_overlapping_weaker_explanations() -> None:
         for node in lattice.nodes
         if node.object_names == frozenset(broad.orbit.object_names)
     )
-    result = MDLCompetition(lattice.nodes).solve()
+    result = MDLCompetition(
+        CoveredObjectExplanationConflictGraph(lattice.nodes)
+    ).solve()
 
     assert result.selected == (broad_node,)
     assert len(result.suppressed) == 1
@@ -5203,8 +5899,8 @@ def test_mdl_competition_uses_exact_conflict_graph_not_greedy_order() -> None:
         residual_object_count=0,
     )
     lattice = FactorizationLattice.from_plans((broad, left, right))
-    graph = ExplanationConflictGraph(lattice.nodes)
-    result = MDLCompetition(lattice.nodes).solve()
+    graph = CoveredObjectExplanationConflictGraph(lattice.nodes)
+    result = MDLCompetition(graph).solve()
 
     assert len(graph.conflict_edges) == 2
     assert graph.independent(
@@ -5231,195 +5927,72 @@ def test_mdl_competition_uses_exact_conflict_graph_not_greedy_order() -> None:
     }
 
 
-def test_submodular_mdl_competition_keeps_positive_partial_overlap() -> None:
-    broad = _factorization_plan(
-        "BroadABC",
-        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec",),
-        manual_object_count=12,
-        residual_object_count=1,
-    )
-    partial = _factorization_plan(
-        "PartialABC",
-        object_names=("Json.emit", "Xml.emit", "Yaml.emit"),
-        shared_axes=("family",),
-        residue_axes=("codec",),
-        manual_object_count=12,
-        residual_object_count=1,
-    )
-    lattice = FactorizationLattice.from_plans((broad, partial))
-
-    exact = MDLCompetition(lattice.nodes).solve()
-    submodular = SubmodularMDLCompetition(lattice.nodes).solve()
-
-    assert len(exact.selected) == 1
-    assert len(submodular.selected) == 2
-    assert submodular.objective_value > exact.selected[0].certified_savings
-
-
-def _trajectory_move(
+def _mdl_explanation(
     key: str,
     *,
     before: int,
     after: int,
-    prerequisites: tuple[str, ...] = (),
-    unlocks: tuple[str, ...] = (),
-    phase: RefactorPhase = RefactorPhase.DERIVE_AUTHORITY,
-    debt_justification: str | None = None,
-    predicts_removed: tuple[str, ...] = (),
-    predicts_emergent: tuple[str, ...] = (),
-) -> RefactorMove:
-    return RefactorMove(
-        move_key=key,
-        move_description=key,
-        move_covered_objects=frozenset({key}),
-        move_compression_certificate=CompressionCertificate(
-            before_cost=SemanticCostVector(residual_objects=before),
-            after_cost=SemanticCostVector(residual_objects=after),
-            semantic_axes=(key,),
+) -> FactorizationLatticeNode:
+    row = FactorizationRow.from_mapping(key, {"identity": key})
+    return FactorizationLatticeNode.from_plan(
+        FactorizationPlan(
+            authority_name=key,
+            orbit=FactorizationOrbit(
+                shared_signature=(("identity", key),),
+                rows=(row,),
+                residue_axis_names=(),
+            ),
+            compression_certificate=CompressionCertificate(
+                before_cost=SemanticCostVector(residual_objects=before),
+                after_cost=SemanticCostVector(residual_objects=after),
+                semantic_axes=(key,),
+            ),
+        )
+    )
+
+
+def test_declared_mdl_competition_escapes_path_graph_greedy_minimum() -> None:
+    left = _mdl_explanation("left", before=5, after=1)
+    middle = _mdl_explanation("middle", before=8, after=1)
+    right = _mdl_explanation("right", before=5, after=1)
+    graph = DeclaredExplanationConflictGraph(
+        explanations=(left, middle, right),
+        declared_conflict_edges=frozenset({(0, 1), (1, 2)}),
+    )
+
+    result = MDLCompetition(graph).solve()
+
+    assert result.selected_indices == (0, 2)
+    assert result.selected == (left, right)
+    assert result.ambiguities == ()
+
+
+def test_declared_mdl_competition_retains_candidate_complete_optimum_witnesses() -> None:
+    explanations = tuple(
+        _mdl_explanation(f"alternative-{index}", before=5, after=1)
+        for index in range(20)
+    )
+    graph = DeclaredExplanationConflictGraph(
+        explanations=explanations,
+        declared_conflict_edges=frozenset(
+            (left, right)
+            for left in range(len(explanations))
+            for right in range(left + 1, len(explanations))
         ),
-        prerequisites=frozenset(prerequisites),
-        unlocks=frozenset(unlocks),
-        phase=phase,
-        debt_justification=debt_justification,
-        predicts_removed=frozenset(predicts_removed),
-        predicts_emergent=frozenset(predicts_emergent),
     )
 
+    result = MDLCompetition(graph).solve()
 
-def test_refactor_trajectory_search_proves_local_minimum_escape() -> None:
-    normalize_records = _trajectory_move(
-        "normalize anonymous records",
-        before=2,
-        after=4,
-        unlocks=("nominal_record_axis",),
-        phase=RefactorPhase.NORMALIZE,
-        debt_justification="names the nominal record axis needed by later moves",
-        predicts_removed=("anonymous_record_projection",),
-        predicts_emergent=("constructor_variant",),
-    )
-    derive_constructor_algebra = _trajectory_move(
-        "derive constructor algebra",
-        before=10,
-        after=2,
-        prerequisites=("nominal_record_axis",),
-        unlocks=("constructor_axis",),
-        phase=RefactorPhase.ESTABLISH_OWNER,
-    )
-    push_hooks_to_abc = _trajectory_move(
-        "push hooks into abc",
-        before=8,
-        after=3,
-        prerequisites=("constructor_axis",),
-        phase=RefactorPhase.DERIVE_AUTHORITY,
-    )
-
-    proof = RefactorTrajectorySearch(
-        (normalize_records, derive_constructor_algebra, push_hooks_to_abc),
-        max_depth=3,
-    ).local_minimum_escape_proof()
-
-    assert proof is not None
-    assert proof.blocked_positive_moves == (
-        derive_constructor_algebra,
-        push_hooks_to_abc,
-    )
-    assert proof.best_trajectory.move_descriptions == (
-        "normalize anonymous records",
-        "derive constructor algebra",
-        "push hooks into abc",
-    )
-    assert proof.temporary_debt == 2
-    assert proof.certified_net_savings == 11
-    assert proof.best_trajectory.debt_justifications == (
-        "names the nominal record axis needed by later moves",
-    )
-    assert "anonymous_record_projection" in proof.best_trajectory.predicted_removed
-    assert "constructor_variant" in proof.best_trajectory.predicted_emergent
-    assert proof.best_trajectory.final_state is not None
-    assert (
-        "push hooks into abc" not in proof.best_trajectory.final_state.active_findings
-    )
-    assert "local one-step search is stuck" in proof.escape_summary
-
-
-def test_refactor_state_rejects_unjustified_debt_and_phase_regression() -> None:
-    unjustified = _trajectory_move(
-        "normalize without proof",
-        before=1,
-        after=2,
-        phase=RefactorPhase.NORMALIZE,
-    )
-    shadow_delete = _trajectory_move(
-        "delete shadow api",
-        before=3,
-        after=1,
-        phase=RefactorPhase.DELETE_SHADOW,
-    )
-    late_normalize = _trajectory_move(
-        "late normalize",
-        before=3,
-        after=1,
-        phase=RefactorPhase.NORMALIZE,
-    )
-    initial = RefactorState.initial((unjustified, shadow_delete, late_normalize))
-    after_shadow = initial.apply(shadow_delete)
-
-    assert not initial.can_apply(unjustified)
-    assert not after_shadow.can_apply(late_normalize)
-
-
-def test_refactor_trajectory_search_prunes_dominated_paths() -> None:
-    weak = _trajectory_move(
-        "weak normalize",
-        before=2,
-        after=3,
-        unlocks=("axis",),
-        phase=RefactorPhase.NORMALIZE,
-        debt_justification="unlocks axis",
-    )
-    strong = _trajectory_move(
-        "strong normalize",
-        before=2,
-        after=2,
-        unlocks=("axis", "owner"),
-        phase=RefactorPhase.NORMALIZE,
-    )
-    payoff = _trajectory_move(
-        "derive payoff",
-        before=8,
-        after=1,
-        prerequisites=("axis",),
-        phase=RefactorPhase.DERIVE_AUTHORITY,
-    )
-
-    trajectory = RefactorTrajectorySearch(
-        (weak, strong, payoff), max_depth=2
-    ).best_trajectory()
-
-    assert trajectory is not None
-    assert trajectory.move_descriptions == ("strong normalize", "derive payoff")
-
-
-def test_refactor_trajectory_search_does_not_hide_local_positive_moves() -> None:
-    local_win = _trajectory_move("extract local abc", before=5, after=1)
-    unlocker = _trajectory_move(
-        "normalize first",
-        before=1,
-        after=2,
-        unlocks=("normalized",),
-        phase=RefactorPhase.NORMALIZE,
-        debt_justification="unlocks normalized axis",
-    )
-    later_win = _trajectory_move(
-        "derive later", before=8, after=1, prerequisites=("normalized",)
-    )
-
-    search = RefactorTrajectorySearch((local_win, unlocker, later_win), max_depth=2)
-
-    assert search.local_minimum_escape_proof() is None
-    assert search.locally_positive_moves() == (local_win,)
+    assert result.selected == ()
+    assert len(result.ambiguities) == 1
+    ambiguity = result.ambiguities[0]
+    assert ambiguity.optimal_solution_count == 20
+    assert len(ambiguity.alternative_witnesses) == 20
+    assert {
+        explanation.explanation_key
+        for witness in ambiguity.alternative_witnesses
+        for explanation in witness
+    } == {explanation.explanation_key for explanation in explanations}
 
 
 def test_semantic_compression_hypergraph_projects_explanation_edges() -> None:
@@ -5883,7 +6456,7 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
     assert finding.scaffold == "Introduce one theorem schema."
 
 
-def test_planner_ranks_by_certified_description_length_savings(
+def test_planner_uses_stable_identity_order_not_local_savings(
     tmp_path: Path,
 ) -> None:
     spec = _finding_spec(
@@ -5923,7 +6496,8 @@ def test_planner_ranks_by_certified_description_length_savings(
         tmp_path,
     )
 
-    assert [plan.outcome.description_length_savings for plan in plans] == [8, 3]
+    assert [plan.subsystem for plan in plans] == ["aaa", "zzz"]
+    assert [plan.outcome.description_length_savings for plan in plans] == [3, 8]
 
 
 def test_execution_plan_groups_findings_by_weighted_graph(
@@ -5968,7 +6542,6 @@ def test_execution_plan_groups_findings_by_weighted_graph(
 
     assert report.total_finding_count == 3
     assert report.connected_component_count == 2
-    assert report.parallel_group_count == 1
     assert len(report.edges) == 1
     assert report.edges[0].weight >= 3
     assert "shared evidence file" in report.edges[0].reasons[0]
@@ -5979,8 +6552,10 @@ def test_execution_plan_groups_findings_by_weighted_graph(
     )
     assert grouped_class.internal_edge_count == 1
     assert grouped_class.graph_density == 1.0
-    assert grouped_class.first_batch_move
-    assert grouped_class.first_codemod_hint
+    assert "batch_priority" not in grouped_class.to_dict()
+    assert "first_batch_move" not in grouped_class.to_dict()
+    assert "first_codemod_hint" not in grouped_class.to_dict()
+    assert "parallel_group" not in grouped_class.to_dict()
 
 
 def test_planning_similarity_requires_concrete_source_authority(
@@ -6125,7 +6700,7 @@ def test_execution_plan_splits_weak_bridges_by_semantic_axis(
     assert len(report.edges) == 1
     assert {execution_class.finding_count for execution_class in report.classes} == {1}
     assert {
-        execution_class.pattern_sequence.primary_pattern_id
+        execution_class.pattern_evidence.pattern_ids[0]
         for execution_class in report.classes
     } == {
         PatternId.AUTHORITATIVE_CONTEXT,
@@ -6133,7 +6708,7 @@ def test_execution_plan_splits_weak_bridges_by_semantic_axis(
     }
 
 
-def test_planner_derives_local_minimum_escape_from_findings(
+def test_planner_does_not_expose_a_fabricated_escape_proof_surface(
     tmp_path: Path,
 ) -> None:
     boundary_spec = _finding_spec(
@@ -6178,35 +6753,12 @@ def test_planner_derives_local_minimum_escape_from_findings(
 
     plan = build_refactor_plans(findings, tmp_path)[0]
 
-    assert len(plan.trajectories) == 1
-    trajectory = plan.trajectories[0]
-    assert trajectory.temporary_debt == 2
-    assert trajectory.certified_net_savings == 8
-    assert trajectory.steps == (
-        "Pattern 1: Normalize records",
-        "Pattern 5: Extract ABC",
-    )
-    assert trajectory.blocked_moves == ("Pattern 5: Extract ABC",)
-    assert trajectory.missing_capabilities == (
-        "Pattern 1: Nominal Boundary Over Sentinel Simulation",
-    )
-    assert trajectory.debt_justifications == (
-        "temporary debt is allowed because this move names or stabilizes "
-        "capabilities that unlock later compression",
-    )
-    assert "unlocked:5" in trajectory.expected_emergent_findings
-    assert any(
-        finding.stable_id in trajectory.expected_removed_findings
-        for finding in findings
-    )
-
-    markdown = MARKDOWN_RENDERER.report(findings, [plan])
-    assert "Local-minimum escape" in markdown
-    assert "Pattern 1: Normalize records -> Pattern 5: Extract ABC" in markdown
-    assert "Counterfactual findings removed" in markdown
+    assert "trajectories" not in plan.to_dict()
 
 
-def test_planner_orders_registry_normal_form_path(tmp_path: Path) -> None:
+def test_planner_keeps_registry_observations_without_suggesting_a_normal_form(
+    tmp_path: Path,
+) -> None:
     registry_spec = _finding_spec(
         PatternId.AUTO_REGISTER_META,
         "Registry needs normal form",
@@ -6242,39 +6794,13 @@ def test_planner_orders_registry_normal_form_path(tmp_path: Path) -> None:
 
     plan = build_refactor_plans(findings, tmp_path)[0]
 
-    assert "repair injectivity" in plan.canonical_normal_form
-    assert "choose authority and derive projection" in plan.canonical_normal_form
-    assert "promote mature injective registry" in plan.canonical_normal_form
-    assert plan.plan_steps[0].startswith("Repair `pkg` registry injectivity first")
-    assert "derive the parallel keyed table" in plan.plan_steps[1]
-    assert "Promote the mature injective registry" in plan.plan_steps[2]
-    assert "rerun NRA before promoting" in plan.plan_steps[3]
-
-
-def test_pattern_action_builder_emits_registered_pattern_actions() -> None:
-    registry_finding = _finding_spec(
+    assert plan.pattern_evidence.pattern_ids == (
         PatternId.AUTO_REGISTER_META,
-        "Registry needs normal form",
-        "Manual registration should become class-owned.",
-        "metaclass-owned registry",
-        "registered leaves own their key",
-    ).build(
-        "manual_registry",
-        "manual registry mirrors concrete implementations",
-        (SourceLocation("pkg/mod.py", 10, "ModeRunner"),),
+        PatternId.AUTHORITATIVE_SCHEMA,
     )
-
-    actions = _pattern_planning(
-        "pkg",
-        PatternId.AUTO_REGISTER_META,
-        (registry_finding,),
-    ).actions
-
-    assert [action.kind for action in actions] == [
-        "create_metaclass",
-        "add_declarative_hooks",
-        "delete_manual_registration",
-    ]
+    assert "candidate_normal_forms" not in plan.to_dict()
+    assert "plan_steps" not in plan.to_dict()
+    assert "actions" not in plan.to_dict()
 
 
 def test_class_family_compression_profile_prices_abc_extraction() -> None:
@@ -6327,7 +6853,7 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
         scaffold="def helper(): ...",
     )
 
-    economics = RecommendationEconomics.from_findings_and_plans(
+    economics = RefactorEvidenceEconomics.from_findings_and_plans(
         [semantic_finding, loc_finding, unproven_finding]
     )
 
@@ -6338,8 +6864,8 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
     assert economics.proven_finding_count == 2
     assert economics.backend_lower_bound_removable_loc == 3
     assert economics.certified_description_length_savings == 6
-    assert not economics.payoff_guard_passes
-    assert economics.unproven_infrastructure_detector_ids == ("unproven",)
+    assert not economics.evidence_guard_passes
+    assert economics.unproved_detector_ids == ("unproven",)
 
 
 def test_repository_change_budget_separates_backend_detector_and_tests() -> None:
@@ -6360,7 +6886,7 @@ def test_repository_change_budget_separates_backend_detector_and_tests() -> None
     assert budget.generated.net_added == 15
 
 
-def test_economics_markdown_and_json_expose_payoff_proof() -> None:
+def test_economics_markdown_and_json_expose_evidence_proof() -> None:
     certificate = _object_family_certificate(
         8,
         ("abc",),
@@ -6377,7 +6903,7 @@ def test_economics_markdown_and_json_expose_payoff_proof() -> None:
         (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
         compression_certificate=certificate,
     )
-    economics = RecommendationEconomics.from_findings_and_plans([finding])
+    economics = RefactorEvidenceEconomics.from_findings_and_plans([finding])
     change_budget = RepositoryChangeBudget.from_numstat_rows(
         ("5\t1\tnominal_refactor_advisor/economics.py",)
     )
@@ -6392,8 +6918,8 @@ def test_economics_markdown_and_json_expose_payoff_proof() -> None:
         economics=economics,
     ).to_dict()
 
-    assert "Economics:" in markdown
-    assert "Recommended backend LOC savings: 0-0" in markdown
+    assert "Evidence economics:" in markdown
+    assert "Observed backend LOC savings: 0-0" in markdown
     assert "Semantic description length: 8 -> 1" in markdown
     assert "advisor backend +5/-1 (net +4)" in markdown
     assert payload["economics"]["certified_description_length_savings"] == 7
@@ -6857,16 +7383,17 @@ def test_source_import_identity_uses_nested_package_boundary(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    assert snapshot.module_import_graph.module_name_for_file_path(
-        authority_path.as_posix()
-    ) == "pyqt_reactive.services.widget_tree_projection"
+    assert (
+        snapshot.module_import_graph.module_name_for_file_path(
+            authority_path.as_posix()
+        )
+        == "pyqt_reactive.services.widget_tree_projection"
+    )
     assert snapshot.module_import_graph.import_source(
         importing_file_path=projection_path.as_posix(),
         imported_file_path=authority_path.as_posix(),
         imported_name="WidgetRect",
-    ) == (
-        "from pyqt_reactive.services.widget_tree_projection import WidgetRect\n"
-    )
+    ) == ("from pyqt_reactive.services.widget_tree_projection import WidgetRect\n")
 
 
 def test_parse_python_module_roots_combines_files_and_dedupes(
@@ -7885,7 +8412,7 @@ def test_parallel_analyze_modules_matches_sequential_stable_ids(
         _write_module(
             tmp_path,
             f"pkg/{module_name}.py",
-            f'''\ndef render_{module_name}(kind):\n    if kind == 1:\n        return "{module_name}-one"\n    elif kind == 2:\n        return "{module_name}-two"\n    elif kind == 3:\n        return "{module_name}-three"\n    return "{module_name}-default"\n''',
+            f"""\ndef render_{module_name}(kind):\n    if kind == 1:\n        return "{module_name}-one"\n    elif kind == 2:\n        return "{module_name}-two"\n    elif kind == 3:\n        return "{module_name}-three"\n    return "{module_name}-default"\n""",
         )
 
     modules = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)
@@ -9198,7 +9725,7 @@ def require_secondary_executor(value):
     assert execution_plan.classes[0].finding_ids == tuple(
         sorted(finding.stable_id for finding in findings)
     )
-    assert execution_plan.classes[0].batch_priority > 0
+    assert "batch_priority" not in execution_plan.classes[0].to_dict()
 
 
 def test_detects_cross_module_reversed_exact_type_guard(
@@ -9988,7 +10515,9 @@ def test_function_observation_families_preserve_nested_definition_ownership(
     assert {observation.symbol for observation in method_injections} == {"inner"}
 
 
-def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
+def test_markdown_output_reports_required_relation_without_first_move(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -9996,10 +10525,11 @@ def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     output = MARKDOWN_RENDERER.report(findings)
-    assert "Prescription:" in output
-    assert "Canonical shape:" in output
-    assert "First move:" in output
-    assert "Example skeleton:" in output
+    assert "Required relation:" in output
+    assert "Prescription:" not in output
+    assert "Canonical shape:" not in output
+    assert "First move:" not in output
+    assert "Example skeleton:" not in output
 
 
 _COMPOSED_SUBSYSTEM_SOURCE = """
@@ -10036,13 +10566,15 @@ REGISTRY["beta"] = Beta
 """
 
 
-def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> None:
+def test_markdown_output_does_not_render_detector_authored_suggestions(
+    tmp_path: Path,
+) -> None:
     _write_module(tmp_path, "pkg/mod.py", _COMPOSED_SUBSYSTEM_SOURCE)
     findings = analyze_path(tmp_path)
     output = MARKDOWN_RENDERER.report(findings, raw_findings=True)
-    assert output.count("Example skeleton:") >= 2
-    assert "Suggested scaffold:" in output
-    assert "Suggested patch:" in output
+    assert "Example skeleton:" not in output
+    assert "Suggested scaffold:" not in output
+    assert "Suggested patch:" not in output
 
 
 def test_observation_graph_caches_derived_groupings() -> None:
@@ -10202,7 +10734,9 @@ def test_module_syntax_index_projects_literal_dispatch_parentage(
     assert syntax_index.enclosing_function_name(nested_index) == "outer"
 
 
-def test_module_syntax_index_keeps_nested_class_bodies_outside_outer_execution() -> None:
+def test_module_syntax_index_keeps_nested_class_bodies_outside_outer_execution() -> (
+    None
+):
     module = ast.parse(
         "def outer():\n"
         "    class Nested:\n"
@@ -10297,7 +10831,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].executable_declaration_name == (
         "RepeatedBuilderSourceProjectionAuthorityMethod"
     )
@@ -10324,11 +10858,9 @@ def test_repeated_builder_rejects_unproved_source_projection_type(
     tmp_path: Path,
     annotation_source: str,
 ) -> None:
-    source = (
-        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION
-        .replace("candidate: PlanSource", f"candidate{annotation_source}")
-        .replace("entry: PlanSource", f"entry{annotation_source}")
-    )
+    source = _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
+        "candidate: PlanSource", f"candidate{annotation_source}"
+    ).replace("entry: PlanSource", f"entry{annotation_source}")
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -11870,7 +12402,7 @@ def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 1
     assert payload["parse_validation"]["parse_valid"] is True
-    assert f"+++ b/{module_path.as_posix().lstrip('/')}" in payload["unified_diff"]
+    assert "+++ b/pkg/mod.py" in payload["unified_diff"]
     assert "+from pkg.modern import modern" in payload["unified_diff"]
     assert "+        return value + 1" in payload["unified_diff"]
     assert "return value + 1" not in module_path.read_text()
@@ -11880,7 +12412,6 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
-    destination_path = tmp_path / "pkg/destination.py"
     _write_module(
         tmp_path,
         "pkg/source.py",
@@ -11931,11 +12462,8 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 2
     assert payload["parse_validation"]["parse_valid"] is True
-    assert f"+++ b/{source_path.as_posix().lstrip('/')}" in payload["unified_diff"]
-    assert (
-        f"+++ b/{destination_path.as_posix().lstrip('/')}"
-        in payload["unified_diff"]
-    )
+    assert "+++ b/pkg/source.py" in payload["unified_diff"]
+    assert "+++ b/pkg/destination.py" in payload["unified_diff"]
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
     assert "+class Helper(LocalBase):" in payload["unified_diff"]
     assert "class Helper" in source_path.read_text()
@@ -12301,37 +12829,11 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         check=False,
     )
     plan_payload = json.loads(plan_result.stdout)
-    emitted_plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
-    validation_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-validate-plan",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    validation_payload = json.loads(validation_result.stdout)
-    operations = tuple(
-        operation
-        for recipe in validation_payload["recipes"]
-        for operation in recipe["operations"]
-    )
 
-    assert plan_result.returncode == 0, plan_result.stderr
-    assert validation_result.returncode == 0, validation_result.stderr
-    assert emitted_plan_payload == plan_payload["document"]
-    assert any(
-        operation["operation"] == "convert_manual_registry_to_autoregister"
-        and operation["class_key_pairs"]
-        == ["AlphaHandler='alpha'", "BetaHandler='beta'"]
-        for operation in operations
-    )
+    assert plan_result.returncode == 1, plan_result.stderr
+    assert plan_payload["application_blocked"] is True
+    assert "reachable refactor trajectories" in plan_payload["application_block_reason"]
+    assert not plan_path.exists()
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
@@ -12365,13 +12867,12 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["is_clean"] is True
     assert payload["simulation"]["parse_validation"]["parse_valid"] is True
     assert payload["expected_removed_finding_count"] == 1
-    assert payload["synthesis_report"]["planned_count"] == 1
+    assert payload["synthesis_report"]["candidate_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert (
-        "+class RegisteredHandler(metaclass=AutoRegisterMeta):"
-        in (payload["unified_diff"])
+    assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
+        payload["unified_diff"]
     )
     assert module_path.read_text() == original_source
 
@@ -12408,7 +12909,7 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["is_clean"] is True
     assert payload["report_count"] == 1
     assert payload["expected_removed_finding_count"] == 1
-    assert payload["synthesis_report"]["planned_count"] == 1
+    assert payload["synthesis_report"]["candidate_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
@@ -12423,7 +12924,7 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert module_path.read_text() == original_source
 
 
-def test_module_cli_synthesizes_and_applies_finding_backed_plan(
+def test_module_cli_blocks_unproved_finding_backed_plan_application(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -12452,19 +12953,10 @@ def test_module_cli_synthesizes_and_applies_finding_backed_plan(
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 0, result.stderr
-    assert payload["applied"] is True
-    assert payload["is_clean"] is True
-    assert payload["simulation"]["parse_validation"]["parse_valid"] is True
-    rewritten = module_path.read_text()
-    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in rewritten
-    assert "REGISTRY[" not in rewritten
-    remaining = tuple(
-        finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
-        if finding.detector_id == "manual_class_registration"
-    )
-    assert remaining == ()
+    assert result.returncode == 1, result.stderr
+    assert payload["application_blocked"] is True
+    assert "reachable refactor trajectories" in payload["application_block_reason"]
+    assert "REGISTRY[" in module_path.read_text()
 
 
 def test_module_cli_emits_codemod_source_index_targets(tmp_path: Path) -> None:
@@ -13582,8 +14074,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.stop_reason.completed is True
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.stage_count == 1
     assert report.total_rewrite_count == 1
     assert report.final_target_finding_ids == ()
@@ -13606,18 +14098,16 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     stage_payload = report.to_dict()["stages"][0]
     assert "synthesis_report" not in stage_payload
-    assert (
-        stage_payload["finding_delta"]["before_finding_ids"]
-        == (stage_payload["progress"]["before_target_finding_ids"])
+    assert stage_payload["finding_delta"]["before_finding_ids"] == (
+        stage_payload["progress"]["before_target_finding_ids"]
     )
-    assert (
-        stage_payload["finding_delta"]["after_finding_ids"]
-        == (stage_payload["progress"]["after_target_finding_ids"])
+    assert stage_payload["finding_delta"]["after_finding_ids"] == (
+        stage_payload["progress"]["after_target_finding_ids"]
     )
     assert len(stage_payload["class_plan_report"]["classes"]) == 1
     assert (
         stage_payload["class_plan_report"]["finding_recipe_plan"]["synthesis_report"][
-            "planned_count"
+            "candidate_count"
         ]
         == 1
     )
@@ -13629,7 +14119,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
 
 
-def test_applied_migration_termination_uses_actual_rescan(
+def test_unproved_migration_stops_before_application_and_fresh_rescan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13724,17 +14214,159 @@ def test_applied_migration_termination_uses_actual_rescan(
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is False
-    assert report.stop_reason is CodemodWorkflowStopReason.NO_PROGRESS
-    assert report.final_target_finding_ids == (finding.stable_id,)
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.final_target_finding_ids == ()
     stage = report.stages[0]
-    assert stage.applied is True
-    assert stage.progress.achieved is False
-    assert stage.progress.made_progress is False
-    assert stage.progress.after_target_finding_ids == (finding.stable_id,)
+    assert stage.applied is False
+    assert stage.progress.achieved is True
+    assert stage.progress.made_progress is True
+    assert stage.progress.after_target_finding_ids == ()
     assert stage.finding_delta.finding_ids is stage.progress.finding_ids
+    assert "return 'old'" in module_path.read_text(encoding="utf-8")
 
 
-def test_class_family_migration_derives_serial_stages_from_one_concept(
+def test_goal_runner_does_not_commit_current_snapshot_recipe_competition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nominal_refactor_advisor.codemod as codemod_module
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    weak_detector_id = "goal_runner_local_minimum_weak_test"
+    strong_detector_id = "goal_runner_local_minimum_strong_test"
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "value = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    def finding(detector_id: str, after: int) -> RefactorFinding:
+        return _finding_spec(
+            PatternId.NOMINAL_BOUNDARY,
+            f"{detector_id} fixture",
+            "Competing migrations require a trajectory proof.",
+            "one globally proved migration",
+            "current-snapshot alternatives can lead to different later states",
+        ).build(
+            detector_id,
+            f"{detector_id} proposes a competing migration.",
+            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            compression_certificate=CompressionCertificate(
+                before_cost=SemanticCostVector(residual_objects=10),
+                after_cost=SemanticCostVector(residual_objects=after),
+                semantic_axes=("value_authority",),
+            ),
+        )
+
+    weak = finding(weak_detector_id, 5)
+    strong = finding(strong_detector_id, 1)
+
+    class WeakGoalRunnerSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("weak-goal-runner-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source="value = 1",
+                        new_source="value = 2",
+                    )
+                )
+            )
+
+    class StrongGoalRunnerSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("strong-goal-runner-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        old_source="value = 1",
+                        new_source="value = 3",
+                    )
+                )
+            )
+
+    def unexpected_apply(_report: CodemodSimulationReport) -> tuple[str, ...]:
+        raise AssertionError("a current-snapshot optimum must not be committed")
+
+    previous_synthesizers = {
+        detector_id: FindingRecipeSynthesizer.__registry__.get(detector_id)
+        for detector_id in (weak_detector_id, strong_detector_id)
+    }
+    FindingRecipeSynthesizer.__registry__[weak_detector_id] = WeakGoalRunnerSynthesizer
+    FindingRecipeSynthesizer.__registry__[strong_detector_id] = (
+        StrongGoalRunnerSynthesizer
+    )
+    monkeypatch.setattr(codemod_module, "apply_codemod_simulation", unexpected_apply)
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=False,
+            migration_type=SemanticCarrierConcept,
+            max_stages=2,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodWorkflowScan(
+                modules=parse_python_modules(tmp_path),
+                findings=[weak, strong],
+            ),
+        ).run()
+    finally:
+        for detector_id, previous in previous_synthesizers.items():
+            if previous is None:
+                FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            else:
+                FindingRecipeSynthesizer.__registry__[detector_id] = previous
+
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stop_reason.completed is False
+    assert report.stage_count == 1
+    assert report.stages[0].applied is False
+    assert module_path.read_text(encoding="utf-8") == original_source
+    records = report.stages[0].class_plan_report.finding_plan.records
+    assert {record.status for record in records} == {
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE,
+        FindingRecipeSynthesisStatus.DOMINATED_BY_CERTIFIED_PLAN,
+    }
+    assert all(record.competition_proof is not None for record in records)
+
+
+def test_class_family_migration_stops_before_unproved_serial_trajectory(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
@@ -13757,38 +14389,21 @@ def test_class_family_migration_derives_serial_stages_from_one_concept(
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    assert report.stop_reason.completed is True
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert report.stage_count == 2
-    assert report.final_target_finding_ids == ()
-    first_stage, second_stage = report.stages
-    first_recipe = first_stage.simulation.document.recipes[0]
-    second_recipe = second_stage.simulation.document.recipes[0]
-    producer_claim = first_recipe.declared_authority_claims[0]
-    consumer_claim = second_recipe.authority_claims[0]
-    assert producer_claim.claimed_symbol == "RegisteredHandler"
-    assert consumer_claim.claimed_symbol == "RegisteredHandler"
-    assert consumer_claim.matches_declared_claim(producer_claim)
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stage_count == 1
+    first_stage = report.stages[0]
     first_source = first_stage.simulation.simulation.rewritten_sources[
-        module_path.as_posix()
-    ]
-    final_source = second_stage.simulation.simulation.rewritten_sources[
         module_path.as_posix()
     ]
     assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in first_source
     assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
-    assert (
-        "ALL_HANDLERS = tuple(RegisteredHandler.__registry__.values())"
-        in final_source
-    )
-    assert report.replay_sequence.documents == (
-        first_stage.simulation.document,
-        second_stage.simulation.document,
-    )
+    assert report.replay_sequence.documents == (first_stage.simulation.document,)
+    assert module_path.read_text(encoding="utf-8") == _staged_class_family_source()
     assert all("stage_index" not in stage.to_dict() for stage in report.stages)
 
 
-def test_class_family_migration_commits_serial_stages_as_one_batch(
+def test_class_family_migration_does_not_commit_unproved_first_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13797,7 +14412,8 @@ def test_class_family_migration_commits_serial_stages_as_one_batch(
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     module_path = tmp_path / "pkg/mod.py"
-    _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
+    original_source = _staged_class_family_source()
+    _write_module(tmp_path, "pkg/mod.py", original_source)
     applied_reports: list[CodemodSimulationReport] = []
     real_apply = codemod_module.apply_codemod_simulation
 
@@ -13818,16 +14434,11 @@ def test_class_family_migration_commits_serial_stages_as_one_batch(
     ).run()
 
     final_source = module_path.read_text(encoding="utf-8")
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert report.stage_count == 2
-    assert all(stage.applied for stage in report.stages)
-    assert len(applied_reports) == 1
-    assert applied_reports[0].changed_file_paths == (module_path.as_posix(),)
-    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in final_source
-    assert (
-        "ALL_HANDLERS = tuple(RegisteredHandler.__registry__.values())"
-        in final_source
-    )
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stage_count == 1
+    assert report.stages[0].applied is False
+    assert applied_reports == []
+    assert final_source == original_source
 
 
 def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
@@ -13861,7 +14472,7 @@ def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    assert report.stop_reason is CodemodWorkflowStopReason.MAX_STAGES
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.stage_count == 1
     assert report.stages[0].applied is False
     assert module_path.read_text(encoding="utf-8") == original_source
@@ -13905,6 +14516,7 @@ def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
 ) -> None:
     import nominal_refactor_advisor.codemod_workflow as workflow_module
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
     from nominal_refactor_advisor.detectors import IssueDetector
 
     _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
@@ -13949,9 +14561,10 @@ def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
     ).run()
 
     semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
-    assert report.stop_reason.completed is True
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert exact_scan_count == 2
-    assert len(detector_rosters) == report.stage_count == 2
+    assert len(detector_rosters) == report.stage_count == 1
     assert all(
         semantic_mirror_ids <= frozenset(detector_roster)
         for detector_roster in detector_rosters
@@ -14059,8 +14672,8 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
         else:
             FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
 
-    assert report.stop_reason.completed is True
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.final_target_finding_ids == ()
     assert report.stages[0].progress.before_target_finding_ids == (
         report_finding.stable_id,
@@ -14240,7 +14853,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
     assert "accepts guard-only --codemod-plan input" in result.stderr
 
 
-def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
+def test_module_cli_does_not_export_unproved_goal_replay_plan(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -14270,17 +14883,16 @@ def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
         check=False,
     )
     payload = json.loads(result.stdout)
-    replay_payload = json.loads(plan_path.read_text(encoding="utf-8"))
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "completed" not in payload
     assert "achieved" not in payload
-    assert payload["stop_reason"] == "achieved"
+    assert payload["stop_reason"] == "unproved_trajectory"
     assert payload["stage_count"] == 1
     assert payload["total_rewrite_count"] == 1
     assert payload["stages"][0]["applied"] is False
-    assert replay_payload == payload["replay_sequence"]
-    assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
+    assert not plan_path.exists()
+    assert payload["replay_sequence"]["stages"][0]["recipes"][0]["recipe_id"] == (
         "finding-backed-codemod-plan"
     )
 
@@ -14495,8 +15107,10 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     assert execution_class["evidence_site_count"] >= 1
     assert execution_class["evidence"]
     assert len(report.classes[0].synthesis_records) == 1
-    assert synthesis_record["status"] == "planned"
+    assert synthesis_record["status"] == "executable_candidate"
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
+    assert "scaffold" not in synthesis_record
+    assert "codemod_patch" not in synthesis_record
     assert class_record["finding_id"] == execution_class["finding_ids"][0]
     assert class_record == synthesis_record
     assert "synthesis_records" not in class_payload
@@ -14669,17 +15283,17 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
 
 
 @pytest.mark.parametrize(
-    ("execution_flag", "result_field", "expected_applied"),
+    ("execution_flag", "result_field", "expected_returncode"),
     (
-        ("--codemod-preflight", "preflight_report", False),
-        ("--codemod-apply", "simulation_result", True),
+        ("--codemod-preflight", "preflight_report", 0),
+        ("--codemod-apply", "application_blocked", 1),
     ),
 )
 def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
     tmp_path: Path,
     execution_flag: str,
     result_field: str,
-    expected_applied: bool,
+    expected_returncode: int,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     original_source = _manual_class_registration_source()
@@ -14705,14 +15319,12 @@ def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == expected_returncode, result.stderr
     assert result_field in payload
-    if expected_applied:
-        assert payload["simulation_result"]["is_clean"] is True
-        assert payload["applied"] is True
-        assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
-            module_path.read_text()
-        )
+    if execution_flag == "--codemod-apply":
+        assert payload["application_blocked"] is True
+        assert "reachable refactor trajectories" in payload["application_block_reason"]
+        assert module_path.read_text() == original_source
     else:
         assert payload["is_clean"] is True
         assert module_path.read_text() == original_source
@@ -15084,8 +15696,6 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
             "-m",
             "nominal_refactor_advisor",
             str(tmp_path),
-            "--impact-ranking-depth",
-            "0",
             "--codemod-plan",
             str(plan_path),
             "--codemod-apply",
@@ -17139,7 +17749,9 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert target_keys
     assert source_index.target_by_id[target_keys[0][0]].qualname == "Alpha.run"
     assert target_keys[0][1] == f"{module_path.as_posix()}:Alpha.run"
-    assert source_index.targets_by_qualname["Alpha.run"][0].target_id == target_keys[0][0]
+    assert (
+        source_index.targets_by_qualname["Alpha.run"][0].target_id == target_keys[0][0]
+    )
     assert source_index.targets_matching_symbol("run")[0].target_id == target_keys[0][0]
     assert (
         source_index.targets_by_file.smallest_enclosing_target(
@@ -17257,8 +17869,6 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
         search_budget=RefactorImpactSearchBudget(
             reported_opportunity_count=5,
             minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
         ),
     )
 
@@ -17269,11 +17879,10 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
 
     assert set(payload) == {
         "opportunities",
-        "trajectories",
         "search_budget",
         "candidate_key_count",
         "opportunity_count",
-        "trajectory_count",
+        "actionability",
     }
     assert set(opportunity) == {
         "key",
@@ -17285,18 +17894,15 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
         "file_paths",
         "symbols",
         "evidence_count",
-        "impact_delta",
-        "load_bearing_score",
         "finding_count",
         "detector_count",
         "file_count",
-        "predicted_removed_finding_count",
     }
     assert key["kind"] == "ast-target"
     assert opportunity["covered_finding_ids"] == (finding.stable_id,)
 
 
-def test_json_and_markdown_expose_codemod_applicability(
+def test_structural_overlap_does_not_project_codemod_candidates(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -17324,78 +17930,42 @@ def test_json_and_markdown_expose_codemod_applicability(
         search_budget=RefactorImpactSearchBudget(
             reported_opportunity_count=5,
             minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
         ),
     )
-    codemod_candidates = codemod_candidates_from_impact_ranking(
-        impact_ranking,
-        source_index,
-    )
-
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
         modules=modules,
         impact_ranking=impact_ranking,
-        codemod_candidates=codemod_candidates,
     ).to_dict()
-    candidate_payload = cast(
-        tuple[dict[str, object], ...],
-        payload["codemod_candidates"],
-    )[0]
-    applicability = cast(dict[str, object], candidate_payload["applicability"])
-    markdown = format_codemod_applicability_markdown(codemod_candidates)
-
-    assert applicability["automation_level"] == "semantic_agent_required"
-    assert applicability["simulation_status"] == "rewrite_plan_required"
-    assert applicability["safe_to_apply"] is False
-    assert applicability["actionability"] == "semantic_agent_refactor"
-    assert applicability["confidence_basis"] == (
-        "confidence=medium; certification=strong_heuristic"
-    )
-    assert "Confidence is sufficient" in str(applicability["agent_action"])
-    assert "stop only if domain semantics are genuinely ambiguous" in str(
-        applicability["agent_action"]
-    )
-    assert candidate_payload["target_ids"]
-    assert "Refactor implementation guidance:" in markdown
-    assert "semantic_agent_required" in markdown
-    assert "rewrite_plan_required" in markdown
-    assert "actionability: semantic_agent_refactor" in markdown
-    assert (
-        "confidence basis: confidence=medium; certification=strong_heuristic"
-        in markdown
-    )
-    assert "agent action:" in markdown
 
     gated_markdown = MARKDOWN_RENDERER.report(
         [finding],
         impact_ranking=impact_ranking,
-        codemod_candidates=codemod_candidates,
     )
     raw_markdown = MARKDOWN_RENDERER.report(
         [finding],
         impact_ranking=impact_ranking,
-        codemod_candidates=codemod_candidates,
         raw_findings=True,
     )
+    impact_payload = cast(dict[str, object], payload["impact_ranking"])
     gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
 
-    assert gated_markdown.startswith("Semantic refactor gate:")
-    assert "Forbidden mode: do not patch individual findings independently" in (
-        gated_markdown
-    )
-    assert "Raw finding evidence suppressed:" in gated_markdown
-    assert f"Stable id: {finding.stable_id}" not in gated_markdown
-    assert "Raw finding evidence (supporting only):" in raw_markdown
+    assert "codemod_candidates" not in payload
+    assert impact_payload["actionability"] == "structural_evidence_only"
+    assert "Structural-overlap evidence (non-actionable):" in gated_markdown
+    assert "do not prove" in gated_markdown
+    assert not gated_markdown.startswith("Semantic refactor gate:")
+    assert "Raw finding evidence suppressed:" not in gated_markdown
+    assert f"Stable id: {finding.stable_id}" in gated_markdown
+    assert "Raw finding evidence (supporting only):" not in raw_markdown
     assert f"Stable id: {finding.stable_id}" in raw_markdown
-    assert gate_payload["active"] is True
-    assert gate_payload["policy"] == "authority_boundary_first"
+    assert gate_payload["active"] is False
+    assert gate_payload["policy"] == "authority_boundary_proof"
     assert gate_payload["raw_findings_default"] == "suppressed_when_active"
 
 
-def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None:
+def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -17428,16 +17998,17 @@ def test_semantic_gate_ranks_larger_boundary_groups_before_label_order() -> None
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
     ).to_dict()
-    work_queue = cast(list[dict[str, object]], payload["findings"])
+    boundary_evidence = cast(list[dict[str, object]], payload["findings"])
 
-    assert work_queue[0]["label"] == "LargeBoundary semantic descent boundary"
-    assert work_queue[0]["authority_candidate"] == "LargeBoundary"
-    assert work_queue[0]["predicted_removed_finding_count"] == 2
-    assert work_queue[1]["label"] == "SmallAuthority semantic descent boundary"
-    assert work_queue[1]["authority_candidate"] == "SmallAuthority"
+    assert boundary_evidence[0]["label"] == "LargeBoundary semantic descent boundary"
+    assert boundary_evidence[0]["authority_candidate"] == "LargeBoundary"
+    assert boundary_evidence[0]["covered_finding_count"] == 2
+    assert "priority_tier" not in boundary_evidence[0]
+    assert boundary_evidence[1]["label"] == "SmallAuthority semantic descent boundary"
+    assert boundary_evidence[1]["authority_candidate"] == "SmallAuthority"
 
 
-def test_semantic_gate_ranks_certificate_breadth_before_raw_group_size() -> None:
+def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -17488,19 +18059,19 @@ def test_semantic_gate_ranks_certificate_breadth_before_raw_group_size() -> None
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
     ).to_dict()
-    work_queue = cast(list[dict[str, object]], payload["findings"])
+    boundary_evidence = cast(list[dict[str, object]], payload["findings"])
 
-    assert work_queue[0]["label"] == "BroadAuthority semantic descent boundary"
-    assert work_queue[0]["authority_candidate"] == "BroadAuthority"
-    assert work_queue[0]["matched_fact_count"] == 5
-    assert work_queue[0]["predicted_removed_finding_count"] == 1
-    assert work_queue[1]["label"] == "NarrowAuthority semantic descent boundary"
-    assert work_queue[1]["authority_candidate"] == "NarrowAuthority"
-    assert work_queue[1]["matched_fact_count"] == 2
-    assert work_queue[1]["predicted_removed_finding_count"] == 2
+    assert boundary_evidence[0]["label"] == "BroadAuthority semantic descent boundary"
+    assert boundary_evidence[0]["authority_candidate"] == "BroadAuthority"
+    assert boundary_evidence[0]["matched_fact_count"] == 5
+    assert boundary_evidence[0]["covered_finding_count"] == 1
+    assert boundary_evidence[1]["label"] == "NarrowAuthority semantic descent boundary"
+    assert boundary_evidence[1]["authority_candidate"] == "NarrowAuthority"
+    assert boundary_evidence[1]["matched_fact_count"] == 2
+    assert boundary_evidence[1]["covered_finding_count"] == 2
 
 
-def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
+def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -17535,75 +18106,63 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
         payload_sections=JsonPayloadProfile.agent.sections,
         raw_findings=True,
     ).to_dict()
-    work_queue = cast(list[dict[str, object]], payload["findings"])
+    boundary_evidence = cast(list[dict[str, object]], payload["findings"])
     gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
-    gate_queue = cast(tuple[dict[str, object], ...], gate_payload["work_queue"])
+    gate_evidence = cast(tuple[dict[str, object], ...], gate_payload["boundary_evidence"])
 
-    assert payload["active_finding_surface"] == "semantic_refactor_work_queue"
-    assert payload["finding_payload_mode"] == "semantic_work_queue"
+    assert payload["active_finding_surface"] == "semantic_refactor_boundary_evidence"
+    assert payload["finding_payload_mode"] == "semantic_boundary_evidence"
     assert payload["supporting_raw_finding_count"] == 1
     assert "supporting_raw_findings" not in payload
-    assert work_queue[0]["detector_id"] == "semantic_mirror_without_descent"
-    assert work_queue[0]["title"] == (
+    assert boundary_evidence[0]["detector_id"] == "semantic_mirror_without_descent"
+    assert boundary_evidence[0]["title"] == (
         "Semantic mirror should descend to its nominal authority"
     )
-    assert isinstance(work_queue[0]["stable_id"], str)
-    assert work_queue[0]["summary"] == (
+    assert isinstance(boundary_evidence[0]["stable_id"], str)
+    assert boundary_evidence[0]["summary"] == (
         "`Handler` has 1 raw mirror signal(s) from "
         "semantic_mirror_without_descent; missing derivation path: "
         "mapping_literal has semantic overlap with class_family `Handler`; "
         "projection enumerates nominal facts directly."
     )
-    assert work_queue[0]["relation_context"] == (
+    assert boundary_evidence[0]["relation_context"] == (
         "mapping_literal has semantic overlap with class_family `Handler`; "
         "projection enumerates nominal facts directly"
     )
-    assert work_queue[0]["source"] == "ssot_finding"
-    assert work_queue[0]["authority_candidate"] == "Handler"
-    assert work_queue[0]["detector_ids"] == ("semantic_mirror_without_descent",)
-    assert work_queue[0]["finding_ids"] == (critical.stable_id,)
-    assert work_queue[0]["certificate_count"] == 1
-    assert work_queue[0]["matched_fact_count"] == 2
-    assert work_queue[0]["authority_kinds"] == ("finding_declared_authority",)
-    assert work_queue[0]["projection_kinds"] == ("detector_finding",)
-    authority_claim = work_queue[0]["authority_claims"][0]
+    assert boundary_evidence[0]["authority_candidate"] == "Handler"
+    assert boundary_evidence[0]["detector_ids"] == ("semantic_mirror_without_descent",)
+    assert boundary_evidence[0]["finding_ids"] == (critical.stable_id,)
+    assert boundary_evidence[0]["certificate_count"] == 1
+    assert boundary_evidence[0]["matched_fact_count"] == 2
+    assert boundary_evidence[0]["authority_kinds"] == ("finding_declared_authority",)
+    assert boundary_evidence[0]["projection_kinds"] == ("detector_finding",)
+    authority_claim = boundary_evidence[0]["authority_claims"][0]
     assert authority_claim["status"] == "resolved"
     assert authority_claim["claim"]["claimed_symbol"] == "Handler"
     assert authority_claim["proof_edges"][0]["edge_kind"] == "semantic_descent_graph"
-    assert gate_queue[0] == work_queue[0]
+    assert gate_evidence[0] == boundary_evidence[0]
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
 
 
 def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() -> None:
-    target = SemanticRefactorAuthorityTarget(
-        opportunity_kind="authority_boundary",
-        authority_claim=AuthorityClaim(claimed_symbol="ComponentAxisAuthority"),
-        priority_tier="ssot_authority_boundary",
-        detector_ids=("semantic_mirror_without_descent",),
-        actionability="semantic_agent_refactor",
-        removal_prediction=FindingRemovalPrediction(target_count=1, removed_count=1),
-        strategy_id="semantic_agent_required",
-        agent_action="route through the authority",
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "ComponentAxisAuthority",
+        "The projection requires a source-backed authority.",
+        "one semantic descent boundary",
+        "a mirror was detected without enough authority evidence",
+    ).build(
+        "semantic_mirror_without_descent",
+        "ComponentAxisAuthority has no resolved descent path.",
+        (SourceLocation("module.py", 1, "ComponentAxisAuthority"),),
     )
-    work_item = SemanticRefactorGateWorkItem.from_authority_target(target)
+    boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding(finding)
     discovery_findings = (
-        AuthorityDiscoveryRequiredFindingProjection.findings_for_work_queue(
-            (work_item,)
+        AuthorityDiscoveryRequiredFindingProjection.findings_for_boundary_evidence(
+            (boundary,)
         )
     )
-    report = SemanticRefactorGateReport(
-        active=True,
-        policy="authority_boundary_first",
-        raw_findings_default="suppressed_when_active",
-        semantic_candidate_count=1,
-        semantic_agent_refactor_count=1,
-        semantic_uncertainty_review_count=0,
-        ssot_authority_finding_count=0,
-        first_trajectory=None,
-        authority_targets=(target,),
-        work_queue=(work_item,),
-        authority_discovery_findings=discovery_findings,
-    )
+    report = SemanticRefactorGateReport.from_findings((finding,))
 
     payload_findings = report.finding_payload()
     report_payload = report.to_dict()
@@ -17616,83 +18175,42 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     assert payload_findings[0]["authority_discovery_required"] is True
     discovery = payload_findings[1]
     assert discovery == discovery_payloads[0]
+    assert discovery_findings[0].stable_id == discovery["stable_id"]
     assert discovery["detector_id"] == "unresolved_authority_claim"
     assert discovery["title"] == "Authority discovery required"
     assert "You claimed `ComponentAxisAuthority`" in str(discovery["summary"])
-    assert "found 0 candidate authority proof path" in str(discovery["summary"])
-    assert "Do not invent `ComponentAxisAuthority`" in str(discovery["codemod_patch"])
+    assert "found 1 candidate authority proof path" in str(discovery["summary"])
+    assert "inferred from presentation evidence" in str(discovery["summary"])
+    assert "scaffold" not in discovery
+    assert "codemod_patch" not in discovery
     evidence = cast(tuple[dict[str, object], ...], discovery["evidence"])
-    assert evidence[0]["file_path"] == "<semantic-refactor-gate>"
+    assert evidence[0]["file_path"] == "module.py"
     assert evidence[0]["symbol"] == "ComponentAxisAuthority"
 
 
-def test_no_impact_ranking_requires_raw_findings_acknowledgement() -> None:
+def test_no_impact_ranking_does_not_disable_authority_gate(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     result = subprocess.run(
         [
             sys.executable,
             "-m",
             "nominal_refactor_advisor",
+            str(tmp_path),
             "--no-impact-ranking",
+            "--json",
         ],
         capture_output=True,
         check=False,
         text=True,
     )
 
-    assert result.returncode == 2
-    assert "--no-impact-ranking disables the semantic refactor gate" in result.stderr
-    assert "--raw-findings" in result.stderr
+    payload = json.loads(result.stdout)
 
-
-def test_semantic_codemod_applicability_stops_only_for_uncertain_findings(
-    tmp_path: Path,
-) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = _finding_spec(
-        PatternId.ABC_TEMPLATE_METHOD,
-        "Collapse repeated class family",
-        "Repeated behavior has one grammar.",
-        "certified grammar compression",
-        "same orbit under renaming",
-    ).build(
-        "orbit_detector",
-        "manual family may compress through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
-        certification=SPECULATIVE,
-    )
-    source_index = build_source_index(modules, (finding,))
-    impact_ranking = build_refactor_impact_ranking(
-        (finding,),
-        source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=5,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
-        ),
-    )
-    codemod_candidates = codemod_candidates_from_impact_ranking(
-        impact_ranking,
-        source_index,
-    )
-    applicability = codemod_candidates[0].applicability
-
-    assert (
-        applicability.actionability is CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
-    )
-    assert (
-        applicability.confidence_basis == "confidence=medium; certification=speculative"
-    )
-    assert "Resolve the finding uncertainty" in applicability.agent_action
-    assert "stop only while the semantic authority boundary is genuinely unclear" in (
-        applicability.agent_action
-    )
+    assert result.returncode == 0
+    assert "impact_ranking" not in payload
+    assert "semantic_refactor_gate" in payload
 
 
 def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
@@ -17738,7 +18256,7 @@ def test_observation_graph_auto_includes_registered_observation_families(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '''
+        """
 SENTINEL = type("Sentinel", (), {})()
 
 
@@ -17772,7 +18290,7 @@ def resolve(config, obj):
             if scope and mro_type:
                 return scope, mro_type
     return SENTINEL
-''',
+""",
     )
     graph = build_observation_graph(parse_python_modules(tmp_path))
     kinds = {item.observation_kind for item in graph.observations}
@@ -17839,7 +18357,7 @@ def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.PLANNED
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert plan.document.recipes[0].operations[0].target.qualname == "render"
 
 
@@ -17868,7 +18386,9 @@ def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert (
+        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
     assert (
         plan.records[0].reason
         == "dispatch_to_polymorphism currently rewrites module functions; "
@@ -17999,7 +18519,7 @@ def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/proof_prefix.py",
-        '''
+        """
 class DeferredStreamPrefixCompactionAuthority:
     @classmethod
     def rebase(cls, certificate, prefix_summary, retained_indices, original_count):
@@ -18025,7 +18545,7 @@ class DeferredStreamPrefixCompactionAuthority:
                 prefix_count=len(retained_indices),
             )
         raise ValueError("unrelated")
-''',
+""",
     )
     finding = next(
         (
@@ -18213,26 +18733,14 @@ def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
     plans = build_refactor_plans(findings, tmp_path)
     assert plans
     plan = plans[0]
-    assert plan.pattern_sequence.primary_pattern_id is PatternId.AUTO_REGISTER_META
-    assert PatternId.AUTHORITATIVE_SCHEMA in plan.pattern_sequence.secondary_pattern_ids
-    assert plan.outcome.loci_of_change_before > plan.outcome.loci_of_change_after
+    assert set(plan.pattern_evidence.pattern_ids) >= {
+        PatternId.AUTO_REGISTER_META,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    }
     assert plan.outcome.registration_sites_removed == 2
     assert plan.outcome.repeated_mappings_centralized >= 3
-    assert any((action.kind == "create_metaclass" for action in plan.actions))
-    mapping_action = next(
-        (
-            action
-            for action in plan.actions
-            if action.kind == "create_authoritative_schema"
-        )
-    )
-    assert mapping_action.create_symbol == "RuntimePlan.from_source"
-    assert "name-for-name boilerplate" in mapping_action.description
-    replace_action = next(
-        (action for action in plan.actions if action.kind == "replace_mapping_sites")
-    )
-    assert replace_action.statement_operation == "replace"
-    assert replace_action.replace_with == "RuntimePlan.from_source(candidate)"
+    assert "actions" not in plan.to_dict()
+    assert "plan_steps" not in plan.to_dict()
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
@@ -18240,11 +18748,12 @@ def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
     output = MARKDOWN_RENDERER.report(findings, plans)
-    assert "Subsystem plans:" in output
-    assert "Primary pattern:" in output
-    assert "Outcome:" in output
-    assert "Action:" in output
-    assert "Action sites:" in output
+    assert "Subsystem structural hypotheses (non-actionable):" in output
+    assert "Observed patterns:" in output
+    assert "Candidate normal form:" not in output
+    assert "Application order:" not in output
+    assert "Action:" not in output
+    assert "Plan step:" not in output
 
 
 def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
@@ -18273,9 +18782,11 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
         execution_plan=execution_plan,
     ).to_dict()
 
-    assert "Graph execution classes:" in output
-    assert "First batch move:" in output
-    assert "Codemod hint:" in output
+    assert "Graph evidence classes (structural evidence only):" in output
+    assert "First batch move:" not in output
+    assert "Codemod hint:" not in output
+    assert "Batch priority:" not in output
+    assert "Parallel group:" not in output
     assert "execution_plan" in payload
     assert payload["execution_plan"]["connected_component_count"] == 1
 
@@ -18407,8 +18918,7 @@ def test_projection_builder_preserves_nominal_owner_update_methods(
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "projection_builder_authority"
-        for finding in findings
+        finding.detector_id == "projection_builder_authority" for finding in findings
     )
 
 
@@ -18424,8 +18934,7 @@ def test_projection_builder_requires_a_low_arity_source_projection(
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "projection_builder_authority"
-        for finding in findings
+        finding.detector_id == "projection_builder_authority" for finding in findings
     )
 
 

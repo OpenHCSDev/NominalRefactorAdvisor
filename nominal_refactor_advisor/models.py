@@ -773,6 +773,8 @@ class RefactorFinding(FindingSemantics):
 
     def to_dict(self) -> dict[str, object]:
         payload = super().to_dict()
+        payload.pop("scaffold", None)
+        payload.pop("codemod_patch", None)
         payload["stable_id"] = self.stable_id
         payload["evidence_ids"] = tuple(
             stable_source_location_id(item) for item in self.evidence
@@ -887,135 +889,31 @@ class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
     certification: CertificationLevel = CERTIFIED
 
 
-class RefactorActionKind(StrEnum):
-    """Action identity carrying its derived execution and confidence semantics."""
-
-    def __new__(
-        cls,
-        value: str,
-        confidence: ConfidenceLevel,
-        statement_operation: str | None = None,
-        removes_symbols: bool = False,
-    ) -> "RefactorActionKind":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.confidence = confidence
-        member.statement_operation = statement_operation
-        member._removes_symbols = removes_symbols
-        return member
-
-    APPLY_PATTERN = "apply_pattern", MEDIUM_CONFIDENCE
-    CREATE_ABC_BASE = "create_abc_base", HIGH_CONFIDENCE
-    EXTRACT_SHARED_FIELDS = "extract_shared_fields", HIGH_CONFIDENCE, "move"
-    LEAVE_SUBCLASS_FIELDS = "leave_subclass_fields", MEDIUM_CONFIDENCE
-    EXTRACT_TEMPLATE_METHOD = "extract_template_method", HIGH_CONFIDENCE, "move"
-    LEAVE_RESIDUAL_HOOKS = "leave_residual_hooks", MEDIUM_CONFIDENCE
-    CREATE_DISPATCH_AUTHORITY = "create_dispatch_authority", HIGH_CONFIDENCE
-    REPLACE_BRANCH_SITES = "replace_branch_sites", HIGH_CONFIDENCE, "replace"
-    CREATE_METACLASS = "create_metaclass", HIGH_CONFIDENCE
-    ADD_DECLARATIVE_HOOKS = "add_declarative_hooks", MEDIUM_CONFIDENCE
-    DELETE_MANUAL_REGISTRATION = (
-        "delete_manual_registration",
-        HIGH_CONFIDENCE,
-        "delete",
-        True,
-    )
-    CREATE_BIDIRECTIONAL_REGISTRY = (
-        "create_bidirectional_registry",
-        HIGH_CONFIDENCE,
-    )
-    DELETE_MIRRORED_UPDATES = (
-        "delete_mirrored_updates",
-        HIGH_CONFIDENCE,
-        "delete",
-        True,
-    )
-    CREATE_AUTHORITATIVE_SCHEMA = "create_authoritative_schema", HIGH_CONFIDENCE
-    REPLACE_MAPPING_SITES = "replace_mapping_sites", HIGH_CONFIDENCE, "replace"
-
-    def remove_symbols_for(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
-        return symbols if self._removes_symbols else ()
-
-    def statement_sites_for(
-        self,
-        evidence: tuple[SourceLocation, ...],
-    ) -> tuple[SourceLocation, ...]:
-        return evidence if self.statement_operation is not None else ()
-
-
 @dataclass(frozen=True)
-class RefactorAction(SemanticRecord):
-    """One proposed transformation step inside a subsystem refactor plan."""
+class RefactorPatternEvidence(SemanticRecord):
+    """Stable set of patterns observed in one structural finding cluster."""
 
-    kind: RefactorActionKind
-    description: str
-    target: str | None = None
-    create_symbol: str | None = None
-    replace_with: str | None = None
-    symbols: tuple[str, ...] = ()
-    evidence: tuple[SourceLocation, ...] = ()
-    statement_operation: str | None = field(init=False)
-    remove_symbols: tuple[str, ...] = field(init=False)
-    statement_sites: tuple[SourceLocation, ...] = field(init=False)
-    confidence: ConfidenceLevel = field(init=False)
+    pattern_ids: tuple[PatternId, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "statement_operation", self.kind.statement_operation)
-        object.__setattr__(
-            self, "remove_symbols", self.kind.remove_symbols_for(self.symbols)
-        )
-        object.__setattr__(
-            self,
-            "statement_sites",
-            self.kind.statement_sites_for(self.evidence),
-        )
-        object.__setattr__(self, "confidence", self.kind.confidence)
+        if not self.pattern_ids:
+            raise ValueError("RefactorPatternEvidence requires at least one pattern.")
+        if self.pattern_ids != tuple(sorted(set(self.pattern_ids))):
+            raise ValueError(
+                "RefactorPatternEvidence requires unique patterns in stable id order."
+            )
 
 
 @dataclass(frozen=True)
-class RefactorTrajectorySummary(SemanticRecord):
-    """One multi-step escape path out of a local refactor minimum."""
+class RefactorPatternEvidenceCarrier(SemanticRecord):
+    """Record surface for values derived from observed pattern evidence."""
 
-    steps: tuple[str, ...]
-    blocked_moves: tuple[str, ...]
-    missing_capabilities: tuple[str, ...]
-    temporary_debt: int
-    certified_net_savings: int
-    escape_summary: str
-    debt_justifications: tuple[str, ...] = ()
-    expected_removed_findings: tuple[str, ...] = ()
-    expected_emergent_findings: tuple[str, ...] = ()
+    pattern_evidence: RefactorPatternEvidence
 
 
 @dataclass(frozen=True)
-class RefactorPatternSequence(SemanticRecord):
-    """Ordered refactoring pattern witness sequence for a synthesized plan."""
-
-    ordered_pattern_ids: tuple[PatternId, ...]
-
-    def __post_init__(self) -> None:
-        if not self.ordered_pattern_ids:
-            raise ValueError("RefactorPatternSequence requires at least one pattern.")
-
-    @property
-    def primary_pattern_id(self) -> PatternId:
-        return self.ordered_pattern_ids[0]
-
-    @property
-    def secondary_pattern_ids(self) -> tuple[PatternId, ...]:
-        return self.ordered_pattern_ids[1:]
-
-
-@dataclass(frozen=True)
-class RefactorPatternSequenceCarrier(SemanticRecord):
-    """Record surface for values derived from one refactoring pattern sequence."""
-
-    pattern_sequence: RefactorPatternSequence
-
-
-@dataclass(frozen=True)
-class RefactorPlan(RefactorPatternSequenceCarrier):
-    """Subsystem-level composition of findings into an ordered refactor plan."""
+class RefactorPlan(RefactorPatternEvidenceCarrier):
+    """Non-actionable subsystem evidence cluster."""
 
     subsystem: str
     summary: str
@@ -1023,13 +921,9 @@ class RefactorPlan(RefactorPatternSequenceCarrier):
     collapsed_distinctions: tuple[str, ...]
     missing_capabilities: tuple[str, ...]
     certification: CertificationLevel
-    canonical_normal_form: str
-    plan_steps: tuple[str, ...]
     supporting_findings: tuple[str, ...]
     evidence: tuple[SourceLocation, ...]
     outcome: OutcomeEstimate
-    actions: tuple[RefactorAction, ...] = ()
-    trajectories: tuple[RefactorTrajectorySummary, ...] = ()
 
 
 @dataclass(frozen=True)

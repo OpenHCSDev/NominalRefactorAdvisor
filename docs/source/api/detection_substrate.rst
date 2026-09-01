@@ -11,20 +11,20 @@ Detector Base Classes
    :members: DetectorConfig, IssueDetector, PerModuleIssueDetector, CandidateFindingDetector, EvidenceOnlyPerModuleDetector, StaticModulePatternDetector, default_detectors
 
 
-Planning Substrate
-------------------
+Structural Hypothesis Substrate
+-------------------------------
 
-Planning metadata is carried by ``PatternId`` members in
-:mod:`nominal_refactor_advisor.patterns`. The planner module provides the
-subsystem-level composition surface that consumes that metadata.
+Structural pattern metadata is carried by ``PatternId`` members in
+:mod:`nominal_refactor_advisor.patterns`. The planner module clusters findings
+through shared source evidence without selecting an application order.
 
 For maintainers, the important split is:
 
-- each ``PatternId`` member defines its dependencies, synergy, phase, and metadata
-- the registered planner builder families derive specialised behaviour directly from ``PatternId`` keys
-- ``build_refactor_plans`` clusters findings and materializes plan output
-- the planner module's internal builder families turn pattern metadata into
-  concrete plan steps and action records
+- each ``PatternId`` member owns its identity, required relation, and witness capabilities
+- ``build_refactor_plans`` preserves every observed pattern in stable identity order
+- pattern evidence states the missing relation without prescribing a normal form
+- graph execution classes expose structural evidence only; they do not rank or
+  schedule refactors
 
 The public ``build_refactor_plans`` entrypoint is documented in
 :doc:`public_api`.

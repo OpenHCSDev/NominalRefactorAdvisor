@@ -10,16 +10,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from itertools import combinations
 from typing import Generic, Hashable, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
-from .descriptor_algebra import AliasProperty, CollectionAttributeProjection
+from .descriptor_algebra import AliasProperty
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
-from .semantic_description_length import CompressionCertificate, SemanticCostVector
+from .semantic_description_length import CompressionCertificate
 from metaclass_registry import AutoRegisterMeta
 
 AxisName: TypeAlias = str
@@ -336,15 +335,17 @@ class FactorizationLattice(FiniteCoverRelation[FactorizationLatticeNode]):
         return tuple(
             (
                 node
-                for node in MDLCompetition(self.nodes).best_non_overlapping()
+                for node in MDLCompetition(
+                    CoveredObjectExplanationConflictGraph(self.nodes)
+                ).best_non_overlapping()
                 if isinstance(node, FactorizationLatticeNode)
             )
         )
 
 
 @dataclass(frozen=True)
-class ExplanationConflictGraph:
-    """Conflict graph for explanation sets that cannot coexist in one MDL cover."""
+class ExplanationConflictGraph(ABC):
+    """ABC for exact competition among mutually exclusive explanations."""
 
     explanations: tuple[CompressibleExplanation, ...]
 
@@ -358,11 +359,10 @@ class ExplanationConflictGraph:
             )
         )
 
+    @abstractmethod
     def conflicts(self, left: int, right: int) -> bool:
-        return bool(
-            self.explanations[left].covered_objects
-            & self.explanations[right].covered_objects
-        )
+        """Return whether two indexed explanations cannot coexist."""
+        raise NotImplementedError
 
     def independent(self, indices: Iterable[int]) -> bool:
         index_tuple = tuple(indices)
@@ -373,7 +373,9 @@ class ExplanationConflictGraph:
             )
         )
 
-    def maximum_weight_independent_set(self) -> tuple[CompressibleExplanation, ...]:
+    def exact_component_selections(
+        self,
+    ) -> tuple["MDLConflictComponentSelection", ...]:
         weighted_indices = tuple(
             (
                 index
@@ -395,50 +397,72 @@ class ExplanationConflictGraph:
             weighted_indices,
             key=lambda index: (
                 -self.explanations[index].certified_savings,
-                -len(self.explanations[index].covered_objects),
                 repr(self.explanations[index].explanation_key),
             ),
         )
-        best_indices: tuple[int, ...] = ()
-        best_score = 0
-        best_coverage = 0
+        return tuple(
+            self.exact_component_selection(component, adjacency)
+            for component in self.conflict_components(ordered, adjacency)
+        )
 
-        def better(candidate: tuple[int, ...]) -> bool:
-            nonlocal best_score, best_coverage
-            score = sum(
-                (self.explanations[index].certified_savings for index in candidate)
+    @staticmethod
+    def conflict_components(
+        ordered_indices: tuple[int, ...],
+        adjacency: Mapping[int, frozenset[int]],
+    ) -> tuple[tuple[int, ...], ...]:
+        remaining = set(ordered_indices)
+        components: list[tuple[int, ...]] = []
+        for seed in ordered_indices:
+            if seed not in remaining:
+                continue
+            pending = [seed]
+            component: set[int] = set()
+            while pending:
+                index = pending.pop()
+                if index not in remaining:
+                    continue
+                remaining.remove(index)
+                component.add(index)
+                pending.extend(adjacency[index] & remaining)
+            components.append(
+                tuple(index for index in ordered_indices if index in component)
             )
-            coverage = len(
-                frozenset(
-                    (
-                        item
-                        for index in candidate
-                        for item in self.explanations[index].covered_objects
-                    )
+        return tuple(components)
+
+    def exact_component_selection(
+        self,
+        ordered: tuple[int, ...],
+        adjacency: Mapping[int, frozenset[int]],
+    ) -> "MDLConflictComponentSelection":
+        if len(ordered) <= 1:
+            return MDLConflictComponentSelection(
+                component_indices=ordered,
+                optimal_witnesses=(ordered,),
+                optimal_solution_count=1,
+                invariant_selected_indices=ordered,
+                certified_savings=sum(
+                    self.explanations[index].certified_savings for index in ordered
+                ),
+            )
+        optimal_witness_by_membership: dict[
+            tuple[int, bool], tuple[int, ...]
+        ] = {}
+        optimal_solution_count = 0
+        invariant_selected_indices: set[int] | None = None
+        best_score = 0
+
+        def retain_candidate_witnesses(
+            optimum: tuple[int, ...],
+        ) -> None:
+            selected = frozenset(optimum)
+            for index in ordered:
+                optimal_witness_by_membership.setdefault(
+                    (index, index in selected),
+                    optimum,
                 )
-            )
-            return (
-                score,
-                coverage,
-                tuple(
-                    (
-                        repr(self.explanations[index].explanation_key)
-                        for index in candidate
-                    )
-                ),
-            ) > (
-                best_score,
-                best_coverage,
-                tuple(
-                    (
-                        repr(self.explanations[index].explanation_key)
-                        for index in best_indices
-                    )
-                ),
-            )
 
         def search(remaining: tuple[int, ...], chosen: tuple[int, ...]) -> None:
-            nonlocal best_indices, best_score, best_coverage
+            nonlocal best_score, optimal_solution_count, invariant_selected_indices
             upper_bound = sum(
                 max(self.explanations[index].certified_savings, 0)
                 for index in remaining
@@ -449,18 +473,20 @@ class ExplanationConflictGraph:
             if current_score + upper_bound < best_score:
                 return
             if not remaining:
-                if better(chosen):
-                    best_indices = chosen
+                canonical_chosen = tuple(sorted(chosen))
+                if current_score > best_score:
                     best_score = current_score
-                    best_coverage = len(
-                        frozenset(
-                            (
-                                item
-                                for index in chosen
-                                for item in self.explanations[index].covered_objects
-                            )
-                        )
-                    )
+                    optimal_witness_by_membership.clear()
+                    retain_candidate_witnesses(canonical_chosen)
+                    optimal_solution_count = 1
+                    invariant_selected_indices = set(canonical_chosen)
+                elif current_score == best_score:
+                    optimal_solution_count += 1
+                    if invariant_selected_indices is None:
+                        invariant_selected_indices = set(canonical_chosen)
+                    else:
+                        invariant_selected_indices.intersection_update(canonical_chosen)
+                    retain_candidate_witnesses(canonical_chosen)
                 return
             pivot, *tail = remaining
             search(
@@ -470,459 +496,53 @@ class ExplanationConflictGraph:
             search(tuple(tail), chosen)
 
         search(ordered, ())
-        return tuple((self.explanations[index] for index in best_indices))
-
-
-class SubmodularMDLCompetition:
-    """Greedy monotone submodular selector for partially overlapping explanations."""
-
-    def __init__(self, explanations: Iterable[CompressibleExplanation]) -> None:
-        self.explanations = tuple((item for item in explanations if item.pays_rent))
-
-    def marginal_gain(
-        self,
-        explanation: CompressibleExplanation,
-        covered_objects: frozenset[Hashable],
-    ) -> int:
-        uncovered = explanation.covered_objects - covered_objects
-        if not uncovered:
-            return 0
-        return (
-            explanation.certified_savings
-            * len(uncovered)
-            // max(len(explanation.covered_objects), 1)
-        )
-
-    def solve(self) -> SubmodularMDLSelection:
-        selected: list[CompressibleExplanation] = []
-        covered_objects: frozenset[Hashable] = frozenset()
-        remaining = set(self.explanations)
-        objective_value = 0
-        while remaining:
-            best = max(
-                remaining,
-                key=lambda item: (
-                    self.marginal_gain(item, covered_objects),
-                    item.certified_savings,
-                    -len(item.covered_objects),
-                    repr(item.explanation_key),
-                ),
-            )
-            gain = self.marginal_gain(best, covered_objects)
-            if gain <= 0:
-                break
-            selected.append(best)
-            objective_value += gain
-            covered_objects = frozenset(covered_objects | best.covered_objects)
-            remaining.remove(best)
-        return SubmodularMDLSelection(tuple(selected), objective_value)
-
-
-class RefactorPhase(StrEnum):
-    """Canonical phase order for legal semantic-compression trajectories."""
-
-    NORMALIZE = "normalize"
-    NAME_AXIS = "name_axis"
-    ESTABLISH_OWNER = "establish_owner"
-    DERIVE_AUTHORITY = "derive_authority"
-    DELETE_SHADOW = "delete_shadow"
-
-
-_REFACTOR_PHASE_ORDER: dict[RefactorPhase, int] = {
-    phase: index for index, phase in enumerate(RefactorPhase)
-}
-
-
-def _phase_allowed(after: RefactorPhase, before: RefactorPhase | None) -> bool:
-    if before is None:
-        return True
-    return _REFACTOR_PHASE_ORDER[after] >= _REFACTOR_PHASE_ORDER[before]
-
-
-@dataclass(frozen=True)
-class RefactorMove(CompressibleExplanation):
-    """One typed transformation edge in semantic refactor state space."""
-
-    move_key: Hashable
-    move_description: str
-    move_covered_objects: frozenset[Hashable]
-    move_compression_certificate: CompressionCertificate
-    prerequisites: frozenset[Hashable] = frozenset()
-    unlocks: frozenset[Hashable] = frozenset()
-    phase: RefactorPhase = RefactorPhase.DERIVE_AUTHORITY
-    debt_justification: str | None = None
-    predicts_removed: frozenset[Hashable] = frozenset()
-    predicts_emergent: frozenset[Hashable] = frozenset()
-    explanation_key = AliasProperty[Hashable]("move_key")
-    covered_objects = AliasProperty[frozenset[Hashable]]("move_covered_objects")
-    compression_certificate = AliasProperty[CompressionCertificate](
-        "move_compression_certificate"
-    )
-    certified_delta = AliasProperty[int]("certified_savings")
-
-    @classmethod
-    def from_explanation(
-        cls,
-        explanation: CompressibleExplanation,
-        *,
-        prerequisites: Iterable[Hashable] = (),
-        unlocks: Iterable[Hashable] = (),
-        description: str | None = None,
-    ) -> "RefactorMove":
-        return cls(
-            move_key=explanation.explanation_key,
-            move_description=description or repr(explanation.explanation_key),
-            move_covered_objects=explanation.covered_objects,
-            move_compression_certificate=explanation.compression_certificate,
-            prerequisites=frozenset(prerequisites),
-            unlocks=frozenset(unlocks),
-            predicts_removed=explanation.covered_objects,
-        )
-
-    @property
-    def temporary_debt(self) -> int:
-        return max(-self.certified_delta, 0)
-
-    @property
-    def debt_is_justified(self) -> bool:
-        return self.temporary_debt == 0 or bool(self.debt_justification)
-
-
-@dataclass(frozen=True)
-class RefactorState:
-    """Predicted semantic state reached by applying refactor moves."""
-
-    capabilities: frozenset[Hashable] = frozenset()
-    active_findings: frozenset[Hashable] = frozenset()
-    description_cost: SemanticCostVector = field(default_factory=SemanticCostVector)
-    applied_move_keys: frozenset[Hashable] = frozenset()
-    last_phase: RefactorPhase | None = None
-
-    @classmethod
-    def initial(
-        cls,
-        moves: Iterable[RefactorMove],
-        *,
-        capabilities: Iterable[Hashable] = (),
-    ) -> "RefactorState":
-        move_tuple = tuple(moves)
-        return cls(
-            capabilities=frozenset(capabilities),
-            active_findings=frozenset((move.explanation_key for move in move_tuple)),
-            description_cost=SemanticCostVector(
-                residual_objects=sum(
-                    (
-                        move.compression_certificate.before_description_length
-                        for move in move_tuple
-                    )
-                )
+        return MDLConflictComponentSelection(
+            component_indices=tuple(sorted(ordered)),
+            optimal_witnesses=tuple(
+                dict.fromkeys(optimal_witness_by_membership.values())
             ),
-        )
-
-    def can_apply(self, move: RefactorMove) -> bool:
-        return (
-            move.explanation_key not in self.applied_move_keys
-            and move.prerequisites <= self.capabilities
-            and _phase_allowed(move.phase, self.last_phase)
-            and move.debt_is_justified
-        )
-
-    def apply(self, move: RefactorMove) -> "RefactorState":
-        if not self.can_apply(move):
-            raise ValueError(f"illegal refactor move for state: {move.move_key!r}")
-        removed = frozenset({move.explanation_key}) | move.predicts_removed
-        return RefactorState(
-            capabilities=frozenset(self.capabilities | move.unlocks),
-            active_findings=frozenset(
-                (self.active_findings - removed) | move.predicts_emergent
+            optimal_solution_count=optimal_solution_count,
+            invariant_selected_indices=tuple(
+                sorted(invariant_selected_indices or set())
             ),
-            description_cost=SemanticCostVector(
-                residual_objects=max(
-                    self.description_cost.description_length
-                    - move.compression_certificate.certified_description_length_savings,
-                    0,
-                )
-            ),
-            applied_move_keys=frozenset(
-                self.applied_move_keys | {move.explanation_key}
-            ),
-            last_phase=move.phase,
+            certified_savings=best_score,
         )
 
 
 @dataclass(frozen=True)
-class RefactorTrajectory(CompressibleExplanation):
-    """A finite move sequence with explicit unlocks, debt, and net MDL payoff."""
+class CoveredObjectExplanationConflictGraph(ExplanationConflictGraph):
+    """Conflict graph derived from overlapping semantic object coverage."""
 
-    moves: tuple[RefactorMove, ...]
-    initial_capabilities: frozenset[Hashable] = frozenset()
-    predicted_states: tuple[RefactorState, ...] = ()
-    explanation_key = CollectionAttributeProjection[Hashable](
-        "moves", "explanation_key"
-    )
-
-    @property
-    def covered_objects(self) -> frozenset[Hashable]:
-        return frozenset((item for move in self.moves for item in move.covered_objects))
-
-    @property
-    def compression_certificate(self) -> CompressionCertificate:
-        return CompressionCertificate(
-            before_cost=SemanticCostVector(
-                residual_objects=sum(
-                    (
-                        move.compression_certificate.before_description_length
-                        for move in self.moves
-                    )
-                )
-            ),
-            after_cost=SemanticCostVector(
-                residual_objects=sum(
-                    (
-                        move.compression_certificate.after_description_length
-                        for move in self.moves
-                    )
-                )
-            ),
-            semantic_axes=tuple(
-                sorted_tuple(
-                    frozenset(
-                        (
-                            axis
-                            for move in self.moves
-                            for axis in move.compression_certificate.semantic_axes
-                        )
-                    ),
-                    key=repr,
-                )
-            ),
-            margin_cost=SemanticCostVector(
-                residual_objects=sum(
-                    (
-                        move.compression_certificate.margin_description_length
-                        for move in self.moves
-                    )
-                )
-            ),
-        )
-
-    @property
-    def final_capabilities(self) -> frozenset[Hashable]:
-        if self.predicted_states:
-            return self.predicted_states[-1].capabilities
-        capabilities = set(self.initial_capabilities)
-        for move in self.moves:
-            capabilities.update(move.unlocks)
-        return frozenset(capabilities)
-
-    @property
-    def final_state(self) -> RefactorState | None:
-        return self.predicted_states[-1] if self.predicted_states else None
-
-    @property
-    def temporary_debt(self) -> int:
-        return sum((move.temporary_debt for move in self.moves))
-
-    move_descriptions = CollectionAttributeProjection[str]("moves", "move_description")
-
-    @property
-    def debt_justifications(self) -> tuple[str, ...]:
-        return tuple(
-            (
-                move.debt_justification
-                for move in self.moves
-                if move.temporary_debt and move.debt_justification is not None
-            )
-        )
-
-    @property
-    def predicted_removed(self) -> tuple[Hashable, ...]:
-        return sorted_tuple(
-            (
-                item
-                for move in self.moves
-                for item in ({move.explanation_key} | move.predicts_removed)
-            ),
-            key=repr,
-        )
-
-    @property
-    def predicted_emergent(self) -> tuple[Hashable, ...]:
-        return sorted_tuple(
-            (item for move in self.moves for item in move.predicts_emergent),
-            key=repr,
+    def conflicts(self, left: int, right: int) -> bool:
+        return bool(
+            self.explanations[left].covered_objects
+            & self.explanations[right].covered_objects
         )
 
 
 @dataclass(frozen=True)
-class LocalMinimumEscapeProof:
-    """Proof that local positive moves are exhausted but a trajectory pays rent."""
+class DeclaredExplanationConflictGraph(ExplanationConflictGraph):
+    """Conflict graph whose exact edges are proved by a domain projection."""
 
-    local_state_capabilities: frozenset[Hashable]
-    blocked_positive_moves: tuple[RefactorMove, ...]
-    best_trajectory: RefactorTrajectory
+    declared_conflict_edges: frozenset[tuple[int, int]]
 
-    @property
-    def certified_net_savings(self) -> int:
-        return self.best_trajectory.certified_savings
-
-    @property
-    def temporary_debt(self) -> int:
-        return self.best_trajectory.temporary_debt
-
-    @property
-    def escape_summary(self) -> str:
-        steps = " -> ".join(self.best_trajectory.move_descriptions)
-        return (
-            "local one-step search is stuck; "
-            f"trajectory saves {self.certified_net_savings} after debt "
-            f"{self.temporary_debt}: {steps}"
-        )
-
-
-class RefactorTrajectorySearch:
-    """Bounded search for MDL-positive escape paths through unlockable moves."""
-
-    def __init__(
-        self,
-        moves: Iterable[RefactorMove],
-        *,
-        initial_capabilities: Iterable[Hashable] = (),
-        max_depth: int = 4,
-        beam_width: int = 16,
-    ) -> None:
-        self.moves = tuple(moves)
-        self.initial_capabilities = frozenset(initial_capabilities)
-        self.initial_state = RefactorState.initial(
-            self.moves, capabilities=self.initial_capabilities
-        )
-        self.max_depth = max_depth
-        self.beam_width = beam_width
-
-    def available_moves(
-        self, state: RefactorState | frozenset[Hashable]
-    ) -> tuple[RefactorMove, ...]:
-        if isinstance(state, frozenset):
-            state = RefactorState(capabilities=state)
-        return tuple((move for move in self.moves if state.can_apply(move)))
-
-    def locally_positive_moves(self) -> tuple[RefactorMove, ...]:
-        return tuple(
-            (
-                move
-                for move in self.available_moves(self.initial_state)
-                if move.pays_rent
+    def __post_init__(self) -> None:
+        explanation_count = len(self.explanations)
+        if any(
+            left < 0
+            or right < 0
+            or left >= explanation_count
+            or right >= explanation_count
+            or left >= right
+            for left, right in self.declared_conflict_edges
+        ):
+            raise ValueError(
+                "Declared explanation conflicts require canonical in-range edges"
             )
-        )
 
-    def best_trajectory(self) -> RefactorTrajectory | None:
-        frontier: tuple[RefactorTrajectory, ...] = (
-            RefactorTrajectory((), self.initial_capabilities, (self.initial_state,)),
-        )
-        best: RefactorTrajectory | None = None
-        for _depth in range(self.max_depth):
-            expanded: list[RefactorTrajectory] = []
-            for trajectory in frontier:
-                state = trajectory.final_state or self.initial_state
-                for move in self.available_moves(state):
-                    next_state = state.apply(move)
-                    candidate = RefactorTrajectory(
-                        (*trajectory.moves, move),
-                        self.initial_capabilities,
-                        (*trajectory.predicted_states, next_state),
-                    )
-                    expanded.append(candidate)
-                    if candidate.pays_rent and (
-                        best is None or _trajectory_better(candidate, best)
-                    ):
-                        best = candidate
-            if not expanded:
-                break
-            frontier = tuple(
-                _prune_dominated_trajectories(
-                    sorted(
-                        expanded,
-                        key=lambda item: (
-                            item.certified_savings,
-                            -item.temporary_debt,
-                            len(item.final_capabilities),
-                            tuple(map(repr, item.explanation_key)),
-                        ),
-                        reverse=True,
-                    )
-                )[: self.beam_width]
-            )
-        return best
-
-    def local_minimum_escape_proof(self) -> LocalMinimumEscapeProof | None:
-        if self.locally_positive_moves():
-            return None
-        best = self.best_trajectory()
-        if best is None or not best.pays_rent:
-            return None
-        blocked = tuple(
-            (
-                move
-                for move in self.moves
-                if move.pays_rent and not self.initial_state.can_apply(move)
-            )
-        )
-        return LocalMinimumEscapeProof(
-            local_state_capabilities=self.initial_capabilities,
-            blocked_positive_moves=blocked,
-            best_trajectory=best,
-        )
-
-
-def _trajectory_better(
-    candidate: RefactorTrajectory, incumbent: RefactorTrajectory
-) -> bool:
-    return (
-        candidate.certified_savings,
-        -candidate.temporary_debt,
-        -len(candidate.moves),
-        tuple(map(repr, candidate.explanation_key)),
-    ) > (
-        incumbent.certified_savings,
-        -incumbent.temporary_debt,
-        -len(incumbent.moves),
-        tuple(map(repr, incumbent.explanation_key)),
-    )
-
-
-def _prune_dominated_trajectories(
-    trajectories: Iterable[RefactorTrajectory],
-) -> tuple[RefactorTrajectory, ...]:
-    kept: list[RefactorTrajectory] = []
-    for candidate in trajectories:
-        if any(_trajectory_dominates(existing, candidate) for existing in kept):
-            continue
-        kept = [
-            existing
-            for existing in kept
-            if not _trajectory_dominates(candidate, existing)
-        ]
-        kept.append(candidate)
-    return tuple(kept)
-
-
-def _trajectory_dominates(left: RefactorTrajectory, right: RefactorTrajectory) -> bool:
-    left_state = left.final_state
-    right_state = right.final_state
-    if left_state is None or right_state is None:
-        return False
-    return (
-        left_state.capabilities >= right_state.capabilities
-        and left.covered_objects >= right.covered_objects
-        and left.temporary_debt <= right.temporary_debt
-        and left.certified_savings >= right.certified_savings
-        and (
-            left_state.capabilities > right_state.capabilities
-            or left.covered_objects > right.covered_objects
-            or left.temporary_debt < right.temporary_debt
-            or left.certified_savings > right.certified_savings
-        )
-    )
+    def conflicts(self, left: int, right: int) -> bool:
+        edge = (left, right) if left < right else (right, left)
+        return edge in self.declared_conflict_edges
 
 
 @dataclass(frozen=True)
@@ -1248,11 +868,46 @@ class SuppressedExplanation:
 
 
 @dataclass(frozen=True)
+class MDLConflictComponentSelection:
+    """Exact optimum facts with bounded ambiguity witnesses for one component."""
+
+    component_indices: tuple[int, ...]
+    optimal_witnesses: tuple[tuple[int, ...], ...]
+    optimal_solution_count: int
+    invariant_selected_indices: tuple[int, ...]
+    certified_savings: int
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.optimal_solution_count > 1
+
+
+@dataclass(frozen=True)
+class AmbiguousExplanationSelection:
+    """Equal-cost incompatible MDL optima that cannot be chosen semantically."""
+
+    component_indices: tuple[int, ...]
+    explanations: tuple[CompressibleExplanation, ...]
+    alternative_index_witnesses: tuple[tuple[int, ...], ...]
+    alternative_witnesses: tuple[tuple[CompressibleExplanation, ...], ...]
+    optimal_solution_count: int
+    certified_savings: int
+
+
+@dataclass(frozen=True)
 class MDLCompetitionResult:
     """Shortest selected MDL cover plus rejected explanations."""
 
-    selected: tuple[CompressibleExplanation, ...]
+    conflict_graph: ExplanationConflictGraph
+    selected_indices: tuple[int, ...]
     suppressed: tuple[SuppressedExplanation, ...]
+    ambiguities: tuple[AmbiguousExplanationSelection, ...] = ()
+
+    @property
+    def selected(self) -> tuple[CompressibleExplanation, ...]:
+        return tuple(
+            self.conflict_graph.explanations[index] for index in self.selected_indices
+        )
 
 
 @dataclass(frozen=True)
@@ -1271,14 +926,6 @@ class ProjectionDiagram:
     source_name: str
     target_name: str
     paths: tuple[ProjectionPath, ...]
-
-
-@dataclass(frozen=True)
-class SubmodularMDLSelection:
-    """Selected explanations under a diminishing-return coverage objective."""
-
-    selected: tuple[CompressibleExplanation, ...]
-    objective_value: int
 
 
 @dataclass(frozen=True)
@@ -1617,21 +1264,51 @@ class InheritanceDesignSearch:
 class MDLCompetition:
     """Select the shortest non-overlapping explanation set by certified MDL."""
 
-    def __init__(self, explanations: Iterable[CompressibleExplanation]) -> None:
-        self.explanations = tuple(explanations)
+    def __init__(self, conflict_graph: ExplanationConflictGraph) -> None:
+        self.conflict_graph = conflict_graph
 
     @property
-    def conflict_graph(self) -> ExplanationConflictGraph:
-        return ExplanationConflictGraph(self.explanations)
+    def explanations(self) -> tuple[CompressibleExplanation, ...]:
+        return self.conflict_graph.explanations
 
     def best_non_overlapping(self) -> tuple[CompressibleExplanation, ...]:
         return self.solve().selected
 
     def solve(self) -> MDLCompetitionResult:
-        selected = self.conflict_graph.maximum_weight_independent_set()
+        component_selections = self.conflict_graph.exact_component_selections()
+        selected_indices = tuple(
+            sorted(
+                index
+                for component in component_selections
+                for index in component.invariant_selected_indices
+            )
+        )
+        ambiguity_by_index = {
+            index: component
+            for component in component_selections
+            if component.is_ambiguous
+            for index in component.component_indices
+        }
+        ambiguities = tuple(
+            AmbiguousExplanationSelection(
+                component_indices=component.component_indices,
+                explanations=tuple(
+                    self.explanations[index] for index in component.component_indices
+                ),
+                alternative_index_witnesses=component.optimal_witnesses,
+                alternative_witnesses=tuple(
+                    tuple(self.explanations[index] for index in alternative)
+                    for alternative in component.optimal_witnesses
+                ),
+                optimal_solution_count=component.optimal_solution_count,
+                certified_savings=component.certified_savings,
+            )
+            for component in component_selections
+            if component.is_ambiguous
+        )
         suppressed: list[SuppressedExplanation] = []
-        for explanation in self.explanations:
-            if explanation in selected:
+        for explanation_index, explanation in enumerate(self.explanations):
+            if explanation_index in selected_indices:
                 continue
             if not explanation.pays_rent:
                 suppressed.append(
@@ -1642,11 +1319,23 @@ class MDLCompetition:
                     )
                 )
                 continue
+            if explanation_index in ambiguity_by_index:
+                suppressed.append(
+                    SuppressedExplanation(
+                        explanation=explanation,
+                        selected_by=None,
+                        reason="equal-cost conflicting MDL optima are ambiguous",
+                    )
+                )
+                continue
             selected_by = next(
                 (
-                    item
-                    for item in selected
-                    if explanation.covered_objects & item.covered_objects
+                    self.explanations[selected_index]
+                    for selected_index in selected_indices
+                    if self.conflict_graph.conflicts(
+                        explanation_index,
+                        selected_index,
+                    )
                 ),
                 None,
             )
@@ -1666,7 +1355,12 @@ class MDLCompetition:
                     reason="excluded by exact MDL competition",
                 )
             )
-        return MDLCompetitionResult(selected, tuple(suppressed))
+        return MDLCompetitionResult(
+            conflict_graph=self.conflict_graph,
+            selected_indices=selected_indices,
+            suppressed=tuple(suppressed),
+            ambiguities=ambiguities,
+        )
 
 
 @dataclass(frozen=True)
@@ -2030,17 +1724,6 @@ class FactorizationEngine:
                 assessment.orbit.object_names,
             ),
         )
-
-    def best_plan(
-        self,
-        authority_name: str,
-        *,
-        minimum_object_count: int = 2,
-    ) -> FactorizationPlan | None:
-        plans = self.candidate_plans(
-            authority_name, minimum_object_count=minimum_object_count
-        )
-        return plans[0] if plans else None
 
     def concept_lattice(self) -> FormalConceptLattice:
         return FormalConceptLattice.from_rows(self.rows)

@@ -56,17 +56,14 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
         "",
         "   * - ID",
         "     - Name",
-        "     - Priority",
-        "     - Dependencies",
+        "     - Required relation",
     ]
     for pattern in patterns:
-        dependencies = _pattern_id_list(pattern.dependencies) or "None"
         lines.extend(
             [
                 f"   * - ``{pattern.value}``",
                 f"     - {pattern.display_name}",
-                f"     - ``{pattern.priority}``",
-                f"     - {dependencies}",
+                f"     - {pattern.required_relation}",
             ]
         )
     lines.extend(["", "Patterns", "--------", ""])
@@ -77,26 +74,10 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
                 title,
                 "^" * len(title),
                 "",
-                f":Prescription: {pattern.prescription}",
-                f":Canonical shape: {pattern.canonical_shape}",
-                f":Priority: ``{pattern.priority}``",
-                f":Dependencies: {_pattern_id_list(pattern.dependencies) or 'None'}",
-                f":Synergy: {_pattern_id_list(pattern.synergy_with) or 'None'}",
+                f":Required relation: {pattern.required_relation}",
                 f":Witness capabilities: {_capability_list(pattern.witness_capabilities) or 'None'}",
-                "",
-                "First moves:",
-                "",
             ]
         )
-        lines.extend(f"- {step}" for step in pattern.first_moves)
-        if pattern.example_skeletons:
-            lines.extend(["", "Example skeletons:", ""])
-            for skeleton in pattern.example_skeletons:
-                lines.extend([".. code-block:: python", ""])
-                lines.extend(
-                    (f"   {line}" if line else "" for line in skeleton.splitlines())
-                )
-                lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -254,10 +235,6 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
         ]
     )
     return "\n".join(lines)
-
-
-def _pattern_id_list(pattern_ids: Iterable[object]) -> str:
-    return ", ".join((f"``{pattern_id.value}``" for pattern_id in pattern_ids))
 
 
 def _rst_field_value(value: str) -> str:

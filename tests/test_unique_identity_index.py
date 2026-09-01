@@ -5,24 +5,12 @@ from pathlib import Path
 
 import pytest
 
-import nominal_refactor_advisor.codemod as codemod_module
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.codemod import (
-    CodemodCandidateOrigin,
-    codemod_candidates_from_impact_ranking,
-)
 from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleCollisionError,
     UniqueIdentityIndexAuthority,
 )
-from nominal_refactor_advisor.impact_ranking import (
-    RefactorImpactKey,
-    RefactorImpactOpportunity,
-    RefactorImpactRankingReport,
-    RefactorImpactRankingRequest,
-    RefactorImpactTrajectory,
-    RefactorImpactTrajectoryStep,
-)
+from nominal_refactor_advisor.impact_ranking import RefactorImpactRankingRequest
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.source_index import (
@@ -151,104 +139,3 @@ def test_impact_ranking_rejects_forced_finding_handle_collision(
     )
     with pytest.raises(IdentityHandleCollisionError):
         _ = request._findings_by_id
-
-
-def test_codemod_candidates_reject_forced_identity_collision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_index = SourceIndex(
-        evidence=(
-            EvidenceDigest(
-                evidence_id="evidence-alpha",
-                file_id=None,
-                file_path="module.py",
-                line=1,
-                symbol="alpha",
-                finding_ids=("finding-alpha",),
-                target_ids=("target",),
-            ),
-            EvidenceDigest(
-                evidence_id="evidence-beta",
-                file_id=None,
-                file_path="module.py",
-                line=2,
-                symbol="beta",
-                finding_ids=("finding-beta",),
-                target_ids=("target",),
-            ),
-        )
-    )
-    opportunities = tuple(
-        RefactorImpactOpportunity(
-            key=RefactorImpactKey(kind="finding", value=finding_id, label=label),
-            covered_finding_ids=(finding_id,),
-            detector_ids=(detector_id,),
-            pattern_ids=(),
-            confidence_levels=(),
-            certification_levels=(),
-            file_paths=("module.py",),
-            symbols=(label,),
-            evidence_count=1,
-        )
-        for finding_id, detector_id, label in (
-            ("finding-alpha", "alpha-detector", "alpha"),
-            ("finding-beta", "beta-detector", "beta"),
-        )
-    )
-    monkeypatch.setattr(codemod_module, "_candidate_id", lambda *args: "collision")
-
-    with pytest.raises(IdentityHandleCollisionError):
-        codemod_candidates_from_impact_ranking(
-            RefactorImpactRankingReport(opportunities=opportunities),
-            source_index,
-            include_trajectory_steps=False,
-        )
-
-
-def test_codemod_candidate_identity_coalesces_origin_provenance() -> None:
-    opportunity = RefactorImpactOpportunity(
-        key=RefactorImpactKey(kind="finding", value="finding", label="finding"),
-        covered_finding_ids=("finding",),
-        detector_ids=("detector",),
-        pattern_ids=(),
-        confidence_levels=(),
-        certification_levels=(),
-        file_paths=("module.py",),
-        symbols=("symbol",),
-        evidence_count=1,
-    )
-    source_index = SourceIndex(
-        evidence=(
-            EvidenceDigest(
-                evidence_id="evidence",
-                file_id=None,
-                file_path="module.py",
-                line=1,
-                symbol="symbol",
-                finding_ids=("finding",),
-                target_ids=("target",),
-            ),
-        )
-    )
-    trajectory = RefactorImpactTrajectory(
-        steps=(
-            RefactorImpactTrajectoryStep(
-                opportunity=opportunity,
-                covered_finding_ids=("finding",),
-                remaining_finding_count=0,
-            ),
-        ),
-        covered_finding_ids=("finding",),
-        residual_finding_count=0,
-    )
-
-    candidates = codemod_candidates_from_impact_ranking(
-        RefactorImpactRankingReport(
-            opportunities=(opportunity,),
-            trajectories=(trajectory,),
-        ),
-        source_index,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].origin is CodemodCandidateOrigin.IMPACT_OPPORTUNITY

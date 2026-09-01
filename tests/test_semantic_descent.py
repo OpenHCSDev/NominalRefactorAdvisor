@@ -28,6 +28,7 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    AuthorityClaimProvenance,
     AuthorityProofEdgeKind,
     ConstructionAuthorityResolver,
     PresentationAuthorityConstruction,
@@ -44,7 +45,7 @@ from nominal_refactor_advisor.semantic_descent import (
     rebase_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
-from nominal_refactor_advisor.semantic_refactor_gate import SemanticRefactorGateWorkItem
+from nominal_refactor_advisor.semantic_refactor_gate import SemanticRefactorBoundaryEvidence
 
 
 def _write_module(root: Path, source: str) -> Path:
@@ -745,6 +746,10 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
 
     assert authority.name == "Step"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
+    assert (
+        authority.claim_provenance
+        is AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
+    )
     assert projection.kind is PresentationProjectionKind.DETECTOR_FINDING
     assert projection.projection_id == semantic_descent_finding_projection_id(finding)
     assert projection.source_text == finding.stable_id
@@ -783,6 +788,10 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
 
     assert authority.name == "AxisRoleAuthority"
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
+    assert (
+        authority.claim_provenance
+        is AuthorityClaimProvenance.INFERRED_FROM_PROJECTION
+    )
     assert {fact.name for fact in graph.facts} == {"alpha", "beta"}
     assert certificate.missing_derivation_path == finding.relation_context
 
@@ -901,18 +910,18 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         authority_evidence_index_by_detector_id={},
     )
 
-    work_item = SemanticRefactorGateWorkItem.from_ssot_finding_group(
+    boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding_group(
         (finding,),
         finding_descent_graph=graph,
     )
 
-    assert work_item.group_key.authority_label == "AxisRoleAuthority"
-    assert work_item.group_key.descent_path == finding.relation_context
-    assert work_item.evidence_symbols == ("local_cases",)
-    assert work_item.certificate_count == 1
-    assert work_item.matched_fact_count == 2
-    assert work_item.authority_kinds == ("finding_declared_authority",)
-    assert work_item.projection_kinds == ("detector_finding",)
+    assert boundary.group_key.authority_label == "AxisRoleAuthority"
+    assert boundary.group_key.descent_path == finding.relation_context
+    assert boundary.evidence_symbols == ("local_cases",)
+    assert boundary.certificate_count == 1
+    assert boundary.matched_fact_count == 2
+    assert boundary.authority_kinds == ("finding_declared_authority",)
+    assert boundary.projection_kinds == ("detector_finding",)
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
@@ -1071,7 +1080,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
 
     assert plan.expected_removed_finding_count == 1
     assert record.detector_id == "semantic_mirror_without_descent"
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert (
         record.executable_declaration_name
         == "ManualClassRegistrationFindingRecipeSynthesizer"
@@ -1180,7 +1189,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     )
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert (
         plan.records[0].executable_declaration_name
         == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
@@ -1287,7 +1296,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     exec(rewritten, namespace)
     ordered_types = namespace["Phase"].ordered_types()
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert (
         plan.records[0].executable_declaration_name
         == "AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer"
@@ -1491,7 +1500,7 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     simulation = plan.simulate_snapshot(snapshot)
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert "def for_function_or_method(" in rewritten
     assert "file_path: str" in rewritten
     assert "qualname: str" in rewritten
@@ -1648,7 +1657,7 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
     simulation = plan.simulate_snapshot(snapshot)
     operation = plan.document.recipes[0].operations[0].to_dict()
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"
@@ -1703,7 +1712,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     operation = plan.document.recipes[0].operations[0].to_dict()
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].refactor_concept == "auto_register_class_registry"
     assert operation["operation"] == "derive_autoregister_instance_view"
     assert operation["assignment_name"] == "STEP_TABLE"
@@ -2035,7 +2044,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
@@ -2098,7 +2107,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     simulation = plan.simulate_snapshot(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert (
         plan.records[0].executable_declaration_name
         == "DataclassFieldNameCollectionProjectionMappingRecipeBuilder"
@@ -2243,7 +2252,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     simulation = plan.simulate_snapshot(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
@@ -2405,7 +2414,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         (package_dir / "report.py").as_posix()
     ]
 
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert record.refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
@@ -2726,7 +2735,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
-    assert record.status.value == "planned"
+    assert record.status.value == "executable_candidate"
     assert record.refactor_concept == "constructor_kwarg_carrier_projection"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
@@ -2873,7 +2882,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     recipe_payload = plan.document.to_dict()["recipes"][0]
     operations = recipe_payload["operations"]
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].refactor_concept == "derived_projection"
     assert simulation.is_clean is True
     assert (
@@ -2990,7 +2999,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
         if path.endswith("detector.py")
     )
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "LabeledMode"
@@ -3064,7 +3073,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         if path.endswith("detector.py")
     )
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert operation["source"] == (
@@ -3651,7 +3660,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         selector_context=snapshot,
     )
 
-    assert plan.records[0].status.value == "planned"
+    assert plan.records[0].status.value == "executable_candidate"
     import_operation = next(
         operation
         for operation in plan.document.recipes[0].operations
