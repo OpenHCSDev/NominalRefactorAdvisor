@@ -174,6 +174,13 @@ class CompactProductFlowRepository:
         )
 
     @cached_property
+    def flow_contexts_by_owner_symbol(self) -> dict[str, CompactProductFlowContext]:
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            self.flow_contexts,
+            lambda context: context.owner_symbol,
+        )
+
+    @cached_property
     def product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:
         return {
             class_symbol: authority

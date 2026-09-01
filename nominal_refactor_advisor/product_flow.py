@@ -834,6 +834,7 @@ class CompactFlowOwner:
 class CompactFunctionFlow:
     owner: CompactFlowOwner
     lexical_scope_qualnames: tuple[str, ...]
+    loaded_value_root_names: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactLexicalMutation, ...]
@@ -1001,6 +1002,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.calls: list[CompactFunctionCall] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactLexicalMutation] = []
+        self.loaded_value_root_names: set[str] = set()
         self.branch_path: tuple[CompactControlBranch, ...] = ()
         self.statement_index = 0
         self.event_index = 0
@@ -1012,6 +1014,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         return CompactFunctionFlow(
             owner=self.owner,
             lexical_scope_qualnames=self.lexical_scope_qualnames,
+            loaded_value_root_names=tuple(sorted(self.loaded_value_root_names)),
             calls=tuple(self.calls),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
@@ -1122,6 +1125,9 @@ class _CompactFlowCollector(ast.NodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
+        target_reference = LexicalValueReference.from_expression(node.func)
+        if target_reference is not None:
+            self.loaded_value_root_names.add(target_reference.root_name)
         self._visit_call_target_evaluation(node.func)
         for argument in node.args:
             self.visit(
@@ -1174,6 +1180,8 @@ class _CompactFlowCollector(ast.NodeVisitor):
             if reference is not None:
                 self._record_mutation(reference, node)
             return
+        if reference is not None:
+            self.loaded_value_root_names.add(reference.root_name)
         if reference is not None and self._is_potential_callable_reference(reference):
             self._record_callable_reference(reference, node)
             return
@@ -1184,6 +1192,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self._record_mutation(reference, node)
         elif isinstance(node.ctx, ast.Load):
+            self.loaded_value_root_names.add(node.id)
             self._record_callable_reference(reference, node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
