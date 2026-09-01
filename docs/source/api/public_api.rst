@@ -40,6 +40,10 @@ Each obstacle identifies the nominal executable declaration that failed to
 prove a recipe and carries that declaration's diagnostic.  The record's
 ``reason`` is a concise summary; consumers that need diagnostic proof detail
 should inspect the structured obstacles instead of parsing that summary.
+For detector-owned synthesis, ``executable_declaration`` names the concrete
+detector declaration whose MRO supplied the recipe behaviour.  Inferred
+metric-driven synthesis names the strategy or builder declaration selected by
+the finding evidence.
 
 Exact repeated methods without a proved owner remain evidence-only findings.
 The ``exact_leaf_method_ancestor_promotion`` detector emits a codemod candidate
@@ -60,11 +64,15 @@ The goal runner reports complete reachable-state evidence separately from the
 single replay sequence.  ``PROVED`` means that exhaustive exploration found one
 unique terminal source state.  Ambiguity or any frontier, depth, or state-budget
 obstacle keeps ``stages`` empty and prevents application.
+Target-free states that increase any complete-scan finding class relative to
+the starting state are recorded as unjustified-debt terminals rather than
+accepted as successful refactors.  The search may pass through intermediate
+states with additional obligations, but a proved terminal must discharge them.
 Caller-supplied architecture guards are evaluated at terminal states and stored
 on the final replay document; recipe-owned guards remain transition-local.
 
 .. automodule:: nominal_refactor_advisor.codemod_workflow
-   :members: CodemodRefactorGoalRunner, CodemodRefactorGoalReport, CodemodRefactorTrajectoryBudget, CodemodRefactorTrajectoryProof, CodemodRefactorTrajectoryStatus, CodemodRefactorTrajectoryObstacle
+   :members: CodemodRefactorGoalRunner, CodemodRefactorGoalReport, CodemodRefactorTrajectoryBudget, CodemodRefactorTrajectoryProof, CodemodRefactorTrajectoryStatus, CodemodRefactorTrajectoryObstacle, CodemodRefactorUnjustifiedDebtTerminal
 
 
 Result Records And Taxonomy

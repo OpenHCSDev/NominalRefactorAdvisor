@@ -151,6 +151,7 @@ class CodemodFindingClassStatus(StrEnum):
 
     ELIMINATED = "eliminated"
     MOVED = "moved"
+    EXPANDED = "expanded"
     PARTIALLY_ELIMINATED = "partially_eliminated"
     PERSISTED = "persisted"
     INTRODUCED = "introduced"
@@ -457,6 +458,8 @@ class CodemodFindingClassChange(CodemodFindingDelta):
             and self.before_finding_count == self.after_finding_count
         ):
             return CodemodFindingClassStatus.MOVED
+        if self.finding_count_increase:
+            return CodemodFindingClassStatus.EXPANDED
         if self.removed_finding_ids:
             return CodemodFindingClassStatus.PARTIALLY_ELIMINATED
         if self.expected_removed_finding_ids:
@@ -467,11 +470,18 @@ class CodemodFindingClassChange(CodemodFindingDelta):
     def expected_removed_finding_count(self) -> int:
         return len(self.expected_removed_finding_ids)
 
+    @property
+    def finding_count_increase(self) -> int:
+        """Return newly introduced obligations in this semantic class."""
+
+        return max(self.after_finding_count - self.before_finding_count, 0)
+
     def to_dict(self) -> JsonObject:
         return JsonObject(
             **self.finding_ids.to_dict(),
             signature=self.signature.to_dict(),
             status=self.status.value,
+            finding_count_increase=self.finding_count_increase,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
             expected_removed_finding_count=self.expected_removed_finding_count,
         )
@@ -544,6 +554,18 @@ class CodemodFindingClassDelta:
     def eliminated_class_count(self) -> int:
         return self.count_status(CodemodFindingClassStatus.ELIMINATED)
 
+    @property
+    def increased_changes(self) -> tuple[CodemodFindingClassChange, ...]:
+        """Return semantic classes whose finding obligations increased."""
+
+        return tuple(
+            change for change in self.changes if change.finding_count_increase > 0
+        )
+
+    @property
+    def finding_count_increase(self) -> int:
+        return sum(change.finding_count_increase for change in self.increased_changes)
+
     def count_status(self, status: CodemodFindingClassStatus) -> int:
         return sum(1 for change in self.changes if change.status is status)
 
@@ -566,6 +588,7 @@ class CodemodFindingClassDelta:
             "class_change_count": self.change_count,
             "moved_class_count": self.moved_class_count,
             "eliminated_class_count": self.eliminated_class_count,
+            "finding_count_increase": self.finding_count_increase,
             "status_counts": self.status_counts(),
             "changes": tuple(change.to_dict() for change in self.changes),
         }
@@ -838,6 +861,30 @@ class CodemodRefactorGuardRejectedTerminal:
 
 
 @dataclass(frozen=True)
+class CodemodRefactorUnjustifiedDebtTerminal:
+    """Target-free state that introduced an unproved finding obligation."""
+
+    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    finding_class_changes: tuple[CodemodFindingClassChange, ...]
+
+    @property
+    def finding_count_increase(self) -> int:
+        return sum(
+            change.finding_count_increase for change in self.finding_class_changes
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_state_id": self.state.source_state_id,
+            "stage_count": len(self.state.stages),
+            "finding_count_increase": self.finding_count_increase,
+            "finding_class_changes": tuple(
+                change.to_dict() for change in self.finding_class_changes
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodRefactorTrajectoryDeadEnd:
     """One fully explored non-goal state with no executable transition."""
 
@@ -865,6 +912,7 @@ class CodemodRefactorTrajectoryProof:
     transition_count: int
     terminals: tuple[CodemodRefactorTrajectoryTerminal, ...] = ()
     guard_rejected_terminals: tuple[CodemodRefactorGuardRejectedTerminal, ...] = ()
+    unjustified_debt_terminals: tuple[CodemodRefactorUnjustifiedDebtTerminal, ...] = ()
     dead_ends: tuple[CodemodRefactorTrajectoryDeadEnd, ...] = ()
     obstacles: tuple[CodemodRefactorTrajectoryObstacle, ...] = ()
 
@@ -896,6 +944,10 @@ class CodemodRefactorTrajectoryProof:
             "guard_rejected_terminal_count": len(self.guard_rejected_terminals),
             "guard_rejected_terminals": tuple(
                 terminal.to_dict() for terminal in self.guard_rejected_terminals
+            ),
+            "unjustified_debt_terminal_count": len(self.unjustified_debt_terminals),
+            "unjustified_debt_terminals": tuple(
+                terminal.to_dict() for terminal in self.unjustified_debt_terminals
             ),
             "dead_end_count": len(self.dead_ends),
             "dead_ends": tuple(dead_end.to_dict() for dead_end in self.dead_ends),
@@ -949,6 +1001,8 @@ class CodemodRefactorGoalReport:
                 f"terminals={len(self.trajectory_proof.terminals)}, "
                 "guard_rejected_terminals="
                 f"{len(self.trajectory_proof.guard_rejected_terminals)}, "
+                "unjustified_debt_terminals="
+                f"{len(self.trajectory_proof.unjustified_debt_terminals)}, "
                 f"dead_ends={len(self.trajectory_proof.dead_ends)}, "
                 f"obstacles={len(self.trajectory_proof.obstacles)}"
             ),
@@ -1542,6 +1596,7 @@ class CodemodRefactorGoalRunner:
             CodemodRefactorTrajectoryTerminal,
         ] = {}
         guard_rejected_terminals: list[CodemodRefactorGuardRejectedTerminal] = []
+        unjustified_debt_terminals: list[CodemodRefactorUnjustifiedDebtTerminal] = []
         dead_ends: list[CodemodRefactorTrajectoryDeadEnd] = []
         obstacles: list[CodemodRefactorTrajectoryObstacle] = []
         transition_count = 0
@@ -1555,6 +1610,21 @@ class CodemodRefactorGoalRunner:
                 target_findings = self.target_findings(active_scan)
                 state = replace(state, scan=active_scan)
                 if not target_findings:
+                    finding_class_delta = CodemodFindingClassDelta.from_findings(
+                        tuple(starting_scan.findings),
+                        tuple(active_scan.findings),
+                    )
+                    terminal_rejected = False
+                    if finding_class_delta.increased_changes:
+                        unjustified_debt_terminals.append(
+                            CodemodRefactorUnjustifiedDebtTerminal(
+                                state=state,
+                                finding_class_changes=(
+                                    finding_class_delta.increased_changes
+                                ),
+                            )
+                        )
+                        terminal_rejected = True
                     terminal_guard_report = (
                         self.guard_suite.clean_report()
                         if self.guard_suite.is_empty
@@ -1563,16 +1633,17 @@ class CodemodRefactorGoalRunner:
                             active_scan.sources_by_file_path,
                         )
                     )
-                    if terminal_guard_report.is_clean:
-                        terminals_by_source_state_id[state.source_state_id] = (
-                            CodemodRefactorTrajectoryTerminal(state)
-                        )
-                    else:
+                    if not terminal_guard_report.is_clean:
                         guard_rejected_terminals.append(
                             CodemodRefactorGuardRejectedTerminal(
                                 state=state,
                                 guard_report=terminal_guard_report,
                             )
+                        )
+                        terminal_rejected = True
+                    if not terminal_rejected:
+                        terminals_by_source_state_id[state.source_state_id] = (
+                            CodemodRefactorTrajectoryTerminal(state)
                         )
                     continue
 
@@ -1672,6 +1743,7 @@ class CodemodRefactorGoalRunner:
                 for source_state_id in sorted(terminals_by_source_state_id)
             ),
             guard_rejected_terminals=tuple(guard_rejected_terminals),
+            unjustified_debt_terminals=tuple(unjustified_debt_terminals),
             dead_ends=tuple(dead_ends),
             obstacles=tuple(obstacles),
         )

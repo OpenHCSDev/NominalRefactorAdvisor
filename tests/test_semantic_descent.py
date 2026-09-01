@@ -1115,8 +1115,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert record.detector_id == "semantic_mirror_without_descent"
     assert record.status.value == "executable_candidate"
     assert (
-        record.executable_declaration_name
-        == "ManualClassRegistrationFindingRecipeSynthesizer"
+        record.executable_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert operation["registry_name"] == "STEP_TABLE"
@@ -1225,7 +1224,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     assert plan.records[0].status.value == "executable_candidate"
     assert (
         plan.records[0].executable_declaration_name
-        == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
+        == "InheritedAutoRegisterConfigBoilerplateDetector"
     )
     assert plan.records[0].refactor_concept == "auto_register"
     assert len(operations) == 1
@@ -1332,7 +1331,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert plan.records[0].status.value == "executable_candidate"
     assert (
         plan.records[0].executable_declaration_name
-        == "AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer"
+        == "AutoRegisterExplicitPriorityOrderingDetector"
     )
     assert plan.records[0].refactor_concept == "auto_register_mro_ordering"
     assert [operation["operation"] for operation in operations] == [

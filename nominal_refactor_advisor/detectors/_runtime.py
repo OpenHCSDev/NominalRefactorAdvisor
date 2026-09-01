@@ -44,8 +44,12 @@ from ..class_index import (
     build_compact_class_family_index,
 )
 from ..codemod import (
+    AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
     CancelableCompositionSignal,
     CancelableCompositionSignalTargetAuthority,
+    ManualClassRegistrationFindingRecipeSynthesizer,
+    NumericLiteralDispatchFindingRecipeSynthesizer,
+    RepeatedBuilderCallFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
@@ -2016,6 +2020,7 @@ class RepeatedBuilderCallDetector(
     CompactModuleProjectionDetectorMixin[BuilderCallShape],
     FlattenedModuleCollectorCandidateDetector[BuilderCallShape],
     SsotAuthorityBoundaryDetector,
+    RepeatedBuilderCallFindingRecipeSynthesizer,
 ):
     module_projection_family = RepeatedBuilderCallShapeProjectionFamily
     detector_id = "repeated_builder_calls"
@@ -2120,7 +2125,8 @@ class RepeatedBuilderCallDetector(
 
 
 class ManualClassRegistrationDetector(
-    CompactGroupedShapeIssueDetector[RegistrationShape, str]
+    CompactGroupedShapeIssueDetector[RegistrationShape, str],
+    ManualClassRegistrationFindingRecipeSynthesizer,
 ):
     module_projection_family = RegistrationShapeFamily
     compact_report_context_requires_target_projection = True
@@ -3153,6 +3159,7 @@ def _compact_autoregister_meta_rent_candidates(
 
 class AutoRegisterMetaUnderRentedDetector(
     CompactClassRepositoryCandidateDetector[AutoRegisterMetaRentCandidate],
+    AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
 ):
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_autoregister_meta_root
@@ -3716,7 +3723,10 @@ class ExactTypeGuardInheritanceRetreatDetector(
         )
 
 
-class NumericLiteralDispatchDetector(PerModuleIssueDetector):
+class NumericLiteralDispatchDetector(
+    PerModuleIssueDetector,
+    NumericLiteralDispatchFindingRecipeSynthesizer,
+):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Closed-family dispatch expressed through numeric IDs",

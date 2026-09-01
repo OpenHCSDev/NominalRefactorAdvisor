@@ -7,6 +7,7 @@ import pytest
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
+from nominal_refactor_advisor import detectors
 from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
@@ -39,6 +40,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
     ),
+    codemod.RegistrationSemanticMirrorRecipeStrategy: (
+        codemod.AutoRegisterClassRegistryConcept
+    ),
     codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
         codemod.ClassFamilyAuthorityConcept
     ),
@@ -65,6 +69,21 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
         codemod.AutoRegisterConcept
     ),
     codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
+        codemod.AutoRegisterMroOrderingConcept
+    ),
+    detectors.ManualClassRegistrationDetector: (
+        codemod.AutoRegisterClassRegistryConcept
+    ),
+    detectors.ExactLeafMethodAncestorPromotionDetector: (
+        codemod.ClassFamilyAuthorityConcept
+    ),
+    detectors.NumericLiteralDispatchDetector: (
+        codemod.AutoRegisterStrategyFamilyConcept
+    ),
+    detectors.InheritedAutoRegisterConfigBoilerplateDetector: (
+        codemod.AutoRegisterConcept
+    ),
+    detectors.AutoRegisterExplicitPriorityOrderingDetector: (
         codemod.AutoRegisterMroOrderingConcept
     ),
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
@@ -102,6 +121,62 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
         codemod.NominalBoundaryConcept.matches_finding.__func__
         is codemod.RefactorConcept.matches_finding.__func__
     )
+
+
+def test_detector_declarations_own_executable_synthesis_through_mro() -> None:
+    executable_bindings = (
+        (
+            detectors.AutoRegisterExplicitPriorityOrderingDetector,
+            codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.AutoRegisterMetaUnderRentedDetector,
+            codemod.AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.EnvironmentBooleanAuthorityDriftDetector,
+            codemod.EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.ExactLeafMethodAncestorPromotionDetector,
+            codemod.ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.InheritedAutoRegisterConfigBoilerplateDetector,
+            codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.ManualClassRegistrationDetector,
+            codemod.ManualClassRegistrationFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.NumericLiteralDispatchDetector,
+            codemod.NumericLiteralDispatchFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.RepeatedBuilderCallDetector,
+            codemod.RepeatedBuilderCallFindingRecipeSynthesizer,
+        ),
+    )
+
+    assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
+    for detector_type, synthesis_type in executable_bindings:
+        detector_id = detector_type.effective_detector_id()
+        assert detector_id is not None
+        assert issubclass(detector_type, codemod.FindingRecipeSynthesizer)
+        assert synthesis_type.detector_declaration_type() is detector_type
+        finding = advisor.RefactorFinding(
+            detector_id=detector_id,
+            pattern_id=advisor.PatternId.NOMINAL_BOUNDARY,
+            title="Executable detector declaration",
+            summary="The detector declaration owns synthesis through its MRO.",
+            why="A separate synthesizer registry would mirror detector identity.",
+            capability_gap="one nominal executable detector declaration",
+            relation_context="detector identity and synthesis share one leaf",
+        )
+        assert type(codemod.FindingRecipeSynthesizer.for_finding(finding)) is (
+            detector_type
+        )
 
 
 def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:

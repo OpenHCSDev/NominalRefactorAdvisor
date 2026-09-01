@@ -20,6 +20,7 @@ from ..ast_tools import (
     walk_function_body_nodes,
 )
 from ..class_index import ATTRIBUTE_CHAIN_AUTHORITY
+from ..codemod import EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer
 from ..models import (
     EnvironmentBooleanDriftMetrics,
     EnvironmentReadKind,
@@ -1460,6 +1461,7 @@ def _fixed_key_authority_wrapper_sites_from_facts(
 class EnvironmentBooleanAuthorityDriftDetector(
     CompactModuleProjectionDetectorMixin[_EnvironmentBooleanModuleProjection],
     SemanticMirrorIssueDetector,
+    EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer,
 ):
     """Detect local environment flag semantics outside a declared authority."""
 

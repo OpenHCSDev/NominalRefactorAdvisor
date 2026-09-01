@@ -23,6 +23,10 @@ from ..ast_tools import (
     SourceModule,
 )
 from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
+from ..codemod import (
+    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
+    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
+)
 from ..native_syntax import NativePythonSyntaxIndex
 from ..taxonomy import CapabilityTag, ObservationTag
 
@@ -2035,6 +2039,7 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
 class InheritedAutoRegisterConfigBoilerplateDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     IssueDetector,
+    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(
@@ -2175,6 +2180,7 @@ _EXPLICIT_CLASS_ORDER_AXIS_NAMES = ("priority", "precedence", "rank", "order")
 class AutoRegisterExplicitPriorityOrderingDetector(
     CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
     IssueDetector,
+    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
 ):
     module_projection_family = CompactModuleClassProjectionFamily
     compact_shared_context_builder = staticmethod(

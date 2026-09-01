@@ -10,6 +10,13 @@ Detector Base Classes
 .. automodule:: nominal_refactor_advisor.detectors
    :members: DetectorConfig, IssueDetector, PerModuleIssueDetector, CandidateFindingDetector, EvidenceOnlyPerModuleDetector, StaticModulePatternDetector, default_detectors
 
+Concrete detectors that can produce executable recipes inherit
+``FindingRecipeSynthesizer`` behaviour directly.  Recipe lookup resolves the
+finding's registered ``IssueDetector`` declaration and follows its MRO; there is
+no second detector-to-synthesiser registry.  Metric-driven inferred synthesis
+remains separate and fails closed unless exactly one inference declaration
+supports the finding.
+
 
 Structural Hypothesis Substrate
 -------------------------------

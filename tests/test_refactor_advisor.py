@@ -137,6 +137,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeActionKey,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
+    FindingRecipeSynthesizer,
     FindingRecipePlanBuilder,
     FindingRecipePlanCandidate,
     CurrentSnapshotRecipeBatchEvaluation,
@@ -199,7 +200,7 @@ from nominal_refactor_advisor.codemod import (
     evaluate_architecture_guards,
     simulate_planned_rewrites,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetector
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
@@ -317,6 +318,76 @@ def _finding_spec(
         "relation_context": relation_context,
     }
     return FindingSpec(**fields)
+
+
+class _FindingRecipeTestDetector(IssueDetector, FindingRecipeSynthesizer, ABC):
+    """Test-only nominal leaf support for synthetic synthesis scenarios."""
+
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Synthetic recipe detector",
+        "Tests exercise one executable transition declaration.",
+        "one nominal test detector",
+        "the test detector owns its synthesis behavior through MRO",
+    )
+
+    def _collect_findings(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del modules, config
+        return []
+
+
+class _FindingRecipeTestRegistry:
+    """Adapt synthetic recipe classes into nominal detector declarations."""
+
+    @staticmethod
+    def detector_registry() -> dict[str, type[IssueDetector]]:
+        return cast(dict[str, type[IssueDetector]], IssueDetector.__registry__)
+
+    def get(self, detector_id: str) -> type[IssueDetector] | None:
+        return self.detector_registry().get(detector_id)
+
+    def __setitem__(
+        self,
+        detector_id: str,
+        synthesis_type: type[FindingRecipeSynthesizer] | type[IssueDetector],
+    ) -> None:
+        if issubclass(synthesis_type, IssueDetector):
+            self.detector_registry()[detector_id] = synthesis_type
+            return
+        detector_type = type(
+            synthesis_type.__name__,
+            (synthesis_type, _FindingRecipeTestDetector),
+            {
+                "__module__": __name__,
+                "detector_id": detector_id,
+            },
+        )
+        assert issubclass(detector_type, IssueDetector)
+        assert self.detector_registry()[detector_id] is detector_type
+
+    def pop(
+        self,
+        detector_id: str,
+        default: object = None,
+    ) -> type[IssueDetector] | object:
+        return self.detector_registry().pop(detector_id, default)
+
+    def update(
+        self,
+        synthesis_types_by_detector_id: Mapping[
+            str,
+            type[FindingRecipeSynthesizer] | type[IssueDetector],
+        ],
+    ) -> None:
+        for detector_id, synthesis_type in synthesis_types_by_detector_id.items():
+            self[detector_id] = synthesis_type
+
+
+_FINDING_RECIPE_TEST_REGISTRY = _FindingRecipeTestRegistry()
 
 
 def _object_family_certificate(
@@ -1196,7 +1267,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "value = 1\n")
 
-    class WeakCompetingRecipeSynthesizer(FindingRecipeSynthesizer):
+    class WeakCompetingRecipeSynthesizer(_FindingRecipeTestDetector):
         detector_id = "weak_competing_recipe_test"
 
         def action_keys_for_finding(
@@ -1224,7 +1295,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
                 )
             )
 
-    class StrongCompetingRecipeSynthesizer(FindingRecipeSynthesizer):
+    class StrongCompetingRecipeSynthesizer(_FindingRecipeTestDetector):
         detector_id = "strong_competing_recipe_test"
 
         def action_keys_for_finding(
@@ -1288,8 +1359,8 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
             for findings in ((weak, strong), (strong, weak))
         )
     finally:
-        FindingRecipeSynthesizer.__registry__.pop(weak_detector_id, None)
-        FindingRecipeSynthesizer.__registry__.pop(strong_detector_id, None)
+        _FINDING_RECIPE_TEST_REGISTRY.pop(weak_detector_id, None)
+        _FINDING_RECIPE_TEST_REGISTRY.pop(strong_detector_id, None)
 
     for plan in plans:
         records_by_detector = {record.detector_id: record for record in plan.records}
@@ -2972,7 +3043,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
         (finding,),
     )
 
-    class EmptyRecipeTestSynthesizer(FindingRecipeSynthesizer):
+    class EmptyRecipeTestSynthesizer(_FindingRecipeTestDetector):
         detector_id = "empty_recipe_test_detector"
 
         def action_keys_for_finding(
@@ -2998,7 +3069,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
             selector_context=snapshot,
         )
     finally:
-        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
     record = plan.report.records[0]
     payload = plan.to_dict()
@@ -3031,7 +3102,7 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
         (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
     )
 
-    class RejectedRecipeWithoutActionKeysSynthesizer(FindingRecipeSynthesizer):
+    class RejectedRecipeWithoutActionKeysSynthesizer(_FindingRecipeTestDetector):
         detector_id = "rejected_recipe_without_action_keys_test"
 
         def evaluate_recipe_for_finding(
@@ -3049,7 +3120,7 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
         )
         plan = snapshot.plan_from_findings((finding,))
     finally:
-        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
     record = plan.records[0]
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
@@ -3082,7 +3153,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
         (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
     )
 
-    class ExecutableRecipeWithoutActionKeysSynthesizer(FindingRecipeSynthesizer):
+    class ExecutableRecipeWithoutActionKeysSynthesizer(_FindingRecipeTestDetector):
         detector_id = "executable_recipe_without_action_keys_test"
 
         def evaluate_recipe_for_finding(
@@ -3108,7 +3179,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
         )
         plan = snapshot.plan_from_findings((finding,))
     finally:
-        FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
     record = plan.records[0]
     assert record.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
@@ -6835,11 +6906,15 @@ def _manual_class_registration_source() -> str:
     return (
         "REGISTRY = {}\n\n\n"
         "class AlphaHandler:\n"
-        "    pass\n\n\n"
+        "    def run(self, value):\n"
+        "        return value + 1\n\n\n"
         "class BetaHandler:\n"
-        "    pass\n\n\n"
+        "    def run(self, value):\n"
+        "        return value - 1\n\n\n"
         "REGISTRY['alpha'] = AlphaHandler\n"
-        "REGISTRY['beta'] = BetaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n\n\n"
+        "def run_handler(name, value):\n"
+        "    return REGISTRY[name]().run(value)\n"
     )
 
 
@@ -6847,12 +6922,16 @@ def _staged_class_family_source() -> str:
     return (
         "REGISTRY = {}\n\n\n"
         "class AlphaHandler:\n"
-        "    pass\n\n\n"
+        "    def run(self, value):\n"
+        "        return value + 1\n\n\n"
         "class BetaHandler:\n"
-        "    pass\n\n\n"
+        "    def run(self, value):\n"
+        "        return value - 1\n\n\n"
         "ALL_HANDLERS = (AlphaHandler, BetaHandler)\n"
         "REGISTRY['alpha'] = AlphaHandler\n"
-        "REGISTRY['beta'] = BetaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n\n\n"
+        "def run_handler(name, value):\n"
+        "    return REGISTRY[name]().run(value)\n"
     )
 
 
@@ -13764,6 +13843,64 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
     assert "achieved" not in report.to_dict()
 
 
+def test_goal_runner_rejects_terminal_with_new_finding_obligations(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import AutoRegisterClassRegistryConcept
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "REGISTRY = {}\n\n\n"
+            "class AlphaHandler:\n"
+            "    pass\n\n\n"
+            "class BetaHandler:\n"
+            "    pass\n\n\n"
+            "REGISTRY['alpha'] = AlphaHandler\n"
+            "REGISTRY['beta'] = BetaHandler\n"
+        ),
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=AutoRegisterClassRegistryConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
+    assert report.trajectory_proof.status is (
+        CodemodRefactorTrajectoryStatus.NO_TERMINAL_STATE
+    )
+    assert report.stages == ()
+    assert report.replay_sequence.documents == ()
+    assert report.trajectory_proof.terminals == ()
+    assert len(report.trajectory_proof.unjustified_debt_terminals) == 1
+    rejected_terminal = report.trajectory_proof.unjustified_debt_terminals[0]
+    assert rejected_terminal.finding_count_increase == 1
+    assert len(rejected_terminal.finding_class_changes) == 1
+    finding_class_change = rejected_terminal.finding_class_changes[0]
+    assert finding_class_change.signature.detector_id == (
+        runtime_detectors.AutoRegisterMetaUnderRentedDetector.effective_detector_id()
+    )
+    assert finding_class_change.status is CodemodFindingClassStatus.INTRODUCED
+    payload = report.to_dict()["trajectory_proof"]
+    assert payload["unjustified_debt_terminal_count"] == 1
+    assert payload["unjustified_debt_terminals"][0]["finding_count_increase"] == 1
+    assert (
+        payload["unjustified_debt_terminals"][0]["finding_class_changes"][0][
+            "finding_count_increase"
+        ]
+        == 1
+    )
+
+
 def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     tmp_path: Path,
 ) -> None:
@@ -13822,8 +13959,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
                 )
             )
 
-    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
-    FindingRecipeSynthesizer.__registry__[detector_id] = GoalTestSynthesizer
+    previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+    _FINDING_RECIPE_TEST_REGISTRY[detector_id] = GoalTestSynthesizer
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -13856,9 +13993,9 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         ).run()
     finally:
         if previous_synthesizer is None:
-            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
         else:
-            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+            _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
@@ -13987,8 +14124,8 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
             findings=[finding],
         )
 
-    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
-    FindingRecipeSynthesizer.__registry__[detector_id] = AppliedMigrationSynthesizer
+    previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+    _FINDING_RECIPE_TEST_REGISTRY[detector_id] = AppliedMigrationSynthesizer
     monkeypatch.setattr(
         CodemodRefactorGoalRunner,
         "fresh_scan",
@@ -14007,9 +14144,9 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
         ).run()
     finally:
         if previous_synthesizer is None:
-            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
         else:
-            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+            _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is False
     assert report.stop_reason is (
@@ -14125,11 +14262,11 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
         raise AssertionError("conflicting trajectory branches must not be committed")
 
     previous_synthesizers = {
-        detector_id: FindingRecipeSynthesizer.__registry__.get(detector_id)
+        detector_id: _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
         for detector_id in (weak_detector_id, strong_detector_id)
     }
-    FindingRecipeSynthesizer.__registry__[weak_detector_id] = WeakGoalRunnerSynthesizer
-    FindingRecipeSynthesizer.__registry__[strong_detector_id] = (
+    _FINDING_RECIPE_TEST_REGISTRY[weak_detector_id] = WeakGoalRunnerSynthesizer
+    _FINDING_RECIPE_TEST_REGISTRY[strong_detector_id] = (
         StrongGoalRunnerSynthesizer
     )
     monkeypatch.setattr(codemod_module, "apply_codemod_simulation", unexpected_apply)
@@ -14150,9 +14287,9 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     finally:
         for detector_id, previous in previous_synthesizers.items():
             if previous is None:
-                FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+                _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
             else:
-                FindingRecipeSynthesizer.__registry__[detector_id] = previous
+                _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous
 
     assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.stop_reason.completed is False
@@ -14339,10 +14476,10 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         GuardRejectedTerminalSynthesizer,
     )
     previous_synthesizers = {
-        detector_id: FindingRecipeSynthesizer.__registry__.get(detector_id)
+        detector_id: _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
         for detector_id in detector_ids
     }
-    FindingRecipeSynthesizer.__registry__.update(
+    _FINDING_RECIPE_TEST_REGISTRY.update(
         dict(zip(detector_ids, synthesizer_types, strict=True))
     )
     monkeypatch.setattr(
@@ -14389,9 +14526,9 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     finally:
         for detector_id, previous in previous_synthesizers.items():
             if previous is None:
-                FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+                _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
             else:
-                FindingRecipeSynthesizer.__registry__[detector_id] = previous
+                _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous
 
     for report in reports:
         assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
@@ -14717,8 +14854,8 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
                 )
             )
 
-    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
-    FindingRecipeSynthesizer.__registry__[detector_id] = GoalScopeTestSynthesizer
+    previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+    _FINDING_RECIPE_TEST_REGISTRY[detector_id] = GoalScopeTestSynthesizer
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -14736,9 +14873,9 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
         ).run()
     finally:
         if previous_synthesizer is None:
-            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
         else:
-            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+            _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
@@ -14802,8 +14939,8 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             del finding, context
             return self.rejected_evaluation("test migration is not executable")
 
-    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
-    FindingRecipeSynthesizer.__registry__[detector_id] = RejectedGoalTestSynthesizer
+    previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+    _FINDING_RECIPE_TEST_REGISTRY[detector_id] = RejectedGoalTestSynthesizer
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -14820,9 +14957,9 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         ).run()
     finally:
         if previous_synthesizer is None:
-            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+            _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
         else:
-            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+            _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous_synthesizer
 
     assert report.stop_reason.completed is False
     assert report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
@@ -15148,6 +15285,48 @@ def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
     assert delta.to_dict()["status_counts"] == {"moved": 1}
 
 
+def test_codemod_finding_class_delta_reports_increased_obligations(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
+
+    spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Stable projection mirrors nominal authority",
+        "A projection should descend from its nominal authority.",
+        "single nominal owner",
+        "projection repeats a nominal authority without descent",
+    )
+    source_path = tmp_path / "projection.py"
+    before = spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+    )
+    surviving = spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+    )
+    added = spec.build(
+        "semantic_mirror_without_descent",
+        "Beta mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+    )
+
+    delta = CodemodFindingClassDelta.from_findings(
+        (before,),
+        (surviving, added),
+    )
+
+    assert len(delta.increased_changes) == 1
+    assert delta.increased_changes[0].status is CodemodFindingClassStatus.EXPANDED
+    assert delta.finding_count_increase == 1
+    assert delta.to_dict()["finding_count_increase"] == 1
+    assert delta.to_dict()["status_counts"] == {"expanded": 1}
+
+
 def test_codemod_class_plan_groups_typed_synthesis_records(
     tmp_path: Path,
 ) -> None:
@@ -15209,7 +15388,7 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
         "convert_manual_registry_to_autoregister"
     )
     assert synthesis_record["executable_declaration"] == (
-        "ManualClassRegistrationFindingRecipeSynthesizer"
+        "ManualClassRegistrationDetector"
     )
     assert recipe["recipe_id"] == "finding-class-codemod-plan"
     assert "target_shape" not in recipe

@@ -9,8 +9,9 @@ Purpose
 -------
 
 The tool is not a generic clone detector. It is a structural issue classifier
-that maps AST observations onto a nominal-architecture model and then prescribes
-one canonical refactoring shape.
+that maps source observations onto a nominal-architecture model. Where a
+detector declaration also owns proof-bearing executable behaviour, the advisor
+can synthesise and simulate a recipe; otherwise the finding remains evidence.
 
 The repository-specific aim is:
 
@@ -41,6 +42,8 @@ Current Design Rules
 The advisor currently enforces these repository-level choices:
 
 - detector bases centralize orchestration so concrete detectors keep only matching logic
+- executable detector leaves inherit recipe synthesis through their MRO rather
+  than repeating detector identities in a second registry
 - findings and plans use authoritative dataclasses rather than loose dict bags
 - class-time registration is normalized through ``metaclass-registry`` rather than local manual rosters
 - docs prefer generated catalogs and code-validated object references over hand-maintained inventories

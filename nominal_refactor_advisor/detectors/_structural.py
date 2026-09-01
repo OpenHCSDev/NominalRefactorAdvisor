@@ -14,6 +14,7 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from ..codemod import ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
 from ..source_identity import source_path_text
@@ -277,7 +278,8 @@ class _CompactExactTinyMethodRoleDetectorBase(
 
 
 class _CompactExactLeafMethodAncestorPromotionDetectorBase(
-    _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionCandidate]
+    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
+    _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionCandidate],
 ):
     def _candidates_from_compact_context(
         self,

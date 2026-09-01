@@ -327,7 +327,7 @@ class FindingRecipeSynthesisStatus(StrEnum):
     )
     NO_SYNTHESIZER = (
         "no_synthesizer",
-        "no registered finding-to-recipe synthesizer",
+        "detector declaration has no executable finding synthesis behavior",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_ACTION_KEYS = (
@@ -623,9 +623,6 @@ class SourceNodeDecoratorPolicy(StrEnum):
 
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
-DETECTOR_ID_FIELD_NAME = "detector_id"
-MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
-NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
 
 
 class AuthorityClaimPayload:
@@ -14055,47 +14052,51 @@ def codemod_class_plan_from_findings(
     )
 
 
-class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
-    """Registry-backed bridge from advisor findings to executable recipes."""
-
-    __registry__: ClassVar[dict[str, type["FindingRecipeSynthesizer"]]] = {}
-    __registry_key__ = DETECTOR_ID_FIELD_NAME
-    __skip_if_no_key__ = True
-
-    detector_id: ClassVar[str]
-
-    @classmethod
-    def has_registered_detector(cls, detector_ids: Iterable[str]) -> bool:
-        selected_detector_ids = tuple(detector_ids)
-        return not selected_detector_ids or any(
-            detector_id in cls.__registry__ for detector_id in selected_detector_ids
-        )
-
-    @classmethod
-    def registered_detector_ids(cls) -> frozenset[str]:
-        return frozenset(cls.__registry__)
+class FindingRecipeSynthesizer(ABC):
+    """Executable finding semantics inherited by their detector declarations."""
 
     @classmethod
     def detector_ids_for_concept(
         cls,
         concept_type: type[RefactorConcept],
     ) -> frozenset[str]:
-        """Project registered detector ids through executable concept MROs."""
+        """Project detector identities through executable declaration MROs."""
 
         return frozenset(
             detector_id
-            for detector_id, synthesizer_type in cls.__registry__.items()
-            if issubclass(synthesizer_type, concept_type)
+            for detector_type in IssueDetector.registered_detector_types()
+            for detector_id in (detector_type.effective_detector_id(),)
+            if detector_id is not None
+            and issubclass(detector_type, cls)
+            and issubclass(detector_type, concept_type)
         )
+
+    @classmethod
+    def detector_declaration_type(cls) -> type[IssueDetector]:
+        """Return the unique detector declaration inheriting this behavior."""
+
+        detector_types = tuple(
+            detector_type
+            for detector_type in IssueDetector.registered_detector_types()
+            if issubclass(detector_type, cls)
+        )
+        if len(detector_types) != 1:
+            raise TypeError(
+                f"{cls.__name__} must belong to exactly one detector declaration; "
+                f"found {tuple(item.__name__ for item in detector_types)!r}"
+            )
+        return detector_types[0]
 
     @classmethod
     def for_finding(
         cls,
         finding: RefactorFinding,
     ) -> "FindingRecipeSynthesizer | None":
-        synthesizer_type = cls.__registry__.get(finding.detector_id)
-        if synthesizer_type is not None:
-            return synthesizer_type()
+        detector_type = IssueDetector.registered_detector_type_for_id(
+            finding.detector_id
+        )
+        if detector_type is not None and issubclass(detector_type, cls):
+            return cast(FindingRecipeSynthesizer, detector_type())
         return InferredFindingRecipeSynthesizer.for_finding(finding)
 
     @abstractmethod
@@ -14185,8 +14186,6 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
 ):
     """Preserve the exact proof gap for environment-boolean drift findings."""
 
-    detector_id = "environment_boolean_authority_drift"
-
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
@@ -14214,8 +14213,6 @@ class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
     FindingRecipeSynthesizer,
 ):
     """Reject a metaclass edit until its missing rent semantics are proven."""
-
-    detector_id = "autoregister_meta_under_rented"
 
     def evaluate_recipe_for_finding(
         self,
@@ -14436,8 +14433,6 @@ class RepeatedBuilderAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
 
 class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     """Build class-owned constructor authority recipes for repeated builder calls."""
-
-    detector_id = "repeated_builder_calls"
 
     def evaluate_recipe_for_finding(
         self,
@@ -15397,8 +15392,6 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
 ):
     """Promote exact methods only to a source-proven existing authority."""
 
-    detector_id = "exact_leaf_method_ancestor_promotion"
-
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
@@ -15638,7 +15631,6 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
 ):
     """Delete AutoRegister protocol fields repeated from inherited bases."""
 
-    detector_id = "inherited_autoregister_config_boilerplate"
     recipe_id_suffix = "delete-inherited-autoregister-config"
     recipe_reason = (
         "Delete AutoRegister registry protocol assignments already inherited "
@@ -15714,8 +15706,6 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
     SingleSourcePathFindingMixin,
 ):
     """Batch an explicit registered priority axis into one nominal MRO view."""
-
-    detector_id = "autoregister_explicit_priority_ordering"
 
     def evaluate_recipe_for_finding(
         self,
@@ -16238,8 +16228,6 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
     AutoRegisterClassRegistryConcept,
 ):
     """Build AutoRegisterMeta conversion recipes for manual class registries."""
-
-    detector_id = MANUAL_CLASS_REGISTRATION_FINDING_ID
 
     def evaluate_recipe_for_finding(
         self,
@@ -20557,7 +20545,10 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         )
 
 
-class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
+class RegistrationSemanticMirrorRecipeStrategy(
+    ManualClassRegistrationFindingRecipeSynthesizer,
+    SemanticMirrorFindingRecipeStrategy,
+):
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
     metric_type = RegistrationMetrics
@@ -20578,8 +20569,9 @@ class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrate
             for builder in contextual_builders
             if (recipe := builder.recipe()) is not None
         )
-        manual_evaluation = ManualClassRegistrationFindingRecipeSynthesizer().evaluate_recipe_for_finding(
-            finding, context
+        manual_evaluation = super().evaluate_recipe_for_finding(
+            finding,
+            context,
         )
         evaluations = (
             *contextual_evaluations,
@@ -20620,16 +20612,6 @@ class RegistrationSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrate
             ),
             executable_declaration_type=type(self),
             obstacles=obstacles,
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        return (
-            ManualClassRegistrationFindingRecipeSynthesizer().action_keys_for_finding(
-                finding
-            )
         )
 
 
@@ -21536,8 +21518,6 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
 ):
     """Build metric-specific recipes for semantic mirror findings."""
 
-    detector_id = "semantic_mirror_without_descent"
-
     @classmethod
     def supports_finding(
         cls,
@@ -21744,8 +21724,6 @@ class NumericLiteralDispatchFindingRecipeSynthesizer(
     LiteralDispatchFindingRecipeSynthesizer
 ):
     """Build recipes for closed numeric-literal dispatch functions."""
-
-    detector_id = NUMERIC_LITERAL_DISPATCH_FINDING_ID
 
 
 class DispatchMetricsFindingRecipeSynthesizer(
