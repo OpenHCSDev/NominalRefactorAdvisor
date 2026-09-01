@@ -79,6 +79,7 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
         codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
         codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
+        codemod.EnumSubsetSemanticMirrorRecipeBuilder,
     }
 )
 
@@ -232,6 +233,10 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
         == EXPECTED_INFERRED_MAPPING_DECLARATIONS
     )
     assert "__registry__" not in codemod.MappingSemanticMirrorRecipeBuilder.__dict__
+    assert not hasattr(
+        codemod.MappingSemanticMirrorRecipeStrategy,
+        "enum_subset_builder_for_finding",
+    )
     assert all(
         not hasattr(builder_type, "mapping_name")
         for builder_type in EXPECTED_MAPPING_DECLARATIONS

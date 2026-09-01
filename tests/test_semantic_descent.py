@@ -2564,7 +2564,12 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
 
         assert plan.records[0].status.value == "rejected_by_safety_check"
         assert not plan.records[0].recipe_id
-        assert "no safe mapping recipe" in plan.records[0].reason
+        assert "could not be derived by inferred builders" in plan.records[0].reason
+        assert (
+            "dataclass payload projection requires one contiguous, exhaustive"
+            in plan.records[0].reason
+        )
+        assert "enum subset projection requires" in plan.records[0].reason
 
 
 def test_semantic_mirror_constructor_projection_uses_dataclass_method(

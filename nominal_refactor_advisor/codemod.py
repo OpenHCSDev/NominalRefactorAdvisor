@@ -15669,6 +15669,101 @@ class SemanticMirrorImportBoundary:
         )
 
 
+class MappingSemanticMirrorRecipeBuilder(
+    CodemodSelectorContext,
+    ABC,
+):
+    """Recipe declaration for one mapping-mirror family."""
+
+    finding: RefactorFinding
+
+    @classmethod
+    def from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> Self | None:
+        if context is None:
+            return None
+        return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            module_node_cache=context.module_nodes_by_file_path,
+            ast_target_node_cache=context.ast_target_nodes_by_id,
+            module_import_graph_cache=context.module_import_graph,
+            finding=finding,
+        )
+
+    @abstractmethod
+    def recipe(self) -> RefactorRecipe | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def rejection_reason(self) -> str:
+        raise NotImplementedError
+
+
+class InferredSemanticMirrorMappingRecipeBuilder(ABC):
+    """Nominal family of structurally inferred mapping recipe builders."""
+
+    @classmethod
+    def builder_types(
+        cls,
+    ) -> tuple[type[MappingSemanticMirrorRecipeBuilder], ...]:
+        return tuple(
+            cast(type[MappingSemanticMirrorRecipeBuilder], builder_type)
+            for builder_type in loaded_concrete_nominal_descendants(cls)
+        )
+
+    @classmethod
+    def builders_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> tuple[MappingSemanticMirrorRecipeBuilder, ...]:
+        return tuple(
+            builder
+            for builder_type in cls.builder_types()
+            if (builder := builder_type.from_context(finding, context)) is not None
+        )
+
+    @staticmethod
+    def rejection_reasons(
+        builders: tuple[MappingSemanticMirrorRecipeBuilder, ...],
+    ) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(builder.rejection_reason() for builder in builders))
+
+
+class FindingRecipeParts(ABC):
+    """Executable recipe facts owned by a recipe builder."""
+
+    @abstractmethod
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        raise NotImplementedError
+
+
+RecipePartsT = TypeVar("RecipePartsT", bound=FindingRecipeParts)
+
+
+class PartsBackedMappingRecipeBuilder(
+    MappingSemanticMirrorRecipeBuilder,
+    Generic[RecipePartsT],
+    ABC,
+):
+    """Mapping recipe builder whose actionability is owned by a parts record."""
+
+    @property
+    @abstractmethod
+    def parts(self) -> RecipePartsT | None:
+        raise NotImplementedError
+
+    def recipe(self) -> RefactorRecipe | None:
+        if self.parts is None:
+            return None
+        return self.parts.recipe_for(self.finding)
+
+
 @dataclass(frozen=True)
 class EnumSubsetProjectionTarget:
     """Module-level projection replaced by a derived enum authority call."""
@@ -15782,7 +15877,7 @@ class EnumSubsetRecipeSourceRenderer:
 
 
 @dataclass(frozen=True)
-class EnumSubsetSemanticMirrorRecipeParts:
+class EnumSubsetSemanticMirrorRecipeParts(FindingRecipeParts):
     """Source facts for moving an enum subset mirror onto the enum authority."""
 
     projection: EnumSubsetProjectionTarget
@@ -15833,13 +15928,24 @@ class EnumSubsetSemanticMirrorRecipeParts:
 
 @dataclass(frozen=True, kw_only=True)
 class EnumSubsetSemanticMirrorRecipeBuilder(
-    CodemodSelectorContext,
+    PartsBackedMappingRecipeBuilder[EnumSubsetSemanticMirrorRecipeParts],
+    InferredSemanticMirrorMappingRecipeBuilder,
     DerivedProjectionConcept,
 ):
     """Build enum subset recipe parts from a semantic mirror finding."""
 
     finding: RefactorFinding
 
+    def rejection_reason(self) -> str:
+        if self.parts is not None:
+            return "enum subset projection has an executable authority recipe"
+        return (
+            "enum subset projection requires one module-level enum value "
+            "collection matching all observed members, a new valid authority "
+            "method name, and a cycle-safe authority reference"
+        )
+
+    @cached_property
     def parts(self) -> EnumSubsetSemanticMirrorRecipeParts | None:
         extraction = (
             Maybe.of(self.seed())
@@ -15954,54 +16060,6 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
         )
 
 
-class MappingSemanticMirrorRecipeBuilder(
-    CodemodSelectorContext,
-    ABC,
-):
-    """Recipe declaration for one mapping-mirror family."""
-
-    finding: RefactorFinding
-
-    @classmethod
-    def from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> Self | None:
-        if context is None:
-            return None
-        return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            module_node_cache=context.module_nodes_by_file_path,
-            ast_target_node_cache=context.ast_target_nodes_by_id,
-            module_import_graph_cache=context.module_import_graph,
-            finding=finding,
-        )
-
-    @abstractmethod
-    def recipe(self) -> RefactorRecipe | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def rejection_reason(self) -> str:
-        raise NotImplementedError
-
-
-class InferredSemanticMirrorMappingRecipeBuilder(ABC):
-    """Nominal marker for builders selected by successful structural projection."""
-
-    @classmethod
-    def builder_types(
-        cls,
-    ) -> tuple[type[MappingSemanticMirrorRecipeBuilder], ...]:
-        return tuple(
-            cast(type[MappingSemanticMirrorRecipeBuilder], builder_type)
-            for builder_type in loaded_concrete_nominal_descendants(cls)
-        )
-
-
 @dataclass(frozen=True)
 class InferredMappingRecipeSelection:
     """One unambiguous inferred builder and the recipe it produced."""
@@ -16010,16 +16068,13 @@ class InferredMappingRecipeSelection:
     recipe: RefactorRecipe
 
     @classmethod
-    def from_context(
+    def from_builders(
         cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
+        builders: tuple[MappingSemanticMirrorRecipeBuilder, ...],
     ) -> "InferredMappingRecipeSelection | None":
         candidates = tuple(
             cls(builder=builder, recipe=recipe)
-            for builder_type in InferredSemanticMirrorMappingRecipeBuilder.builder_types()
-            for builder in (builder_type.from_context(finding, context),)
-            if builder is not None
+            for builder in builders
             for recipe in (builder.recipe(),)
             if recipe is not None
         )
@@ -16029,35 +16084,6 @@ class InferredMappingRecipeSelection:
                 f"{tuple(type(candidate.builder).__name__ for candidate in candidates)!r}"
             )
         return candidates[0] if candidates else None
-
-
-class FindingRecipeParts(ABC):
-    """Executable recipe facts owned by a recipe builder."""
-
-    @abstractmethod
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        raise NotImplementedError
-
-
-RecipePartsT = TypeVar("RecipePartsT", bound=FindingRecipeParts)
-
-
-class PartsBackedMappingRecipeBuilder(
-    MappingSemanticMirrorRecipeBuilder,
-    Generic[RecipePartsT],
-    ABC,
-):
-    """Mapping recipe builder whose actionability is owned by a parts record."""
-
-    @property
-    @abstractmethod
-    def parts(self) -> RecipePartsT | None:
-        raise NotImplementedError
-
-    def recipe(self) -> RefactorRecipe | None:
-        if self.parts is None:
-            return None
-        return self.parts.recipe_for(self.finding)
 
 
 @dataclass(frozen=True)
@@ -20148,27 +20174,23 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        selection = InferredMappingRecipeSelection.from_context(
+        builders = InferredSemanticMirrorMappingRecipeBuilder.builders_from_context(
             finding,
             context,
         )
+        selection = InferredMappingRecipeSelection.from_builders(builders)
         if selection is not None:
             return self.evaluation_from_recipe(
                 finding,
                 selection.recipe,
                 type(selection.builder),
             )
-        enum_subset_builder = self.enum_subset_builder_for_finding(finding, context)
-        if enum_subset_builder is not None:
-            parts = enum_subset_builder.parts()
-            if parts is not None:
-                return self.evaluation_from_recipe(
-                    finding,
-                    parts.recipe_for(finding),
-                    type(enum_subset_builder),
-                )
         return RejectedRecipeEvaluation(
-            reason=self.recipe_rejection_reason(finding, context),
+            reason=self.recipe_rejection_reason(
+                finding,
+                context,
+                builders=builders,
+            ),
             executable_declaration_type=type(self),
         )
 
@@ -20190,40 +20212,45 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
+        *,
+        builders: tuple[MappingSemanticMirrorRecipeBuilder, ...] | None = None,
     ) -> str:
-        if context is not None:
-            seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
-            import_boundary = (
-                SemanticMirrorImportBoundary.from_seed(seed, context)
-                if seed is not None
-                else None
+        if context is None:
+            return "semantic mapping mirror recipes require a source selector context"
+        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
+        import_boundary = (
+            SemanticMirrorImportBoundary.from_seed(seed, context)
+            if seed is not None
+            else None
+        )
+        if (
+            import_boundary is not None
+            and import_boundary.import_would_create_cycle(context)
+        ):
+            return "semantic authority import would create a module cycle"
+        resolved_builders = (
+            builders
+            if builders is not None
+            else InferredSemanticMirrorMappingRecipeBuilder.builders_from_context(
+                finding,
+                context,
             )
-            if (
-                import_boundary is not None
-                and import_boundary.import_would_create_cycle(context)
-            ):
-                return "semantic authority import would create a module cycle"
+        )
+        rejection_reasons = (
+            InferredSemanticMirrorMappingRecipeBuilder.rejection_reasons(
+                resolved_builders
+            )
+        )
+        if rejection_reasons:
+            return (
+                f"semantic mapping mirror `{finding.title}` could not be derived "
+                "by inferred builders: "
+                f"{'; '.join(rejection_reasons)}"
+            )
         return (
             "semantic mapping mirror has a stable DSL action key, but no safe "
             f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
             f"from `{finding.metrics.plan_source_name}`"
-        )
-
-    @staticmethod
-    def enum_subset_builder_for_finding(
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> EnumSubsetSemanticMirrorRecipeBuilder | None:
-        if context is None:
-            return None
-        return EnumSubsetSemanticMirrorRecipeBuilder(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            module_node_cache=context.module_nodes_by_file_path,
-            ast_target_node_cache=context.ast_target_nodes_by_id,
-            module_import_graph_cache=context.module_import_graph,
-            finding=finding,
         )
 
     @staticmethod
