@@ -20,7 +20,9 @@ from nominal_refactor_advisor.product_flow import (
     CompactProductFlowModuleProjectionFamily,
     CurrentClassMethodReference,
     DynamicCallTargetReference,
+    ExactCompactValueOrigin,
     LexicalValueReference,
+    OpenCompactValueOrigin,
     compact_product_flow_projection,
 )
 
@@ -272,6 +274,72 @@ def test_product_flow_projects_only_exact_local_value_alias_events() -> None:
         alias.binding_mutation in wrapper.mutations
         for alias in wrapper.exact_local_value_aliases
     )
+
+
+def test_product_flow_resolves_straight_line_alias_origins_and_attribute_suffixes() -> (
+    None
+):
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def target(value):\n"
+            "    return value\n"
+            "\n"
+            "def wrapper(source):\n"
+            "    first = source\n"
+            "    second = first\n"
+            "    return target(second.value)\n"
+        )
+    )
+    wrapper = next(
+        flow for flow in projection.flows if flow.owner.qualname == "wrapper"
+    )
+    call = wrapper.calls[0]
+
+    resolution = wrapper.value_origin_for(
+        LexicalValueReference("second", ("value",)),
+        call.position,
+    )
+
+    assert isinstance(resolution, ExactCompactValueOrigin)
+    assert resolution.exact_origin == LexicalValueReference("source", ("value",))
+    assert tuple(mutation.reference.root_name for mutation in resolution.alias_chain) == (
+        "first",
+        "second",
+    )
+
+
+def test_product_flow_keeps_branch_and_rebinding_alias_origins_open() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def target(left, right):\n"
+            "    return left, right\n"
+            "\n"
+            "def wrapper(flag, left, right):\n"
+            "    if flag:\n"
+            "        first = left\n"
+            "    second = right\n"
+            "    second = normalize(second)\n"
+            "    return target(first, second)\n"
+        )
+    )
+    wrapper = next(
+        flow for flow in projection.flows if flow.owner.qualname == "wrapper"
+    )
+    call = wrapper.calls[-1]
+
+    branch_resolution = wrapper.value_origin_for(
+        LexicalValueReference("first"),
+        call.position,
+    )
+    rebound_resolution = wrapper.value_origin_for(
+        LexicalValueReference("second"),
+        call.position,
+    )
+
+    assert isinstance(branch_resolution, OpenCompactValueOrigin)
+    assert LexicalValueReference("left") in branch_resolution.possible_origins
+    assert isinstance(rebound_resolution, OpenCompactValueOrigin)
+    assert LexicalValueReference("right") in rebound_resolution.possible_origins
 
 
 def test_function_binding_and_dynamic_call_shapes_remain_nominal() -> None:

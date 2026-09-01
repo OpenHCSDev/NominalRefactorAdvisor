@@ -11,6 +11,7 @@ import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cached_property
 from typing import Self
 
 from .ast_tools import CollectedFamily, CompactModuleIdentity, ParsedModule
@@ -695,6 +696,97 @@ class CompactLexicalMutation:
     line: int
 
 
+class CompactValueOriginViolation(StrEnum):
+    """Reason one lexical value lacks a single unchanged local origin."""
+
+    CONTROL_FLOW_JOIN = "control_flow_join"
+    INTERVENING_REBINDING = "intervening_rebinding"
+    AMBIGUOUS_BINDING = "ambiguous_binding"
+    CYCLIC_ALIAS = "cyclic_alias"
+
+
+class CompactValueOriginResolution(ABC):
+    """Nominal result of tracing one value through exact local aliases."""
+
+    @property
+    @abstractmethod
+    def exact_origin(self) -> LexicalValueReference | None:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def possible_origins(self) -> tuple[LexicalValueReference, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def through_alias(
+        self,
+        suffix: tuple[str, ...],
+        binding_mutation: CompactLexicalMutation,
+    ) -> "CompactValueOriginResolution":
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExactCompactValueOrigin(CompactValueOriginResolution):
+    origin: LexicalValueReference
+    alias_chain: tuple[CompactLexicalMutation, ...] = ()
+
+    @property
+    def exact_origin(self) -> LexicalValueReference:
+        return self.origin
+
+    @property
+    def possible_origins(self) -> tuple[LexicalValueReference, ...]:
+        return (self.origin,)
+
+    def through_alias(
+        self,
+        suffix: tuple[str, ...],
+        binding_mutation: CompactLexicalMutation,
+    ) -> "ExactCompactValueOrigin":
+        return type(self)(
+            LexicalValueReference(
+                self.origin.root_name,
+                (*self.origin.attribute_path, *suffix),
+            ),
+            (*self.alias_chain, binding_mutation),
+        )
+
+
+@dataclass(frozen=True)
+class OpenCompactValueOrigin(CompactValueOriginResolution):
+    candidates: tuple[LexicalValueReference, ...]
+    violation: CompactValueOriginViolation
+
+    @property
+    def exact_origin(self) -> None:
+        return None
+
+    @property
+    def possible_origins(self) -> tuple[LexicalValueReference, ...]:
+        return self.candidates
+
+    def through_alias(
+        self,
+        suffix: tuple[str, ...],
+        binding_mutation: CompactLexicalMutation,
+    ) -> "OpenCompactValueOrigin":
+        del binding_mutation
+        return type(self)(
+            tuple(
+                dict.fromkeys(
+                    LexicalValueReference(
+                        candidate.root_name,
+                        (*candidate.attribute_path, *suffix),
+                    )
+                    for candidate in self.candidates
+                )
+            ),
+            self.violation,
+        )
+
+
 @dataclass(frozen=True)
 class CompactExactLocalValueAlias:
     """One exact local-name binding to an unchanged lexical value."""
@@ -913,6 +1005,100 @@ class CompactFunctionFlow:
     @property
     def local_signature_is_observed(self) -> bool:
         return CompactLocalSignatureObserver.observes_any(self.calls)
+
+    @cached_property
+    def mutations_by_root_name(self) -> dict[str, tuple[CompactLexicalMutation, ...]]:
+        grouped: dict[str, list[CompactLexicalMutation]] = {}
+        for mutation in self.mutations:
+            if mutation.reference.attribute_path:
+                continue
+            grouped.setdefault(mutation.reference.root_name, []).append(mutation)
+        return {name: tuple(mutations) for name, mutations in grouped.items()}
+
+    @cached_property
+    def exact_aliases_by_binding_mutation(
+        self,
+    ) -> dict[CompactLexicalMutation, CompactExactLocalValueAlias]:
+        return {
+            alias.binding_mutation: alias for alias in self.exact_local_value_aliases
+        }
+
+    def value_origin_for(
+        self,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition,
+    ) -> CompactValueOriginResolution:
+        return self._value_origin_for(reference, use_position, frozenset())
+
+    def _value_origin_for(
+        self,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition,
+        visited_root_names: frozenset[str],
+    ) -> CompactValueOriginResolution:
+        root_name = reference.root_name
+        if root_name in visited_root_names:
+            return OpenCompactValueOrigin(
+                (reference,),
+                CompactValueOriginViolation.CYCLIC_ALIAS,
+            )
+        mutations = self.mutations_by_root_name.get(root_name, ())
+        if not mutations:
+            return ExactCompactValueOrigin(reference)
+        possible_origins = self._possible_alias_origins(reference, mutations)
+        if len(mutations) != 1:
+            return OpenCompactValueOrigin(
+                possible_origins,
+                CompactValueOriginViolation.AMBIGUOUS_BINDING,
+            )
+        mutation = mutations[0]
+        if not mutation.position.dominates(use_position):
+            return OpenCompactValueOrigin(
+                possible_origins,
+                CompactValueOriginViolation.CONTROL_FLOW_JOIN,
+            )
+        alias = self.exact_aliases_by_binding_mutation.get(mutation)
+        if alias is None:
+            return OpenCompactValueOrigin(
+                possible_origins,
+                CompactValueOriginViolation.INTERVENING_REBINDING,
+            )
+        source_resolution = self._value_origin_for(
+            alias.source,
+            mutation.position,
+            visited_root_names | {root_name},
+        )
+        return source_resolution.through_alias(
+            reference.attribute_path,
+            mutation,
+        )
+
+    def _possible_alias_origins(
+        self,
+        reference: LexicalValueReference,
+        mutations: tuple[CompactLexicalMutation, ...],
+    ) -> tuple[LexicalValueReference, ...]:
+        suffix = reference.attribute_path
+        return tuple(
+            dict.fromkeys(
+                (
+                    reference,
+                    *(
+                        LexicalValueReference(
+                            alias.source.root_name,
+                            (*alias.source.attribute_path, *suffix),
+                        )
+                        for mutation in mutations
+                        if (
+                            alias := self.exact_aliases_by_binding_mutation.get(
+                                mutation
+                            )
+                        )
+                        is not None
+                    ),
+                )
+            )
+        )
 
     def local_candidate_symbols(
         self,
