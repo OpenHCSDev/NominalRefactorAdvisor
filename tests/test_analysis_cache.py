@@ -3571,6 +3571,49 @@ def test_compact_family_cache_identity_derives_item_schema(
     assert string_identity.cache_token != integer_identity.cache_token
 
 
+def test_compact_family_cache_identity_derives_projection_implementation(
+    tmp_path: Path,
+) -> None:
+    family_cache = ast_tools_module.CollectedFamilyCacheContext(
+        path=tmp_path / "mod.py",
+        module_name="mod",
+        source_signature="source",
+        family_cache_dir=None,
+    )
+
+    identity = family_cache.identity(
+        runtime_detectors.RepeatedBuilderCallShapeProjectionFamily
+    )
+    implementation = identity.family_schema.implementation
+    sources_by_module = {
+        source.module_name: source for source in implementation.sources
+    }
+
+    assert ast_tools_module.__name__ in sources_by_module
+    assert native_syntax_module.__name__ in sources_by_module
+    assert (
+        runtime_detectors.RepeatedBuilderCallShapeProjectionFamily.__module__
+        in sources_by_module
+    )
+
+    ast_tools_source = sources_by_module[ast_tools_module.__name__]
+    changed_sources = tuple(
+        replace(source, source_signature="changed-collector-semantics")
+        if source == ast_tools_source
+        else source
+        for source in implementation.sources
+    )
+    changed_identity = replace(
+        identity,
+        family_schema=replace(
+            identity.family_schema,
+            implementation=replace(implementation, sources=changed_sources),
+        ),
+    )
+
+    assert changed_identity.cache_token != identity.cache_token
+
+
 def test_compact_global_detector_shards_reuse_across_report_targets(
     tmp_path: Path,
 ) -> None:

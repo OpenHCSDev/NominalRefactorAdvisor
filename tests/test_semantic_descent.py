@@ -1524,6 +1524,38 @@ def test_repeated_builder_call_ignores_varying_owned_method_calls(
         for item in analyze_path(tmp_path)
     )
 
+
+def test_repeated_builder_call_ignores_existing_owned_method_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class RuntimeCache:\n"
+        "    def request_key(self, *, plan, files, backend):\n"
+        "        return plan, files, backend\n"
+        "\n"
+        "    def cached_context(self, plan, files, backend):\n"
+        "        return self.request_key(\n"
+        "            plan=plan, files=files, backend=backend\n"
+        "        )\n"
+        "\n"
+        "    def cached_state(self, plan, files, backend):\n"
+        "        return self.request_key(\n"
+        "            plan=plan, files=files, backend=backend\n"
+        "        )\n"
+        "\n"
+        "    def cached_metadata(self, plan, files, backend):\n"
+        "        return self.request_key(\n"
+        "            plan=plan, files=files, backend=backend\n"
+        "        )\n",
+    )
+
+    assert not any(
+        item.detector_id == "repeated_builder_calls"
+        for item in analyze_path(tmp_path)
+    )
+
+
 def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
     tmp_path: Path,
 ) -> None:

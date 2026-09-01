@@ -289,12 +289,14 @@ class AnalysisEngineSignature:
 
     @staticmethod
     def module_names() -> tuple[str, ...]:
-        return (
-            "nominal_refactor_advisor.analysis",
-            "nominal_refactor_advisor.analysis_cache",
-            "nominal_refactor_advisor.class_index",
-            "nominal_refactor_advisor.models",
-            "nominal_refactor_advisor.semantic_descent",
+        return tuple(
+            dict.fromkeys(
+                (
+                    "nominal_refactor_advisor.analysis",
+                    "nominal_refactor_advisor.analysis_cache",
+                    *DetectorSemanticEngineSignature.module_names(),
+                )
+            )
         )
 
 
