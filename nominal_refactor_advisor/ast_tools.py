@@ -28,14 +28,18 @@ from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
 from functools import cached_property, lru_cache
 from pathlib import Path
-from types import EllipsisType, ModuleType
-from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast, get_args
+from types import EllipsisType
+from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
 from .deadline import scan_deadline_checkpoint
+from .implementation_identity import (
+    ImplementationSource,
+    declaration_implementation_module_names,
+)
 from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
@@ -167,34 +171,8 @@ class CollectedFamilyContentSignatureIndexSchema:
 
 
 @dataclass(frozen=True)
-class CollectedFamilyImplementationSource:
+class CollectedFamilyImplementationSource(ImplementationSource):
     """Content identity of one module that can determine a family projection."""
-
-    module_name: str
-    source_signature: str
-
-    @classmethod
-    def from_module_name(
-        cls,
-        module_name: str,
-    ) -> "CollectedFamilyImplementationSource":
-        module = sys.modules.get(module_name)
-        source_path = None if module is None else module.__dict__.get("__file__")
-        if not isinstance(source_path, str):
-            return cls(module_name, _source_signature(module_name))
-        path = Path(source_path)
-        try:
-            path_stat = path.stat()
-        except OSError:
-            return cls(module_name, _source_signature(str(path)))
-        return cls(
-            module_name,
-            _implementation_source_signature(
-                str(path.resolve()),
-                path_stat.st_mtime_ns,
-                path_stat.st_size,
-            ),
-        )
 
 
 @dataclass(frozen=True)
@@ -508,124 +486,12 @@ def _source_signature(source: str) -> str:
     return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
 
 
-@lru_cache(maxsize=None)
-def _implementation_source_signature(
-    path_text: str,
-    mtime_ns: int,
-    size: int,
-) -> str:
-    """Hash loaded implementation source under its filesystem change identity."""
-
-    del mtime_ns, size
-    try:
-        payload = Path(path_text).read_bytes()
-    except OSError:
-        payload = path_text.encode("utf-8")
-    return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
-
-def _semantic_value_module_names(
-    value: object,
-    seen_value_ids: set[int] | None = None,
-) -> tuple[str, ...]:
-    """Derive implementation owners carried by one declared semantic value."""
-
-    if seen_value_ids is None:
-        seen_value_ids = set()
-    value_id = id(value)
-    if value_id in seen_value_ids:
-        return ()
-    seen_value_ids.add(value_id)
-
-    module_names: list[str] = []
-    module_name = (
-        value.__name__
-        if isinstance(value, ModuleType)
-        else getattr(value, "__module__", None)
-    )
-    if isinstance(module_name, str):
-        module_names.append(module_name)
-    if is_dataclass(value) and not isinstance(value, type):
-        module_names.append(type(value).__module__)
-        for declared_field in fields(value):
-            module_names.extend(
-                _semantic_value_module_names(
-                    getattr(value, declared_field.name),
-                    seen_value_ids,
-                )
-            )
-    elif callable(value) and not isinstance(module_name, str):
-        module_names.append(type(value).__module__)
-
-    for generic_argument in get_args(value):
-        module_names.extend(
-            _semantic_value_module_names(generic_argument, seen_value_ids)
-        )
-
-    function = getattr(value, "__func__", value)
-    function_code = getattr(function, "__code__", None)
-    function_globals = getattr(function, "__globals__", None)
-    if function_code is not None and isinstance(function_globals, dict):
-        for dependency_name in function_code.co_names:
-            dependency = function_globals.get(dependency_name)
-            if dependency is not None:
-                module_names.extend(
-                    _semantic_value_module_names(dependency, seen_value_ids)
-                )
-        for annotation in getattr(function, "__annotations__", {}).values():
-            if isinstance(annotation, str):
-                try:
-                    annotation_tree = ast.parse(annotation, mode="eval")
-                except SyntaxError:
-                    continue
-                annotation_nodes: list[ast.AST] = []
-                annotation_stack = [annotation_tree]
-                while annotation_stack:
-                    annotation_node = annotation_stack.pop()
-                    annotation_nodes.append(annotation_node)
-                    annotation_stack.extend(ast.iter_child_nodes(annotation_node))
-                annotation_dependencies = (
-                    function_globals.get(node.id)
-                    for node in annotation_nodes
-                    if isinstance(node, ast.Name)
-                )
-            else:
-                annotation_dependencies = (annotation,)
-            for dependency in annotation_dependencies:
-                if dependency is not None:
-                    module_names.extend(
-                        _semantic_value_module_names(dependency, seen_value_ids)
-                    )
-    return tuple(module_names)
-
-
 def _collected_family_implementation_module_names(
     family: type["CollectedFamily[object]"],
 ) -> tuple[str, ...]:
     """Project cache dependencies from the collected-family declaration itself."""
 
-    semantic_values = (
-        CollectedFamily,
-        family,
-        family.collect,
-        *(
-            getattr(family, attribute_name, None)
-            for attribute_name in CollectedFamily.__annotations__
-        ),
-    )
-    seen_value_ids: set[int] = set()
-    return tuple(
-        sorted(
-            {
-                module_name
-                for value in semantic_values
-                for module_name in _semantic_value_module_names(
-                    value,
-                    seen_value_ids,
-                )
-            }
-        )
-    )
+    return declaration_implementation_module_names((family,))
 
 
 def python_source_cache_signature(source: str) -> str:
@@ -1607,6 +1473,14 @@ class CollectedFamily(
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
+
+    @classmethod
+    def registered_implementation_module_names(cls) -> tuple[str, ...]:
+        """Project every family producer dependency through registered leaves."""
+
+        return declaration_implementation_module_names(
+            cls.all_registered_families()
+        )
 
     @classmethod
     @lru_cache(maxsize=None)

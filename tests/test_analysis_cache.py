@@ -38,6 +38,7 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisFindingCacheChunkStreamHeader,
     AnalysisFindingCacheEntryPayload,
     AnalysisFindingCache,
+    DetectorSemanticEngineSignature,
     DetectorRegistrySignature,
     GlobalDetectorAnalysisCacheIdentity,
     GlobalDetectorFamilyAnalysisCacheIdentity,
@@ -45,6 +46,7 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import (
     BuilderCallShapeFamily,
+    CollectedFamily,
     RegistrationShapeFamily,
     SourceModule,
     collect_family_items,
@@ -55,7 +57,12 @@ from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor import ast_tools as ast_tools_module
 from nominal_refactor_advisor import analysis as analysis_module
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
+from nominal_refactor_advisor import annotation_semantics as annotation_semantics_module
+from nominal_refactor_advisor import (
+    assignment_projection as assignment_projection_module,
+)
 from nominal_refactor_advisor import class_index as class_index_module
+from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
 from nominal_refactor_advisor import native_syntax as native_syntax_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
@@ -103,6 +110,7 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraph,
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheIdentity,
+    SemanticDescentImplementationSignature,
     build_semantic_descent_graph,
     build_compact_semantic_descent_graph,
 )
@@ -579,6 +587,46 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     )
     assert global_after_orchestration_change == global_baseline
     assert global_after_semantic_change != global_baseline
+
+
+def test_detector_semantic_engine_derives_registered_declaration_dependencies() -> None:
+    module_names = frozenset(DetectorSemanticEngineSignature.module_names())
+
+    assert {
+        source.module_name
+        for family in CollectedFamily.all_registered_families()
+        for source in family.implementation_identity().sources
+    } <= module_names
+    assert {
+        detector_type.__module__
+        for detector_type in IssueDetector.registered_detector_types()
+    } <= module_names
+    assert {
+        annotation_semantics_module.__name__,
+        assignment_projection_module.__name__,
+        constructor_algebra_module.__name__,
+    } <= module_names
+    assert analysis_module.__name__ not in module_names
+
+
+def test_semantic_graph_cache_identity_derives_every_graph_producer() -> None:
+    module_names = frozenset(SemanticDescentImplementationSignature.module_names())
+    projection_families = (
+        CompactSemanticModuleProjectionFamily,
+        class_index_module.CompactModuleClassProjectionFamily,
+    )
+
+    assert {
+        source.module_name
+        for family in projection_families
+        for source in family.implementation_identity().sources
+    } <= module_names
+    assert {
+        assignment_projection_module.__name__,
+        class_index_module.__name__,
+        semantic_descent_module.__name__,
+    } <= module_names
+    assert analysis_module.__name__ not in module_names
 
 
 def test_semantic_graph_cache_treats_truncated_payload_as_miss(
@@ -1852,6 +1900,9 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
         del cls, module
         raise AssertionError("compact global projection cache was not reused")
 
+    unexpected_collection.__module__ = (
+        runtime_detectors.GeneratedBoundarySemanticConstantAuthority.__module__
+    )
     monkeypatch.setattr(
         runtime_detectors.GeneratedBoundarySemanticConstantAuthority,
         "module_sites",

@@ -38,7 +38,6 @@ from .ast_tools import (
     module_syntax_index,
     python_module_path_identities_for_roots,
 )
-from . import class_index as class_index_module
 from .cache_paths import default_semantic_descent_cache_dir
 from .cache_checkout import (
     CacheCheckoutPathError,
@@ -53,6 +52,7 @@ from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
+    CompactModuleClassProjectionFamily,
     CompactModuleClassProjection,
     IndexedClass,
     ModuleClassReferenceResolver,
@@ -63,6 +63,7 @@ from .class_index import (
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from .implementation_identity import ImplementationSource, implementation_module_names
 from .models import (
     FindingMetrics,
     MappingMetrics,
@@ -335,7 +336,7 @@ class SemanticDescentGraphCacheReadError(RuntimeError):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 10
+    version: int = 11
     digest_size: int = 16
 
 
@@ -352,13 +353,28 @@ class SemanticDescentImplementationSignature:
     def current(cls) -> "SemanticDescentImplementationSignature":
         return cls(
             source_hashes=tuple(
-                sorted(
-                    (
-                        (path.name, _source_file_hash(path))
-                        for path in _semantic_descent_implementation_paths()
-                    ),
-                    key=lambda item: item[0],
+                (
+                    source.module_name,
+                    source.source_signature,
                 )
+                for source in (
+                    ImplementationSource.from_module_name(module_name)
+                    for module_name in cls.module_names()
+                )
+            )
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def module_names() -> tuple[str, ...]:
+        """Derive every persisted graph producer from executable declarations."""
+
+        return implementation_module_names(
+            (
+                _build_semantic_descent_graph_cached,
+                build_compact_semantic_descent_graph,
+                CompactSemanticModuleProjectionFamily,
+                CompactModuleClassProjectionFamily,
             )
         )
 
@@ -6377,13 +6393,6 @@ def _assignment_label(node: ast.stmt, *, owner_symbol: str) -> str:
     if isinstance(node, ast.Assign) and node.targets:
         return ast.unparse(node.targets[0])
     return PresentationProjectionSiteKind.ASSIGNMENT.label_for(owner_symbol)
-
-
-def _semantic_descent_implementation_paths() -> tuple[Path, ...]:
-    return (
-        Path(__file__).resolve(),
-        Path(class_index_module.__file__).resolve(),
-    )
 
 
 def _source_file_hash(path: Path) -> str:

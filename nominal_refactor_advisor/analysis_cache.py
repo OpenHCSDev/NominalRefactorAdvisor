@@ -17,6 +17,7 @@ from types import TracebackType
 from typing import BinaryIO, TypeAlias
 
 from .ast_tools import (
+    CollectedFamily,
     ParsedModule,
     PythonSourcePathPolicy,
     python_source_paths_for_roots,
@@ -34,6 +35,7 @@ from .cache_checkout import (
 )
 from .detectors import DetectorConfig, IssueDetector
 from .finding_counts import FindingSummary
+from .implementation_identity import declaration_implementation_module_names
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
 
@@ -306,25 +308,15 @@ class DetectorSemanticEngineSignature(AnalysisEngineSignature):
 
     @staticmethod
     def module_names() -> tuple[str, ...]:
-        return (
-            "nominal_refactor_advisor.annotation_semantics",
-            "nominal_refactor_advisor.assignment_projection",
-            "nominal_refactor_advisor.ast_tools",
-            "nominal_refactor_advisor.class_index",
-            "nominal_refactor_advisor.constructor_algebra",
-            "nominal_refactor_advisor.detectors._base",
-            "nominal_refactor_advisor.detectors._helpers",
-            "nominal_refactor_advisor.models",
-            "nominal_refactor_advisor.name_algebra",
-            "nominal_refactor_advisor.observation_families",
-            "nominal_refactor_advisor.observation_graph",
-            "nominal_refactor_advisor.registry_normal_form",
-            "nominal_refactor_advisor.semantic_algebra",
-            "nominal_refactor_advisor.semantic_descent",
-            "nominal_refactor_advisor.semantic_inspection",
-            "nominal_refactor_advisor.semantic_match",
-            "nominal_refactor_advisor.semantic_shape_algebra",
-            "nominal_refactor_advisor.source_index",
+        return tuple(
+            sorted(
+                set(
+                    declaration_implementation_module_names(
+                        IssueDetector.registered_detector_types()
+                    )
+                )
+                | set(CollectedFamily.registered_implementation_module_names())
+            )
         )
 
 
