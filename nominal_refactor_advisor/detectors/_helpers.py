@@ -4505,13 +4505,6 @@ def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
     return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+@classmethod\n+def from_source(cls, source):\n+    return {callee_name}(...)\n*** End Patch"
 
 
-def _single_owner_builder_family_patch(owner_symbol: str, callee_name: str) -> str:
-    return (
-        f"# Replace the repeated `{callee_name}` calls inside `{owner_symbol}` with one declarative invocation table.\n"
-        "# Keep the builder authority in one row family and materialize the calls in one loop."
-    )
-
-
 def _autoregister_patch(
     registry_name: str,
     class_names: set[str],
@@ -4572,10 +4565,6 @@ def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
         (f"            {name}=source.{name}," for name in field_names[:4])
     )
     return f"@dataclass(frozen=True)\nclass {row_name}:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(\n{args_block}\n        )"
-
-
-def _single_owner_builder_family_scaffold(callee_name: str) -> str:
-    return f'@dataclass(frozen=True)\nclass InvocationSpec:\n    args: tuple[object, ...]\n    kwargs: dict[str, object]\n\nINVOCATION_SPECS = (\n    InvocationSpec(args=(...), kwargs={{"flag": True}}),\n)\n\nfor spec in INVOCATION_SPECS:\n    owner.{callee_name}(*spec.args, **spec.kwargs)'
 
 
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:

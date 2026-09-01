@@ -36,9 +36,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
     codemod.RepeatedBuilderAuthorityMethod: (codemod.ConstructorKwargCollapseConcept),
-    codemod.RepeatedMethodCallAuthorityRecipeParts: (
-        codemod.CallMappingAuthorityConcept
-    ),
     codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
     ),
@@ -118,7 +115,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             codemod.NominalBoundaryConcept,
             frozenset(
                 {
-                    codemod.CallMappingAuthorityConcept,
                     codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                     codemod.DataclassPayloadProjectionConcept,
@@ -145,7 +141,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             codemod.CallMappingAuthorityConcept,
             frozenset(
                 {
-                    codemod.CallMappingAuthorityConcept,
                     codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                 }
@@ -402,49 +397,6 @@ def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
         codemod.RefactorConcept.leaf_concept_for_declaration(declaration)
         is codemod.ConstructorKwargCarrierProjectionConcept
     )
-
-
-def test_repeated_builder_nonconcept_rule_does_not_inherit_a_carrier_leaf(
-    tmp_path: Path,
-) -> None:
-    evaluation = _repeated_builder_evaluation_for_source(
-        tmp_path,
-        "class Builder:\n"
-        "    def main(self):\n"
-        '        self.register("--json", action="store_true", help="JSON")\n'
-        '        self.register("--plans", action="store_true", help="Plans")\n'
-        '        self.register("--workers", type=int, default=3, help="Workers")\n'
-        '        self.register("--exclude", action="append", default=[], help="Exclude")\n'
-        "        return self\n",
-    )
-
-    declaration = evaluation.required_executable_declaration_type
-    assert declaration is codemod.RepeatedBuilderCallFindingRecipeSynthesizer
-    assert not issubclass(declaration, codemod.RefactorConcept)
-
-
-def test_repeated_owner_method_calls_publish_call_mapping_authority(
-    tmp_path: Path,
-) -> None:
-    evaluation = _repeated_builder_evaluation_for_source(
-        tmp_path,
-        "class Renderer:\n"
-        "    def emit(\n"
-        "        self, name: str, enabled: bool = False, style: str = 'plain'\n"
-        "    ) -> str:\n"
-        "        return name if enabled else f'{style}:{name.lower()}'\n\n"
-        "    def build(self):\n"
-        "        first = self.emit(name='alpha')\n"
-        "        second = self.emit(name='beta', enabled=True)\n"
-        "        third = self.emit(name='gamma', style='compact')\n"
-        "        fourth = self.emit(name='delta', enabled=True, style='wide')\n"
-        "        return first, second, third, fourth\n",
-    )
-
-    declaration = evaluation.required_executable_declaration_type
-    assert evaluation.status.planned
-    assert declaration is codemod.RepeatedMethodCallAuthorityRecipeParts
-    assert evaluation.refactor_concept_type is codemod.CallMappingAuthorityConcept
 
 
 def test_target_shape_and_selector_mirror_authorities_are_absent() -> None:

@@ -3476,7 +3476,6 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
     family = runtime_detectors.RepeatedBuilderCallShapeProjectionFamily
     demand = runtime_detectors.RepeatedBuilderCallProjectionDemand(
         exact_mapping_keys=frozenset(),
-        owner_family_keys=frozenset(),
     )
     demand_signature = ast_tools_module.collected_family_demand_cache_signature(demand)
     source_signature = ast_tools_module.python_source_cache_signature(source)

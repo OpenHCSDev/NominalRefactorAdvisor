@@ -1913,10 +1913,9 @@ def _builder_call_projection_sort_key(
 
 @dataclass(frozen=True)
 class RepeatedBuilderCallProjectionDemand:
-    """Group keys capable of producing a finding with report-target evidence."""
+    """Exact mapping keys capable of producing a repeated-builder finding."""
 
     exact_mapping_keys: frozenset[tuple[str, str, tuple[str, ...], tuple[str, ...]]]
-    owner_family_keys: frozenset[tuple[str, str, str]]
 
 
 def _repeated_builder_call_projection_demand(
@@ -1937,10 +1936,6 @@ def _repeated_builder_call_projection_demand(
             )
             for builder in target_builders
         ),
-        owner_family_keys=frozenset(
-            (builder.file_path, builder.owner_prefix, builder.callee_name)
-            for builder in target_builders
-        ),
     )
 
 
@@ -1948,17 +1943,12 @@ def _repeated_builder_call_is_demanded(
     builder: BuilderCallShape,
     demand: RepeatedBuilderCallProjectionDemand,
 ) -> bool:
-    return bool(
-        (
-            builder.file_path,
-            builder.callee_name,
-            builder.field_names,
-            builder.value_fingerprint,
-        )
-        in demand.exact_mapping_keys
-        or (builder.file_path, builder.owner_prefix, builder.callee_name)
-        in demand.owner_family_keys
-    )
+    return (
+        builder.file_path,
+        builder.callee_name,
+        builder.field_names,
+        builder.value_fingerprint,
+    ) in demand.exact_mapping_keys
 
 
 def _project_repeated_builder_call_demand(
@@ -1984,8 +1974,6 @@ def _collect_repeated_builder_call_ast_demand(
     callee_names = frozenset(
         callee_name
         for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
-    ) | frozenset(
-        callee_name for _file_path, _owner_name, callee_name in demand.owner_family_keys
     )
     return list(
         _project_repeated_builder_call_demand(
@@ -2072,10 +2060,7 @@ class RepeatedBuilderCallDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         builders = tuple(candidates)
-        findings: list[RefactorFinding] = []
-        findings.extend(self._exact_mapping_findings(builders, config))
-        findings.extend(self._single_owner_family_findings(builders, config))
-        return findings
+        return self._exact_mapping_findings(builders, config)
 
     def _exact_mapping_findings(
         self,
@@ -2130,63 +2115,6 @@ class RepeatedBuilderCallDetector(
                         field_names=ordered[0].field_names,
                         source_name=ordered[0].source_name,
                         identity_field_names=ordered[0].identity_field_names,
-                    ),
-                )
-            )
-        return findings
-
-    def _single_owner_family_findings(
-        self,
-        builders: tuple[BuilderCallShape, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        grouped: dict[tuple[str, str, str], list[BuilderCallShape]] = defaultdict(list)
-        for builder in builders:
-            if not builder.field_names:
-                continue
-            grouped[
-                (builder.file_path, builder.owner_prefix, builder.callee_name)
-            ].append(builder)
-        findings: list[RefactorFinding] = []
-        minimum_sites = max(config.min_builder_keywords, 4)
-        for owner_key, group in grouped.items():
-            ordered = sorted_tuple(
-                group, key=lambda item: (item.file_path, item.lineno)
-            )
-            if len(ordered) < minimum_sites:
-                continue
-            distinct_field_names = sorted_tuple(
-                {name for builder in ordered for name in builder.field_names}
-            )
-            if len(distinct_field_names) < config.min_builder_keywords:
-                continue
-            if len({builder.field_names for builder in ordered}) < 2:
-                continue
-            owner_symbols = {builder.symbol for builder in ordered}
-            if len(owner_symbols) != 1:
-                continue
-            _file_path, owner_symbol, callee_name = owner_key
-            evidence = tuple(
-                (
-                    SourceLocation(builder.file_path, builder.lineno, builder.symbol)
-                    for builder in ordered[:6]
-                )
-            )
-            findings.append(
-                self.build_finding(
-                    f"`{owner_symbol}` repeats builder `{callee_name}` across {len(ordered)} declarative sites with field family {distinct_field_names}.",
-                    evidence,
-                    capability_gap="single authoritative declarative builder table for one owner surface",
-                    relation_context="one owner repeats a builder call family with varying declarative payload",
-                    scaffold=_single_owner_builder_family_scaffold(callee_name),
-                    codemod_patch=_single_owner_builder_family_patch(
-                        owner_symbol, callee_name
-                    ),
-                    metrics=MappingMetrics.from_field_names(
-                        mapping_site_count=len(ordered),
-                        mapping_name=callee_name,
-                        field_names=distinct_field_names,
-                        source_name=owner_symbol,
                     ),
                 )
             )

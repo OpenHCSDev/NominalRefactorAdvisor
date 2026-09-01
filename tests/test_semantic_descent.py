@@ -1372,7 +1372,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert "without a custom key extractor" in custom_key_plan.records[0].reason
 
 
-def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
+def test_repeated_builder_call_rejects_identity_constructor_wrapper(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -1419,25 +1419,12 @@ def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
-    recipe = plan.document.to_dict()["recipes"][0]
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "planned"
-    assert (
-        plan.records[0].executable_declaration_name == "RepeatedBuilderAuthorityMethod"
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "requires a source projection or invariant selector axis" in (
+        plan.records[0].reason
     )
-    assert plan.records[0].refactor_concept == "constructor_kwarg_collapse"
-    assert [operation["operation"] for operation in recipe["operations"]] == [
-        "replace_target",
-        "replace_target",
-        "replace_target",
-        "replace_target",
-    ]
-    assert "def from_sources(" in rewritten
-    assert rewritten.count("BranchItem.from_sources(") == 3
-    assert "return cls(" in rewritten
-    assert simulation.is_clean is True
+    assert plan.document.recipes == ()
 
 
 def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
@@ -1505,104 +1492,29 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     assert simulation.is_clean is True
 
 
-def test_repeated_builder_call_synthesizes_single_owner_method_authority(
+def test_repeated_builder_call_ignores_varying_owned_method_calls(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
-        "from dataclasses import dataclass\n"
+        "class Renderer:\n"
+        "    def emit(\n"
+        "        self, name: str, enabled: bool = False, style: str = 'plain'\n"
+        "    ) -> str:\n"
+        "        return name if enabled else f'{style}:{name.lower()}'\n"
         "\n"
-        "@dataclass(frozen=True)\n"
-        "class Report:\n"
-        "    stages: tuple[str, ...]\n"
-        "    scan: str\n"
-        "    reason: str\n"
-        "    completed: bool\n"
-        "    terminal_synthesis_report: str | None = None\n"
-        "\n"
-        "class Runner:\n"
-        "    def run(self, active_scan, stages, stage, report):\n"
-        "        if not active_scan:\n"
-        "            return self.report(\n"
-        "                stages=(),\n"
-        "                scan=active_scan,\n"
-        "                reason='no_targets',\n"
-        "                completed=True,\n"
-        "            )\n"
-        "        if report is None:\n"
-        "            return self.report(\n"
-        "                stages=tuple(stages),\n"
-        "                scan=active_scan,\n"
-        "                reason='no_recipe',\n"
-        "                completed=False,\n"
-        "                terminal_synthesis_report=report,\n"
-        "            )\n"
-        "        if stage:\n"
-        "            return self.report(\n"
-        "                stages=(*stages, stage),\n"
-        "                scan=active_scan,\n"
-        "                reason='staged',\n"
-        "                completed=False,\n"
-        "            )\n"
-        "        return self.report(\n"
-        "            stages=tuple(stages),\n"
-        "            scan=active_scan,\n"
-        "            reason='done',\n"
-        "            completed=True,\n"
-        "            terminal_synthesis_report=report,\n"
-        "        )\n"
-        "\n"
-        "    def report(\n"
-        "        self,\n"
-        "        *,\n"
-        "        stages: tuple[str, ...],\n"
-        "        scan: str,\n"
-        "        reason: str,\n"
-        "        completed: bool,\n"
-        "        terminal_synthesis_report: str | None = None,\n"
-        "    ) -> Report:\n"
-        "        return Report(\n"
-        "            stages=stages,\n"
-        "            scan=scan,\n"
-        "            reason=reason,\n"
-        "            completed=completed,\n"
-        "            terminal_synthesis_report=terminal_synthesis_report,\n"
-        "        )\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    finding = next(
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "repeated_builder_calls"
-        and item.relation_context
-        == "one owner repeats a builder call family with varying declarative payload"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
-
-    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
-    projected_findings = analyze_modules(
-        snapshot.with_virtual_sources(
-            simulation.simulation.rewritten_sources
-        ).parsed_modules,
-        DetectorConfig(),
+        "    def build(self):\n"
+        "        first = self.emit(name='alpha')\n"
+        "        second = self.emit(name='beta', enabled=True)\n"
+        "        third = self.emit(name='gamma', style='compact')\n"
+        "        fourth = self.emit(name='delta', enabled=True, style='wide')\n"
+        "        return first, second, third, fourth\n",
     )
 
-    assert plan.records[0].status.value == "planned"
-    assert "def _run_report_authority(" in rewritten
-    assert "return self.report(" in rewritten
-    assert rewritten.count("self._run_report_authority(") == 4
-    assert rewritten.count("return self.report(") == 1
-    assert "terminal_synthesis_report: str | None = None" in rewritten
     assert not any(
         item.detector_id == "repeated_builder_calls"
-        and item.relation_context
-        == "one owner repeats a builder call family with varying declarative payload"
-        for item in projected_findings
+        for item in analyze_path(tmp_path)
     )
-    assert simulation.is_clean is True
-
 
 def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
     tmp_path: Path,

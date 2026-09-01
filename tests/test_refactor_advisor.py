@@ -6088,6 +6088,34 @@ class DynamicSource:
 
 
 _REPEATED_BUILDER_SOURCE = """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RuntimePlan:
+    pose_id: str
+    score: float
+    theorem_handles: tuple[str, ...]
+
+
+def alpha(candidate):
+    return RuntimePlan(
+        pose_id=candidate.pose_id,
+        score=candidate.score,
+        theorem_handles=tuple(candidate.theorem_handles),
+    )
+
+
+def beta(entry):
+    return RuntimePlan(
+        pose_id=entry.pose_id,
+        score=entry.score,
+        theorem_handles=tuple(entry.theorem_handles),
+    )
+"""
+
+
+_VARYING_OWNER_CALL_SOURCE = """
 class Builder:
     def main(self):
         self.register("--json", action="store_true", help="Emit JSON output")
@@ -9735,24 +9763,18 @@ def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> Non
     )
 
 
-def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
+def test_ignores_varying_single_owner_calls_without_shared_mapping(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        _REPEATED_BUILDER_SOURCE,
+        _VARYING_OWNER_CALL_SOURCE,
     )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-            and "main" in finding.summary
-            and ("register" in finding.summary)
-        )
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in analyze_path(tmp_path)
     )
-    assert "InvocationSpec" in (finding.scaffold or "")
-    assert "declarative invocation table" in (finding.codemod_patch or "")
 
 
 def test_ignores_argparse_add_argument_builder_family(tmp_path: Path) -> None:

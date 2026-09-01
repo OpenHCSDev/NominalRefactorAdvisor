@@ -13340,60 +13340,6 @@ class RepeatedBuilderAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
         return type(self.authority_method)
 
 
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthorityParameter(RepeatedCallAuthorityParameter):
-    """One generated method-call authority parameter derived from a callee."""
-
-    default_source: str | None = None
-
-
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthorityRecipeParts(
-    RepeatedAuthorityRecipeParts,
-    CallMappingAuthorityConcept,
-):
-    """Executable facts for one single-owner repeated method-call extraction."""
-
-    recipe_id_suffix = "extract-method-call-authority"
-    recipe_reason = "Move repeated method-call field mapping behind an owner authority."
-
-    def executable_declaration_type(
-        self,
-        synthesizer_type: type[object],
-    ) -> type[object]:
-        del synthesizer_type
-        return type(self)
-
-
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthorityCallSpec(RepeatedAuthorityMethodName):
-    """Generated call expression for one owner method-call authority."""
-
-    argument_sources: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthoritySourceSpec(
-    RepeatedAuthorityMethodSpec[RepeatedMethodCallAuthorityParameter]
-):
-    """Generated helper method source for one method-call authority."""
-
-    callee_name: str
-    return_annotation: str
-
-
-@dataclass(frozen=True)
-class RepeatedMethodCallAuthorityExtraction(
-    RepeatedAuthorityMethodSpec[RepeatedMethodCallAuthorityParameter]
-):
-    """Resolved owner/callee context for one method-call authority extraction."""
-
-    class_target: AstTargetDigest
-    class_node: ast.ClassDef
-    callee_node: ast.FunctionDef | ast.AsyncFunctionDef
-    calls: tuple[ast.Call, ...]
-
-
 class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     """Build class-owned constructor authority recipes for repeated builder calls."""
 
@@ -13431,12 +13377,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext,
-    ) -> tuple[
-        RepeatedBuilderAuthorityRecipeParts
-        | RepeatedMethodCallAuthorityRecipeParts
-        | None,
-        str,
-    ]:
+    ) -> tuple[RepeatedBuilderAuthorityRecipeParts | None, str]:
         if not isinstance(finding.metrics, MappingMetrics):
             return (
                 None,
@@ -13465,17 +13406,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             return None, "repeated-builder authority extraction requires source text"
         constructor = self.constructor_target(context, source_path, constructor_name)
         if constructor is None:
-            method_parts, method_rejection_reason = (
-                self.repeated_method_call_recipe_parts_for_finding(
-                    finding,
-                    context,
-                    source_path=source_path,
-                    source=source,
-                    callee_name=constructor_name,
-                )
-            )
-            if method_parts is not None or method_rejection_reason:
-                return method_parts, method_rejection_reason
             return (
                 None,
                 "repeated-builder authority extraction cannot resolve constructor class",
@@ -13508,7 +13438,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if method is None:
             return (
                 None,
-                "repeated-builder authority extraction requires a role or invariant selector axis",
+                "repeated-builder authority extraction requires a source projection "
+                "or invariant selector axis",
             )
         if self.class_defines_method(constructor_node, method.method_name):
             return (
@@ -13583,401 +13514,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if len(resolved_paths) != 1:
             return None
         return next(iter(resolved_paths))
-
-    def repeated_method_call_recipe_parts_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        source: str,
-        callee_name: str,
-    ) -> tuple[RepeatedMethodCallAuthorityRecipeParts | None, str]:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return None, "repeated method-call extraction requires mapping metrics"
-        extraction, rejection_reason = self.repeated_method_call_authority_extraction(
-            finding,
-            context,
-            source_path=source_path,
-            callee_name=callee_name,
-        )
-        if extraction is None:
-            return None, rejection_reason
-        replacements = self.method_call_replacements(
-            source,
-            extraction.calls,
-            call_spec=RepeatedMethodCallAuthorityCallSpec(
-                method_name=extraction.method_name,
-                argument_sources=(),
-            ),
-            parameters=extraction.parameters,
-        )
-        if not replacements:
-            return (
-                None,
-                "repeated method-call extraction found no safe call rewrites",
-            )
-        if extraction.callee_node.returns is None:
-            return (
-                None,
-                "repeated method-call extraction requires a typed callee return",
-            )
-        replacement_source = self.class_replacement_with_method_call_authority(
-            source,
-            extraction.class_node,
-            extraction.callee_node,
-            source_spec=RepeatedMethodCallAuthoritySourceSpec(
-                callee_name=callee_name,
-                method_name=extraction.method_name,
-                parameters=extraction.parameters,
-                return_annotation=ast.unparse(extraction.callee_node.returns),
-            ),
-            call_replacements=replacements,
-        )
-        return (
-            RepeatedMethodCallAuthorityRecipeParts(
-                rewrite_steps=(
-                    RepeatedAuthorityTargetRewrite(
-                        target=extraction.class_target,
-                        replacement_source=replacement_source,
-                        rationale=(
-                            "Insert owner method-call authority and rewrite repeated "
-                            "calls."
-                        ),
-                    ),
-                ),
-                authority_claim=AstTargetAuthorityClaim.from_target(
-                    extraction.class_target
-                ),
-            ),
-            "",
-        )
-
-    def repeated_method_call_authority_extraction(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        callee_name: str,
-    ) -> tuple[RepeatedMethodCallAuthorityExtraction | None, str]:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return None, "repeated method-call extraction requires mapping metrics"
-        owner_qualname = self.single_owner_qualname(finding)
-        if owner_qualname is None:
-            return None, "repeated method-call extraction requires one owner method"
-        owner_target = self.function_target(context, source_path, owner_qualname)
-        if owner_target is None:
-            return None, "repeated method-call extraction cannot resolve owner method"
-        owner_target_digest, owner_node = owner_target
-        class_context, rejection_reason = self.method_call_authority_class_context(
-            context,
-            owner_target_digest,
-        )
-        if class_context is None:
-            return None, rejection_reason
-        class_target, class_node = class_context
-        callee_node = self.class_method_node(class_node, callee_name)
-        if callee_node is None:
-            return None, "repeated method-call extraction cannot resolve owner callee"
-        parameters = self.callee_parameters(
-            callee_node,
-            finding.metrics.plan_field_names,
-        )
-        if parameters is None:
-            return (
-                None,
-                "repeated method-call extraction requires typed callee parameters",
-            )
-        calls = self.matching_self_method_calls(
-            owner_node,
-            callee_name=callee_name,
-            field_names=tuple(parameter.name for parameter in parameters),
-        )
-        if len(calls) < 2:
-            return (
-                None,
-                "repeated method-call extraction found no repeated owner calls",
-            )
-        method_name = self.method_call_authority_method_name(
-            owner_qualname,
-            callee_name,
-        )
-        if self.class_defines_method(class_node, method_name):
-            return (
-                None,
-                f"repeated method-call extraction will not overwrite {method_name}",
-            )
-        return (
-            RepeatedMethodCallAuthorityExtraction(
-                class_target=class_target,
-                class_node=class_node,
-                callee_node=callee_node,
-                method_name=method_name,
-                parameters=parameters,
-                calls=calls,
-            ),
-            "",
-        )
-
-    @staticmethod
-    def method_call_authority_class_context(
-        context: CodemodSelectorContext,
-        owner_target_digest: AstTargetDigest,
-    ) -> tuple[tuple[AstTargetDigest, ast.ClassDef] | None, str]:
-        class_target = ContainingClassTargetBoundaryPolicy(
-            context.source_index
-        ).target_for(owner_target_digest.target_id)
-        if class_target is None:
-            return None, "repeated method-call extraction requires a containing class"
-        class_node = context.ast_target_nodes_by_id.get(class_target.target_id)
-        if not isinstance(class_node, ast.ClassDef):
-            return None, "repeated method-call extraction class target is not a class"
-        return (class_target, class_node), ""
-
-    @staticmethod
-    def single_owner_qualname(finding: RefactorFinding) -> str | None:
-        subjects = {
-            EvidenceSymbol(evidence.symbol).subject for evidence in finding.evidence
-        }
-        if len(subjects) != 1:
-            return None
-        return next(iter(subjects))
-
-    @staticmethod
-    def class_method_node(
-        class_node: ast.ClassDef,
-        method_name: str,
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        matches = tuple(
-            statement
-            for statement in class_node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and statement.name == method_name
-        )
-        if len(matches) != 1:
-            return None
-        return matches[0]
-
-    @classmethod
-    def callee_parameters(
-        cls,
-        callee_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        field_names: tuple[str, ...],
-    ) -> tuple[RepeatedMethodCallAuthorityParameter, ...] | None:
-        expected_names = set(field_names)
-        args = callee_node.args
-        positional_defaults = cls.positional_default_sources(args)
-        keyword_defaults = cls.keyword_only_default_sources(args)
-        all_parameters = (
-            *(
-                (argument, positional_defaults.get(argument.arg))
-                for argument in args.args[1:]
-            ),
-            *(
-                (argument, keyword_defaults.get(argument.arg))
-                for argument in args.kwonlyargs
-            ),
-        )
-        if any(
-            argument.arg in expected_names and argument.annotation is None
-            for argument, _default_source in all_parameters
-        ):
-            return None
-        parameters = tuple(
-            RepeatedMethodCallAuthorityParameter(
-                name=argument.arg,
-                annotation=ast.unparse(argument.annotation),
-                default_source=default_source,
-            )
-            for argument, default_source in all_parameters
-            if argument.arg in expected_names
-        )
-        if {parameter.name for parameter in parameters} != expected_names:
-            return None
-        return parameters
-
-    @staticmethod
-    def positional_default_sources(arguments: ast.arguments) -> dict[str, str]:
-        default_by_name: dict[str, str] = {}
-        if not arguments.defaults:
-            return default_by_name
-        defaulted_args = arguments.args[-len(arguments.defaults) :]
-        for argument, default in zip(defaulted_args, arguments.defaults, strict=True):
-            default_by_name[argument.arg] = ast.unparse(default)
-        return default_by_name
-
-    @staticmethod
-    def keyword_only_default_sources(arguments: ast.arguments) -> dict[str, str]:
-        return {
-            argument.arg: ast.unparse(default)
-            for argument, default in zip(
-                arguments.kwonlyargs,
-                arguments.kw_defaults,
-                strict=True,
-            )
-            if default is not None
-        }
-
-    @staticmethod
-    def matching_self_method_calls(
-        owner_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        *,
-        callee_name: str,
-        field_names: tuple[str, ...],
-    ) -> tuple[ast.Call, ...]:
-        return tuple(
-            node
-            for node in ast.walk(owner_node)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "self"
-            and node.func.attr == callee_name
-            and not node.args
-            and all(keyword.arg is not None for keyword in node.keywords)
-            and {keyword.arg for keyword in node.keywords} <= set(field_names)
-        )
-
-    @staticmethod
-    def method_call_authority_method_name(
-        owner_qualname: str,
-        callee_name: str,
-    ) -> str:
-        owner_method = owner_qualname.rsplit(".", 1)[-1]
-        return f"_{owner_method}_{callee_name}_authority"
-
-    @classmethod
-    def method_call_replacements(
-        cls,
-        source: str,
-        calls: tuple[ast.Call, ...],
-        *,
-        call_spec: RepeatedMethodCallAuthorityCallSpec,
-        parameters: tuple[RepeatedMethodCallAuthorityParameter, ...],
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        geometry = SourceTextGeometry(source)
-        replacements: list[SourceTextSpanReplacement] = []
-        for call in calls:
-            argument_sources = cls.method_call_argument_sources(
-                geometry,
-                call,
-                parameters,
-            )
-            if argument_sources is None:
-                return ()
-            start_offset, end_offset = geometry.required_node_offsets(call)
-            replacements.append(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=start_offset,
-                    end_offset=end_offset,
-                    replacement_source=cls.method_call_authority_call_source(
-                        call,
-                        spec=replace(
-                            call_spec,
-                            argument_sources=argument_sources,
-                        ),
-                    ),
-                )
-            )
-        return tuple(replacements)
-
-    @staticmethod
-    def method_call_authority_call_source(
-        call: ast.Call,
-        *,
-        spec: RepeatedMethodCallAuthorityCallSpec,
-    ) -> str:
-        argument_indent = " " * (call.col_offset + 4)
-        closing_indent = " " * call.col_offset
-        argument_lines = tuple(
-            f"{argument_indent}{argument_source},"
-            for argument_source in spec.argument_sources
-        )
-        arguments_source = "\n".join(argument_lines)
-        return f"self.{spec.method_name}(\n{arguments_source}\n{closing_indent})"
-
-    @staticmethod
-    def method_call_argument_sources(
-        geometry: SourceTextGeometry,
-        call: ast.Call,
-        parameters: tuple[RepeatedMethodCallAuthorityParameter, ...],
-    ) -> tuple[str, ...] | None:
-        value_by_keyword = {
-            keyword.arg: keyword.value
-            for keyword in call.keywords
-            if keyword.arg is not None
-        }
-        argument_sources: list[str] = []
-        for parameter in parameters:
-            value = value_by_keyword.get(parameter.name)
-            if value is None:
-                if parameter.default_source is None:
-                    return None
-                argument_sources.append(parameter.default_source)
-                continue
-            source_segment = geometry.segment_for_node(value)
-            if source_segment is None:
-                return None
-            argument_sources.append(source_segment)
-        return tuple(argument_sources)
-
-    def class_replacement_with_method_call_authority(
-        self,
-        source: str,
-        class_node: ast.ClassDef,
-        callee_node: ast.FunctionDef | ast.AsyncFunctionDef,
-        *,
-        source_spec: RepeatedMethodCallAuthoritySourceSpec,
-        call_replacements: tuple[SourceTextSpanReplacement, ...],
-    ) -> str:
-        geometry = SourceTextGeometry(source)
-        class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(class_node))
-        insertion_offset = geometry.node_span_offsets(
-            SourceNodeSpan(
-                callee_node,
-                decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
-            )
-        )[0]
-        method_source = self.method_call_authority_source(source_spec)
-        replacements = (
-            *call_replacements,
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=insertion_offset,
-                end_offset=insertion_offset,
-                replacement_source=method_source,
-            ),
-        )
-        return geometry.source_with_replacements_in_span(
-            class_start,
-            class_end,
-            replacements,
-        )
-
-    @staticmethod
-    def method_call_authority_source(
-        spec: RepeatedMethodCallAuthoritySourceSpec,
-    ) -> str:
-        parameter_lines = tuple(
-            "        "
-            f"{parameter.name}: {parameter.annotation}"
-            f"{'' if parameter.default_source is None else f' = {parameter.default_source}'},\n"
-            for parameter in spec.parameters
-        )
-        call_lines = tuple(
-            f"            {parameter.name}={parameter.name},\n"
-            for parameter in spec.parameters
-        )
-        return (
-            "    def "
-            f"{spec.method_name}(\n"
-            "        self,\n"
-            f"{''.join(parameter_lines)}"
-            f"    ) -> {spec.return_annotation}:\n"
-            f"        return self.{spec.callee_name}(\n"
-            f"{''.join(call_lines)}"
-            "        )\n\n"
-        )
 
     @staticmethod
     def constructor_target(
@@ -14081,10 +13617,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 metrics,
                 field_annotations,
                 matching_calls,
-            )
-            or cls.role_authority_method_or_none(
-                metrics,
-                field_annotations,
             )
             or cls.invariant_selector_authority_method_or_none(
                 metrics,
@@ -14294,37 +13826,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if not isinstance(rewritten, ast.expr):
             raise TypeError(f"Expected expression rewrite, got {type(rewritten)!r}")
         return ast.fix_missing_locations(rewritten)
-
-    @classmethod
-    def role_authority_method_or_none(
-        cls,
-        metrics: MappingMetrics,
-        field_annotations: tuple[tuple[str, str], ...],
-    ) -> RepeatedBuilderAuthorityMethod | None:
-        role_tokens = cls.shared_suffix_tokens(metrics.plan_identity_field_names)
-        if not role_tokens:
-            return None
-        role_name = "_".join(role_tokens)
-        if not role_name.endswith("s"):
-            role_name = f"{role_name}s"
-        return RepeatedBuilderAuthorityMethod(
-            method_name=f"from_{role_name}",
-            parameters=tuple(
-                RepeatedBuilderAuthorityParameter(
-                    name=field_name,
-                    annotation=annotation,
-                    source_field_name=field_name,
-                )
-                for field_name, annotation in field_annotations
-            ),
-            constructor_arguments=tuple(
-                RepeatedBuilderConstructorArgument(
-                    field_name=field_name,
-                    value_source=field_name,
-                )
-                for field_name, _annotation in field_annotations
-            ),
-        )
 
     @classmethod
     def invariant_selector_authority_method_or_none(
@@ -14556,23 +14057,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if isinstance(value, ast.Name):
             return tuple(CLASS_NAME_ALGEBRA.ordered_tokens(value.id))
         return ()
-
-    @staticmethod
-    def shared_suffix_tokens(field_names: tuple[str, ...]) -> tuple[str, ...]:
-        if not field_names:
-            return ()
-        token_rows = tuple(
-            CLASS_NAME_ALGEBRA.ordered_tokens(name) for name in field_names
-        )
-        if not all(token_rows):
-            return ()
-        suffix: list[str] = []
-        for offset in range(1, min(len(row) for row in token_rows) + 1):
-            tokens = {row[-offset] for row in token_rows}
-            if len(tokens) != 1:
-                break
-            suffix.insert(0, next(iter(tokens)))
-        return tuple(suffix)
 
     def constructor_replacement_source(
         self,
