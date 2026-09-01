@@ -161,20 +161,11 @@ PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
 PayloadRecordT = TypeVar("PayloadRecordT", bound="CodemodPayloadRecord")
 StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
-DataclassRecordT = TypeVar("DataclassRecordT")
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
     str,
     str | None,
 )
-
-
-def dataclass_payload_field_names(
-    record_type: type[DataclassRecordT],
-) -> tuple[str, ...]:
-    """Return JSON payload field names owned by a dataclass declaration."""
-
-    return tuple(record_field.name for record_field in dataclass_fields(record_type))
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -3223,6 +3214,50 @@ class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPol
 
 
 @dataclass(frozen=True)
+class PayloadFieldDeclaration(Generic[PayloadValueT]):
+    """Wire semantics owned by one dataclass constructor field."""
+
+    codec: PayloadValueCodec[PayloadValueT]
+    field_name: str | None = None
+
+
+_PAYLOAD_FIELD_DECLARATION = object()
+_NO_PAYLOAD_FIELD_DEFAULT = object()
+
+
+def codemod_payload_field(
+    codec: PayloadValueCodec[PayloadValueT],
+    *,
+    field_name: str | None = None,
+    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+) -> PayloadValueT:
+    """Declare a constructor field and its derived codemod wire projection."""
+
+    if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
+        default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
+    ):
+        raise TypeError("codemod payload fields cannot declare two defaults")
+    metadata = {
+        _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
+            codec=codec,
+            field_name=field_name,
+        )
+    }
+    if default is not _NO_PAYLOAD_FIELD_DEFAULT:
+        return cast(PayloadValueT, field(default=default, metadata=metadata))
+    if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
+        return cast(
+            PayloadValueT,
+            field(
+                default_factory=cast(Callable[[], PayloadValueT], default_factory),
+                metadata=metadata,
+            ),
+        )
+    return cast(PayloadValueT, field(metadata=metadata))
+
+
+@dataclass(frozen=True)
 class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
     """Declarative JSON-to-constructor binding for one DSL payload field."""
 
@@ -3296,6 +3331,62 @@ class PayloadBindingSet(
             )
             for field_name, constructor_argument_name, codec in specs
         )
+
+    @classmethod
+    def from_dataclass(
+        cls,
+        owner_type: type[PayloadOwnerT],
+    ) -> Self:
+        """Derive wire bindings from the owner's declared dataclass fields."""
+
+        bindings = []
+        for record_field in dataclass_fields(owner_type):
+            declaration = record_field.metadata.get(_PAYLOAD_FIELD_DECLARATION)
+            if declaration is None:
+                continue
+            if not isinstance(declaration, PayloadFieldDeclaration):
+                raise TypeError(
+                    f"Invalid payload field declaration on {owner_type.__name__}."
+                    f"{record_field.name}"
+                )
+            bindings.append(
+                PayloadBinding(
+                    field_name=declaration.field_name or record_field.name,
+                    constructor_argument_name=record_field.name,
+                    codec=declaration.codec,
+                )
+            )
+        return cls(bindings)
+
+    def require_complete_dataclass_fields(
+        self,
+        owner_type: type[PayloadOwnerT],
+        *,
+        non_payload_owner_types: tuple[type[object], ...] = (),
+    ) -> Self:
+        """Fail when a constructor field has no payload declaration or exclusion."""
+
+        excluded_field_names = frozenset(
+            record_field.name
+            for non_payload_owner_type in non_payload_owner_types
+            for record_field in dataclass_fields(non_payload_owner_type)
+        )
+        expected_field_names = frozenset(
+            record_field.name
+            for record_field in dataclass_fields(owner_type)
+            if record_field.name not in excluded_field_names
+        )
+        bound_field_names = frozenset(
+            binding.constructor_argument_name for binding in self
+        )
+        missing_field_names = tuple(sorted(expected_field_names - bound_field_names))
+        unexpected_field_names = tuple(sorted(bound_field_names - expected_field_names))
+        if missing_field_names or unexpected_field_names:
+            raise TypeError(
+                f"Incomplete payload field declarations on {owner_type.__name__}: "
+                f"missing={missing_field_names!r}, unexpected={unexpected_field_names!r}"
+            )
+        return self
 
     def __add__(self, other: Self) -> Self:
         return type(self)((*self, *other))
@@ -5142,8 +5233,12 @@ class RefactorRecipeOperation(
         )
 
     @classmethod
+    @lru_cache(maxsize=None)
     def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet()
+        return PayloadBindingSet.from_dataclass(cls).require_complete_dataclass_fields(
+            cls,
+            non_payload_owner_types=(SourceRewritePlanItem,),
+        )
 
     def operation_payload(self) -> JsonObject:
         return type(self).payload_bindings().payload(self, omit_none=True)
@@ -5276,16 +5371,11 @@ class RefactorRecipeOperation(
 class ReplaceTargetOperation(RefactorRecipeOperation):
     """Replace one exact source-index target with caller-declared source."""
 
-    replacement_source: str
-    contributors: tuple[SourceRewriteContributor, ...] = ()
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            replacement_source=RequiredStringPayloadValueCodec(),
-            contributors=PayloadRecordArrayValueCodec(SourceRewriteContributor),
-        )
+    replacement_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    contributors: tuple[SourceRewriteContributor, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteContributor),
+        default=(),
+    )
 
     def source_edits(
         self,
@@ -5372,21 +5462,16 @@ class TargetNodeRecipeOperationMixin(ABC):
 class SourcePayloadOperation(RefactorRecipeOperation, ABC):
     """Recipe operation whose declaration owns required Python source text."""
 
-    source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            source=RequiredStringPayloadValueCodec(),
-        )
+    source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
 
 @dataclass(frozen=True, kw_only=True)
 class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
     """Operation whose declaration owns a non-empty assignment-name set."""
 
-    assignment_names: tuple[str, ...]
+    assignment_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def __post_init__(self) -> None:
         operation_key = self.operation_key()
@@ -5397,42 +5482,20 @@ class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
         if len(set(self.assignment_names)) != len(self.assignment_names):
             raise ValueError(f"{operation_key} requires unique assignment_names")
 
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            assignment_names=StringArrayPayloadValueCodec(),
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
 class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
     """Recipe operation whose JSON payload declares a generated base class."""
 
-    base_name: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            base_name=RequiredStringPayloadValueCodec(),
-        )
+    base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceTextOperation(RefactorRecipeOperation):
     """Replace one exact text fragment inside a source-index target."""
 
-    old_source: str
-    new_source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            old_source=RequiredStringPayloadValueCodec(),
-            new_source=OptionalStringPayloadValueCodec(""),
-        )
+    old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    new_source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
 
     def source_edits(
         self,
@@ -5454,12 +5517,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 class CreateFileOperation(SourcePayloadOperation):
     """Create a Python source file for later operations in the same plan."""
 
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            source=OptionalStringPayloadValueCodec(""),
-        )
+    source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
 
     def created_source_paths(
         self,
@@ -5600,15 +5658,8 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
     """Replace one named module-level assignment statement."""
 
-    assignment_name: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            assignment_name=RequiredStringPayloadValueCodec(),
-            source=OptionalStringPayloadValueCodec(""),
-        )
+    source: str = codemod_payload_field(OptionalStringPayloadValueCodec(""))
+    assignment_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits(
         self,
@@ -5648,29 +5699,8 @@ class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
 class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     """Recipe operation that promotes repeated class members to a shared base."""
 
-    base_name: str
-    class_names: tuple[str, ...]
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        inherited_field_names = frozenset(
-            dataclass_payload_field_names(ClassMemberPromotionOperation)
-        )
-        member_field_names = tuple(
-            field_name
-            for field_name in dataclass_payload_field_names(cls)
-            if field_name not in inherited_field_names
-        )
-        if len(member_field_names) != 1:
-            raise TypeError(
-                "Class member promotion declarations must add one member field"
-            )
-        return PayloadBindingSet.from_field_codecs(
-            base_name=RequiredStringPayloadValueCodec(),
-            class_names=StringArrayPayloadValueCodec(),
-        ) + PayloadBindingSet.from_field_codecs(
-            **{member_field_names[0]: StringArrayPayloadValueCodec()},
-        )
+    base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    class_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
 
     @property
     @abstractmethod
@@ -5773,7 +5803,9 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
 class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
     """Shared mechanics for nominal class-method promotion policies."""
 
-    method_names: tuple[str, ...]
+    method_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     @property
     def member_names(self) -> tuple[str, ...]:
@@ -6594,18 +6626,11 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
 class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
     """Move a complete exact leaf-method set to its proved existing authority."""
 
-    authority_name: str
-    class_names: tuple[str, ...]
-    method_names: tuple[str, ...]
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            authority_name=RequiredStringPayloadValueCodec(),
-            class_names=StringArrayPayloadValueCodec(),
-            method_names=StringArrayPayloadValueCodec(),
-        )
+    authority_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    class_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+    method_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def source_edits(
         self,
@@ -6989,23 +7014,24 @@ class ExtractMethodsToClassOperation(
 ):
     """Extract selected methods from one class into a generated peer authority class."""
 
-    destination_class_name: str
-    method_names: tuple[str, ...]
-    field_declaration_sources: tuple[str, ...] = ()
-    class_base_names: tuple[str, ...] = ()
-    class_decorator_sources: tuple[str, ...] = ()
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            destination_class_name=RequiredStringPayloadValueCodec(),
-            method_names=StringArrayPayloadValueCodec(),
-        ) + PayloadBindingSet.from_field_codecs(
-            field_declaration_sources=OptionalStringArrayPayloadValueCodec(),
-            class_base_names=OptionalStringArrayPayloadValueCodec(),
-            class_decorator_sources=OptionalStringArrayPayloadValueCodec(),
-        )
+    destination_class_name: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
+    method_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    field_declaration_sources: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    class_base_names: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    class_decorator_sources: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
 
     def source_edits_for_target_node(
         self,
@@ -7279,19 +7305,18 @@ class CarrierFieldDeclaration:
 class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
     """Shared payload surface for field-to-carrier projection operations."""
 
-    class_name: str
-    field_projection_pairs: tuple[str, ...]
-    constructor_names: tuple[str, ...] = ()
-    attribute_owner_expressions: tuple[str, ...] = ()
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_field_codecs(
-            class_name=RequiredStringPayloadValueCodec(),
-            field_projection_pairs=StringArrayPayloadValueCodec(),
-            constructor_names=OptionalStringArrayPayloadValueCodec(),
-            attribute_owner_expressions=OptionalStringArrayPayloadValueCodec(),
-        )
+    class_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    field_projection_pairs: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    constructor_names: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    attribute_owner_expressions: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
 
     @property
     def resolved_constructor_names(self) -> tuple[str, ...]:
@@ -7302,15 +7327,9 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
 class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
     """Replace projected primitive fields with one existing carrier field."""
 
-    carrier_field_declaration: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().payload_bindings() + (
-            PayloadBindingSet.from_field_codecs(
-                carrier_field_declaration=RequiredStringPayloadValueCodec(),
-            )
-        )
+    carrier_field_declaration: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
 
     @property
     def carrier_field(self) -> CarrierFieldDeclaration:
@@ -7619,17 +7638,13 @@ class DeleteTargetOperation(RefactorRecipeOperation):
 class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
     """Operation base whose target set comes from a registered selector."""
 
-    selector: CodemodTargetSelector
-    selection_count: SelectionCountExpectation = field(
-        default_factory=SelectionCountExpectation
+    selector: CodemodTargetSelector = codemod_payload_field(
+        SelectorObjectPayloadValueCodec()
     )
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return PayloadBindingSet.from_field_codecs(
-            selector=SelectorObjectPayloadValueCodec(),
-            selection_count=SelectionCountPayloadValueCodec(),
-        )
+    selection_count: SelectionCountExpectation = codemod_payload_field(
+        SelectionCountPayloadValueCodec(),
+        default_factory=SelectionCountExpectation,
+    )
 
     def selector_context(
         self,
@@ -7702,29 +7717,17 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
 class AuthoritySourceOperation(RefactorRecipeOperation, ABC):
     """Codemod operation carrying source for a declared authority boundary."""
 
-    authority_source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            authority_source=RequiredStringPayloadValueCodec(),
-        )
+    authority_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
 
 @dataclass(frozen=True, kw_only=True)
 class ExtractAuthorityOperation(AuthoritySourceOperation):
     """Replace a helper target with a nominal authority and route call sites."""
 
-    call_replacements: tuple[RecipeCallReplacement, ...] = ()
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().payload_bindings() + (
-            PayloadBindingSet.from_field_codecs(
-                call_replacements=PayloadRecordArrayValueCodec(RecipeCallReplacement),
-            )
-        )
+    call_replacements: tuple[RecipeCallReplacement, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(RecipeCallReplacement),
+        default=(),
+    )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (
@@ -7774,18 +7777,13 @@ class DeclareAuthorityOperation(
 ):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
+    authority_claim: AuthorityClaim = codemod_payload_field(
+        AuthorityClaimPayloadValueCodec()
+    )
+
     @property
     def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
         return (self.authority_claim,)
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return (
-            PayloadBindingSet.from_field_codecs(
-                authority_claim=AuthorityClaimPayloadValueCodec(),
-            )
-            + super().payload_bindings()
-        )
 
     def source_edits(
         self,
@@ -7888,14 +7886,7 @@ class InsertAfterImportsOperation(SourcePayloadOperation):
 class EnsureImportOperation(RefactorRecipeOperation):
     """Insert import source after leading imports unless it already exists."""
 
-    import_source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            import_source=RequiredStringPayloadValueCodec(),
-        )
+    import_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits_with_context(
         self,
@@ -8010,16 +8001,10 @@ class RequestedImportStatement:
 class RemoveImportNamesOperation(RefactorRecipeOperation):
     """Remove selected names from a from-import statement."""
 
-    module_name: str
-    import_names: tuple[str, ...]
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            module_name=RequiredStringPayloadValueCodec(),
-            import_names=StringArrayPayloadValueCodec(),
-        )
+    module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    import_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def source_edits(
         self,
@@ -9126,18 +9111,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
     """Shared destination/import contract for module-symbol move operations."""
 
-    destination_path: str
-    replacement_import: MovedSymbolImportPolicy = field(
-        default_factory=MovedSymbolImportPolicy
+    destination_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    replacement_import: MovedSymbolImportPolicy = codemod_payload_field(
+        ReplacementImportPayloadValueCodec(),
+        default_factory=MovedSymbolImportPolicy,
     )
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            destination_path=RequiredStringPayloadValueCodec(),
-            replacement_import=ReplacementImportPayloadValueCodec(),
-        )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (
@@ -9186,16 +9164,9 @@ class MoveSymbolToModuleOperation(
 class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
     """Move a dependency-checked set of top-level symbols into another module."""
 
-    symbol_qualnames: tuple[str, ...]
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return (
-            PayloadBindingSet.from_field_codecs(
-                symbol_qualnames=StringArrayPayloadValueCodec(),
-            )
-            + super().payload_bindings()
-        )
+    symbol_qualnames: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def dependency_report(
         self,
@@ -9456,32 +9427,33 @@ class ExposeGlobalCandidateCacheContextOperation(
 ):
     """Make a global detector cache by its candidate projection."""
 
-    candidate_type_name: str
-    candidate_collector_name: str
-    candidate_collector_scope: CandidateCollectorScope = (
-        CandidateCollectorScope.CROSS_MODULE
+    candidate_type_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    candidate_collector_name: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
     )
-    candidate_collector_uses_config: bool = False
-    candidate_item_sort_attributes: tuple[str, ...] = ()
-    base_name: str = "IssueDetector"
-    import_source: str = ""
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            candidate_type_name=RequiredStringPayloadValueCodec(),
-            candidate_collector_name=RequiredStringPayloadValueCodec(),
-            candidate_collector_scope=StrEnumPayloadValueCodec(
-                CandidateCollectorScope,
-                CandidateCollectorScope.CROSS_MODULE,
-            ),
-            candidate_collector_uses_config=BooleanPayloadValueCodec(),
-            candidate_item_sort_attributes=OptionalStringArrayPayloadValueCodec(),
-            base_name=OptionalStringPayloadValueCodec("IssueDetector"),
-        ) + PayloadBindingSet.from_field_codecs(
-            import_source=OptionalStringPayloadValueCodec(""),
-        )
+    candidate_collector_scope: CandidateCollectorScope = codemod_payload_field(
+        StrEnumPayloadValueCodec(
+            CandidateCollectorScope,
+            CandidateCollectorScope.CROSS_MODULE,
+        ),
+        default=CandidateCollectorScope.CROSS_MODULE,
+    )
+    candidate_collector_uses_config: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(),
+        default=False,
+    )
+    candidate_item_sort_attributes: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(),
+        default=(),
+    )
+    base_name: str = codemod_payload_field(
+        OptionalStringPayloadValueCodec("IssueDetector"),
+        default="IssueDetector",
+    )
+    import_source: str = codemod_payload_field(
+        OptionalStringPayloadValueCodec(""),
+        default="",
+    )
 
     @property
     def candidate_method_spec(self) -> CandidateCollectorMethodSpec:
@@ -9685,17 +9657,11 @@ class DeriveAutoregisterInstanceViewOperation(
 ):
     """Derive an instance-valued module view from an AutoRegisterMeta family."""
 
-    assignment_name: str
-    class_key_pairs: tuple[str, ...]
-    method_name: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
-            assignment_name=RequiredStringPayloadValueCodec(),
-            class_key_pairs=StringArrayPayloadValueCodec(),
-            method_name=RequiredStringPayloadValueCodec(),
-        )
+    assignment_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    class_key_pairs: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     @property
     def parsed_class_key_pairs(self) -> tuple[ClassRegistryKeyPair, ...]:
@@ -10038,7 +10004,13 @@ class ConvertManualRegistryToAutoregisterOperation(
 ):
     """Convert manual class registry writes into an AutoRegisterMeta base."""
 
-    registry_key_attribute: str
+    registry_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    class_key_pairs: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    registry_key_attribute: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
 
     @property
     def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
@@ -10049,14 +10021,6 @@ class ConvertManualRegistryToAutoregisterOperation(
                 file_path=self.target.file_path or "",
                 qualname=self.base_name,
             ),
-        )
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
-            registry_name=RequiredStringPayloadValueCodec(),
-            registry_key_attribute=RequiredStringPayloadValueCodec(),
-            class_key_pairs=StringArrayPayloadValueCodec(),
         )
 
     @property
@@ -10909,14 +10873,14 @@ class DispatchToPolymorphismOperation(
 ):
     """Replace simple literal dispatch functions with strategy subclasses."""
 
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        return super().payload_bindings() + PayloadBindingSet.from_field_codecs(
-            dispatch_axis_expression=RequiredStringPayloadValueCodec(),
-            case_key_attribute=RequiredStringPayloadValueCodec(),
-            method_name=RequiredStringPayloadValueCodec(),
-            literal_cases=StringArrayPayloadValueCodec(),
-        )
+    dispatch_axis_expression: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
+    case_key_attribute: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    literal_cases: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def source_edits_for_target_node(
         self,
@@ -11053,14 +11017,7 @@ class ReplaceFunctionSignatureOperation(
 ):
     """Replace a single-line function signature while preserving its body."""
 
-    signature_source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            signature_source=RequiredStringPayloadValueCodec(),
-        )
+    signature_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits_for_target_node(
         self,
@@ -11096,14 +11053,7 @@ class ReplaceFunctionBodyOperation(
 ):
     """Replace a function or method body while preserving its signature."""
 
-    body_source: str
-
-    @classmethod
-    def payload_bindings(cls) -> OperationPayloadBindings:
-        del cls
-        return PayloadBindingSet.from_field_codecs(
-            body_source=RequiredStringPayloadValueCodec(),
-        )
+    body_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits_for_target_node(
         self,

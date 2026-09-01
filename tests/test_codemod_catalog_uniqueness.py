@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass, fields
 
 import pytest
 
@@ -16,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     RecipeCallReplacement,
     RequiredStringPayloadValueCodec,
+    SourceRewritePlanItem,
     SourceRewriteContributor,
 )
 
@@ -114,11 +116,36 @@ def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> No
 
 
 def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:
+    transport_field_names = frozenset(
+        record_field.name for record_field in fields(SourceRewritePlanItem)
+    )
     for operation_key, operation_type in RefactorRecipeOperation.__registry__.items():
+        binding_set = operation_type.payload_bindings()
+        declared_payload_field_names = frozenset(
+            record_field.name
+            for record_field in fields(operation_type)
+            if record_field.name not in transport_field_names
+        )
+
         assert all(
             binding.field_name == binding.constructor_argument_name
-            for binding in operation_type.payload_bindings()
+            for binding in binding_set
         ), operation_key
+        assert (
+            frozenset(binding.constructor_argument_name for binding in binding_set)
+            == declared_payload_field_names
+        ), operation_key
+        assert "payload_bindings" not in operation_type.__dict__, operation_key
+        assert operation_type.payload_bindings() is binding_set
+
+
+def test_operation_payload_derivation_rejects_unbound_constructor_fields() -> None:
+    @dataclass(frozen=True, kw_only=True)
+    class IncompletePayloadOperation(RefactorRecipeOperation):
+        undeclared_value: str
+
+    with pytest.raises(TypeError, match="missing=\\('undeclared_value',\\)"):
+        IncompletePayloadOperation.payload_bindings()
 
 
 def test_registered_selector_payload_bindings_are_unique() -> None:

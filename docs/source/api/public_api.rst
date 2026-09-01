@@ -34,6 +34,10 @@ export and application require a proof across reachable refactor trajectories.
 Its cancelable-composition signal is generic: it treats pack, unpack, and
 field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
+``RefactorRecipeOperation`` subclasses declare wire semantics with
+``codemod_payload_field`` on their dataclass fields.  The inherited operation
+codec catalog is derived from those declarations, so adding a field does not
+require a parallel serialization method.
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to
@@ -55,7 +59,7 @@ ownership move, and the complete method batch pays compression rent.  The
 codemod preflight reconstructs the same proof from the current full AST.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: PlannedSourceRewrite, RefactorRecipeOperation, codemod_payload_field, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

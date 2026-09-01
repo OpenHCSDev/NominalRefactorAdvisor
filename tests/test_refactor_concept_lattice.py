@@ -383,21 +383,23 @@ def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
 
 
 def test_source_payload_operations_share_the_source_declaration() -> None:
-    expected_bindings = {
-        codemod.CreateFileOperation: ("source",),
-        codemod.ReplaceModuleAssignmentOperation: ("assignment_name", "source"),
-        codemod.InsertBeforeTargetOperation: ("source",),
-        codemod.InsertAfterTargetOperation: ("source",),
-        codemod.InsertAfterImportsOperation: ("source",),
-    }
+    operation_types = (
+        codemod.CreateFileOperation,
+        codemod.ReplaceModuleAssignmentOperation,
+        codemod.InsertBeforeTargetOperation,
+        codemod.InsertAfterTargetOperation,
+        codemod.InsertAfterImportsOperation,
+    )
 
     assert not hasattr(codemod, "StringPayloadOperation")
-    for operation_type, field_names in expected_bindings.items():
+    for operation_type in operation_types:
         assert issubclass(operation_type, codemod.SourcePayloadOperation)
-        assert (
-            tuple(binding.field_name for binding in operation_type.payload_bindings())
-            == field_names
+        source_binding = next(
+            binding
+            for binding in operation_type.payload_bindings()
+            if binding.constructor_argument_name == "source"
         )
+        assert source_binding.field_name == "source"
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
