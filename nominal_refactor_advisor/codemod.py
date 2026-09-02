@@ -3301,14 +3301,16 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
 
     def line_replacement(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         *,
         rationale: str,
     ) -> SourceSpanReplacement:
-        target_identifier = self.target.required_target_id(source_index)
-        target_digest = source_index.target_by_id[target_identifier]
-        return SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
+        target_identifier = self.target.required_target_id(context.source_index)
+        target_digest = context.source_index.target_by_id[target_identifier]
+        return SourceTargetEditor(
+            context.sources_by_file_path,
+            target_digest,
+        ).exact_text_replacement(
             self.old_source,
             self.new_source,
             rationale=rationale
@@ -4385,29 +4387,16 @@ class RefactorRecipeOperation(
     @abstractmethod
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[NominalSourceEdit, ...]:
-        del selector_context
-        return self.source_edits(source_index, source_by_path)
-
     def originated_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         *,
         recipe_id: str,
         plan_item_index: int,
-        selector_context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         origin = SourceEditOrigin(
             recipe_id=recipe_id,
@@ -4415,22 +4404,14 @@ class RefactorRecipeOperation(
             plan_item_index=plan_item_index,
         )
         return tuple(
-            edit.with_origin(origin)
-            for edit in self.source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
+            edit.with_origin(origin) for edit in self.source_edits(context)
         )
 
     def preflight_reports(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        del source_index, source_by_path, selector_context
+        del context
         return ()
 
     def created_source_paths(
@@ -4451,17 +4432,16 @@ class RefactorRecipeOperation(
 
     def required_source_path(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
         operation_name: str,
     ) -> str:
         if self.target.file_path is None:
             raise ValueError(f"{operation_name} requires file_path")
-        return self.target.required_file_path(source_index)
+        return self.target.required_file_path(context.source_index)
 
     def required_import_mutations(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         source_path: str,
         *,
         import_source: str,
@@ -4471,42 +4451,20 @@ class RefactorRecipeOperation(
             target=SourceRewriteTarget(file_path=source_path),
             import_source=import_source,
             rationale=self.rationale_text(default_rationale),
-        ).source_edits(source_index, source_by_path)
+        ).source_edits(context)
 
     def target_digest(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[str, AstTargetDigest]:
-        target_identifier = self.target.required_target_id(source_index)
-        return target_identifier, source_index.target_by_id[target_identifier]
-
-    def target_node(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[str, AstTargetDigest, _TargetNode]:
-        return self.target_node_from_context(
-            self.operation_context(source_index, source_by_path, None)
-        )
+        target_identifier = self.target.required_target_id(context.source_index)
+        return target_identifier, context.source_index.target_by_id[target_identifier]
 
     def target_node_from_context(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[str, AstTargetDigest, _TargetNode]:
         return context.target_node_for_rewrite_target(self.target)
-
-    @staticmethod
-    def operation_context(
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        selector_context: CodemodSelectorContext | None,
-    ) -> CodemodSelectorContext:
-        if selector_context is not None:
-            return selector_context
-        return CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
-        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4515,26 +4473,11 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         return self.required_reproof(
             lambda: self.source_edits_from_snapshot(
-                CodemodSourceSnapshot.from_indexed_sources(
-                    source_index,
-                    source_by_path,
-                )
-                if selector_context is None
-                else selector_context.execution_snapshot()
+                context.execution_snapshot()
             )
         )
 
@@ -4611,11 +4554,9 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        del source_by_path
-        _target_identifier, target = self.target_digest(source_index)
+        _target_identifier, target = self.target_digest(context)
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
@@ -4631,25 +4572,17 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
 
     def originated_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         *,
         recipe_id: str,
         plan_item_index: int,
-        selector_context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         if self.contributors:
-            return self.source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
+            return self.source_edits(context)
         return super().originated_edits(
-            source_index,
-            source_by_path,
+            context,
             recipe_id=recipe_id,
             plan_item_index=plan_item_index,
-            selector_context=selector_context,
         )
 
 
@@ -4658,19 +4591,8 @@ class TargetNodeRecipeOperationMixin(ABC):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(source_index, source_by_path, selector_context)
         target_identifier, target_digest, node = self.target_node_from_context(context)
         return self.source_edits_for_target_node(
             context,
@@ -4731,12 +4653,14 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        _, target_digest = self.target_digest(source_index)
+        _, target_digest = self.target_digest(context)
         return (
-            SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
+            SourceTargetEditor(
+                context.sources_by_file_path,
+                target_digest,
+            ).exact_text_replacement(
                 self.old_source,
                 self.new_source,
                 rationale=self.rationale
@@ -5242,14 +5166,13 @@ class CreateFileOperation(SourcePayloadOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
         source_path = self.required_source_path(
-            source_index,
+            context,
             self.operation_key(),
         )
-        existing_source = source_by_path[source_path]
+        existing_source = context.sources_by_file_path[source_path]
         if existing_source:
             raise ValueError(f"create_file target {source_path!r} is not empty")
         return (
@@ -5363,11 +5286,7 @@ class DeleteInheritedAutoRegisterConfigurationOperation(SourceReprovedOperation)
             target=SourceRewriteTarget(target_id=target.target_id),
             assignment_names=repeated_names,
             rationale=self.rationale,
-        ).source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        ).source_edits(snapshot)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -5376,14 +5295,13 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
-            source_index,
+            context,
             "delete_module_assignments",
         )
-        module = ast.parse(source_by_path[source_path], filename=source_path)
+        module = context.module_nodes_by_file_path[source_path]
         pending_names = set(self.assignment_names)
         replacements = []
         for statement in module.body:
@@ -5420,14 +5338,13 @@ class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
-            source_index,
+            context,
             "replace_module_assignment",
         )
-        module = ast.parse(source_by_path[source_path], filename=source_path)
+        module = context.module_nodes_by_file_path[source_path]
         matching_statements = tuple(
             statement
             for statement in module.body
@@ -5471,27 +5388,9 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        context = (
-            CodemodSourceSnapshot.from_indexed_sources(
-                source_index,
-                source_by_path,
-            )
-            if selector_context is None
-            else selector_context
-        )
-        targets = self.resolved_targets(context, source_index)
+        targets = self.resolved_targets(context)
         self.validate_targets(targets)
         return ClassMemberPromotionReplacementPlan(
             base_name=self.base_name,
@@ -5503,12 +5402,11 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     def resolved_targets(
         self,
         context: CodemodSelectorContext,
-        source_index: SourceIndex,
     ) -> "ClassMemberPromotionTargets":
         try:
             return ClassMemberPromotionTargets.resolve(
                 context,
-                source_path=self.target.optional_file_path(source_index),
+                source_path=self.target.optional_file_path(context.source_index),
                 class_names=self.class_names,
             )
         except ValueError as error:
@@ -5516,21 +5414,10 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
 
     def preflight_reports(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        context = (
-            CodemodSourceSnapshot.from_indexed_sources(
-                source_index,
-                source_by_path,
-            )
-            if selector_context is None
-            else selector_context
-        )
         try:
-            self.validate_targets(self.resolved_targets(context, source_index))
+            self.validate_targets(self.resolved_targets(context))
         except CodemodOperationPreflightError as error:
             return (error.report,)
         return ()
@@ -7079,16 +6966,15 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
-            source_index,
+            context,
             self.operation_key(),
         )
-        source = source_by_path[source_path]
+        source = context.sources_by_file_path[source_path]
         geometry = SourceTextGeometry(source)
-        root = ast.parse(source, filename=source_path)
+        root = context.module_nodes_by_file_path[source_path]
         replacements = [
             *self.class_field_replacements(root, geometry),
             *self.constructor_projection_replacements(root, geometry),
@@ -7316,19 +7202,11 @@ class DeleteTargetOperation(RefactorRecipeOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        target_identifier = self.target.required_target_id(source_index)
-        target_digest = source_index.target_by_id[target_identifier]
-        target_node = (
-            AstTargetNodeIndex(
-                source_index,
-                source_by_path,
-            )
-            .nodes_by_target_identifier()
-            .get(target_identifier)
-        )
+        target_identifier = self.target.required_target_id(context.source_index)
+        target_digest = context.source_index.target_by_id[target_identifier]
+        target_node = context.ast_target_nodes_by_id.get(target_identifier)
         if isinstance(target_node, ast.stmt):
             target_span = SourceNodeSpan(
                 target_node,
@@ -7363,19 +7241,6 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
         default_factory=SelectionCountExpectation,
     )
 
-    def selector_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        provided_context: CodemodSelectorContext | None,
-    ) -> CodemodSelectorContext:
-        if provided_context is not None:
-            return provided_context
-        return CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
-        )
-
     def selected_target_ids(
         self,
         context: CodemodSelectorContext,
@@ -7384,40 +7249,17 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
         self.selection_count.require_actual_count(len(target_ids))
         return target_ids
 
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    @abstractmethod
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        raise NotImplementedError
-
-
 @dataclass(frozen=True, kw_only=True)
 class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     """Delete every source-index target selected by a registered selector."""
 
-    def source_edits_with_context(
+    def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         return tuple(
-            self.line_replacement_for(source_index.target_by_id[target_id])
-            for target_id in self.selected_target_ids(
-                self.selector_context(source_index, source_by_path, selector_context)
-            )
+            self.line_replacement_for(context.source_index.target_by_id[target_id])
+            for target_id in self.selected_target_ids(context)
         )
 
     def line_replacement_for(
@@ -7458,11 +7300,10 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        target_identifier = self.target.required_target_id(source_index)
-        target_digest = source_index.target_by_id[target_identifier]
+        target_identifier = self.target.required_target_id(context.source_index)
+        target_digest = context.source_index.target_by_id[target_identifier]
         return (
             SourceInsertion(
                 file_path=target_digest.file_path,
@@ -7478,8 +7319,7 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
             ),
             *(
                 replacement.line_replacement(
-                    source_index,
-                    source_by_path,
+                    context,
                     rationale=self.rationale,
                 )
                 for replacement in self.call_replacements
@@ -7507,12 +7347,15 @@ class DeclareAuthorityOperation(
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        source_path = self.required_source_path(source_index, "declare_authority")
-        source = source_by_path[source_path]
-        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        source_path = self.required_source_path(context, "declare_authority")
+        source = context.sources_by_file_path[source_path]
+        insertion_line = ModuleImportInsertionPoint(
+            source,
+            source_path,
+            context.module_nodes_by_file_path[source_path],
+        ).line_number
         return (
             SourceInsertion(
                 file_path=source_path,
@@ -7582,15 +7425,18 @@ class InsertAfterImportsOperation(SourcePayloadOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
-            source_index,
+            context,
             "insert_after_imports",
         )
-        source = source_by_path[source_path]
-        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        source = context.sources_by_file_path[source_path]
+        insertion_line = ModuleImportInsertionPoint(
+            source,
+            source_path,
+            context.module_nodes_by_file_path[source_path],
+        ).line_number
         return (
             SourceInsertion(
                 file_path=source_path,
@@ -7608,26 +7454,14 @@ class EnsureImportOperation(RefactorRecipeOperation):
 
     import_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[ModuleImportMutation, ...]:
-        del source_by_path, selector_context
-        return (self.mutation(source_index),)
-
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[ModuleImportMutation, ...]:
-        del source_by_path
-        return (self.mutation(source_index),)
+        return (self.mutation(context),)
 
-    def mutation(self, source_index: SourceIndex) -> ModuleImportMutation:
-        source_path = self.required_source_path(source_index, "ensure_import")
+    def mutation(self, context: CodemodSelectorContext) -> ModuleImportMutation:
+        source_path = self.required_source_path(context, "ensure_import")
         return ModuleImportMutation.from_source(
             file_path=source_path,
             import_source=self.import_source,
@@ -7728,12 +7562,10 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[ModuleImportMutation, ...]:
-        del source_by_path
         source_path = self.required_source_path(
-            source_index,
+            context,
             "remove_import_names",
         )
         return (
@@ -8181,8 +8013,7 @@ class SourceTopLevelSymbolMovePlan:
         cls,
         target_digest: AstTargetDigest,
         node: _TargetNode,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         *,
         destination_file_path: str,
         rationale: str,
@@ -8190,12 +8021,11 @@ class SourceTopLevelSymbolMovePlan:
         source_block = MovedTopLevelSymbolSource.from_target(
             target_digest,
             node,
-            source_by_path,
+            context.sources_by_file_path,
         )
         cls._validate_destination(
             target_digest,
-            source_index,
-            source_by_path,
+            context,
             destination_file_path,
         )
         return cls(
@@ -8207,11 +8037,10 @@ class SourceTopLevelSymbolMovePlan:
     @staticmethod
     def _validate_destination(
         target_digest: AstTargetDigest,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         destination_file_path: str,
     ) -> None:
-        if destination_file_path not in source_by_path:
+        if destination_file_path not in context.sources_by_file_path:
             raise ValueError(
                 f"move_symbol_to_module destination {destination_file_path!r} "
                 "is not in the source set"
@@ -8225,7 +8054,7 @@ class SourceTopLevelSymbolMovePlan:
             and destination_target.name == target_digest.name
             and _is_movable_module_symbol_kind(destination_target.node_kind)
             and "." not in destination_target.qualname
-            for destination_target in source_index.ast_targets
+            for destination_target in context.source_index.ast_targets
         ):
             raise ValueError(
                 f"Destination {destination_file_path!r} already defines "
@@ -8234,21 +8063,22 @@ class SourceTopLevelSymbolMovePlan:
 
     def source_edits(
         self,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         return (
-            self.destination_insertion(source_by_path),
+            self.destination_insertion(context),
             self.source_block.deletion_replacement(rationale=self.rationale),
         )
 
     def destination_insertion(
         self,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> SourceInsertion:
-        destination_source = source_by_path[self.destination_file_path]
+        destination_source = context.sources_by_file_path[self.destination_file_path]
         insertion_line = ModuleImportInsertionPoint(
             destination_source,
             self.destination_file_path,
+            context.module_nodes_by_file_path[self.destination_file_path],
         ).line_number
         return SourceInsertion(
             file_path=self.destination_file_path,
@@ -8664,31 +8494,22 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     def from_request(
         cls,
         request: SourceTopLevelSymbolClosureMoveRequest,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> "SourceTopLevelSymbolClosureMovePlan":
         source_table = ModuleSymbolTable(
             file_path=request.source_path,
-            source=source_by_path[request.source_path],
-            module=ast.parse(
-                source_by_path[request.source_path], filename=request.source_path
-            ),
+            source=context.sources_by_file_path[request.source_path],
+            module=context.module_nodes_by_file_path[request.source_path],
         )
         destination_table = ModuleSymbolTable(
             file_path=request.destination_path,
-            source=source_by_path[request.destination_path],
-            module=ast.parse(
-                source_by_path[request.destination_path],
-                filename=request.destination_path,
-            ),
+            source=context.sources_by_file_path[request.destination_path],
+            module=context.module_nodes_by_file_path[request.destination_path],
         )
-        target_nodes = AstTargetNodeIndex(
-            source_index,
-            source_by_path,
-        ).nodes_by_target_identifier()
+        target_nodes = context.ast_target_nodes_by_id
         targets = tuple(
             cls._target_digest_for_symbol(
-                source_index,
+                context.source_index,
                 request.source_path,
                 symbol_qualname,
             )
@@ -8698,12 +8519,16 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             raise ValueError(
                 "move_symbols_to_module requires unique top-level symbol names"
             )
-        cls._validate_destination(source_index, request.destination_path, targets)
+        cls._validate_destination(
+            context.source_index,
+            request.destination_path,
+            targets,
+        )
         source_blocks = tuple(
             MovedTopLevelSymbolSource.from_target(
                 target,
                 target_nodes[target.target_id],
-                source_by_path,
+                context.sources_by_file_path,
             )
             for target in targets
         )
@@ -8830,7 +8655,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         return tuple(dict.fromkeys(import_sources))
 
     def source_edits(
-        self, source_by_path: Mapping[str, str]
+        self,
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         if not self.dependency_report.is_clean:
             raise CodemodOperationPreflightError(
@@ -8842,7 +8668,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
             )
         edits: list[NominalSourceEdit] = [
-            self.destination_insertion(source_by_path),
+            self.destination_insertion(context),
             *(
                 block.deletion_replacement(rationale=self.rationale)
                 for block in self.source_blocks
@@ -8867,12 +8693,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
     def destination_insertion(
         self,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> SourceInsertion:
-        destination_source = source_by_path[self.destination_path]
+        destination_source = context.sources_by_file_path[self.destination_path]
         insertion_line = ModuleImportInsertionPoint(
             destination_source,
             self.destination_path,
+            context.module_nodes_by_file_path[self.destination_path],
         ).line_number
         return SourceInsertion(
             file_path=self.destination_path,
@@ -8956,15 +8783,14 @@ class MoveSymbolToModuleOperation(
         move_plan = SourceTopLevelSymbolMovePlan.from_target(
             target_digest,
             node,
-            context.source_index,
-            context.sources_by_file_path,
+            context,
             destination_file_path=SourcePathResolutionAuthority.from_source_index(
                 self.destination_path,
                 context.source_index,
             ).required_path(),
             rationale=self.rationale,
         )
-        replacements = list(move_plan.source_edits(context.sources_by_file_path))
+        replacements = list(move_plan.source_edits(context))
         import_mutation = self.replacement_import.source_mutation(
             move_plan.source_block,
             rationale=self.rationale,
@@ -8984,20 +8810,15 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 
     def dependency_report(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> ModuleMoveDependencyReport:
-        return self.move_plan(source_index, source_by_path).dependency_report
+        return self.move_plan(context).dependency_report
 
     def preflight_reports(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        del selector_context
-        dependency_report = self.dependency_report(source_index, source_by_path)
+        dependency_report = self.dependency_report(context)
         if dependency_report.is_clean:
             status = CodemodPreflightStatus.PASSED
             message = "move_symbols_to_module dependency closure is clean"
@@ -9015,13 +8836,12 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 
     def move_plan(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> SourceTopLevelSymbolClosureMovePlan:
-        source_path = self.required_source_path(source_index, "move_symbols_to_module")
+        source_path = self.required_source_path(context, "move_symbols_to_module")
         destination_path = SourcePathResolutionAuthority.from_source_index(
             self.destination_path,
-            source_index,
+            context.source_index,
         ).required_path()
         if source_path == destination_path:
             raise ValueError(
@@ -9035,18 +8855,14 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
                 replacement_import=self.replacement_import.import_source,
                 rationale=self.rationale,
             ),
-            source_index=source_index,
-            source_by_path=source_by_path,
+            context=context,
         )
 
     def source_edits(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        return self.move_plan(source_index, source_by_path).source_edits(
-            source_by_path,
-        )
+        return self.move_plan(context).source_edits(context)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -9314,8 +9130,7 @@ class ExposeGlobalCandidateCacheContextOperation(
         if import_source:
             edits.extend(
                 self.required_import_mutations(
-                    context.source_index,
-                    context.sources_by_file_path,
+                    context,
                     source_path,
                     import_source=import_source,
                     default_rationale=(
@@ -9714,8 +9529,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         authority_target = self.authority_target(snapshot, source_path, component)
         return (
             *self.required_import_mutations(
-                snapshot.source_index,
-                snapshot.sources_by_file_path,
+                snapshot,
                 source_path,
                 import_source=(
                     f"from metaclass_registry import {AUTOREGISTER_META_NAME}\n"
@@ -10479,8 +10293,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
             )
         return (
             *self.import_mutations(
-                context.source_index,
-                context.sources_by_file_path,
+                context,
                 target_digest.file_path,
                 source,
             ),
@@ -10515,8 +10328,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
 
     def import_mutations(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         source_path: str,
         source: DispatchPolymorphismSource,
     ) -> tuple[ModuleImportMutation, ...]:
@@ -10527,7 +10339,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
                 target=SourceRewriteTarget(file_path=source_path),
                 import_source=import_source,
                 rationale=self.rationale_text("Import dispatch strategy support."),
-            ).source_edits(source_index, source_by_path)
+            ).source_edits(context)
         )
 
     def family_insertion_replacement(
@@ -10924,7 +10736,7 @@ class _RecipeReplacementGroup:
 
 
 @dataclass(frozen=True)
-class RefactorRecipeOperationCompiler(CodemodSelectorContext):
+class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
     """Compile declarative recipe operations into simulator-ready rewrites."""
 
     @classmethod
@@ -10934,13 +10746,14 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     ) -> Self:
         if isinstance(context, cls):
             return context
+        snapshot = context.execution_snapshot()
         return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            module_node_cache=context.module_node_cache,
-            ast_target_node_cache=context.ast_target_node_cache,
-            module_import_graph_cache=context.module_import_graph_cache,
+            source_index=snapshot.source_index,
+            sources_by_file_path=snapshot.sources_by_file_path,
+            class_family_index=snapshot.class_family_index,
+            module_node_cache=snapshot.module_node_cache,
+            ast_target_node_cache=snapshot.ast_target_node_cache,
+            module_import_graph_cache=snapshot.module_import_graph_cache,
         )
 
     def planned_rewrites_for_recipes(
@@ -10993,11 +10806,9 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         operation: RefactorRecipeOperation,
     ) -> tuple[NominalSourceEdit, ...]:
         return operation.originated_edits(
-            self.source_index,
-            self.sources_by_file_path,
+            self,
             recipe_id=recipe_id,
             plan_item_index=plan_item_index,
-            selector_context=self,
         )
 
     def _resolved_physical_edits(
@@ -11236,25 +11047,14 @@ class RefactorRecipe(CodemodPayloadRecord):
 
     def preflight_reports(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        context = selector_context or CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
-        )
         return (
             *self.authority_claim_preflight_reports(context),
             *(
                 report
                 for operation in self.operations
-                for report in operation.preflight_reports(
-                    source_index,
-                    source_by_path,
-                    selector_context=context,
-                )
+                for report in operation.preflight_reports(context)
             ),
         )
 
@@ -11538,11 +11338,7 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
             tuple(
                 report
                 for recipe in self.recipes
-                for report in recipe.preflight_reports(
-                    rewrite_snapshot.source_index,
-                    rewrite_snapshot.sources_by_file_path,
-                    selector_context=rewrite_snapshot,
-                )
+                for report in recipe.preflight_reports(rewrite_snapshot)
             )
         )
 
@@ -15343,7 +15139,6 @@ class AutoRegisterMroOrderingDerivation:
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         source_by_path = self.context.sources_by_file_path
-        source_index = self.context.source_index
         sorted_call_source = SourceTextGeometry(
             source_by_path[self.root.file_path]
         ).segment_for_node(self.sorted_call)
@@ -15360,33 +15155,21 @@ class AutoRegisterMroOrderingDerivation:
                 rationale=(
                     "Delete the explicit ordering axis superseded by the family MRO."
                 ),
-            ).source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=self.context,
-            )
+            ).source_edits(self.context)
         )
         ordering_edits = ReplaceTextOperation(
             target=SourceRewriteTarget(target_id=self.ordering_method.target.target_id),
             old_source=sorted_call_source,
             new_source=self.registered_types_call_source,
             rationale="Read family precedence from the declared MRO projection.",
-        ).source_edits_with_context(
-            source_index,
-            source_by_path,
-            selector_context=self.context,
-        )
+        ).source_edits(self.context)
         insertion_edits = InsertAfterTargetOperation(
             target=SourceRewriteTarget(
                 target_id=self.insertion_target.target.target_id
             ),
             source=self.resolution_class_source,
             rationale="Declare the family MRO projection beside its leaves.",
-        ).source_edits_with_context(
-            source_index,
-            source_by_path,
-            selector_context=self.context,
-        )
+        ).source_edits(self.context)
         return (*deletion_edits, *ordering_edits, *insertion_edits)
 
     @staticmethod
@@ -16534,8 +16317,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    snapshot.source_index,
-                    snapshot.sources_by_file_path,
+                    snapshot,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the enum subset authority.",
@@ -18485,8 +18267,7 @@ class SourceDerivedDataclassProjectionOperation(
             edit
             for import_source in derivation.import_sources
             for edit in self.required_import_mutations(
-                snapshot.source_index,
-                snapshot.sources_by_file_path,
+                snapshot,
                 derivation.projection.source_path,
                 import_source=import_source,
                 default_rationale=(
@@ -18502,11 +18283,7 @@ class SourceDerivedDataclassProjectionOperation(
             old_source=replacement.old_source,
             new_source=replacement.new_source,
             rationale=("Replace mirrored fields with an authority-owned projection."),
-        ).source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        ).source_edits(snapshot)
         return (*edits, *replacement_edits)
 
     @abstractmethod
@@ -20016,8 +19793,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    snapshot.source_index,
-                    snapshot.sources_by_file_path,
+                    snapshot,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the class-family authority.",

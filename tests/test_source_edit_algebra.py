@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     RefactorRecipe,
+    RefactorRecipeOperationCompiler,
     ReplaceFieldsWithCarrierOperation,
     SourceEditOrigin,
     SourceFileCreation,
@@ -58,6 +59,49 @@ def test_source_path_resolution_mro_preserves_stronger_matches(
     assert authority.required_path() == first_candidate
     monkeypatch.chdir(second_root)
     assert authority.required_path() == second_candidate
+
+
+def test_document_compiler_supplies_one_context_authority_to_every_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path, snapshot = _snapshot(tmp_path, "VALUE = 1\n")
+    observed_contexts: list[RefactorRecipeOperationCompiler] = []
+    original_source_edits = EnsureImportOperation.source_edits
+
+    def recording_source_edits(
+        operation: EnsureImportOperation,
+        context: RefactorRecipeOperationCompiler,
+    ) -> tuple[ModuleImportMutation, ...]:
+        observed_contexts.append(context)
+        return original_source_edits(operation, context)
+
+    monkeypatch.setattr(EnsureImportOperation, "source_edits", recording_source_edits)
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("one-context")
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    import_source="from pkg.alpha import Alpha\n",
+                )
+            )
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    import_source="from pkg.beta import Beta\n",
+                )
+            ),
+        )
+    )
+
+    document.source_rewrite_batch_from_snapshot(snapshot)
+
+    assert len(observed_contexts) == 2
+    assert observed_contexts[0] is observed_contexts[1]
+    assert observed_contexts[0].execution_snapshot() is observed_contexts[0]
+    assert observed_contexts[0].module_node_cache is snapshot.module_node_cache
+    assert observed_contexts[0].ast_target_node_cache is snapshot.ast_target_node_cache
 
 
 def test_source_path_resolution_fails_closed_on_suffix_ambiguity() -> None:
@@ -250,10 +294,7 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
             )
         )
     )
-    carrier_edits = recipe.operations[-1].source_edits(
-        snapshot.source_index,
-        snapshot.sources_by_file_path,
-    )
+    carrier_edits = recipe.operations[-1].source_edits(snapshot)
 
     assert len(carrier_edits) > 1
     assert all(

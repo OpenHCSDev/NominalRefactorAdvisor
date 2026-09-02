@@ -2545,11 +2545,7 @@ def test_dataclass_payload_operation_rejects_authority_schema_drift(
         CodemodOperationPreflightError,
         match="exactly one exhaustive return-dict",
     ):
-        operation.source_edits_with_context(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        operation.source_edits(changed_snapshot)
 
 
 def test_dataclass_payload_operation_rejects_ambiguous_return_projections(
@@ -2584,11 +2580,7 @@ def test_dataclass_payload_operation_rejects_ambiguous_return_projections(
         CodemodOperationPreflightError,
         match="exhaustive return-dict.*found 2",
     ):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_dataclass_payload_operation_ignores_nested_function_returns(
@@ -2620,11 +2612,7 @@ def test_dataclass_payload_operation_ignores_nested_function_returns(
         CodemodOperationPreflightError,
         match="exhaustive return-dict.*found 0",
     ):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
@@ -2718,11 +2706,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
         CodemodOperationPreflightError,
         match="absent from current source",
     ):
-        replayed.source_edits_with_context(
-            commented_snapshot.source_index,
-            commented_snapshot.sources_by_file_path,
-            selector_context=commented_snapshot,
-        )
+        replayed.source_edits(commented_snapshot)
     assert "import dataclasses" in rewritten_source
     assert (
         "tuple(field.name for field in dataclasses.fields(PhaseRecord))"
@@ -3761,11 +3745,7 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
         },
     )
 
-    edits = replayed.source_edits_with_context(
-        changed_snapshot.source_index,
-        changed_snapshot.sources_by_file_path,
-        selector_context=changed_snapshot,
-    )
+    edits = replayed.source_edits(changed_snapshot)
     rendered_edits = "\n".join(
         "".join(edit.inserted_lines)
         if hasattr(edit, "inserted_lines")
@@ -3804,11 +3784,7 @@ def test_enum_subset_operation_rejects_authority_value_drift(
         CodemodOperationPreflightError,
         match="exactly one literal frozenset subset",
     ):
-        operation.source_edits_with_context(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        operation.source_edits(changed_snapshot)
 
 
 def test_enum_subset_operation_rejects_ambiguous_projections(
@@ -3830,11 +3806,7 @@ def test_enum_subset_operation_rejects_ambiguous_projections(
         CodemodOperationPreflightError,
         match="exactly one literal frozenset subset; found 2",
     ):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 @pytest.mark.parametrize("shadow_module", ("authority", "projection"))
@@ -3865,11 +3837,7 @@ def test_enum_subset_operation_rejects_shadowed_frozenset(
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
 
     with pytest.raises(CodemodOperationPreflightError):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
@@ -3896,11 +3864,7 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         CodemodOperationPreflightError,
         match="aliased string values",
     ):
-        aliased_operation.source_edits_with_context(
-            aliased_snapshot.source_index,
-            aliased_snapshot.sources_by_file_path,
-            selector_context=aliased_snapshot,
-        )
+        aliased_operation.source_edits(aliased_snapshot)
 
     module_path.write_text(
         "from enum import StrEnum\n\n"
@@ -3924,11 +3888,7 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         CodemodOperationPreflightError,
         match="already binds 'actionable'",
     ):
-        collision_operation.source_edits_with_context(
-            collision_snapshot.source_index,
-            collision_snapshot.sources_by_file_path,
-            selector_context=collision_snapshot,
-        )
+        collision_operation.source_edits(collision_snapshot)
 
 
 def test_enum_subset_operation_executes_source_derived_view(tmp_path: Path) -> None:
@@ -4239,11 +4199,7 @@ def test_class_family_collection_operation_rederives_current_source(
         CodemodOperationPreflightError,
         match="exactly one complete literal collection",
     ):
-        replayed.source_edits_with_context(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        replayed.source_edits(changed_snapshot)
 
 
 def test_class_family_collection_operation_rejects_ambiguous_projections(
@@ -4267,11 +4223,7 @@ def test_class_family_collection_operation_rejects_ambiguous_projections(
         CodemodOperationPreflightError,
         match="exactly one complete literal collection; found 2",
     ):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_class_family_collection_operation_executes_source_derived_view(
@@ -4290,10 +4242,7 @@ def test_class_family_collection_operation_executes_source_derived_view(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
-    direct_edits = operation.source_edits(
-        snapshot.source_index,
-        snapshot.sources_by_file_path,
-    )
+    direct_edits = operation.source_edits(snapshot)
     simulation = (
         RefactorRecipe("derive-members")
         .with_operation(operation)
@@ -4349,18 +4298,10 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
             ValueError,
             match="exactly one complete literal collection",
         ):
-            operation.source_edits_with_context(
-                snapshot.source_index,
-                snapshot.sources_by_file_path,
-                selector_context=snapshot,
-            )
+            operation.source_edits(snapshot)
         return
 
-    edits = operation.source_edits_with_context(
-        snapshot.source_index,
-        snapshot.sources_by_file_path,
-        selector_context=snapshot,
-    )
+    edits = operation.source_edits(snapshot)
 
     assert edits
     assert any(
@@ -4388,11 +4329,7 @@ def test_class_family_collection_operation_rejects_shadowed_factory(
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
     with pytest.raises(ValueError, match="exactly one complete literal collection"):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_class_family_collection_operation_rejects_authority_name_collision(
@@ -4419,11 +4356,7 @@ def test_class_family_collection_operation_rejects_authority_name_collision(
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
 
     with pytest.raises(ValueError, match="authority name 'Root' is rebound"):
-        operation.source_edits_with_context(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-            selector_context=snapshot,
-        )
+        operation.source_edits(snapshot)
 
 
 def test_semantic_mirror_preserves_public_export_contract(tmp_path: Path) -> None:

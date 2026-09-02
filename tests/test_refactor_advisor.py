@@ -5374,7 +5374,12 @@ def test_manual_registry_operation_rederives_source_instead_of_replaying_payload
         CodemodOperationPreflightError,
         match="exactly one direct registry component",
     ):
-        operation.source_edits(source_index, {module_path.as_posix(): changed_source})
+        operation.source_edits(
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                {module_path.as_posix(): changed_source},
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -5426,7 +5431,12 @@ def test_manual_registry_operation_fails_closed_on_unproved_mapping_semantics(
     )
 
     with pytest.raises(CodemodOperationPreflightError, match=expected_error):
-        operation.source_edits(source_index, {module_path.as_posix(): source})
+        operation.source_edits(
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                {module_path.as_posix(): source},
+            )
+        )
 
 
 def test_manual_registry_operation_rejects_generated_authority_import_collision(
@@ -5458,7 +5468,12 @@ def test_manual_registry_operation_rejects_generated_authority_import_collision(
         CodemodOperationPreflightError,
         match="RegisteredHandler.*is bound",
     ):
-        operation.source_edits(source_index, {module_path.as_posix(): source})
+        operation.source_edits(
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                {module_path.as_posix(): source},
+            )
+        )
 
 
 def _autoregister_instance_view_source(
@@ -5584,7 +5599,12 @@ def test_autoregister_instance_view_operation_fails_closed_on_unproved_semantics
     )
 
     with pytest.raises(CodemodOperationPreflightError, match=expected_error):
-        operation.source_edits(source_index, {module_path.as_posix(): source})
+        operation.source_edits(
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                {module_path.as_posix(): source},
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -5622,7 +5642,12 @@ def test_autoregister_instance_view_operation_rejects_authority_collisions(
     )
 
     with pytest.raises(CodemodOperationPreflightError, match=expected_error):
-        operation.source_edits(source_index, {module_path.as_posix(): source})
+        operation.source_edits(
+            CodemodSourceSnapshot.from_indexed_sources(
+                source_index,
+                {module_path.as_posix(): source},
+            )
+        )
 
 
 def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
@@ -6109,7 +6134,9 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         )
     )
     operation = recipe.operations[0]
-    report = operation.dependency_report(source_index, source_by_path)
+    report = operation.dependency_report(
+        CodemodSourceSnapshot.from_indexed_sources(source_index, source_by_path)
+    )
     simulation = recipe.simulate(
         source_index,
         source_by_path,
@@ -6185,7 +6212,9 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
         )
 
     operation = recipe.operations[0]
-    report = operation.dependency_report(source_index, source_by_path)
+    report = operation.dependency_report(
+        CodemodSourceSnapshot.from_indexed_sources(source_index, source_by_path)
+    )
     assert report.is_clean is False
     assert report.source_local_dependency_names == ("LocalBase",)
     assert report.unresolved_dependency_names == ()
