@@ -8,7 +8,7 @@ reason about partial views, confusability, and coherence.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from typing import TYPE_CHECKING, TypeAlias
@@ -49,6 +49,13 @@ _ObservationAxis: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel]
 _FiberGroupKey: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel, str]
 
 
+class ObservationPayloadRecord:
+    """Nominal owner of storage-shaped observation payloads."""
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
 class _CoherenceCohortCacheKey:
     observation_kind: ObservationKind
@@ -58,7 +65,7 @@ class _CoherenceCohortCacheKey:
 
 
 @dataclass(frozen=True)
-class StructuralObservation:
+class StructuralObservation(ObservationPayloadRecord):
     """Normalized structural fact emitted by a collected shape."""
 
     file_path: str
@@ -88,7 +95,7 @@ class StructuralObservationCarrier(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class ObservationGroup(metaclass=AutoRegisterMeta):
+class ObservationGroup(ObservationPayloadRecord, metaclass=AutoRegisterMeta):
     """Common carrier for grouped observations under one structural axis."""
 
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
@@ -136,7 +143,7 @@ _WitnessGroupsByAxis: TypeAlias = dict[
 
 
 @dataclass(frozen=True)
-class ObservationCohort:
+class ObservationCohort(ObservationPayloadRecord):
     """Coherent cluster of fibers that share the same witness family."""
 
     observation_kind: ObservationKind

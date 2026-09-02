@@ -14,7 +14,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
@@ -1145,9 +1145,11 @@ class JsonPayloadBuilder:
             graph = build_observation_graph(self.modules)
             observation_graph_seconds = round(perf_counter() - started, 3)
             if sections.observation_graph:
-                payload["observations"] = [asdict(item) for item in graph.observations]
+                payload["observations"] = [
+                    item.to_dict() for item in graph.observations
+                ]
             if sections.observation_fibers:
-                payload["fibers"] = [asdict(item) for item in graph.fibers]
+                payload["fibers"] = [item.to_dict() for item in graph.fibers]
         semantic_descent_graph_seconds = 0.0
         semantic_descent_source = (
             self.semantic_descent_source

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from dataclasses import dataclass
+from abc import ABC
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import Generic, Iterable, TypeAlias, TypeVar
@@ -80,8 +81,15 @@ _FUNCTION_LIKE_NODE_KINDS = frozenset(
 )
 
 
+class SourceIndexRecord(ABC):
+    """Nominal owner of storage-shaped source-index record payloads."""
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 @dataclass(frozen=True)
-class SourceFileDigest:
+class SourceFileDigest(SourceIndexRecord):
     """Stable source id for one parsed file."""
 
     file_id: str
@@ -116,7 +124,7 @@ class SourceFileDigest:
 
 
 @dataclass(frozen=True)
-class AstTargetDigest:
+class AstTargetDigest(SourceIndexRecord):
     """Stable AST target address for one module, class, function, or method."""
 
     target_id: str
@@ -167,7 +175,7 @@ class AstTargetDigest:
 
 
 @dataclass(frozen=True)
-class EvidenceDigest:
+class EvidenceDigest(SourceIndexRecord):
     """Stable source-address row for one finding evidence coordinate."""
 
     evidence_id: str
@@ -527,8 +535,8 @@ class SourceIndex:
     def to_dict(self) -> dict[str, object]:
         return {
             "files": tuple(item.to_dict() for item in self.files),
-            "ast_targets": tuple(item.__dict__ for item in self.ast_targets),
-            "evidence": tuple(item.__dict__ for item in self.evidence),
+            "ast_targets": tuple(item.to_dict() for item in self.ast_targets),
+            "evidence": tuple(item.to_dict() for item in self.evidence),
         }
 
 

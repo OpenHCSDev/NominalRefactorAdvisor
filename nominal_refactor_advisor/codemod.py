@@ -2602,7 +2602,7 @@ class CodemodSourceIndexReport:
                     for target in self.source_index.ast_targets
                 ),
                 "evidence": tuple(
-                    dict(evidence.__dict__) for evidence in self.source_index.evidence
+                    evidence.to_dict() for evidence in self.source_index.evidence
                 ),
                 "target_ids_by_finding_id": (
                     self.source_index.target_ids_by_finding_id.to_dict()
@@ -2615,7 +2615,7 @@ class CodemodSourceIndexReport:
 
     @staticmethod
     def target_payload(target: AstTargetDigest) -> JsonObject:
-        return JsonObject(dict(target.__dict__))
+        return JsonObject(target.to_dict())
 
 
 @dataclass(frozen=True)

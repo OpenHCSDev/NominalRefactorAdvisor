@@ -181,7 +181,7 @@ class SemanticInspectionReport(SemanticInspectionRecord):
     def to_dict(self) -> dict[str, JsonValue]:
         payload = cast(dict[str, JsonValue], asdict(self))
         payload["ast_targets"] = tuple(
-            cast(dict[str, JsonValue], item.__dict__)
+            cast(dict[str, JsonValue], item.to_dict())
             for item in self.source_index.ast_targets
         )
         payload["source_index"] = cast(
