@@ -56,6 +56,7 @@ from nominal_refactor_advisor.semantic_descent import (
     semantic_descent_finding_projection_id,
 )
 from nominal_refactor_advisor.semantic_refactor_gate import (
+    DescentCertificateFindingAuthority,
     SemanticRefactorBoundaryEvidence,
 )
 
@@ -863,6 +864,24 @@ def test_finding_authority_evidence_must_belong_to_its_evidence() -> None:
             evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
             authority_evidence=SourceLocation("pkg/model.py", 3, "AxisRole"),
         )
+
+
+def test_finding_certificate_authority_requires_exact_graph_membership() -> None:
+    finding = RefactorFinding(
+        detector_id="authority_projection_test",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Authority evidence",
+        summary="finding is absent from the supplied graph",
+        why="a different graph cannot certify this finding",
+        capability_gap="one exact finding-backed certificate",
+        relation_context="finding and graph membership must agree",
+    )
+    certificate_authority = DescentCertificateFindingAuthority(
+        build_finding_backed_semantic_descent_graph(())
+    )
+
+    with pytest.raises(ValueError, match="requires exactly one"):
+        certificate_authority.certificate_for_finding(finding)
 
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:

@@ -28,10 +28,6 @@ from .taxonomy import CertificationLevel, ConfidenceLevel
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
 
 
-def detector_ids_have_semantic_mirror_role(detector_ids: tuple[str, ...]) -> bool:
-    return bool(frozenset(detector_ids) & IssueDetector.semantic_mirror_detector_ids())
-
-
 def ssot_authority_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorFinding, ...]:
@@ -72,11 +68,14 @@ class DescentCertificateFindingAuthority:
     def certificate_for_finding(
         self,
         finding: RefactorFinding,
-    ) -> DescentCertificate | None:
+    ) -> DescentCertificate:
         certificates = self.certificates_for_findings((finding,))
-        if certificates:
-            return certificates[0]
-        return None
+        if len(certificates) != 1:
+            raise ValueError(
+                f"Finding {finding.stable_id} requires exactly one semantic-descent "
+                f"certificate; found {len(certificates)}."
+            )
+        return certificates[0]
 
     def certificates_for_findings(
         self,
@@ -108,25 +107,10 @@ class DescentCertificateFindingAuthority:
 
     def authority_label_for_finding(self, finding: RefactorFinding) -> str:
         certificate = self.certificate_for_finding(finding)
-        if certificate is not None:
-            return self.graph.authority_catalog.authority_for_edge(
-                certificate.edge
-            ).name
-        if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-            return finding.title
-        if finding.evidence:
-            return finding.evidence[0].symbol
-        return finding.title
+        return self.graph.authority_catalog.authority_for_edge(certificate.edge).name
 
     def descent_path_for_finding(self, finding: RefactorFinding) -> str:
-        certificate = self.certificate_for_finding(finding)
-        if certificate is not None:
-            return certificate.missing_derivation_path
-        if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-            return finding.relation_context
-        return SemanticRefactorBoundaryEvidence.descent_path_for_detectors(
-            (finding.detector_id,)
-        )
+        return self.certificate_for_finding(finding).missing_derivation_path
 
     def group_key_for_finding(
         self,
@@ -168,18 +152,9 @@ class DescentCertificateFindingAuthority:
         finding: RefactorFinding,
     ) -> AuthorityClaimResolution:
         certificate = self.certificate_for_finding(finding)
-        if certificate is not None:
-            authority = self.graph.authority_catalog.authority_for_edge(
-                certificate.edge
-            )
-            return AuthorityClaimResolver(self.graph).resolve(
-                AuthorityClaim.from_authority(authority)
-            )
-        label = self.authority_label_for_finding(finding)
-        return AuthorityClaimResolution.unresolved(
-            AuthorityClaim(claimed_symbol=label),
-            searched_symbols=(label,),
-            reason="finding did not provide a graph-certified authority proof",
+        authority = self.graph.authority_catalog.authority_for_edge(certificate.edge)
+        return AuthorityClaimResolver(self.graph).resolve(
+            AuthorityClaim.from_authority(authority)
         )
 
     def authority_claims_for_findings(
@@ -407,19 +382,6 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
     @property
     def discovery_required(self) -> bool:
         return any(not claim.is_actionable for claim in self.authority_claims)
-
-    @staticmethod
-    def descent_path_for_detectors(detector_ids: tuple[str, ...]) -> str:
-        if detector_ids_have_semantic_mirror_role(detector_ids):
-            return (
-                "projection must be derived from the nominal authority registry, "
-                "class family, enum, or schema owner"
-            )
-        return (
-            "raw surfaces must collapse behind one nominal authority before "
-            "lower-level finding cleanup"
-        )
-
 
 class AuthorityDiscoveryRequiredFindingProjection:
     """Project unresolved gate authority claims into hard advisor findings."""
