@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    RefactorRecipeOperation,
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.detectors import (
@@ -1838,17 +1839,25 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     assert claim.qualname == "Step"
     assert claim.authority_id
     assert operation["operation"] == "derive_autoregister_instance_view"
-    assert operation["assignment_name"] == "STEP_TABLE"
+    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert operation["target_id"] == claim.authority_id
+    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
     assert "__registry__ = {}" in rewritten
     assert "registry_key = StepId.LOAD" in rewritten
     assert "registry_key = StepId.SAVE" in rewritten
     assert "def instances_by_registry_key" in rewritten
     assert "key_attribute = cls.__registry_key__" in rewritten
     assert "registered_type.__dict__[key_attribute]: registered_type()" in rewritten
-    assert "if isinstance(registered_type.__dict__[key_attribute], StepId)" in rewritten
     assert "for key, registered_type in cls.__registry__.items()" not in rewritten
     assert "STEP_TABLE = Step.instances_by_registry_key()" in rewritten
     assert simulation.is_clean is True
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "pkg/mod.py", "exec"), namespace)
+    step_id = namespace["StepId"]
+    step_table = namespace["STEP_TABLE"]
+    assert set(step_table) == {step_id.LOAD, step_id.SAVE}
+    assert type(step_table[step_id.LOAD]) is namespace["LoadStep"]
+    assert type(step_table[step_id.SAVE]) is namespace["SaveStep"]
 
 
 def test_semantic_descent_resolves_bound_constructor_values_to_class_family(
@@ -2020,7 +2029,7 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
         "no class-family recipe declaration proved an executable exact derivation"
     )
     assert (
-        "class/key pairs are incomplete"
+        "source does not prove one complete zero-argument constructor view"
         in obstacles_by_declaration["AutoregisterInstanceViewRecipeBuilder"]
     )
     assert record.to_dict()["proof_obstacles"] == tuple(

@@ -135,6 +135,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceRevisionError,
     CodemodSourceSnapshot,
     ConvertManualRegistryToAutoregisterOperation,
+    DeriveAutoregisterInstanceViewOperation,
     CreateFileOperation,
     FindingRecipeAuthorityClaimGate,
     FindingRecipeActionKey,
@@ -5314,6 +5315,10 @@ def test_manual_registry_operation_rederives_source_instead_of_replaying_payload
             "REGISTRY['beta'] = BetaHandler\n",
             "observed while its manual population is still in progress",
         ),
+        (
+            "REGISTRY[make_key()] = AlphaHandler\nREGISTRY['beta'] = BetaHandler\n",
+            "not a relocatable declaration expression",
+        ),
     ),
 )
 def test_manual_registry_operation_fails_closed_on_unproved_mapping_semantics(
@@ -5371,6 +5376,170 @@ def test_manual_registry_operation_rejects_generated_authority_import_collision(
     )
 
     with pytest.raises(ValueError, match="RegisteredHandler.*is bound"):
+        operation.source_edits(source_index, {module_path.as_posix(): source})
+
+
+def _autoregister_instance_view_source(
+    mapping_source: str = (
+        "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.SAVE: SaveStep()}\n"
+    ),
+) -> str:
+    return (
+        "from abc import ABC, abstractmethod\n"
+        "from enum import StrEnum\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        "class StepId(StrEnum):\n"
+        "    LOAD = 'load'\n"
+        "    SAVE = 'save'\n\n"
+        "def make_key():\n"
+        "    return StepId.LOAD\n\n"
+        "class Step(ABC, metaclass=AutoRegisterMeta):\n"
+        '    """One executable step."""\n'
+        "    __registry_key__ = 'registry_key'\n"
+        "    __skip_if_no_key__ = True\n\n"
+        "    @abstractmethod\n"
+        "    def build(self):\n"
+        "        raise NotImplementedError\n\n"
+        "class LoadStep(Step):\n"
+        "    def __init__(self, label='load'):\n"
+        "        self.label = label\n\n"
+        "    def build(self):\n"
+        "        return self.label\n\n"
+        "class SaveStep(Step):\n"
+        "    def build(self):\n"
+        "        return 'save'\n\n"
+        f"{mapping_source}"
+    )
+
+
+def test_autoregister_instance_view_operation_derives_everything_from_target(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _autoregister_instance_view_source()
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    step_target = next(
+        target for target in source_index.ast_targets if target.qualname == "Step"
+    )
+    operation = DeriveAutoregisterInstanceViewOperation(
+        target=SourceRewriteTarget(target_id=step_target.target_id)
+    )
+    recipe = RefactorRecipe("derive-instance-view").with_operation(operation)
+
+    simulation = recipe.simulate(source_index, {module_path.as_posix(): source})
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    payload = operation.to_dict()
+
+    assert set(payload) == {"operation", "target_id", "rationale"}
+    assert RefactorRecipeOperation.from_dict(payload) == operation
+    with pytest.raises(
+        ValueError,
+        match="Unsupported DeriveAutoregisterInstanceViewOperation payload field",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **payload,
+                "assignment_name": "STEP_TABLE",
+                "base_name": "Step",
+                "class_key_pairs": [
+                    "LoadStep=StepId.LOAD",
+                    "SaveStep=StepId.SAVE",
+                ],
+                "method_name": "instances_by_registry_key",
+            }
+        )
+    assert "__registry__ = {}" in rewritten
+    assert "STEP_TABLE = Step.instances_by_registry_key()" in rewritten
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+    assert namespace["Step"].__doc__ == "One executable step."
+    assert namespace["STEP_TABLE"][namespace["StepId"].LOAD].build() == "load"
+    assert namespace["STEP_TABLE"][namespace["StepId"].SAVE].build() == "save"
+
+
+@pytest.mark.parametrize(
+    ("mapping_source", "expected_error"),
+    (
+        (
+            "STEP_TABLE = {StepId.LOAD: LoadStep('configured'), "
+            "StepId.SAVE: SaveStep()}\n",
+            "exactly one constructor-valued instance view",
+        ),
+        (
+            "STEP_TABLE = {make_key(): LoadStep(), StepId.SAVE: SaveStep()}\n",
+            "not a relocatable declaration expression",
+        ),
+        (
+            "STEP_TABLE = {StepId.SAVE: SaveStep(), StepId.LOAD: LoadStep()}\n",
+            "order must match class declaration order",
+        ),
+        (
+            "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.LOAD: SaveStep()}\n",
+            "registry keys must be unique",
+        ),
+        (
+            "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.SAVE: SaveStep()}\n"
+            "SECOND_TABLE = {StepId.LOAD: LoadStep(), StepId.SAVE: SaveStep()}\n",
+            "exactly one constructor-valued instance view",
+        ),
+    ),
+)
+def test_autoregister_instance_view_operation_fails_closed_on_unproved_semantics(
+    tmp_path: Path,
+    mapping_source: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _autoregister_instance_view_source(mapping_source)
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    step_target = next(
+        target for target in source_index.ast_targets if target.qualname == "Step"
+    )
+    operation = DeriveAutoregisterInstanceViewOperation(
+        target=SourceRewriteTarget(target_id=step_target.target_id)
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        operation.source_edits(source_index, {module_path.as_posix(): source})
+
+
+@pytest.mark.parametrize(
+    ("authority_source", "expected_error"),
+    (
+        (
+            "    __registry__ = {'foreign': object}\n",
+            "must own an empty direct registry",
+        ),
+        (
+            "    @classmethod\n"
+            "    def instances_by_registry_key(cls):\n"
+            "        return {}\n",
+            "already binds 'instances_by_registry_key'",
+        ),
+    ),
+)
+def test_autoregister_instance_view_operation_rejects_authority_collisions(
+    tmp_path: Path,
+    authority_source: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _autoregister_instance_view_source().replace(
+        "    __skip_if_no_key__ = True\n",
+        f"    __skip_if_no_key__ = True\n{authority_source}",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    step_target = next(
+        target for target in source_index.ast_targets if target.qualname == "Step"
+    )
+    operation = DeriveAutoregisterInstanceViewOperation(
+        target=SourceRewriteTarget(target_id=step_target.target_id)
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
         operation.source_edits(source_index, {module_path.as_posix(): source})
 
 

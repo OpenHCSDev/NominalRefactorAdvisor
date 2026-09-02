@@ -115,8 +115,10 @@ from .models import (
     SourceLocation,
 )
 from .manual_registry import (
+    AutoRegisterInstanceViewComponent,
     DirectManualRegistryComponent,
     RegistryAssignment,
+    SourceClassKeyEntry,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .parameter_conveyor import (
@@ -6515,6 +6517,38 @@ class ClassHeaderSpanSourceAuthority:
 
 
 @dataclass(frozen=True)
+class ClassBodySourceAuthority:
+    """Recover insertion geometry owned by one class body."""
+
+    node: ast.ClassDef
+    source: str
+
+    @property
+    def source_lines(self) -> list[str]:
+        return self.source.splitlines(keepends=True)
+
+    @property
+    def indentation(self) -> str:
+        if self.node.body:
+            body_line = self.source_lines[self.node.body[0].lineno - 1]
+            indentation = body_line[: len(body_line) - len(body_line.lstrip())]
+            if indentation:
+                return indentation
+        return "    "
+
+    @property
+    def declaration_insert_line(self) -> int:
+        if (
+            self.node.body
+            and isinstance(self.node.body[0], ast.Expr)
+            and isinstance(self.node.body[0].value, ast.Constant)
+            and isinstance(self.node.body[0].value.value, str)
+        ):
+            return self.node.body[0].end_lineno or self.node.body[0].lineno
+        return self.node.lineno
+
+
+@dataclass(frozen=True)
 class ClassBaseRewriteTarget:
     """Class declaration target supported by the class-header rewrite engine."""
 
@@ -9222,60 +9256,19 @@ class ExposeGlobalCandidateCacheContextOperation(
         )
 
 
-@dataclass(frozen=True)
-class ClassRegistryKeyPair:
-    """One class/key binding used to convert manual registries."""
-
-    class_name: str
-    key_source: str
-
-    @classmethod
-    def parse(cls, source: str) -> "ClassRegistryKeyPair":
-        class_name, separator, key_source = source.partition("=")
-        if separator != "=" or not class_name or not key_source:
-            raise ValueError(f"Invalid class/key pair {source!r}")
-        return cls(class_name=class_name, key_source=key_source)
-
-    @classmethod
-    def for_class_name(
-        cls,
-        class_name: str,
-        pairs: tuple["ClassRegistryKeyPair", ...],
-    ) -> "ClassRegistryKeyPair | None":
-        return next((pair for pair in pairs if pair.class_name == class_name), None)
-
-    @property
-    def key_node(self) -> ast.expr:
-        return ast.parse(self.key_source, mode="eval").body
-
-
-@dataclass(frozen=True)
-class RegistryKeyDeclaration:
-    """One class-owned key declaration derived from a source registry edge."""
-
-    class_name: str
-    key_node: ast.expr
-
-    @property
-    def key_source(self) -> str:
-        return ast.unparse(self.key_node)
-
-
 class RegistryKeyDeclarationRewriteMixin:
     """Reuse exact class-key declaration rewrites across registry operations."""
 
     def registry_key_declaration_replacements(
         self,
         targets: ClassMemberPromotionTargets,
-        declarations: tuple[RegistryKeyDeclaration, ...],
+        entries: tuple[SourceClassKeyEntry, ...],
         registry_key_attribute: str,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        declarations_by_class = {
-            declaration.class_name: declaration for declaration in declarations
-        }
+        entries_by_class = {entry.class_name: entry for entry in entries}
         replacements = []
         for class_target in targets.targets:
-            declaration = declarations_by_class[class_target.node.name]
+            entry = entries_by_class[class_target.node.name]
             existing = tuple(
                 statement
                 for statement in class_target.node.body
@@ -9284,7 +9277,7 @@ class RegistryKeyDeclarationRewriteMixin:
             )
             if existing:
                 if len(existing) != 1 or not self.declaration_matches_value(
-                    existing[0], declaration.key_node
+                    existing[0], entry.key_node
                 ):
                     raise ValueError(
                         f"Registry key on {class_target.qualname!r} conflicts with "
@@ -9295,7 +9288,7 @@ class RegistryKeyDeclarationRewriteMixin:
                 self.registry_key_declaration_replacement(
                     targets,
                     class_target,
-                    declaration,
+                    entry,
                     registry_key_attribute,
                 )
             )
@@ -9305,16 +9298,16 @@ class RegistryKeyDeclarationRewriteMixin:
         self,
         targets: ClassMemberPromotionTargets,
         target: ResolvedClassTarget,
-        declaration: RegistryKeyDeclaration,
+        entry: SourceClassKeyEntry,
         registry_key_attribute: str,
     ) -> PhysicalSourceEdit:
-        source_lines = targets.source_for(target.file_path).splitlines(keepends=True)
-        indent = DeriveAutoregisterInstanceViewOperation.class_body_indent(
+        body_authority = ClassBodySourceAuthority(
             target.node,
-            source_lines,
+            targets.source_for(target.file_path),
         )
         assignment_line = (
-            f"{indent}{registry_key_attribute} = {declaration.key_source}\n"
+            f"{body_authority.indentation}{registry_key_attribute} = "
+            f"{entry.key_source}\n"
         )
         body = statements_without_docstring(target.node.body)
         if len(body) == 1 and isinstance(body[0], ast.Pass):
@@ -9328,10 +9321,9 @@ class RegistryKeyDeclarationRewriteMixin:
                     f"Declare registry key on {target.qualname!r}."
                 ),
             )
-        insertion_line = self.class_declaration_insert_line(target.node)
         return SourceInsertion(
             file_path=target.file_path,
-            insertion_line=insertion_line + 1,
+            insertion_line=body_authority.declaration_insert_line + 1,
             inserted_lines=(assignment_line,),
             rationale=self.rationale_text(
                 f"Declare registry key on {target.qualname!r}."
@@ -9349,17 +9341,6 @@ class RegistryKeyDeclarationRewriteMixin:
             value, include_attributes=False
         ) == ast.dump(expected, include_attributes=False)
 
-    @staticmethod
-    def class_declaration_insert_line(node: ast.ClassDef) -> int:
-        if (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            return node.body[0].end_lineno or node.body[0].lineno
-        return node.lineno
-
 
 class SharedAssignmentValueMixin:
     @staticmethod
@@ -9370,167 +9351,75 @@ class SharedAssignmentValueMixin:
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
     RegistryKeyDeclarationRewriteMixin,
-    SharedAssignmentValueMixin,
-    BaseNamePayloadOperation,
+    RefactorRecipeOperation,
 ):
     """Derive an instance-valued module view from an AutoRegisterMeta family."""
 
-    assignment_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    class_key_pairs: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
-    method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    @property
-    def parsed_class_key_pairs(self) -> tuple[ClassRegistryKeyPair, ...]:
-        return tuple(
-            ClassRegistryKeyPair.parse(source) for source in self.class_key_pairs
-        )
+    instance_view_method_name: ClassVar[str] = "instances_by_registry_key"
 
     def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[PhysicalSourceEdit, ...]:
-        source_path = self.required_source_path(
-            source_index,
-            "derive_autoregister_instance_view",
+        context = self.operation_context(source_index, source_by_path, None)
+        _target_id, authority_digest, authority_node = self.target_node_from_context(
+            context
         )
-        if not self.method_name.isidentifier():
-            raise ValueError(f"Method name must be an identifier: {self.method_name!r}")
-        module = ast.parse(source_by_path[source_path], filename=source_path)
-        class_key_pairs = self.parsed_class_key_pairs
-        self.require_instance_view_assignment(module, class_key_pairs)
-        context = CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
+        if not authority_digest.is_class or not isinstance(
+            authority_node, ast.ClassDef
+        ):
+            raise ValueError("Instance-view derivation target must be a class")
+        if "." in authority_digest.qualname:
+            raise ValueError("Instance-view derivation requires a top-level authority")
+        source_path = authority_digest.file_path
+        component = AutoRegisterInstanceViewComponent.from_module_authority(
+            context.module_nodes_by_file_path[source_path],
+            authority_node.name,
         )
         concrete_targets = ClassMemberPromotionTargets.resolve(
             context,
             source_path=source_path,
-            class_names=tuple(pair.class_name for pair in class_key_pairs),
+            class_names=component.class_names,
         )
-        authority_targets = ClassMemberPromotionTargets.resolve(
-            context,
-            source_path=source_path,
-            class_names=(self.base_name,),
+        authority_target = ResolvedClassTarget(
+            target=authority_digest,
+            node=component.authority_node,
         )
-        authority_target = authority_targets.targets[0]
-        authority = AutoRegisterClassAuthority(authority_target.node)
-        if not authority.runtime_autoregister_family:
-            raise ValueError(f"{self.base_name!r} is not an AutoRegisterMeta family")
-        registry_key_attribute = authority.registry_key_attribute
-        if registry_key_attribute is None:
-            raise ValueError(f"{self.base_name!r} has no resolved registry key axis")
         return (
-            *self.class_key_replacements(
+            *self.registry_key_declaration_replacements(
                 concrete_targets,
-                class_key_pairs,
-                registry_key_attribute,
+                component.entries,
+                component.registry_key_attribute,
             ),
             *self.authority_replacements(
                 authority_target,
-                authority,
+                component,
                 source_by_path,
-                class_key_pairs,
             ),
-            *self.assignment_replacements(source_index, source_by_path, source_path),
-        )
-
-    def require_instance_view_assignment(
-        self,
-        module: ast.Module,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> None:
-        statement = self.single_assignment_statement(module)
-        value = self.assignment_value(statement)
-        if not isinstance(value, ast.Dict):
-            raise ValueError(f"{self.assignment_name!r} is not a dict literal")
-        matched_pairs = self.instance_view_matched_pairs(
-            value,
-            class_key_pairs,
-        )
-        if len(matched_pairs) != len(class_key_pairs):
-            raise ValueError(
-                "Expected one constructor-valued dict entry per class/key pair"
-            )
-
-    def single_assignment_statement(
-        self, module: ast.Module
-    ) -> ast.Assign | ast.AnnAssign:
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if self.assignment_name
-            in AssignmentStatementNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            raise ValueError(
-                f"Expected one top-level assignment for {self.assignment_name!r}; "
-                f"found {len(matching_statements)}"
-            )
-        statement = matching_statements[0]
-        if not isinstance(statement, ast.Assign | ast.AnnAssign):
-            raise ValueError(
-                f"{self.assignment_name!r} is not a plain or annotated assignment"
-            )
-        return statement
-
-    def instance_view_matched_pairs(
-        self,
-        node: ast.Dict,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[ClassRegistryKeyPair, ...]:
-        matched_pairs = []
-        for key_node, value_node in zip(node.keys, node.values, strict=True):
-            if key_node is None:
-                return ()
-            class_name = self.constructor_call_class_name(value_node)
-            if class_name is None:
-                return ()
-            pair = ClassRegistryKeyPair.for_class_name(
-                class_name,
-                class_key_pairs,
-            )
-            if pair is None or ast.unparse(key_node) != pair.key_source:
-                return ()
-            matched_pairs.append(pair)
-        return tuple(matched_pairs)
-
-    @staticmethod
-    def constructor_call_class_name(node: ast.AST) -> str | None:
-        if not isinstance(node, ast.Call):
-            return None
-        return _terminal_name(node.func)
-
-    def class_key_replacements(
-        self,
-        targets: ClassMemberPromotionTargets,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-        registry_key_attribute: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.registry_key_declaration_replacements(
-            targets,
-            tuple(
-                RegistryKeyDeclaration(pair.class_name, pair.key_node)
-                for pair in class_key_pairs
-            ),
-            registry_key_attribute,
+            self.assignment_replacement(source_path, component),
         )
 
     def instance_method_replacements(
         self,
         authority_target: ResolvedClassTarget,
-        authority: AutoRegisterClassAuthority,
+        component: AutoRegisterInstanceViewComponent,
         source_by_path: Mapping[str, str],
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
     ) -> tuple[PhysicalSourceEdit, ...]:
-        if authority.declares_method(self.method_name):
-            return ()
-        source_lines = source_by_path[authority_target.file_path].splitlines(
-            keepends=True
+        if (
+            self.instance_view_method_name
+            in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                component.authority_node.body
+            )
+        ):
+            raise ValueError(
+                f"AutoRegister authority {authority_target.qualname!r} already binds "
+                f"{self.instance_view_method_name!r}"
+            )
+        body_authority = ClassBodySourceAuthority(
+            component.authority_node,
+            source_by_path[authority_target.file_path],
         )
-        body_indent = self.class_body_indent(authority.node, source_lines)
         insertion_line = (
             authority_target.node.end_lineno or authority_target.node.lineno
         )
@@ -9539,11 +9428,10 @@ class DeriveAutoregisterInstanceViewOperation(
                 file_path=authority_target.file_path,
                 insertion_line=insertion_line + 1,
                 inserted_lines=SourceTargetEditor.source_lines(
-                    self.instance_method_source(body_indent, class_key_pairs)
+                    self.instance_method_source(body_authority.indentation)
                 ),
-                rationale=self.rationale
-                or (
-                    f"Add {self.method_name!r} derived instance view to "
+                rationale=self.rationale_text(
+                    f"Add {self.instance_view_method_name!r} derived instance view to "
                     f"{authority_target.qualname!r}."
                 ),
             ),
@@ -9552,167 +9440,88 @@ class DeriveAutoregisterInstanceViewOperation(
     def authority_replacements(
         self,
         authority_target: ResolvedClassTarget,
-        authority: AutoRegisterClassAuthority,
+        component: AutoRegisterInstanceViewComponent,
         source_by_path: Mapping[str, str],
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
     ) -> tuple[PhysicalSourceEdit, ...]:
         return (
             *self.explicit_registry_replacements(
                 authority_target,
-                authority,
+                component,
                 source_by_path,
-                class_key_pairs,
             ),
             *self.instance_method_replacements(
                 authority_target,
-                authority,
+                component,
                 source_by_path,
-                class_key_pairs,
             ),
         )
 
     def explicit_registry_replacements(
         self,
         authority_target: ResolvedClassTarget,
-        authority: AutoRegisterClassAuthority,
+        component: AutoRegisterInstanceViewComponent,
         source_by_path: Mapping[str, str],
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
     ) -> tuple[PhysicalSourceEdit, ...]:
-        if authority.declares_registry:
+        if component.authority.declares_registry:
             return ()
-        if not self.requires_explicit_registry(class_key_pairs):
-            return ()
-        source_lines = source_by_path[authority_target.file_path].splitlines(
-            keepends=True
-        )
-        body_indent = self.class_body_indent(authority.node, source_lines)
-        insertion_line = (
-            authority.node.body[0].lineno
-            if authority.node.body
-            else (authority.node.lineno + 1)
+        body_authority = ClassBodySourceAuthority(
+            component.authority_node,
+            source_by_path[authority_target.file_path],
         )
         return (
             SourceInsertion(
                 file_path=authority_target.file_path,
-                insertion_line=insertion_line,
-                inserted_lines=(f"{body_indent}__registry__ = {{}}\n",),
-                rationale=self.rationale
-                or f"Keep {authority_target.qualname!r} registry in memory.",
+                insertion_line=body_authority.declaration_insert_line + 1,
+                inserted_lines=(
+                    f"{body_authority.indentation}{REGISTRY_ATTRIBUTE_NAME} = {{}}\n",
+                ),
+                rationale=self.rationale_text(
+                    f"Keep {authority_target.qualname!r} registry in memory."
+                ),
             ),
         )
-
-    @staticmethod
-    def requires_explicit_registry(
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> bool:
-        return any(
-            not DeriveAutoregisterInstanceViewOperation.key_source_is_string_literal(
-                pair.key_source
-            )
-            for pair in class_key_pairs
-        )
-
-    @staticmethod
-    def key_source_is_string_literal(key_source: str) -> bool:
-        try:
-            node = ast.parse(key_source, mode="eval").body
-        except SyntaxError:
-            return False
-        return isinstance(node, ast.Constant) and isinstance(node.value, str)
-
-    @staticmethod
-    def class_body_indent(node: ast.ClassDef, source_lines: list[str]) -> str:
-        if node.body:
-            body_line = source_lines[node.body[0].lineno - 1]
-            indent = body_line[: len(body_line) - len(body_line.lstrip())]
-            if indent:
-                return indent
-        return "    "
 
     def instance_method_source(
         self,
         indent: str,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
     ) -> str:
-        key_type_source = self.key_type_filter_source(class_key_pairs)
-        filter_source = (
-            f"{indent}        if key_attribute in registered_type.__dict__\n"
-        )
-        if key_type_source is not None:
-            filter_source += (
-                f"{indent}        if isinstance("
-                f"registered_type.__dict__[key_attribute], {key_type_source})\n"
-            )
         return (
             "\n"
             f"{indent}@classmethod\n"
-            f"{indent}def {self.method_name}(cls):\n"
+            f"{indent}def {self.instance_view_method_name}(cls):\n"
             f"{indent}    key_attribute = cls.{REGISTRY_KEY_ATTRIBUTE_NAME}\n"
             f"{indent}    return {{\n"
             f"{indent}        registered_type.__dict__[key_attribute]: registered_type()\n"
             f"{indent}        for registered_type in "
             f"cls.{REGISTRY_ATTRIBUTE_NAME}.values()\n"
-            f"{filter_source}"
+            f"{indent}        if key_attribute in registered_type.__dict__\n"
             f"{indent}    }}\n"
         )
 
-    @staticmethod
-    def key_type_filter_source(
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> str | None:
-        key_type_sources = tuple(
-            DeriveAutoregisterInstanceViewOperation.attribute_owner_source(
-                pair.key_source
-            )
-            for pair in class_key_pairs
-        )
-        if any(source is None for source in key_type_sources):
-            return None
-        unique_sources = set(key_type_sources)
-        if len(unique_sources) != 1:
-            return None
-        return next(iter(unique_sources))
-
-    @staticmethod
-    def attribute_owner_source(key_source: str) -> str | None:
-        try:
-            node = ast.parse(key_source, mode="eval").body
-        except SyntaxError:
-            return None
-        if not isinstance(node, ast.Attribute):
-            return None
-        return ast.unparse(node.value)
-
-    def assignment_replacements(
+    def assignment_replacement(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
         source_path: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del source_index
-        module = ast.parse(source_by_path[source_path], filename=source_path)
-        statement = self.single_assignment_statement(module)
-        return (
-            SourceSpanReplacement(
-                file_path=source_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
-                replacement_lines=SourceTargetEditor.source_lines(
-                    self.derived_assignment_source(statement)
-                ),
-                rationale=self.rationale
-                or f"Derive {self.assignment_name!r} from {self.base_name!r}.",
-            ),
-        )
-
-    def derived_assignment_source(self, statement: ast.Assign | ast.AnnAssign) -> str:
-        value_source = f"{self.base_name}.{self.method_name}()"
+        component: AutoRegisterInstanceViewComponent,
+    ) -> PhysicalSourceEdit:
+        statement = component.assignment
+        value_source = f"{component.authority_name}.{self.instance_view_method_name}()"
         if isinstance(statement, ast.AnnAssign):
-            return (
-                f"{self.assignment_name}: {ast.unparse(statement.annotation)} = "
+            assignment_source = (
+                f"{component.assignment_name}: {ast.unparse(statement.annotation)} = "
                 f"{value_source}"
             )
-        return f"{self.assignment_name} = {value_source}"
+        else:
+            assignment_source = f"{component.assignment_name} = {value_source}"
+        return SourceSpanReplacement(
+            file_path=source_path,
+            start_line=statement.lineno,
+            end_line=statement.end_lineno or statement.lineno,
+            replacement_lines=SourceTargetEditor.source_lines(assignment_source),
+            rationale=self.rationale_text(
+                f"Derive {component.assignment_name!r} from "
+                f"{component.authority_name!r}."
+            ),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -9779,10 +9588,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             ),
             *self.registry_key_declaration_replacements(
                 targets,
-                tuple(
-                    RegistryKeyDeclaration(entry.class_name, entry.key_node)
-                    for entry in component.entries
-                ),
+                component.entries,
                 DEFAULT_REGISTRY_KEY_ATTRIBUTE,
             ),
             *self.registration_replacements(source_path, component),
@@ -9960,13 +9766,13 @@ class ConvertManualRegistryToAutoregisterOperation(
                 )
         if not missing:
             return ()
-        source_lines = source.splitlines(keepends=True)
-        indent = DeriveAutoregisterInstanceViewOperation.class_body_indent(
+        body_authority = ClassBodySourceAuthority(
             authority_target.node,
-            source_lines,
+            source,
         )
         inserted_lines = tuple(
-            f"{indent}{name} = {ast.unparse(value)}\n" for name, value in missing
+            f"{body_authority.indentation}{name} = {ast.unparse(value)}\n"
+            for name, value in missing
         )
         body = statements_without_docstring(authority_target.node.body)
         if len(body) == 1 and isinstance(body[0], ast.Pass):
@@ -9982,11 +9788,10 @@ class ConvertManualRegistryToAutoregisterOperation(
                     ),
                 ),
             )
-        insertion_line = self.class_declaration_insert_line(authority_target.node)
         return (
             SourceInsertion(
                 file_path=authority_target.file_path,
-                insertion_line=insertion_line + 1,
+                insertion_line=body_authority.declaration_insert_line + 1,
                 inserted_lines=inserted_lines,
                 rationale=self.rationale_text(
                     f"Declare registry semantics on {authority_target.qualname!r}."
@@ -20508,35 +20313,6 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         return "tuple"
 
 
-@dataclass(frozen=True)
-class AutoregisterInstanceViewRecipeParts:
-    """Executable recipe facts for an AutoRegister-derived instance view."""
-
-    projection_path: str
-    authority_target: AstTargetDigest
-    assignment_name: str
-    class_key_pairs: tuple[str, ...]
-    method_name: str = "instances_by_registry_key"
-
-    @property
-    def base_name(self) -> str:
-        return self.authority_target.name
-
-
-@dataclass(frozen=True)
-class AutoregisterInstanceViewRecipeSeedDraft(SemanticMirrorRecipeSeedLocations):
-    """Autoregister instance-view seed before class/key pairs are proven present."""
-
-    assignment_name: str
-
-
-@dataclass(frozen=True)
-class AutoregisterInstanceViewRecipeSeed(AutoregisterInstanceViewRecipeSeedDraft):
-    """Semantic mirror facts before source-geometry safety checks."""
-
-    class_key_pairs: tuple[str, ...]
-
-
 @dataclass(frozen=True, kw_only=True)
 class AutoregisterInstanceViewRecipeBuilder(
     ContextualSemanticMirrorRecipeBuilder,
@@ -20545,8 +20321,8 @@ class AutoregisterInstanceViewRecipeBuilder(
     """Build recipes for constructor-valued views over AutoRegisterMeta families."""
 
     def recipe(self) -> RefactorRecipe | None:
-        parts = self.parts()
-        if parts is None:
+        authority_target = self.authority_target()
+        if authority_target is None:
             return None
         return (
             RefactorRecipe(
@@ -20555,92 +20331,50 @@ class AutoregisterInstanceViewRecipeBuilder(
             )
             .with_authority_claim(
                 AstTargetAuthorityClaim.from_target(
-                    parts.authority_target,
+                    authority_target,
                     authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
                 )
             )
             .with_operation(
                 DeriveAutoregisterInstanceViewOperation(
-                    target=SourceRewriteTarget(file_path=parts.projection_path),
-                    base_name=parts.base_name,
-                    assignment_name=parts.assignment_name,
-                    class_key_pairs=tuple(parts.class_key_pairs),
-                    method_name=parts.method_name,
+                    target=SourceRewriteTarget(target_id=authority_target.target_id),
                     rationale="",
                 )
             )
         )
 
-    def parts(self) -> AutoregisterInstanceViewRecipeParts | None:
-        seed = self.seed()
-        if seed is None:
+    def authority_target(self) -> AstTargetDigest | None:
+        locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
+        assignment_name = self.finding.metrics.plan_registry_name
+        expected_class_names = frozenset(self.finding.metrics.plan_class_names)
+        if locations is None or assignment_name is None or not expected_class_names:
             return None
-        class_names = tuple(
-            ClassRegistryKeyPair.parse(source).class_name
-            for source in seed.class_key_pairs
-        )
-        concrete_targets = ClassMemberPromotionTargets.resolve_or_none(
-            self,
-            source_path=seed.projection_file_path(),
-            class_names=class_names,
-        )
+        projection_location, authority_location = locations
+        projection_paths = self.resolve_source_paths((projection_location.file_path,))
+        if len(projection_paths) != 1:
+            return None
+        projection_path = next(iter(projection_paths))
         authority_targets = ClassMemberPromotionTargets.resolve_or_none(
             self,
-            source_path=seed.projection_file_path(),
-            class_names=(seed.authority_symbol(),),
+            source_path=projection_path,
+            class_names=(authority_location.symbol,),
         )
-        if concrete_targets is None or authority_targets is None:
+        if authority_targets is None:
             return None
-        authority_target = authority_targets.targets[0]
-        authority = AutoRegisterClassAuthority(authority_target.node)
-        if not authority.runtime_autoregister_family:
+        authority_target = authority_targets.targets[0].target
+        try:
+            component = AutoRegisterInstanceViewComponent.from_module_authority(
+                self.module_nodes_by_file_path[projection_path],
+                authority_target.name,
+            )
+        except ValueError:
             return None
-        parts = AutoregisterInstanceViewRecipeParts(
-            projection_path=seed.projection_file_path(),
-            authority_target=authority_target.target,
-            assignment_name=seed.assignment_name,
-            class_key_pairs=seed.class_key_pairs,
-        )
-        if not self.assignment_is_constructor_view(parts):
-            return None
-        return parts
-
-    def seed(self) -> AutoregisterInstanceViewRecipeSeed | None:
-        return (
-            Maybe.of(
-                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
-            )
-            .combine(
-                lambda locations: self.finding.metrics.plan_registry_name,
-                lambda locations, assignment_name: (
-                    AutoregisterInstanceViewRecipeSeedDraft(
-                        endpoints=locations.endpoints,
-                        assignment_name=assignment_name,
-                    )
-                ),
-            )
-            .filter(lambda draft: draft.assignment_name is not None)
-            .combine(
-                lambda draft: self.complete_class_key_pairs(),
-                lambda draft, class_key_pairs: AutoregisterInstanceViewRecipeSeed(
-                    endpoints=draft.endpoints,
-                    assignment_name=draft.assignment_name,
-                    class_key_pairs=class_key_pairs,
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-    def complete_class_key_pairs(self) -> tuple[str, ...] | None:
-        class_key_pairs = self.finding.metrics.plan_class_key_pairs
-        paired_class_names = frozenset(
-            ClassRegistryKeyPair.parse(source).class_name for source in class_key_pairs
-        )
-        if not class_key_pairs or paired_class_names != frozenset(
-            self.finding.metrics.plan_class_names
+        if (
+            component.assignment_name != assignment_name
+            or frozenset(component.class_names) != expected_class_names
         ):
             return None
-        return class_key_pairs
+        return authority_target
 
     def rejection_reason(self) -> str:
         locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
@@ -20648,49 +20382,12 @@ class AutoregisterInstanceViewRecipeBuilder(
             return "semantic mirror finding does not expose projection and authority locations"
         if self.finding.metrics.plan_registry_name is None:
             return "semantic mirror finding exposes no instance-view assignment"
-        if not self.finding.metrics.plan_class_key_pairs:
-            return "semantic mirror finding exposes no class/key pairs"
-        if len(self.finding.metrics.plan_class_key_pairs) < len(
-            self.finding.metrics.plan_class_names
-        ):
-            return (
-                "semantic mirror class/key pairs are incomplete; mapping values "
-                "are ambiguous or not uniquely tied to one class"
-            )
-        parts = self.parts()
-        if parts is not None:
+        if self.authority_target() is not None:
             return "instance-view derivation is available"
         return (
-            "authority is not an AutoRegisterMeta family or the projection is not "
-            "a constructor-valued dict view"
+            "source does not prove one complete zero-argument constructor view "
+            "owned by the AutoRegisterMeta family"
         )
-
-    def assignment_is_constructor_view(
-        self,
-        parts: AutoregisterInstanceViewRecipeParts,
-    ) -> bool:
-        statement = self.module_assignment_statement(
-            parts.projection_path,
-            parts.assignment_name,
-        )
-        if not isinstance(statement, ast.Assign | ast.AnnAssign):
-            return False
-        value = DeriveAutoregisterInstanceViewOperation.assignment_value(statement)
-        if not isinstance(value, ast.Dict):
-            return False
-        operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(file_path=parts.projection_path),
-            base_name=parts.base_name,
-            assignment_name=parts.assignment_name,
-            class_key_pairs=parts.class_key_pairs,
-            method_name=parts.method_name,
-        )
-        parsed_pairs = operation.parsed_class_key_pairs
-        matched_pairs = operation.instance_view_matched_pairs(
-            value,
-            parsed_pairs,
-        )
-        return len(matched_pairs) == len(parsed_pairs)
 
 
 class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):

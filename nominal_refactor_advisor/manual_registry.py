@@ -1,4 +1,4 @@
-"""Source-derived proof model for direct manual class registries."""
+"""Source-derived proof models for registry refactors."""
 
 from __future__ import annotations
 
@@ -15,7 +15,11 @@ from .ast_tools import (
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .name_algebra import CLASS_NAME_ALGEBRA
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
+from .registry_identity import (
+    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    REGISTRY_ATTRIBUTE_NAME,
+    AutoRegisterClassAuthority,
+)
 
 RegistryAssignment: TypeAlias = ast.Assign | ast.AnnAssign
 
@@ -37,13 +41,59 @@ def _assignment_value(statement: RegistryAssignment) -> ast.AST | None:
 
 
 @dataclass(frozen=True)
-class DirectManualRegistryEntry:
-    """One class/key edge recovered directly from Python syntax."""
+class DirectModuleClassGraph:
+    """Direct top-level class graph recovered from one module declaration."""
 
-    registry_name: str
+    module: ast.Module
+
+    @cached_property
+    def classes_by_name(self) -> dict[str, ast.ClassDef]:
+        class_nodes = tuple(
+            statement
+            for statement in self.module.body
+            if isinstance(statement, ast.ClassDef)
+        )
+        try:
+            return UniqueIdentityIndexAuthority.declarations_by_handle(
+                class_nodes,
+                lambda node: node.name,
+            )
+        except ValueError as error:
+            raise ValueError(
+                "Registry refactors require unique top-level class names"
+            ) from error
+
+    def descends_from(self, node: ast.ClassDef, ancestor_name: str) -> bool:
+        pending = [base.id for base in node.bases if isinstance(base, ast.Name)]
+        visited: set[str] = set()
+        while pending:
+            base_name = pending.pop()
+            if base_name == ancestor_name:
+                return True
+            if base_name in visited:
+                continue
+            visited.add(base_name)
+            base_node = self.classes_by_name.get(base_name)
+            if base_node is not None:
+                pending.extend(
+                    base.id for base in base_node.bases if isinstance(base, ast.Name)
+                )
+        return False
+
+    def descendants_of(self, ancestor_name: str) -> tuple[ast.ClassDef, ...]:
+        return tuple(
+            node
+            for node in self.classes_by_name.values()
+            if self.descends_from(node, ancestor_name)
+        )
+
+
+@dataclass(frozen=True)
+class SourceClassKeyEntry:
+    """One class/key semantic edge recovered from current source."""
+
     class_node: ast.ClassDef
     key_node: ast.expr
-    removal_node: ast.stmt
 
     @property
     def class_name(self) -> str:
@@ -62,6 +112,33 @@ class DirectManualRegistryEntry:
             return "syntax", ast.dump(self.key_node, include_attributes=False)
         return "literal", value
 
+    def require_relocatable_key(self, module: ast.Module) -> None:
+        reference_names = _relocatable_key_reference_names(self.key_node)
+        if reference_names is None:
+            raise ValueError(
+                f"Registry key for {self.class_name!r} is not a relocatable "
+                "declaration expression"
+            )
+        preceding_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            statement
+            for statement in module.body
+            if statement.lineno < self.class_node.lineno
+        )
+        unresolved_names = reference_names - preceding_names
+        if unresolved_names:
+            raise ValueError(
+                f"Registry key for {self.class_name!r} depends on names not bound "
+                f"before its declaration: {tuple(sorted(unresolved_names))!r}"
+            )
+
+
+@dataclass(frozen=True)
+class DirectManualRegistryEntry(SourceClassKeyEntry):
+    """One manual class-registration edge recovered directly from source."""
+
+    registry_name: str
+    removal_node: ast.stmt
+
 
 @dataclass(frozen=True)
 class DirectManualRegistryComponent:
@@ -77,7 +154,7 @@ class DirectManualRegistryComponent:
         module: ast.Module,
         anchor_class_name: str,
     ) -> "DirectManualRegistryComponent":
-        class_nodes = cls.top_level_classes(module)
+        class_nodes = DirectModuleClassGraph(module).classes_by_name
         entries = cls.direct_entries(module, class_nodes)
         registry_names = frozenset(
             entry.registry_name
@@ -105,23 +182,6 @@ class DirectManualRegistryComponent:
         )
         component.require_complete()
         return component
-
-    @staticmethod
-    def top_level_classes(module: ast.Module) -> dict[str, ast.ClassDef]:
-        class_nodes = tuple(
-            statement
-            for statement in module.body
-            if isinstance(statement, ast.ClassDef)
-        )
-        try:
-            return UniqueIdentityIndexAuthority.declarations_by_handle(
-                class_nodes,
-                lambda node: node.name,
-            )
-        except ValueError as error:
-            raise ValueError(
-                "Manual registry classes require unique module names"
-            ) from error
 
     @classmethod
     def direct_entries(
@@ -216,8 +276,12 @@ class DirectManualRegistryComponent:
     class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
 
     @cached_property
+    def class_graph(self) -> DirectModuleClassGraph:
+        return DirectModuleClassGraph(self.module)
+
+    @property
     def classes_by_name(self) -> dict[str, ast.ClassDef]:
-        return self.top_level_classes(self.module)
+        return self.class_graph.classes_by_name
 
     @property
     def registration_statements(self) -> tuple[ast.stmt, ...]:
@@ -267,11 +331,7 @@ class DirectManualRegistryComponent:
             raise ValueError("Registered classes have multiple shared local bases")
         authority_name = next(iter(common_names))
         authority_node = class_nodes[authority_name]
-        descendants = tuple(
-            node
-            for node in class_nodes.values()
-            if self.descends_from(node, authority_name, class_nodes)
-        )
+        descendants = self.class_graph.descendants_of(authority_name)
         registered_names = frozenset(self.class_names)
         unsafe_descendants = tuple(
             node.name
@@ -279,7 +339,7 @@ class DirectManualRegistryComponent:
             if node.name not in registered_names
             and (
                 any(
-                    self.descends_from(node, registered_name, class_nodes)
+                    self.class_graph.descends_from(node, registered_name)
                     for registered_name in registered_names
                 )
                 or _class_declares_non_null_name(
@@ -294,28 +354,6 @@ class DirectManualRegistryComponent:
                 f"descendants {unsafe_descendants!r} outside the registry component"
             )
         return authority_node
-
-    @staticmethod
-    def descends_from(
-        node: ast.ClassDef,
-        ancestor_name: str,
-        class_nodes: dict[str, ast.ClassDef],
-    ) -> bool:
-        pending = [base.id for base in node.bases if isinstance(base, ast.Name)]
-        visited: set[str] = set()
-        while pending:
-            base_name = pending.pop()
-            if base_name == ancestor_name:
-                return True
-            if base_name in visited:
-                continue
-            visited.add(base_name)
-            base_node = class_nodes.get(base_name)
-            if base_node is not None:
-                pending.extend(
-                    base.id for base in base_node.bases if isinstance(base, ast.Name)
-                )
-        return False
 
     @property
     def generated_authority_name(self) -> str:
@@ -353,6 +391,8 @@ class DirectManualRegistryComponent:
             for right in key_identities[index + 1 :]
         ):
             raise ValueError("Manual registry keys must be unique")
+        for entry in self.entries:
+            entry.require_relocatable_key(self.module)
         if not isinstance(self.registry_value, ast.Dict):
             raise ValueError(
                 f"Registry {self.registry_name!r} is not initialized as a dict"
@@ -443,6 +483,187 @@ class DirectManualRegistryComponent:
         )
 
 
+@dataclass(frozen=True)
+class AutoRegisterInstanceViewComponent:
+    """One constructor-valued view proved against its AutoRegister authority."""
+
+    module: ast.Module
+    authority_node: ast.ClassDef
+    assignment: RegistryAssignment
+    entries: tuple[SourceClassKeyEntry, ...]
+
+    @classmethod
+    def from_module_authority(
+        cls,
+        module: ast.Module,
+        authority_name: str,
+    ) -> "AutoRegisterInstanceViewComponent":
+        class_graph = DirectModuleClassGraph(module)
+        authority_node = class_graph.classes_by_name.get(authority_name)
+        if authority_node is None:
+            raise ValueError(
+                f"AutoRegister authority {authority_name!r} is not a top-level class"
+            )
+        candidates = tuple(
+            candidate
+            for statement in module.body
+            if (
+                candidate := cls.from_assignment(
+                    module,
+                    authority_node,
+                    statement,
+                    class_graph,
+                )
+            )
+            is not None
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                f"AutoRegister authority {authority_name!r} must identify exactly "
+                "one constructor-valued instance view"
+            )
+        component = candidates[0]
+        component.require_complete(class_graph)
+        return component
+
+    @classmethod
+    def from_assignment(
+        cls,
+        module: ast.Module,
+        authority_node: ast.ClassDef,
+        statement: ast.stmt,
+        class_graph: DirectModuleClassGraph,
+    ) -> "AutoRegisterInstanceViewComponent | None":
+        if not isinstance(statement, RegistryAssignment):
+            return None
+        try:
+            assignment_name = _name(_assignment_target(statement))
+        except ValueError:
+            return None
+        value = _assignment_value(statement)
+        if (
+            assignment_name is None
+            or not isinstance(value, ast.Dict)
+            or len(value.keys) < 2
+            or any(key is None for key in value.keys)
+        ):
+            return None
+        entries = []
+        for key, value_node in zip(value.keys, value.values, strict=True):
+            if (
+                key is None
+                or not isinstance(value_node, ast.Call)
+                or value_node.args
+                or value_node.keywords
+                or not isinstance(value_node.func, ast.Name)
+            ):
+                return None
+            class_node = class_graph.classes_by_name.get(value_node.func.id)
+            if class_node is None or not class_graph.descends_from(
+                class_node,
+                authority_node.name,
+            ):
+                return None
+            entries.append(SourceClassKeyEntry(class_node, key))
+        return cls(
+            module=module,
+            authority_node=authority_node,
+            assignment=statement,
+            entries=tuple(entries),
+        )
+
+    class_names = CollectionAttributeProjection[str]("entries", "class_name")
+    class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
+
+    @cached_property
+    def authority(self) -> AutoRegisterClassAuthority:
+        return AutoRegisterClassAuthority(self.authority_node)
+
+    @property
+    def authority_name(self) -> str:
+        return self.authority_node.name
+
+    @property
+    def assignment_name(self) -> str:
+        assignment_name = _name(_assignment_target(self.assignment))
+        if assignment_name is None:
+            raise ValueError("Instance-view assignment target is not a name")
+        return assignment_name
+
+    @property
+    def registry_key_attribute(self) -> str:
+        registry_key_attribute = self.authority.registry_key_attribute
+        if registry_key_attribute is None:
+            raise ValueError(
+                f"AutoRegister authority {self.authority_name!r} has no registry key"
+            )
+        return registry_key_attribute
+
+    def require_complete(self, class_graph: DirectModuleClassGraph) -> None:
+        if not self.authority.runtime_autoregister_family:
+            raise ValueError(
+                f"{self.authority_name!r} is not an AutoRegisterMeta family"
+            )
+        if self.authority.declares_registry:
+            registry_value = self.authority.assignment_value(REGISTRY_ATTRIBUTE_NAME)
+            if not (
+                isinstance(registry_value, ast.Dict)
+                and not registry_value.keys
+                and not registry_value.values
+            ):
+                raise ValueError(
+                    f"AutoRegister authority {self.authority_name!r} must own an "
+                    "empty direct registry"
+                )
+        if len(frozenset(self.class_names)) != len(self.class_names):
+            raise ValueError(
+                "Each instance-view class must have exactly one registry key"
+            )
+        class_definition_order = tuple(
+            node.name for node in sorted(self.class_nodes, key=lambda node: node.lineno)
+        )
+        if self.class_names != class_definition_order:
+            raise ValueError("Instance-view order must match class declaration order")
+        key_identities = tuple(entry.key_identity for entry in self.entries)
+        if any(
+            left == right
+            for index, left in enumerate(key_identities)
+            for right in key_identities[index + 1 :]
+        ):
+            raise ValueError("Instance-view registry keys must be unique")
+        for entry in self.entries:
+            entry.require_relocatable_key(self.module)
+        assignment_line = self.assignment.lineno
+        if any(
+            (node.end_lineno or node.lineno) >= assignment_line
+            for node in self.class_nodes
+        ):
+            raise ValueError(
+                "Instance-view assignment must follow every constructed class"
+            )
+        registered_names = frozenset(self.class_names)
+        unsafe_descendants = tuple(
+            node.name
+            for node in class_graph.descendants_of(self.authority_name)
+            if node.lineno < assignment_line
+            and node.name not in registered_names
+            and (
+                any(
+                    class_graph.descends_from(node, registered_name)
+                    for registered_name in registered_names
+                )
+                or _class_declares_non_null_name(
+                    node,
+                    self.registry_key_attribute,
+                )
+            )
+        )
+        if unsafe_descendants:
+            raise ValueError(
+                f"Instance view omits registered descendants {unsafe_descendants!r}"
+            )
+
+
 class EagerNameLoadCollector(ast.NodeVisitor):
     """Collect module-executed name loads without descending into call bodies."""
 
@@ -508,6 +729,31 @@ def _terminal_name(node: ast.AST) -> str | None:
 
 def _source_span(node: ast.AST) -> tuple[int, int]:
     return node.lineno, node.end_lineno or node.lineno
+
+
+def _relocatable_key_reference_names(node: ast.AST) -> frozenset[str] | None:
+    if isinstance(node, ast.Constant):
+        try:
+            hash(node.value)
+        except TypeError:
+            return None
+        return frozenset()
+    if isinstance(node, ast.Name):
+        return frozenset((node.id,))
+    if isinstance(node, ast.Attribute):
+        return _relocatable_key_reference_names(node.value)
+    if isinstance(node, ast.Tuple):
+        child_names = tuple(
+            _relocatable_key_reference_names(element) for element in node.elts
+        )
+        if any(names is None for names in child_names):
+            return None
+        return frozenset(
+            name for names in child_names if names is not None for name in names
+        )
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
+        return _relocatable_key_reference_names(node.operand)
+    return None
 
 
 def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:
