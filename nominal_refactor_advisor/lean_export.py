@@ -153,7 +153,6 @@ class GenericLeanFindingAdapter(LeanFindingAdapter):
             _required_string(row, "detector_id"),
             _required_string(row, "summary"),
             _evidence(row),
-            codemod_patch=_optional_string(row, "codemod_patch"),
         )
 
 
@@ -170,7 +169,6 @@ class LeanRepeatedStructuralSignatureAdapter(LeanFindingAdapter):
             _required_string(row, "summary"),
             _evidence(row),
             title=_optional_string(row, "title"),
-            codemod_patch=_optional_string(row, "codemod_patch"),
         )
 
 

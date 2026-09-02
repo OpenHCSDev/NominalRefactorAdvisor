@@ -886,12 +886,6 @@ declare_candidate_rule_detector(
         f"{candidate.predicate_count} inline AST predicates over {candidate.ast_type_names} "
         f"inside {candidate.traversal_count} traversal block(s); move this into a matcher grammar."
     ),
-    codemod_patch=lambda candidate: (
-        f"# Replace inline predicate ladder in `{candidate.class_name}.{candidate.method_name}` "
-        "with declaration-derived `AstPredicateRule` subclasses and one traversal runner.\n"
-        "# Keep node type, field name, operator, and projection residue as typed rule data; "
-        "fail closed if rule matches overlap instead of introducing precedence metadata."
-    ),
     metrics=lambda candidate: OrchestrationMetrics(
         function_line_count=candidate.line_count,
         branch_site_count=candidate.predicate_count,
@@ -1035,9 +1029,6 @@ declare_candidate_rule_detector(
         f"`{projection_candidate.class_name}` repeats Path projection properties {', '.join(projection_candidate.property_names)} over bases {', '.join(projection_candidate.base_names)}."
     ),
     evidence=lambda projection_candidate: projection_candidate.evidence_locations,
-    codemod_patch=lambda projection_candidate: (
-        "# Replace repeated @property path projections with PathProjection descriptors.\n# Keep only base attribute and path parts as declarative data."
-    ),
     metrics=lambda projection_candidate: MappingMetrics(
         mapping_site_count=len(projection_candidate.property_names),
         field_count=len(projection_candidate.base_names),
@@ -1174,11 +1165,6 @@ declare_candidate_rule_detector(
         f"for member attributes {candidate.projected_attribute_names}."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    codemod_patch=lambda candidate: (
-        "# Replace repeated collection projection @property methods with one "
-        "CollectionAttributeProjection descriptor; keep only collection and "
-        "member attribute names as class-level data."
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.property_names),
         mapping_name=f"{candidate.class_name}.{candidate.collection_name}",
@@ -1222,10 +1208,6 @@ class SuffixAxisCompatibilitySurfaceDetector(
                 f"across operations {operation_summary}."
             ),
             surface_candidate.evidence,
-            codemod_patch=(
-                f"# Collapse suffix-axis method family {method_names[:8]} onto one authoritative record.\n"
-                "# Prefer one conversion point from the secondary axis into the primary axis, then delete per-operation mirrored wrappers."
-            ),
             metrics=ParameterThreadMetrics(
                 function_count=len(surface_candidate.operation_names),
                 shared_parameter_count=len(surface_candidate.axis_names),
@@ -1268,11 +1250,6 @@ class ResidualClosedAxisIndirectionDetector(
                 f"but still branches on residual cases {residual_cases}."
             ),
             axis_candidate.evidence,
-            codemod_patch=(
-                f"# Replace `{axis_candidate.table_name}[{axis_candidate.dispatch_axis_expression}]` plus residual "
-                f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.dispatch_axis_expression})`.\n"
-                f"# Move projections ({value_summary}) and per-case behavior into registered `AxisPolicy` subclasses."
-            ),
             metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=axis_candidate.enum_name,
                 literal_cases=axis_candidate.table_case_names,
@@ -1327,10 +1304,6 @@ class ClosedConstantSelectorDetector(
                 f"sibling constants {constants_preview} from `{family_label}`."
             ),
             selector_candidate.evidence,
-            codemod_patch=(
-                f"# Replace manual branches in `{selector_candidate.qualname}` with one authoritative selector table.\n"
-                "# Select the sibling constant once, then apply any shared wrapper outside the selector."
-            ),
             metrics=MappingMetrics(
                 mapping_site_count=len(selector_candidate.constant_names),
                 field_count=max(len(selector_candidate.guard_expressions), 1),
@@ -1378,9 +1351,6 @@ class DerivedWrapperSpecShadowDetector(
                 f"then feeds generated wrappers via {builder_preview}."
             ),
             shadow_candidate.evidence,
-            codemod_patch=(
-                f"# Remove parallel family `{shadow_candidate.derived_family_name}`.\n# Move `{', '.join(shadow_candidate.extra_field_names) or 'wrapper metadata'}` onto the authoritative `{shadow_candidate.primary_constructor_name}` records and derive wrappers directly from that family."
-            ),
             metrics=MappingMetrics(
                 mapping_site_count=len(shadow_candidate.primary_constant_names),
                 field_count=max(len(shadow_candidate.extra_field_names), 1),
@@ -1415,9 +1385,6 @@ declare_candidate_rule_detector(
         f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and `{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for {', '.join(helper_candidate.rule_table_names[:4])} and indexes {', '.join(helper_candidate.index_table_names[:4])}."
     ),
     evidence=lambda helper_candidate: helper_candidate.evidence,
-    codemod_patch=lambda helper_candidate: (
-        f"# Remove local keyed-selection helper `{helper_candidate.rule_class_name}` / `{helper_candidate.helper_function_name}` / `{helper_candidate.lookup_function_name}`.\n# Re-express these rule tables through the shared KeyedRecordTable substrate."
-    ),
     metrics=lambda helper_candidate: MappingMetrics(
         mapping_site_count=len(helper_candidate.rule_table_names),
         field_count=1,
@@ -1560,9 +1527,6 @@ declare_candidate_rule_detector(
         f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
     ),
     evidence=lambda shadow_candidate: shadow_candidate.evidence,
-    codemod_patch=lambda shadow_candidate: (
-        f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`."
-    ),
     metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
@@ -1621,10 +1585,6 @@ class ResidualClosedAxisBranchingDetector(
                 f"even though authoritative family `{authoritative_family_names}` already owns that axis."
             ),
             residual_candidate.evidence,
-            codemod_patch=(
-                f"# Remove residual `{residual_candidate.key_type_name}` branch ladder in `{residual_candidate.qualname}`.\n"
-                "# Delegate through the existing keyed family authority and keep only case-local residue on the policy leaves."
-            ),
             metrics=DispatchCountMetrics(
                 dispatch_site_count=residual_candidate.branch_site_count,
                 dispatch_axis=residual_candidate.key_type_name,
@@ -1688,10 +1648,6 @@ class ParallelKeyedAxisFamilyDetector(
                 f"across cases {shared_cases}.{label_clause}"
             ),
             family_candidate.evidence,
-            codemod_patch=(
-                f"# Collapse `{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` onto one authoritative keyed family.\n"
-                "# Move the irreducible case-specific hooks to that family or to a single derived adapter table, not two parallel nominal roots."
-            ),
             metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
                 family_candidate.shared_case_names,
                 family_candidate.key_type_name,
@@ -1750,10 +1706,6 @@ class ParallelKeyedTableAndFamilyDetector(
                 f"{', '.join(table_candidate.shared_case_names[:4])}."
             ),
             table_candidate.evidence,
-            codemod_patch=(
-                f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
-                "# Keep the runtime boundary on the auto-registered family and derive any keyed rows/views from `AxisPolicy.__registry__`."
-            ),
             metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
                 table_candidate.shared_case_names,
                 table_candidate.key_type_name,
@@ -1809,10 +1761,6 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
                         f"{operations}; this is a hardcoded strategy family."
                     ),
                     (SourceLocation(module.file_path, statement.lineno, assignment),),
-                    codemod_patch=(
-                        f"# Replace callable registry `{assignment}` with an AutoRegisterMeta-backed strategy family.\n"
-                        "# Move each callable into a registered subclass and dispatch with `Family.__registry__[method].run(...)`."
-                    ),
                     metrics=DispatchCountMetrics.from_literal_family(
                         dispatch_axis=axis_name,
                         literal_cases=operation_names,
@@ -1930,10 +1878,6 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
                             indexed_class.line,
                             indexed_class.simple_name,
                         ),
-                    ),
-                    codemod_patch=(
-                        f"# Delete repeated registry protocol fields {field_list} from `{indexed_class.simple_name}`.\n"
-                        "# Keep those fields on the inherited shared base. If the runtime registry does not honor inherited config, fix AutoRegisterMeta inheritance semantics instead of copying boilerplate."
                     ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(repeated_fields),
@@ -2082,10 +2026,6 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                             indexed_class.simple_name,
                         ),
                         *evidence_sites[:5],
-                    ),
-                    codemod_patch=(
-                        f"# Delete the {axis_label} class axis from `{indexed_class.simple_name}` and its leaves.\n"
-                        "# Replace sorted registry traversal with one registry-filtered MRO composition owned by the nominal family."
                     ),
                     metrics=MappingMetrics(
                         mapping_site_count=len(evidence_sites),
@@ -2267,10 +2207,6 @@ class NominalInstanceExplicitOrderingDetector(
                         ),
                         *evidence_sites[:6],
                     ),
-                    codemod_patch=(
-                        f"# Delete the {axis_label} field and its constructor arguments from `{family_root.simple_name}` declarations.\n"
-                        "# Give each declaration one catalog node and derive the sequence solely from the catalog MRO."
-                    ),
                     metrics=MappingMetrics(
                         mapping_site_count=len(evidence_sites),
                         field_count=len(evidence_sites),
@@ -2357,10 +2293,6 @@ class EnumKeyedTableClassAxisShadowDetector(
                 f"`{axis_candidate.key_attr_name}`."
             ),
             axis_candidate.evidence,
-            codemod_patch=(
-                f"# Remove `{axis_candidate.table_name}` as a second writable authority.\n"
-                f"# Derive `{axis_candidate.key_type_name}` lookup views from the auto-registered family keyed by `{axis_candidate.key_attr_name}` instead of hardcoding a parallel table."
-            ),
             metrics=MappingMetrics(
                 mapping_site_count=len(axis_candidate.shared_case_names),
                 field_count=1,
@@ -2418,9 +2350,6 @@ class ParallelRegistryProjectionFamilyDetector(
                 f"over parallel extractor bases {extractor_bases}."
             ),
             evidence,
-            codemod_patch=(
-                "# Extract one registry-projection family spec and one authoritative projection builder.\n# Make per-axis public helpers delegate to that authority instead of reconstructing collector(...registry_accessor())."
-            ),
         )
 
 
@@ -2503,9 +2432,6 @@ class RepeatedKeyedFamilyDetector(
                 f"`{lookup_names}` over `{family_candidate.family_base_name}`."
             ),
             evidence,
-            codemod_patch=(
-                "# Extract one typed metaclass-registry base that owns registration lookup, duplicate handling, and error shaping.\n# Leave only declarative key attributes and irreducible hook methods on each family root, and read the registered classes from `cls.__registry__`."
-            ),
         )
 
 
@@ -3140,11 +3066,6 @@ declare_candidate_rule_detector(
         f"{candidate.injectivity_proof.duplicate_type_names}, missing keyed types {candidate.injectivity_proof.missing_type_names}."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    codemod_patch=lambda candidate: (
-        f"# Repair `{candidate.class_name}` before adding or keeping registry metaprogramming.\n"
-        "# Give every concrete implementation exactly one canonical key and delete aliases or duplicate key writes.\n"
-        "# If aliases are semantic, model them as an explicit alias projection instead of a second registry identity."
-    ),
     metrics=lambda candidate: RegistrationMetrics(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
@@ -3177,10 +3098,6 @@ declare_candidate_rule_detector(
         f"consumers {candidate.consumer_symbols}; replace handwritten registry mechanics with AutoRegisterMeta."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    codemod_patch=lambda candidate: (
-        f"# Replace `{candidate.class_name}` handwritten `_registry` population with `AutoRegisterMeta`.\n"
-        f"# Keep `{candidate.registry_key_attr_name}` as the canonical class-level key and let the metaclass prove class-time population."
-    ),
     metrics=lambda candidate: RegistrationMetrics(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
@@ -3230,19 +3147,6 @@ declare_candidate_rule_detector(
     evidence=lambda candidate: (
         SourceLocation(candidate.file_path, candidate.line, candidate.surface_name),
     ),
-    codemod_patch=lambda candidate: (
-        f"# Delete `{candidate.surface_name}` as a handwritten `{candidate.projection_role}` `{candidate.surface_kind}`.\n"
-        f"# Replace it with RegistryProjectionSpec({candidate.registry_class_name}, policy={candidate.projection_policy_name!r}, target={candidate.projection_target_name!r}, materialization={candidate.materialization_rule.value!r}).\n"
-        + (
-            f"# Its decompression key is `{candidate.decompression_key}`; derive it from the injective key/type registry proof."
-            if candidate.projection_coverage_ratio >= 1.0
-            else (
-                f"# Its decompression key is `{candidate.decompression_key}`; derive it through an explicit `{candidate.subset_policy_hint}` projection policy."
-                if candidate.subset_policy_hint is not None
-                else f"# Either derive the full surface from `{candidate.registry_class_name}` or add a named projection policy explaining the missing keys/types."
-            )
-        )
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.projected_names),
         mapping_name=candidate.surface_name,
@@ -3282,10 +3186,6 @@ declare_candidate_rule_detector(
         f"and materialize targets {candidate.projection_target_names} from specs."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    codemod_patch=lambda candidate: (
-        f"# Replace repeated `{candidate.policy_hint}` subset surfaces {candidate.surface_names} with one nominal projection policy.\n"
-        f"# Generate specs for targets {candidate.projection_target_names} using decompression keys {candidate.decompression_keys}."
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.surface_names),
         mapping_name=f"{candidate.policy_hint}_projection_policy",
@@ -3325,11 +3225,6 @@ declare_candidate_rule_detector(
         f"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    codemod_patch=lambda candidate: (
-        f"# Do not promote `{candidate.class_name}` to registry infrastructure until it proves all three signals:\n"
-        "# stable key cases, explicit lookup/class-time lifecycle, and at least two independent consumers.\n"
-        "# Replace premature registry infrastructure with a typed table or local strategy map while any signal is missing."
-    ),
     metrics=_registry_maturity_fanout_metrics,
     detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
 )
@@ -3376,9 +3271,6 @@ class ManualKeyedRecordTableDetector(
                 f"and `{lookup_names}` around key fields {key_fields}."
             ),
             evidence,
-            codemod_patch=(
-                "# Replace per-class mutable `_registry` + `register` shells with one authoritative tuple of record specs.\n# Derive the keyed lookup dict once, or factor the pattern into a generic keyed-record table helper."
-            ),
         )
 
 
@@ -3423,9 +3315,6 @@ class ManualStructuralRecordMechanicsDetector(
                 f"{transform_methods} on top of base family `{base_names}`."
             ),
             evidence,
-            codemod_patch=(
-                "# Move validation constraints, projected-field partitions, and transform semantics into typed field metadata.\n# Derive projection, round-trip reconstruction, and fieldwise transforms from one structural-record base instead of re-encoding them per class."
-            ),
         )
 
 
@@ -3538,9 +3427,6 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                 f"Functions {function_names} repeatedly recover `{case_candidate.subject_role}` across concrete classes {class_names}.{alias_summary}{existing_base_summary}"
             ),
             case_candidate.evidence,
-            codemod_patch=(
-                f"# Type `{case_candidate.subject_role}` against one nominal ABC family instead of a concrete union surface.\n# Move repeated concrete `isinstance` recovery into abstract properties or case hooks on that family.\n# Keep only irreducible case-local residue in the concrete subclasses."
-            ),
             metrics=DispatchCountMetrics(
                 dispatch_site_count=len(case_candidate.functions),
                 dispatch_axis=case_candidate.subject_role,
@@ -3628,10 +3514,6 @@ class ImplicitSelfContractMixinDetector(
                 f"`{mixin_candidate.mixin_name}` uses `cast(..., self)` ({cast_types}) in `{methods}` to reach consumer-owned attributes ({accessed_attributes}) across subclasses {consumers}."
             ),
             mixin_candidate.evidence,
-            codemod_patch=(
-                f"# `{mixin_candidate.mixin_name}` is not an orthogonal mixin; it hides a consumer contract behind `cast(..., self)`.\n"
-                "# Move the shared behavior to a declared nominal base or a keyed policy/spec family, and leave only true orthogonal residue in mixins."
-            ),
             metrics=HierarchyCandidateMetrics(
                 duplicate_group_count=len(mixin_candidate.method_names),
                 class_count=len(mixin_candidate.consumer_class_names) + 1,
@@ -3682,9 +3564,6 @@ class RepeatedGuardValidatorFamilyDetector(
                 f"with the same fail-fast attribute checks over {shared_attrs}.{helper_summary}"
             ),
             family_candidate.evidence,
-            codemod_patch=(
-                "# Collapse these sibling boolean helpers into one authoritative case-policy family or one declarative rule table.\n# Keep shared fail-fast guards in one concrete validator method, and leave only case-specific predicates or handle sets per case."
-            ),
         )
 
 
@@ -3714,11 +3593,6 @@ class AllMissingAxisPredicateDetector(
                 f"{axis_names} inline before appending `{predicate_candidate.signal_name}`."
             ),
             (predicate_candidate.evidence,),
-            codemod_patch=(
-                f"# Name the axis bundle in `{predicate_candidate.function_name}` before testing it.\n"
-                f"# Replace the raw conjunction over {predicate_candidate.predicate_names} with `not any(axis_bundle)` "
-                f"or a policy method that owns the same axes, then append `{predicate_candidate.signal_name}`."
-            ),
         )
 
 
@@ -3772,9 +3646,6 @@ class RepeatedValidateShapeGuardFamilyDetector(
                 f"Validate methods {method_summary} repeat {shared_guard_count} shared shape/ndim guard forms."
             ),
             family_candidate.evidence,
-            codemod_patch=(
-                "# Collapse repeated `validate()` shape guards into one authoritative validated-record base or field-spec table.\n# Keep only the truly variable residue checks, messages, or field roster on each concrete record."
-            ),
         )
 
 
@@ -3812,9 +3683,6 @@ class RepeatedResultAssemblyPipelineDetector(
                 f"{stage_names} and differ only in their leading source stages."
             ),
             evidence,
-            codemod_patch=(
-                "# Extract the shared assignment/return tail into one authoritative helper.\n# Leave only the source-supplier stage variant-specific."
-            ),
             metrics=RepeatedMethodMetrics.from_duplicate_family(
                 duplicate_site_count=len(pipeline_candidate.functions),
                 statement_count=len(pipeline_candidate.shared_tail),
@@ -3857,9 +3725,6 @@ declare_candidate_rule_detector(
     summary=lambda collector: (
         f"`{collector.class_name}.{collector.method_name}` only forwards to `{collector.collector_name}`; inherit `{collector.recommended_base_name}` and declare `candidate_collector` instead."
     ),
-    codemod_patch=lambda collector: (
-        f"# Delete the forwarding `_candidate_items()` method.\n# Change the detector base to `{collector.recommended_base_name}` and assign `candidate_collector = {collector.collector_name}`."
-    ),
     metrics=lambda collector: OrchestrationMetrics(
         function_line_count=0,
         branch_site_count=1,
@@ -3892,9 +3757,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` to `{candidate.candidate_type_name}` before doing real work; parameterize `{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type."
     ),
-    codemod_patch=lambda candidate: (
-        f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude."
-    ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
     candidate_collector=_typed_candidate_cast_boilerplate_candidates,
 )
@@ -3921,9 +3783,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` is a {candidate.line_count}-line metadata-only detector over `{candidate.candidate_type_name}` with assignments {candidate.assignment_names}."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, and base."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,
@@ -3955,9 +3814,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats a {candidate.line_count}-line static observation shell over `{candidate.observation_family_name}` / `{candidate.observation_type_name}`."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Replace `{candidate.class_name}` with `declare_typed_observation_detector(...)`.\n# Keep detector-specific semantics as declarations: finding spec, observation family/type, minimum evidence, and summary template."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.line_count,
@@ -4000,12 +3856,6 @@ declare_candidate_rule_detector(
         f"{family.requirement_modes} and coercions {family.coercion_kinds} are schema rows."
     ),
     evidence=lambda family: family.evidence_locations,
-    codemod_patch=lambda family: (
-        f"# Replace accessor methods {family.method_names} on `{family.class_name}` "
-        f"with one authoritative projection schema keyed by `{family.enum_name}`.\n"
-        "# Keep required/optional mode, accepted type, coercion, and error text as "
-        "field-spec coordinates; derive named accessors only if callers need them."
-    ),
     compression_certificate=lambda family: family.compression_certificate,
     metrics=lambda family: MappingMetrics.from_field_names(
         mapping_site_count=len(family.method_names),
@@ -4039,10 +3889,6 @@ declare_candidate_rule_detector(
         f"`{candidate.function_name}` uses positional tuple paths "
         f"{candidate.index_expressions} inside carrier pipeline calls "
         f"{candidate.carrier_call_names}."
-    ),
-    codemod_patch=lambda candidate: (
-        "# Introduce a named product record or authority-owned context for the carrier stage.\n"
-        "# Replace numeric tuple paths with named fields; keep the carrier, but stop encoding semantics by position."
     ),
     compression_certificate=lambda candidate: CompressionCertificate.from_object_family(
         manual_object_count=candidate.nested_index_count
@@ -4113,11 +3959,6 @@ class FindingSpecDefaultFieldBoilerplateDetector(
                 f"{keyword_summary}{constructor_note}."
             ),
             (field_candidate.evidence,),
-            codemod_patch=(
-                f"# Replace `{field_candidate.constructor_name}` with "
-                f"`{field_candidate.recommended_constructor_name}` where needed.\n"
-                f"# Delete redundant semantic keywords: {', '.join(field_candidate.redundant_keyword_names)}."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(field_candidate.redundant_keyword_names),
                 mapping_name=field_candidate.constructor_name,
@@ -4146,9 +3987,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.symbol}` calls `self.finding_spec.build(self.detector_id, ...)`; `build_finding(...)` can derive the detector id from the instance."
-    ),
-    codemod_patch=lambda candidate: (
-        "# Replace `self.finding_spec.build(` with `self.build_finding(`.\n# Delete the leading `self.detector_id,` argument."
     ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
     detector_name="FindingSpecBuildBoilerplateDetector",
@@ -4188,9 +4026,6 @@ class DirectBuildFindingRendererDetector(
                 f"positional payloads and {keyword_summary}."
             ),
             (renderer.evidence,),
-            codemod_patch=(
-                f"# Move the `{renderer.method_name}` payload in `{renderer.class_name}` to a `CandidateFindingRenderer` classvar.\n# Let `CandidateFindingDetector._finding_for_candidate` run the renderer."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=1,
                 mapping_name=renderer.class_name,
@@ -4219,9 +4054,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` builds `{candidate.constructor_name}` by spelling {len(candidate.keyword_names)} FindingSpec coordinate keywords; use `{candidate.builder_name}`."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Replace `{candidate.constructor_name}(pattern_id=..., title=..., ...)` with `{candidate.builder_name}(...)` and let the builder own coordinate names."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=1,
@@ -4252,9 +4084,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"{candidate.file_path} declares conversion matrix {candidate.function_names} over sources {candidate.source_axis_values} and targets {candidate.target_axis_values}; factor it into closed axes."
-    ),
-    codemod_patch=lambda candidate: (
-        "# Replace pairwise conversion function selection with one source/target axis table.\n# Keep specialized conversion bodies only as private table entries when they carry real backend semantics."
     ),
     metrics=lambda candidate: DispatchCountMetrics(
         dispatch_site_count=len(candidate.function_names),
@@ -4288,11 +4117,6 @@ declare_candidate_rule_detector(
         f"Operations {candidate.function_names} repeat array capability probes "
         f"{candidate.attribute_names}; move capability discovery into an array bridge."
     ),
-    codemod_patch=lambda candidate: (
-        f"# Replace repeated probes {candidate.attribute_names} in {candidate.function_names} "
-        "with one array bridge selected at the boundary.\n"
-        "# Keep protocol-specific dtype/device/shape logic behind bridge capability properties."
-    ),
     metrics=lambda candidate: ProbeCountMetrics(probe_site_count=candidate.probe_count),
     compression_certificate=lambda candidate: candidate.compression_certificate,
     candidate_collector=_array_protocol_probe_bridge_candidates,
@@ -4320,9 +4144,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.qualname}` hand-declares visitor stacks {candidate.stack_names} across {candidate.transition_method_names}."
-    ),
-    codemod_patch=lambda candidate: (
-        "# Delete repeated stack lifecycle methods after moving initialization and `visit_ClassDef`/`visit_FunctionDef` push/pop transitions into a nominal ABC such as `ClassFunctionStackNodeVisitor`; keep only visitor-specific hooks and node handlers in the concrete class."
     ),
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.transition_method_names),
@@ -4359,9 +4180,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` reads {candidate.property_names} from `{candidate.table_name}` across {candidate.case_count} enum cases."
-    ),
-    codemod_patch=lambda candidate: (
-        f"# Move `{candidate.table_name}` values into `{candidate.class_name}` member tuples and delete the table-backed property lookups."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.case_count,
@@ -4426,9 +4244,6 @@ declare_candidate_rule_detector(
             candidate.argument_spec_name,
         ),
     ),
-    codemod_patch=lambda candidate: (
-        f"# Derive `{candidate.class_name}.from_namespace()` and `{candidate.argument_spec_name}` from dataclass fields/defaults.\n# Keep per-option help text as the only CLI-specific residue."
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.field_names) + len(candidate.cli_field_names),
         mapping_name=candidate.class_name,
@@ -4468,7 +4283,6 @@ declare_candidate_rule_detector(
             f"{fiber_candidate.class_name}.{fiber_candidate.method_name}",
         ),
     ),
-    codemod_patch=lambda fiber_candidate: _manual_fiber_tag_patch(fiber_candidate),
     metrics=lambda fiber_candidate: DispatchCountMetrics.from_literal_family(
         dispatch_axis=f"self.{fiber_candidate.tag_name}",
         literal_cases=fiber_candidate.case_names,
@@ -4515,7 +4329,6 @@ class DeferredClassRegistrationDetector(
         return self.build_finding(
             f"Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation.",
             tuple(evidence),
-            codemod_patch=_manual_registry_patch(registry_candidate),
             metrics=RegistrationMetrics(
                 registration_site_count=len(registry_candidate.class_names),
                 registry_name=registry_candidate.registry_name,
@@ -4552,7 +4365,6 @@ class StructuralConfusabilityDetector(
         return self.build_finding(
             f"`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view.",
             evidence,
-            codemod_patch=_structural_confusability_patch(confusability_candidate),
         )
 
 
@@ -4589,7 +4401,6 @@ class SemanticWitnessFamilyDetector(
         return self.build_finding(
             f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier.",
             evidence,
-            codemod_patch=_witness_carrier_family_patch(witness_candidate),
             metrics=WitnessCarrierMetrics(
                 class_count=len(witness_candidate.class_names),
                 shared_role_count=len(witness_candidate.shared_role_names),

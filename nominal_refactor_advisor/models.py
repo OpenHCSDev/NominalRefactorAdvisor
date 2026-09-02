@@ -765,7 +765,6 @@ class RefactorFinding(FindingSemantics):
     summary: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
     authority_evidence: SourceLocation | None = None
-    codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
 
@@ -847,7 +846,6 @@ class RefactorFinding(FindingSemantics):
 
     def to_dict(self) -> dict[str, object]:
         payload = super().to_dict()
-        payload.pop("codemod_patch", None)
         payload["stable_id"] = self.stable_id
         payload["evidence_ids"] = tuple(
             stable_source_location_id(item) for item in self.evidence
@@ -869,7 +867,6 @@ class RefactorFinding(FindingSemantics):
         confidence: ConfidenceLevel | None = None,
         relation_context: str | None = None,
         authority_evidence: SourceLocation | None = None,
-        codemod_patch: str | None = None,
         compression_certificate: CompressionCertificate | None = None,
         certification: CertificationLevel | None = None,
         capability_tags: tuple[CapabilityTag, ...] | None = None,
@@ -887,7 +884,6 @@ class RefactorFinding(FindingSemantics):
             relation_context=relation_context or spec.relation_context,
             evidence=evidence,
             authority_evidence=authority_evidence,
-            codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,
             certification=certification or spec.certification,
             capability_tags=capability_tags or spec.capability_tags,
@@ -906,7 +902,6 @@ class FindingSpec(FindingSemantics):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        codemod_patch: str | None = None,
         compression_certificate: CompressionCertificate | None = None,
         metrics: FindingMetrics | None = None,
         title: str | None = None,
@@ -930,7 +925,6 @@ class FindingSpec(FindingSemantics):
             confidence=confidence,
             relation_context=relation_context,
             authority_evidence=authority_evidence,
-            codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,
             certification=certification,
             capability_tags=capability_tags,

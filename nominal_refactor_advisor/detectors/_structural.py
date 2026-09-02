@@ -140,7 +140,6 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
                 f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance.",
                 evidence,
                 FindingBuildContext(
-                    codemod_patch=_witness_mixin_enforcement_patch(candidate),
                     metrics=WitnessCarrierMetrics(
                         class_count=len(candidate.class_names),
                         shared_role_count=len(candidate.role_field_names),
@@ -196,9 +195,6 @@ class RepeatedPropertyAliasHookDetector(
                 f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as `return self.{hook_group.returned_attribute}`."
             ),
             evidence,
-            codemod_patch=(
-                f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
-            ),
             metrics=hook_group.repeated_method_metrics,
         )
 
@@ -580,9 +576,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}."
     ),
-    codemod_patch=lambda candidate: (
-        f"# Replace constant-return property methods on `{candidate.class_name}` with `ConstantProperty[...]` descriptors.\n# Keep method syntax only for defaults that allocate or compute."
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.property_names),
         mapping_name=candidate.class_name,
@@ -628,10 +621,6 @@ class ReflectiveSelfAttributeEscapeDetector(
                     f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
                 ),
             ),
-            codemod_patch=(
-                f"# Delete `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')`.\n"
-                f"# Declare `{reflective_candidate.attribute_name}` once on the shared nominal carrier or abstract base instead of probing it by string."
-            ),
             compression_certificate=_reflective_self_attribute_compression_certificate(
                 reflective_candidate
             ),
@@ -661,9 +650,6 @@ declare_candidate_rule_detector(
         f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations."
     ),
     evidence=lambda candidate: candidate.evidence,
-    codemod_patch=lambda candidate: (
-        "# Extract the repeated contiguous base bundle into one named ABC/mixin.\n# Replace the repeated base sequence in each class with that nominal bundle and keep only class-specific orthogonal bases explicit."
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.class_count,
         mapping_name="mro-base-bundle",
@@ -707,10 +693,6 @@ class TypeIndexedDefinitionBoilerplateDetector(
                 f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
             ),
             evidence,
-            codemod_patch=(
-                f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
-                "# Derive runtime family classes, registry indexes, exported aliases, and `__all__` from the same declarations instead of restating them in classes plus assignments."
-            ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(group.definition_class_names),
                 registry_name=group.base_names[0],
@@ -831,9 +813,6 @@ class ExportPolicyPredicateDetector(
                 ),
                 evidence,
                 FindingBuildContext(
-                    codemod_patch=(
-                        "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
-                    ),
                     metrics=RepeatedMethodMetrics.from_duplicate_family(
                         duplicate_site_count=len(candidates),
                         statement_count=1,
@@ -878,10 +857,6 @@ class DerivedIndexedSurfaceDetector(
                     index_candidate.surface_name,
                 ),
             ),
-            codemod_patch=(
-                f"# Delete `{index_candidate.surface_name}` as a handwritten index.\n"
-                "# Derive the key-to-type map from the authoritative local family instead of maintaining a second module-level registry."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(index_candidate.value_names),
                 mapping_name=index_candidate.surface_name,
@@ -913,9 +888,6 @@ declare_candidate_rule_detector(
             union_candidate.line,
             union_candidate.owner_name,
         ),
-    ),
-    codemod_patch=lambda union_candidate: (
-        f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
     ),
     metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(union_candidate.root_names),
@@ -968,7 +940,6 @@ declare_candidate_rule_detector(
             f"{candidate.function_name}.{candidate.parameter_name}",
         ),
     ),
-    codemod_patch=_concrete_type_union_contract_patch,
     candidate_collector=_concrete_type_union_contract_candidates,
 )
 
@@ -1027,9 +998,6 @@ class RegistryTraversalSubstrateDetector(
                     f"{registry_clause}{filter_clause} with materialization modes {materialization_modes}."
                 ),
                 evidence,
-                codemod_patch=(
-                    "# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm."
-                ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.symbols),
                     statement_count=6,
@@ -1361,10 +1329,6 @@ class AlternateConstructorFamilyDetector(
                 f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
             ),
             evidence,
-            codemod_patch=(
-                f"# Collapse {group.method_names} into one provenance-dispatched constructor for `{group.class_name}`.\n"
-                "# Keep source-kind differences in dispatch handlers and keep the shared record schema in one authoritative builder."
-            ),
             metrics=group.mapping_metrics,
         )
 
@@ -1391,9 +1355,6 @@ declare_candidate_rule_detector(
         f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
     ),
     evidence=lambda fold_candidate: fold_candidate.evidence,
-    codemod_patch=lambda fold_candidate: (
-        f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook."
-    ),
     metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(fold_candidate.method_names),
         statement_count=3,
@@ -1431,9 +1392,6 @@ declare_candidate_rule_detector(
         f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
     ),
     evidence=lambda catalog_candidate: catalog_candidate.evidence,
-    codemod_patch=lambda catalog_candidate: (
-        "# Delete the repeated `__init_subclass__` bodies after moving the lifecycle code into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin."
-    ),
     metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(catalog_candidate.class_names),
         statement_count=2,
@@ -1471,9 +1429,6 @@ declare_candidate_rule_detector(
         f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
     ),
     evidence=lambda regex_candidate: regex_candidate.evidence,
-    codemod_patch=lambda regex_candidate: (
-        "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
-    ),
     metrics=lambda regex_candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(regex_candidate.method_names),
         mapping_name=regex_candidate.class_name,
@@ -1520,9 +1475,6 @@ class SupportPreludeModuleFamilyDetector(
                         f"{len(candidate.class_names)} one-class modules share support prelude `{candidate.support_module_name}` without a manifest authority."
                     ),
                     candidate.evidence[:8],
-                    codemod_patch=(
-                        "# Add one module-family catalog beside the shared support prelude.\n# Derive member rows from package structure instead of relying only on repeated star-import shape."
-                    ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(candidate.class_names),
                         mapping_name=candidate.support_module_name,
@@ -1550,9 +1502,6 @@ declare_candidate_rule_detector(
     summary=lambda dynamic_candidate: (
         f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value."
     ),
-    codemod_patch=lambda dynamic_candidate: (
-        f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier."
-    ),
     candidate_collector=_dynamic_self_field_selection_candidates,
 )
 
@@ -1577,9 +1526,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda reflective_candidate: (
         f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes."
-    ),
-    codemod_patch=lambda reflective_candidate: (
-        f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method."
     ),
     metrics=lambda reflective_candidate: SentinelSimulationMetrics(
         class_count=len(reflective_candidate.concrete_class_names),

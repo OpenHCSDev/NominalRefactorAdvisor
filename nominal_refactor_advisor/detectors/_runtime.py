@@ -192,7 +192,6 @@ class LiteralDispatchFindingFactory:
             relation_context=(
                 f"same observed axis `{observation.dispatch_axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
             ),
-            codemod_patch=_literal_dispatch_authority_patch(observation),
             metrics=DispatchCountMetrics.from_literal_family(
                 observation.dispatch_axis_expression,
                 observation.literal_cases,
@@ -343,11 +342,6 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
                         f"{field_names} as untyped `object`."
                     ),
                     evidence,
-                    codemod_patch=(
-                        f"# Replace private object boundary fields on `{class_name}` "
-                        "with a named typed authority/ABC field. Do not pass "
-                        "private closures through request dataclasses."
-                    ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(field_names),
                         mapping_name=class_name,
@@ -907,12 +901,6 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
                 mapping_name="formal_boundary_external_string_registry",
                 source_name=str(path),
             ),
-            codemod_patch=(
-                "# Replace the Python-side string-id catalog with a generated "
-                "authority loaded from the formal artifact/export. Keep symbolic "
-                "names in runtime code and derive external ids from the formal "
-                "catalog so Lean/formal and Python cannot drift."
-            ),
         )
 
     @staticmethod
@@ -1128,12 +1116,6 @@ class GeneratedBoundarySemanticConstantAuthority:
                 field_names=(target_name, value),
                 mapping_name="generated_boundary_semantic_constant",
                 source_name=target_name,
-            ),
-            codemod_patch=(
-                "# Delete the handwritten runtime copy of this generated semantic "
-                "constant and read the value from the generated catalog or nominal "
-                "authority. Runtime code should name the symbolic fact, not mirror "
-                "the generated value."
             ),
         )
 
@@ -1424,10 +1406,6 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                     f"site(s): {', '.join(bridge_kinds)}."
                 ),
                 evidence,
-                codemod_patch=(
-                    "# Remove runtime namespace copying in this module.\n"
-                    "# Add explicit imports for every required dependency, then let missing names raise at import time."
-                ),
                 capability_gap="no runtime namespace bridge or guarded globals definition remains",
             )
         ]
@@ -1680,12 +1658,6 @@ class LoadBearingRelationBranchDetector(PerModuleIssueDetector):
                             f"{result_summary}."
                         ),
                         evidence,
-                        codemod_patch=(
-                            f"# Replace the ordered relation branches in `{qualname}` "
-                            "with an AutoRegisterMeta-backed relation-case family.\n"
-                            "# Move each source-domain/certificate relation into a named case and "
-                            "make the authority require exactly one matching case."
-                        ),
                         metrics=BranchCountMetrics(branch_site_count=len(chain)),
                         capability_gap=(
                             "proof-relevant certificate/domain dispatch is a nominal relation-case algebra"
@@ -2020,7 +1992,6 @@ class RepeatedBuilderCallDetector(
                         if same_source
                         else self.finding_spec.capability_gap
                     ),
-                    codemod_patch=_builder_patch(ordered),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
                         mapping_name=ordered[0].callee_name,
@@ -2093,9 +2064,6 @@ class ManualClassRegistrationDetector(
         return self.build_finding(
             f"Registry `{registry_name}` is populated manually for {len(class_names)} classes across {len(registrations)} sites.",
             evidence,
-            codemod_patch=_autoregister_patch(
-                registry_name, class_names, registrations
-            ),
             metrics=RegistrationMetrics(
                 registration_site_count=len(registrations),
                 registry_name=registry_name,
@@ -2333,10 +2301,6 @@ class ManualConcreteSubclassRosterDetector(
                 f"`{roster_candidate.class_name}` maintains roster `{roster_candidate.registry_name}` for {len(roster_candidate.concrete_class_names)} concrete subclasses ({concrete_preview}){guard_summary} and consumes it via {roster_candidate.consumer_names}."
             ),
             tuple(evidence[:6]),
-            codemod_patch=(
-                f"# Remove manual roster `{roster_candidate.registry_name}` from `{roster_candidate.class_name}`.\n"
-                "# Reuse one metaclass-registry base so descendant discovery and abstract filtering are not rewritten per family."
-            ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(roster_candidate.concrete_class_names),
                 registry_name=roster_candidate.registry_name,
@@ -2397,15 +2361,6 @@ class LatentImplementationRosterDetector(
                 f"{projection_suffix}."
             ),
             (roster_candidate.evidence,),
-            codemod_patch=(
-                f"# Delete manual roster `{roster.roster_name}`.\n"
-                f"# Promote `{roster_candidate.class_name}` to `ABC, metaclass=AutoRegisterMeta` and derive this projection from `__registry__`"
-                + (
-                    f" through a named `{match.projection_policy_hint}` subset policy."
-                    if match.projection_policy_hint is not None
-                    else "."
-                )
-            ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(roster_candidate.concrete_class_names),
                 registry_name=roster.roster_name,
@@ -3085,12 +3040,6 @@ class AutoRegisterMetaUnderRentedDetector(
                 f"Rent margin {rent_candidate.rent_margin}."
             ),
             (rent_candidate.evidence,),
-            codemod_patch=(
-                f"# Prove or remove AutoRegisterMeta on `{rent_candidate.class_name}`.\n"
-                "# Rent proof must expose a stable key axis, multiple registered leaves, and a behavioral contract.\n"
-                "# Prefer an explicit registry projection/consumer derived from `cls.__registry__` when the family is enumerated.\n"
-                "# If the family is metadata-only or has no projection surface, replace it with a typed table or ordinary ABC."
-            ),
             compression_certificate=rent_candidate.compression_certificate,
             metrics=AutoRegisterMetaRentMetrics(
                 registration_site_count=len(rent_candidate.concrete_class_names),
@@ -3153,10 +3102,6 @@ class PredicateSelectedConcreteFamilyDetector(
                 f"{len(family_candidate.concrete_class_names)} concrete leaves ({concrete_preview}) before manually choosing one match."
             ),
             tuple(evidence[:6]),
-            codemod_patch=(
-                f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
-                "# Leave only `matches_context(...)` and family-specific error shaping on the root, and stop reimplementing `cls.__registry__.values()` scans."
-            ),
         )
 
 
@@ -3209,11 +3154,6 @@ class ParallelMirroredLeafFamilyDetector(
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
             mirrored_candidate.evidence[:6],
-            codemod_patch=(
-                f"# Preserve roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` as nominal domain authorities.\n"
-                "# Extract each repeated role implementation once into a mixin, then compose role mixins with domain roots through multiple inheritance.\n"
-                "# Empty concrete product leaves are valid when they carry the composed nominal identity; do not replace the product lattice with callable tables."
-            ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=(
                     len(mirrored_candidate.left.leaf_evidence)
@@ -3409,10 +3349,6 @@ class ConcreteConfigFieldProbeDetector(
                 f"fields {missing_fields} through `{reflective_builtins}` on `{probe_candidate.config_attr_name}`."
             ),
             (probe_candidate.evidence,),
-            codemod_patch=(
-                f"# Delete reflective field probes against `{probe_candidate.config_type_name}`.\n"
-                "# Either move this backend onto its own declared config contract or use fields that the concrete config type actually owns."
-            ),
         )
 
 
@@ -3558,12 +3494,6 @@ class ExactTypeGuardInheritanceRetreatDetector(
                 f"inheritance graph contains descendant(s) {descendants}."
             ),
             candidate.evidence,
-            codemod_patch=(
-                f"# Replace `{guard.expression}` with "
-                f"`{guard.structural_membership_expression}` at this "
-                "boundary; preserve the existing fail-loud branch and let nominal "
-                "subclasses satisfy the base contract."
-            ),
             metrics=HierarchyCandidateMetrics(
                 duplicate_group_count=1,
                 class_count=1 + len(candidate.descendant_classes),
@@ -4548,14 +4478,6 @@ class AlgebraicVariantMethodFamilyDetector(
                 f"algebra, not method names.{context_suffix}"
             ),
             candidate.evidence,
-            codemod_patch=(
-                f"# Replace variant method family {seed.method_names} on "
-                f"`{exemplar.owner_class_name}` with one nominal request/context operation.\n"
-                "# Put each leaf operation on its nominal variant declaration; do not replace the "
-                "method family with caller-side branching or a variant-to-callable table.\n"
-                "# Use source-index anchored rewrites to migrate callers after the request/product "
-                "type owns the operation variant explicitly."
-            ),
             metrics=RepeatedMethodMetrics.from_duplicate_family(
                 duplicate_site_count=max(
                     2, len(seed.methods) + len(candidate.composition_signals)
@@ -4688,9 +4610,6 @@ class MirroredImportFallbackDetector(
                 f"from {module_summary} across relative and absolute ImportError branches."
             ),
             (import_candidate.evidence,),
-            codemod_patch=(
-                "# Replace mirrored relative/absolute import branches with a package bootstrap or shared import adapter."
-            ),
             metrics=MappingMetrics(
                 mapping_site_count=2,
                 field_count=import_candidate.imported_name_count,
@@ -4839,9 +4758,6 @@ class RepeatedLocalRegexBundleDetector(
                 f"local regex grammar literals across {functions}."
             ),
             regex_candidate.evidence_locations,
-            codemod_patch=(
-                "# Move repeated local regex grammar into one typed syntax authority.\n# Derive parser operations from named recognizers instead of redeclaring patterns in each helper."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(regex_candidate.function_names),
                 mapping_name="regex syntax authority",

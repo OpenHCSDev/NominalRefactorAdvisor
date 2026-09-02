@@ -6491,7 +6491,6 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
                     },
                 ],
                 "scaffold": "Introduce one theorem schema.",
-                "codemod_patch": "Factor through the theorem schema.",
             }
         ],
     }
@@ -6505,6 +6504,9 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
     assert finding.confidence == "high"
     assert finding.certification == "strong_heuristic"
     assert "scaffold" not in {field_item.name for field_item in fields(RefactorFinding)}
+    assert "codemod_patch" not in {
+        field_item.name for field_item in fields(RefactorFinding)
+    }
     assert finding.evidence == (
         SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
         SourceLocation("<lean-env>", 0, "Leverage.Beta"),
@@ -6897,7 +6899,6 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
         "loc",
         "dispatch sites collapse",
         (SourceLocation("pkg/mod.py", 20, "dispatch"),),
-        codemod_patch="# delete repeated dispatch",
         metrics=DispatchCountMetrics(dispatch_site_count=4),
     )
     unproven_finding = spec.build(
@@ -8703,7 +8704,6 @@ def test_variant_method_detector_places_execution_on_nominal_variant(
     )
 
     assert len(findings) == 1
-    assert "caller-side branching" in (findings[0].codemod_patch or "")
 
 
 def test_preserves_independent_nominal_and_generic_dispatch(
@@ -8818,9 +8818,6 @@ def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
     assert "EXECUTION_SPECS" in finding.summary
     assert "execution" in finding.summary
     assert "build_wrapper" in finding.summary
-    assert "wrapper metadata" not in (finding.codemod_patch or "")
-    assert "WRAPPER_RULES" in (finding.codemod_patch or "")
-    assert "ExecutionSpec" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
@@ -8840,7 +8837,6 @@ def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
     assert "LazyPipelineConfig" in finding.summary
     assert "PipelineConfig" in finding.summary
     assert "batch_size" in finding.summary
-    assert "dataclasses.fields(PipelineConfig)" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 
@@ -9065,7 +9061,6 @@ def test_detects_premature_registry_infrastructure(tmp_path: Path) -> None:
     assert "registered_case_axis" in finding.summary
     assert "lookup_lifecycle" in finding.summary
     assert "consumer_fanout" in finding.summary
-    assert "typed table" in (finding.codemod_patch or "")
 
 
 def test_ignores_mature_registry_infrastructure(tmp_path: Path) -> None:
@@ -9154,7 +9149,6 @@ def test_detects_registry_projection_surface_from_injective_registry(
         "ModeRunner|Mode|full|lookup_projection:key_to_type_index|mapping_literal"
         in finding.summary
     )
-    assert "RegistryProjectionSpec(ModeRunner" in (finding.codemod_patch or "")
     export_finding = next(
         finding for finding in findings if "__all__" in finding.summary
     )
@@ -9253,7 +9247,6 @@ def test_registry_projection_requires_policy_for_suspicious_subset(
 
     assert "coverage 0.67" in finding.summary
     assert "need a named projection policy" in finding.summary
-    assert "add a named projection policy" in (finding.codemod_patch or "")
 
 
 def test_registry_projection_accepts_named_subset_policy_hint(
@@ -9280,7 +9273,6 @@ def test_registry_projection_accepts_named_subset_policy_hint(
     assert "coverage 0.67" in finding.summary
     assert "Subset policy hint `public`" in finding.summary
     assert "public|config_choices:key_roster|choices_tuple" in finding.summary
-    assert "explicit `public` projection policy" in (finding.codemod_patch or "")
 
 
 def test_detects_repeated_registry_projection_policy_hint_authority(
@@ -9992,7 +9984,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "UnsafeRequest" in finding.summary
     assert "_handler_impl" in finding.summary
     assert "SafeRequest" not in finding.summary
-    assert "protocol" not in (finding.codemod_patch or "").lower()
 
 
 def test_source_segment_projection_reuses_cached_geometry(
@@ -10140,7 +10131,6 @@ def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
     ]
     assert len(findings) == 1
     assert "high_confidence_spec" in findings[0].summary
-    assert "coordinate names" in (findings[0].codemod_patch or "")
 
 
 def test_disabled_simple_property_alias_detector_family_is_removed() -> None:
@@ -10338,8 +10328,9 @@ def test_detects_mixin_enforcement_for_renamed_semantic_roles(tmp_path: Path) ->
             and ("class_names" in item.summary)
         )
     )
-    assert finding.codemod_patch is not None
-    assert "multiple inheritance" in finding.codemod_patch
+    assert "FunctionTrace" in finding.summary
+    assert "RegistryTrace" in finding.summary
+    assert "multiple inheritance" in finding.summary
 
 
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
@@ -10813,9 +10804,6 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     assert any((finding.pattern_id == 14 for finding in findings))
-    assert any(
-        (finding.pattern_id == 14 and finding.codemod_patch for finding in findings)
-    )
 
 
 _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION = """
@@ -16418,12 +16406,6 @@ def test_detects_manual_class_registration(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     assert any((finding.pattern_id == 6 for finding in findings))
-    assert any(
-        (
-            finding.pattern_id == 6 and "__registry__" in (finding.codemod_patch or "")
-            for finding in findings
-        )
-    )
 
 
 def test_manual_class_registration_findings_synthesize_recipe_plan(
@@ -16599,7 +16581,6 @@ def test_detects_manual_concrete_subclass_roster_with_selector_guard(
     assert "route_name" in finding.summary
     assert "DirectRequest" in finding.summary
     assert "GuidedRequest" in finding.summary
-    assert "metaclass-registry" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_root_qualified_append(
@@ -16700,7 +16681,6 @@ def test_detects_inherited_autoregister_config_boilerplate(
     assert "SpatialBinStrategy" in finding.summary
     assert "__registry_key__" in finding.summary
     assert "__skip_if_no_key__" in finding.summary
-    assert "fix AutoRegisterMeta inheritance semantics" in (finding.codemod_patch or "")
 
 
 def test_autoregister_rent_counts_inherited_registry_config(
@@ -16795,7 +16775,6 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "SourcePathExclusion" in finding.summary
     assert "priority" in finding.summary
     assert "MRO" in finding.title
-    assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
 
 
 def test_detects_nominal_instance_catalog_ordering_outside_autoregister(
@@ -16816,9 +16795,6 @@ def test_detects_nominal_instance_catalog_ordering_outside_autoregister(
     assert "GalleryScenarioABC" in finding.summary
     assert "`order`" in finding.summary
     assert "MRO" in finding.title
-    assert "derive the sequence solely from the catalog MRO" in (
-        finding.codemod_patch or ""
-    )
 
 
 def test_nominal_instance_ordering_ignores_non_nominal_value_rows(
@@ -16854,7 +16830,6 @@ def test_detects_autoregister_family_precedence_axis_ordering(
     assert "SelectionOutcome" in finding.summary
     assert "precedence" in finding.summary
     assert "MRO" in finding.title
-    assert "Delete the `precedence` class axis" in (finding.codemod_patch or "")
 
 
 def test_detects_external_autoregister_registry_priority_sort(
@@ -17062,7 +17037,6 @@ def test_detects_all_missing_axis_predicate(tmp_path: Path) -> None:
     assert "missing_signals" in finding.summary
     assert "behavior_axis" in finding.summary
     assert "projection_or_consumer" in finding.summary
-    assert "not any" in (finding.codemod_patch or "")
 
 
 def test_all_missing_axis_predicate_does_not_attribute_nested_function_body(
@@ -17219,7 +17193,6 @@ def test_detects_latent_implementation_class_roster(tmp_path: Path) -> None:
     assert "STEP_TYPES" in finding.summary
     assert "AlphaStep" in finding.summary
     assert "BetaStep" in finding.summary
-    assert "__registry__" in (finding.codemod_patch or "")
 
 
 def test_ignores_public_export_surface_as_implementation_roster(
@@ -17255,7 +17228,6 @@ def test_detects_latent_implementation_subset_roster_with_policy_hint(
     assert "SUPPORTED_EXPORT_FORMATS" in finding.summary
     assert "supported" in finding.summary
     assert "parquet" in finding.summary
-    assert "subset policy" in (finding.codemod_patch or "")
 
 
 def test_detects_latent_implementation_dict_projection_roster(
@@ -17361,7 +17333,6 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "InvoiceFieldEmitter" in finding.summary
     assert "ReceiptFieldEmitter" in finding.summary
     assert "alpha emitter" in finding.summary
-    assert "callable tables" in (finding.codemod_patch or "")
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
@@ -18986,8 +18957,6 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     )
     assert "`pattern_id`" in finding.summary
     assert "3" in finding.summary
-    assert finding.codemod_patch is not None
-    assert "instead of if/elif or match/case" in finding.codemod_patch
     assert finding.certification == "certified"
 
 
@@ -19103,7 +19072,6 @@ def test_detects_runtime_namespace_bridge(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "runtime namespace bridge" in finding.summary
     assert "RuntimeCarrier" in {e.symbol for e in finding.evidence}
-    assert "missing names raise" in (finding.codemod_patch or "")
 
 
 def test_detects_raw_globals_update_bridge(tmp_path: Path) -> None:
@@ -19169,7 +19137,6 @@ def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Payload" in finding.summary
     assert "ViewerStreamKwargName" in finding.summary
-    assert "projection schema" in (finding.codemod_patch or "")
 
 
 def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
@@ -19214,7 +19181,6 @@ class DeferredStreamPrefixCompactionAuthority:
     assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
     assert "DeferredStreamPrefixCompactionAuthority.rebase" in (finding.summary)
     assert "nominal relation-case" in (finding.capability_gap or "")
-    assert "exactly one matching case" in (finding.codemod_patch or "")
 
 
 def test_load_bearing_relation_branch_accepts_nominal_case_authority(
@@ -19480,8 +19446,6 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     )
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
-    assert "PatternId" in (finding.codemod_patch or "")
-    assert "authoritative record" in (finding.codemod_patch or "")
 
 
 def test_preserves_nominal_identity_of_forwarding_wrapper(tmp_path: Path) -> None:
@@ -19498,7 +19462,7 @@ def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass PerModuleIssueDetector:\n    pass\n\n\nclass AlphaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for candidate in alpha_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_alpha(candidate),\n                    alpha_evidence(candidate),\n                    scaffold=alpha_scaffold(candidate),\n                    codemod_patch=alpha_patch(candidate),\n                    metrics=AlphaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass BetaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for entry in beta_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_beta(entry),\n                    beta_evidence(entry),\n                    scaffold=beta_scaffold(entry),\n                    codemod_patch=beta_patch(entry),\n                    metrics=BetaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass GammaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for witness in gamma_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_gamma(witness),\n                    gamma_evidence(witness),\n                    scaffold=gamma_scaffold(witness),\n                    codemod_patch=gamma_patch(witness),\n                    metrics=GammaMetrics(site_count=1),\n                )\n            )\n        return findings\n",
+        "\nclass PerModuleIssueDetector:\n    pass\n\n\nclass AlphaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for candidate in alpha_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_alpha(candidate),\n                    alpha_evidence(candidate),\n                    metrics=AlphaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass BetaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for entry in beta_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_beta(entry),\n                    beta_evidence(entry),\n                    metrics=BetaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass GammaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for witness in gamma_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_gamma(witness),\n                    gamma_evidence(witness),\n                    metrics=GammaMetrics(site_count=1),\n                )\n            )\n        return findings\n",
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -19643,7 +19607,6 @@ def test_detects_semantic_overlap_method(tmp_path: Path) -> None:
     assert "strict-subset families" in finding.summary
     assert "0 lattice edge(s)" in finding.summary
     assert "no hierarchy placement is selected" in finding.summary
-    assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
     source_index = cast(
@@ -19724,7 +19687,6 @@ def test_method_family_derives_partial_overlap_axes(tmp_path: Path) -> None:
     assert "audit[CsvWorker,JsonWorker]" in emit_finding.summary
     assert "cache[JsonWorker,XmlWorker]" in emit_finding.summary
     assert "cache[JsonWorker,XmlWorker]" in audit_finding.summary
-    assert audit_finding.codemod_patch is None
     global_finding = next(
         finding
         for finding in all_findings
@@ -19735,7 +19697,6 @@ def test_method_family_derives_partial_overlap_axes(tmp_path: Path) -> None:
     assert "audit" in global_finding.summary
     assert "cache" in global_finding.summary
     assert "partial-overlap families" in global_finding.summary
-    assert global_finding.codemod_patch is None
     assert global_finding.compression_certificate is not None
     assert global_finding.compression_certificate.pays_rent
 
@@ -19855,7 +19816,6 @@ def test_method_family_detects_whole_family_template(tmp_path: Path) -> None:
     assert "validate" in finding.summary
     assert "observed leaf residue basis" in finding.summary
     assert "no hierarchy placement is selected" in finding.summary
-    assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
     assert len(finding.evidence) == 6
@@ -19909,7 +19869,6 @@ def test_detects_constant_property_default_bundle(tmp_path: Path) -> None:
         )
     )
     assert "Metrics" in finding.summary
-    assert "ConstantProperty" in (finding.codemod_patch or "")
 
 
 def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
@@ -20066,7 +20025,6 @@ def test_detects_repeated_base_bundle(tmp_path: Path) -> None:
         )
     )
     assert "RoleMixin" in finding.summary
-    assert "ABC/mixin" in (finding.codemod_patch or "")
 
 
 def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
@@ -20085,7 +20043,6 @@ def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
     )
     assert "AlphaFamilyDefinition" in finding.summary
     assert "AlphaFamily" in finding.summary
-    assert "typed declaration table" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
@@ -20165,7 +20122,6 @@ def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     )
     assert "RuntimePolicy.lean" in finding.summary
     assert "3 formal-boundary string ids" in finding.summary
-    assert "formal artifact/export" in (finding.codemod_patch or "")
 
 
 def test_formal_boundary_string_registry_skips_candidate_free_ast_walk(
@@ -20240,7 +20196,6 @@ def test_detects_generated_boundary_semantic_constant_mirror(
 
     assert "POLICY_PROFILE_ID" in finding.summary
     assert "generated semantic constant value" in finding.summary
-    assert "generated catalog or nominal authority" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
@@ -20302,7 +20257,6 @@ def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None
     assert "from_error_context" in finding.summary
     assert "type[ViewerWindowResultFactory]" in finding.summary
     assert "Protocol" not in finding.capability_gap
-    assert "Do not hide this behind a TypeAlias" in (finding.codemod_patch or "")
 
 
 def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
@@ -20344,7 +20298,8 @@ def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> No
             and ("all_metrics" in finding.summary)
         )
     )
-    assert "declarative include/materialize residue" in (finding.codemod_patch or "")
+    assert "all_plugins" in finding.summary
+    assert "all_metrics" in finding.summary
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
@@ -20398,7 +20353,6 @@ def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
         )
     )
     assert "PayloadPreparationMixin" in finding.summary
-    assert "cast(..., self)" in (finding.codemod_patch or "")
     assert "RequestContract" in finding.summary
     assert "AlphaPreparation" in finding.summary
 

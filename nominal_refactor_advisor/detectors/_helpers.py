@@ -644,14 +644,7 @@ def _finding_assembly_pipeline_candidates_for_class(
     if candidate_source_name is None:
         return
     metrics_type_name = _build_call_keyword_helper_name(build_call, "metrics")
-    patch_helper_name = _build_call_keyword_helper_name(build_call, "codemod_patch")
-    if not any(
-        helper_name is not None
-        for helper_name in (
-            metrics_type_name,
-            patch_helper_name,
-        )
-    ):
+    if metrics_type_name is None:
         return
     yield FindingAssemblyPipelineCandidate(
         file_path=module.file_path,
@@ -662,14 +655,12 @@ def _finding_assembly_pipeline_candidates_for_class(
             for item in (
                 candidate_source_name,
                 metrics_type_name,
-                patch_helper_name,
             )
             if item is not None
         ),
         method_name=method.name,
         candidate_source_name=candidate_source_name,
         metrics_type_name=metrics_type_name,
-        patch_helper_name=patch_helper_name,
     )
 
 

@@ -616,11 +616,6 @@ class AuthorityClaimPreflightFinding:
             if discovery is not None
             else "authority claim is not resolved or declared"
         )
-        searched = (
-            discovery.searched_symbols
-            if discovery is not None
-            else (resolution.claim.claimed_symbol,)
-        )
         return cls._finding(
             recipe_id=recipe_id,
             claimed_symbol=resolution.claim.claimed_symbol,
@@ -630,11 +625,6 @@ class AuthorityClaimPreflightFinding:
                 f"`{resolution.status.value}`: {reason}."
             ),
             evidence_symbol=resolution.claim.claimed_symbol,
-            codemod_patch=(
-                "# Resolve this authority claim against a real source-index target, "
-                "or introduce the boundary with declare_authority.\n"
-                f"# Searched symbols: {', '.join(searched)}"
-            ),
         )
 
     @classmethod
@@ -645,7 +635,6 @@ class AuthorityClaimPreflightFinding:
         claimed_symbol: str,
         summary: str,
         evidence_symbol: str,
-        codemod_patch: str,
     ) -> RefactorFinding:
         return RefactorFinding(
             pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -672,7 +661,6 @@ class AuthorityClaimPreflightFinding:
                     evidence_symbol,
                 ),
             ),
-            codemod_patch=codemod_patch,
         )
 
 

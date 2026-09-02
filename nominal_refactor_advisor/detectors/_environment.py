@@ -1518,12 +1518,6 @@ class EnvironmentBooleanAuthorityDriftDetector(
             self.build_finding(
                 f"`{candidate.symbol}` {candidate.summary_detail} for `{candidate.environment_key}`.",
                 candidate.evidence,
-                codemod_patch=(
-                    f"# Delete local environment-boolean semantics in `{candidate.symbol}`.\n"
-                    "# Route the flag through the existing declared authority once, "
-                    "materialize typed immutable configuration, and pass that value "
-                    "to runtime consumers."
-                ),
                 relation_context=(
                     "AST dataflow links a direct Python environment read or fixed-key "
                     "wrapper to independently owned boolean flag semantics"

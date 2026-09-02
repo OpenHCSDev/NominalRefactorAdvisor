@@ -3024,7 +3024,6 @@ def test_nested_factory_keyword_names_do_not_prove_dataclass_authority(
         "@dataclass(frozen=True)\n"
         "class FindingBuildContext:\n"
         "    scaffold: str | None = None\n"
-        "    codemod_patch: str | None = None\n"
         "    metrics: object | None = None\n"
         "\n"
         "class Detector:\n"
@@ -3037,7 +3036,6 @@ def test_nested_factory_keyword_names_do_not_prove_dataclass_authority(
         "                'summary',\n"
         "                evidence,\n"
         "                scaffold='scaffold',\n"
-        "                codemod_patch='patch',\n"
         "                metrics=metric,\n"
         "            )\n"
         "        ]\n",

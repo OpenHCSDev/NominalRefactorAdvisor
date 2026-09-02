@@ -567,7 +567,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             detector_id,
             summary,
             evidence,
-            codemod_patch=context.codemod_patch,
             compression_certificate=context.compression_certificate,
             metrics=context.metrics,
             title=context.title,
@@ -1098,7 +1097,6 @@ CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
 CandidateEvidenceRenderer: TypeAlias = Callable[
     [CandidateItemT], tuple[SourceLocation, ...]
 ]
-OptionalCandidateTextRenderer: TypeAlias = Callable[[CandidateItemT], str | None] | None
 OptionalCandidateCompressionRenderer: TypeAlias = (
     Callable[[CandidateItemT], CompressionCertificate | None] | None
 )
@@ -1124,7 +1122,6 @@ SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 
 
 class FindingBuildContextKwargs(TypedDict, total=False):
-    codemod_patch: str | None
     compression_certificate: CompressionCertificate | None
     metrics: FindingMetrics | None
     title: str | None
@@ -1142,7 +1139,6 @@ class FindingBuildContextKwargs(TypedDict, total=False):
 class FindingBuildContext:
     """Nominal bundle for finding rendering, payoff, and override authority."""
 
-    codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics | None = None
     title: str | None = None
@@ -1170,7 +1166,6 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     target_finding_type: ClassVar[type[RefactorFinding]] = RefactorFinding
     summary: CandidateSummaryRenderer[CandidateItemT]
     evidence: CandidateEvidenceRenderer[CandidateItemT]
-    codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None
     compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
 
@@ -1189,7 +1184,6 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
 
     def build_context(self, candidate: CandidateItemT) -> FindingBuildContext:
         return FindingBuildContext(
-            codemod_patch=self._optional_value(candidate, self.codemod_patch),
             compression_certificate=self._optional_value(
                 candidate, self.compression_certificate
             ),
@@ -2143,7 +2137,6 @@ def declare_candidate_rule_detector(
     *,
     summary: CandidateSummaryRenderer[CandidateItemT],
     evidence: CandidateEvidenceRenderer[CandidateItemT] = single_candidate_evidence,
-    codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None,
     compression_certificate: OptionalCandidateCompressionRenderer[
         CandidateItemT
     ] = None,
@@ -2157,7 +2150,6 @@ def declare_candidate_rule_detector(
     renderer = CandidateFindingRenderer(
         summary=summary,
         evidence=evidence,
-        codemod_patch=codemod_patch,
         compression_certificate=compression_certificate,
         metrics=metrics,
     )
@@ -7468,7 +7460,6 @@ class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
     method_name: str
     candidate_source_name: str
     metrics_type_name: str | None
-    patch_helper_name: str | None
 
 
 @dataclass(frozen=True)

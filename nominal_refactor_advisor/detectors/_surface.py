@@ -156,10 +156,6 @@ class ManualFamilyRosterDetector(
                 ),
                 *candidate.member_locations,
             )[:6],
-            codemod_patch=(
-                f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
-                f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
-            ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(candidate.member_names),
                 registry_name=candidate.owner_name,
@@ -202,10 +198,6 @@ class FragmentedFamilyAuthorityDetector(
                 f"Tables {', '.join(authority_candidate.mapping_names)} split one `{authority_candidate.key_family_name}` metadata family across {len(authority_candidate.mapping_names)} authorities."
             ),
             evidence[:6],
-            codemod_patch=(
-                f"# Collapse {authority_candidate.mapping_names} into one `{authority_candidate.key_family_name}`-keyed spec table.\n"
-                f"# Move shared keys {authority_candidate.shared_keys} into one authoritative record instead of parallel dicts."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(authority_candidate.mapping_names),
                 mapping_name=f"{authority_candidate.key_family_name} spec",
@@ -232,9 +224,6 @@ declare_candidate_rule_detector(
         f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
     ),
     evidence=lambda query_candidate: query_candidate.evidence,
-    codemod_patch=lambda query_candidate: (
-        f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes."
-    ),
     metrics=lambda query_candidate: MappingMetrics(
         mapping_site_count=len(query_candidate.function_names),
         field_count=max(len(query_candidate.query_key_names), 1),
@@ -273,11 +262,6 @@ declare_candidate_rule_detector(
         "derive the companion surface from the schema authority instead of redeclaring it."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    codemod_patch=lambda candidate: (
-        f"# Delete the manually mirrored `{candidate.companion_class_name}` field declarations.\n"
-        f"# Generate the `{candidate.surface_role_name}` companion from `dataclasses.fields({candidate.authority_class_name})`, "
-        "and keep only irreducible companion residue as generator policy."
-    ),
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=2,
@@ -332,9 +316,6 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 FindingBuildContext(
-                    codemod_patch=(
-                        "# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and codemod direction on the leaves."
-                    ),
                     metrics=RepeatedMethodMetrics.from_duplicate_family(
                         duplicate_site_count=len(candidates),
                         statement_count=3,
@@ -388,10 +369,6 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                         "with guards/defaults varying per site."
                     ),
                     evidence,
-                    codemod_patch=(
-                        f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
-                        "# Leave call sites responsible only for naming the source authorities, not reassigning every field."
-                    ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(builders),
                         mapping_name=callee_name,
@@ -441,9 +418,6 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 FindingBuildContext(
-                    codemod_patch=(
-                        "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
-                    ),
                     metrics=RepeatedMethodMetrics.from_duplicate_family(
                         duplicate_site_count=len(candidates),
                         statement_count=2,
@@ -528,10 +502,6 @@ class StructuralObservationProjectionDetector(
                 f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{candidate.property_name}` with the same `{candidate.constructor_name}` schema over roles {candidate.keyword_names}."
             ),
             evidence,
-            codemod_patch=(
-                f"# Introduce one projection template for `{candidate.property_name}` over roles {candidate.keyword_names}.\n"
-                "# Leave only the role-specific hooks on the concrete carriers."
-            ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(grouped_candidates),
                 mapping_name=candidate.constructor_name,
