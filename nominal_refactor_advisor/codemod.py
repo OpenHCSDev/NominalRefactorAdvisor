@@ -4568,7 +4568,75 @@ class RefactorRecipeOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceDerivedAuthorityProjectionOperation(RefactorRecipeOperation, ABC):
+class SourceReprovedOperation(RefactorRecipeOperation, ABC):
+    """Operation whose physical edits must be re-derived from current source."""
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        try:
+            snapshot = (
+                CodemodSourceSnapshot.from_indexed_sources(
+                    source_index,
+                    source_by_path,
+                )
+                if selector_context is None
+                else selector_context.execution_snapshot()
+            )
+            return self.source_edits_from_snapshot(snapshot)
+        except CodemodOperationPreflightError:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self.failed_preflight(str(error)) from error
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            self.source_edits_with_context(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return ()
+
+    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
+        return CodemodOperationPreflightError(
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.FAILED,
+                message=message,
+                details={"target": self.target.to_dict()},
+            )
+        )
+
+    @abstractmethod
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceDerivedAuthorityProjectionOperation(SourceReprovedOperation, ABC):
     """Exact authority/projection pair whose edits derive from current source."""
 
     projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -4579,23 +4647,6 @@ class SourceDerivedAuthorityProjectionOperation(RefactorRecipeOperation, ABC):
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (*super().referenced_source_targets(), self.projection_target)
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    @abstractmethod
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[NominalSourceEdit, ...]:
-        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -5184,74 +5235,6 @@ class _ClosedParameterConveyorSourceRewrite:
                 ctx=ast.Load(),
             )
         return expression
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceReprovedOperation(RefactorRecipeOperation, ABC):
-    """Operation whose physical edits must be re-derived from current source."""
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        try:
-            snapshot = (
-                CodemodSourceSnapshot.from_indexed_sources(
-                    source_index,
-                    source_by_path,
-                )
-                if selector_context is None
-                else selector_context.execution_snapshot()
-            )
-            return self.source_edits_from_snapshot(snapshot)
-        except CodemodOperationPreflightError:
-            raise
-        except (TypeError, ValueError) as error:
-            raise self.failed_preflight(str(error)) from error
-
-    def preflight_reports(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return ()
-
-    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
-        return CodemodOperationPreflightError(
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.FAILED,
-                message=message,
-                details={"target": self.target.to_dict()},
-            )
-        )
-
-    @abstractmethod
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -16548,25 +16531,15 @@ class EnumSubsetDerivation:
 class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
     """Move one literal enum-value subset behind its enum authority."""
 
-    def source_edits_with_context(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        if context.class_family_index is None:
-            context = context.execution_snapshot()
-        derivation = self.required_derivation(context)
+        derivation = self.required_derivation(snapshot)
         authority_target = derivation.authority.target
         body_authority = ClassBodySourceAuthority(
             authority_target.node,
-            context.sources_by_file_path[authority_target.file_path],
+            snapshot.sources_by_file_path[authority_target.file_path],
         )
         edits: list[NominalSourceEdit] = [
             SourceInsertion(
@@ -16584,8 +16557,8 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    context.source_index,
-                    context.sources_by_file_path,
+                    snapshot.source_index,
+                    snapshot.sources_by_file_path,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the enum subset authority.",
@@ -18526,27 +18499,17 @@ class SourceDerivedDataclassProjectionOperation(
 ):
     """Replay one exact dataclass projection from its current declarations."""
 
-    def source_edits_with_context(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        if context.class_family_index is None:
-            context = context.execution_snapshot()
-        derivation = self.required_derivation(context)
+        derivation = self.required_derivation(snapshot)
         edits = tuple(
             edit
             for import_source in derivation.import_sources
             for edit in self.required_import_mutations(
-                context.source_index,
-                context.sources_by_file_path,
+                snapshot.source_index,
+                snapshot.sources_by_file_path,
                 derivation.projection.source_path,
                 import_source=import_source,
                 default_rationale=(
@@ -18563,9 +18526,9 @@ class SourceDerivedDataclassProjectionOperation(
             new_source=replacement.new_source,
             rationale=("Replace mirrored fields with an authority-owned projection."),
         ).source_edits_with_context(
-            context.source_index,
-            context.sources_by_file_path,
-            selector_context=context,
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
         )
         return (*edits, *replacement_edits)
 
@@ -20067,27 +20030,17 @@ class ClassFamilyCollectionDerivation:
 class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOperation):
     """Derive one complete collection projection from its class authority."""
 
-    def source_edits_with_context(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        if context.class_family_index is None:
-            context = context.execution_snapshot()
-        derivation = self.required_derivation(context)
+        derivation = self.required_derivation(snapshot)
         edits: list[NominalSourceEdit] = []
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    context.source_index,
-                    context.sources_by_file_path,
+                    snapshot.source_index,
+                    snapshot.sources_by_file_path,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the class-family authority.",

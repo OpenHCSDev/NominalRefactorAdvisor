@@ -13,6 +13,7 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    CodemodOperationPreflightError,
     CodemodPlanDocument,
     CodemodSourceContext,
     CodemodSourceSnapshot,
@@ -2480,7 +2481,10 @@ def test_dataclass_payload_operation_rejects_authority_schema_drift(
         {module_path.as_posix(): changed_source},
     )
 
-    with pytest.raises(ValueError, match="exactly one exhaustive return-dict"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exactly one exhaustive return-dict",
+    ):
         operation.source_edits_with_context(
             changed_snapshot.source_index,
             changed_snapshot.sources_by_file_path,
@@ -2516,7 +2520,10 @@ def test_dataclass_payload_operation_rejects_ambiguous_return_projections(
         "payload",
     )
 
-    with pytest.raises(ValueError, match="exhaustive return-dict.*found 2"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exhaustive return-dict.*found 2",
+    ):
         operation.source_edits_with_context(
             snapshot.source_index,
             snapshot.sources_by_file_path,
@@ -2549,7 +2556,10 @@ def test_dataclass_payload_operation_ignores_nested_function_returns(
         "payload",
     )
 
-    with pytest.raises(ValueError, match="exhaustive return-dict.*found 0"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exhaustive return-dict.*found 0",
+    ):
         operation.source_edits_with_context(
             snapshot.source_index,
             snapshot.sources_by_file_path,
@@ -2644,7 +2654,10 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
         snapshot.source_index,
         {module_path.as_posix(): commented_source},
     )
-    with pytest.raises(ValueError, match="absent from current source"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="absent from current source",
+    ):
         replayed.source_edits_with_context(
             commented_snapshot.source_index,
             commented_snapshot.sources_by_file_path,
@@ -3727,7 +3740,10 @@ def test_enum_subset_operation_rejects_authority_value_drift(
         {module_path.as_posix(): changed_source},
     )
 
-    with pytest.raises(ValueError, match="exactly one literal frozenset subset"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exactly one literal frozenset subset",
+    ):
         operation.source_edits_with_context(
             changed_snapshot.source_index,
             changed_snapshot.sources_by_file_path,
@@ -3751,7 +3767,7 @@ def test_enum_subset_operation_rejects_ambiguous_projections(
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
 
     with pytest.raises(
-        ValueError,
+        CodemodOperationPreflightError,
         match="exactly one literal frozenset subset; found 2",
     ):
         operation.source_edits_with_context(
@@ -3788,7 +3804,7 @@ def test_enum_subset_operation_rejects_shadowed_frozenset(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(CodemodOperationPreflightError):
         operation.source_edits_with_context(
             snapshot.source_index,
             snapshot.sources_by_file_path,
@@ -3816,7 +3832,10 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         module_path,
     )
 
-    with pytest.raises(ValueError, match="aliased string values"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="aliased string values",
+    ):
         aliased_operation.source_edits_with_context(
             aliased_snapshot.source_index,
             aliased_snapshot.sources_by_file_path,
@@ -3841,7 +3860,10 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         module_path,
     )
 
-    with pytest.raises(ValueError, match="already binds 'actionable'"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="already binds 'actionable'",
+    ):
         collision_operation.source_edits_with_context(
             collision_snapshot.source_index,
             collision_snapshot.sources_by_file_path,
@@ -4153,7 +4175,10 @@ def test_class_family_collection_operation_rederives_current_source(
         "rationale",
     }
     assert replayed == operation
-    with pytest.raises(ValueError, match="exactly one complete literal collection"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exactly one complete literal collection",
+    ):
         replayed.source_edits_with_context(
             changed_snapshot.source_index,
             changed_snapshot.sources_by_file_path,
@@ -4179,7 +4204,7 @@ def test_class_family_collection_operation_rejects_ambiguous_projections(
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
     with pytest.raises(
-        ValueError,
+        CodemodOperationPreflightError,
         match="exactly one complete literal collection; found 2",
     ):
         operation.source_edits_with_context(
