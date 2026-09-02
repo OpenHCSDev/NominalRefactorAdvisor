@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
+from typing import ClassVar
 
 from .codemod import JsonObject
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
@@ -19,6 +20,8 @@ from .semantic_descent import (
     AuthorityClaimResolver,
     AuthorityDiscoveryRequired,
     DescentCertificate,
+    PresentationProjectionKind,
+    SemanticAuthorityKind,
     SemanticDescentGraph,
     build_finding_backed_semantic_descent_graph,
     semantic_descent_finding_projection_id,
@@ -130,21 +133,23 @@ class DescentCertificateFindingAuthority:
     def authority_kinds(
         self,
         certificates: tuple[DescentCertificate, ...],
-    ) -> tuple[str, ...]:
-        return _unique_strings(
-            self.graph.authority_catalog.authority_for_edge(certificate.edge).kind.value
-            for certificate in certificates
+    ) -> tuple[SemanticAuthorityKind, ...]:
+        return tuple(
+            dict.fromkeys(
+                self.graph.authority_catalog.authority_for_edge(certificate.edge).kind
+                for certificate in certificates
+            )
         )
 
     def projection_kinds(
         self,
         certificates: tuple[DescentCertificate, ...],
-    ) -> tuple[str, ...]:
-        return _unique_strings(
-            self.graph.projection_catalog.projection_for_edge(
-                certificate.edge
-            ).kind.value
-            for certificate in certificates
+    ) -> tuple[PresentationProjectionKind, ...]:
+        return tuple(
+            dict.fromkeys(
+                self.graph.projection_catalog.projection_for_edge(certificate.edge).kind
+                for certificate in certificates
+            )
         )
 
     def authority_claim_for_finding(
@@ -242,8 +247,8 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
     finding_coverage: FindingCoverage
     certificate_count: int
     matched_fact_count: int
-    authority_kinds: tuple[str, ...]
-    projection_kinds: tuple[str, ...]
+    authority_kinds: tuple[SemanticAuthorityKind, ...]
+    projection_kinds: tuple[PresentationProjectionKind, ...]
     authority_claims: tuple[AuthorityClaimResolution, ...]
     evidence_symbols: tuple[str, ...]
     evidence_locations: tuple[SourceLocation, ...] = ()
@@ -335,8 +340,8 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
                 **self.finding_coverage.to_payload_fields(),
                 "certificate_count": self.certificate_count,
                 "matched_fact_count": self.matched_fact_count,
-                "authority_kinds": self.authority_kinds,
-                "projection_kinds": self.projection_kinds,
+                "authority_kinds": tuple(kind.value for kind in self.authority_kinds),
+                "projection_kinds": tuple(kind.value for kind in self.projection_kinds),
                 "authority_claims": tuple(
                     claim.to_dict() for claim in self.authority_claims
                 ),
@@ -382,6 +387,7 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
     @property
     def discovery_required(self) -> bool:
         return any(not claim.is_actionable for claim in self.authority_claims)
+
 
 class AuthorityDiscoveryRequiredFindingProjection:
     """Project unresolved gate authority claims into hard advisor findings."""
@@ -489,12 +495,20 @@ class AuthorityDiscoveryRequiredFindingProjection:
 class SemanticRefactorGateReport(SemanticRecord):
     """Authority-boundary proof report for semantic refactor scans."""
 
-    active: bool
-    policy: str
-    raw_findings_default: str
-    ssot_authority_finding_count: int
+    policy: ClassVar[str] = "authority_boundary_proof"
+    raw_findings_default: ClassVar[str] = "suppressed_when_active"
     boundary_evidence: tuple[SemanticRefactorBoundaryEvidence, ...]
     authority_discovery_findings: tuple[RefactorFinding, ...]
+
+    @property
+    def active(self) -> bool:
+        return bool(self.boundary_evidence)
+
+    @property
+    def ssot_authority_finding_count(self) -> int:
+        return sum(
+            item.finding_coverage.finding_count for item in self.boundary_evidence
+        )
 
     @classmethod
     def from_findings(
@@ -510,10 +524,6 @@ class SemanticRefactorGateReport(SemanticRecord):
             finding_descent_graph,
         )
         return cls(
-            active=bool(ssot_findings),
-            policy="authority_boundary_proof",
-            raw_findings_default="suppressed_when_active",
-            ssot_authority_finding_count=len(ssot_findings),
             boundary_evidence=boundary_evidence,
             authority_discovery_findings=(
                 AuthorityDiscoveryRequiredFindingProjection.findings_for_boundary_evidence(
@@ -525,10 +535,6 @@ class SemanticRefactorGateReport(SemanticRecord):
     @classmethod
     def inactive(cls) -> "SemanticRefactorGateReport":
         return cls(
-            active=False,
-            policy="authority_boundary_proof",
-            raw_findings_default="suppressed_when_active",
-            ssot_authority_finding_count=0,
             boundary_evidence=(),
             authority_discovery_findings=(),
         )

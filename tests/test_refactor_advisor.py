@@ -9,7 +9,7 @@ import subprocess
 import sys
 from abc import ABC
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -18666,8 +18666,13 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     assert "Raw finding evidence (supporting only):" not in raw_markdown
     assert f"Stable id: {finding.stable_id}" in raw_markdown
     assert gate_payload["active"] is False
+    assert gate_payload["ssot_authority_finding_count"] == 0
     assert gate_payload["policy"] == "authority_boundary_proof"
     assert gate_payload["raw_findings_default"] == "suppressed_when_active"
+    assert tuple(field.name for field in fields(SemanticRefactorGateReport)) == (
+        "boundary_evidence",
+        "authority_discovery_findings",
+    )
 
 
 def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -> None:
@@ -18850,6 +18855,7 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
     assert authority_claim["claim"]["claimed_symbol"] == "Handler"
     assert authority_claim["proof_edges"][0]["edge_kind"] == "semantic_descent_graph"
     assert gate_evidence[0] == boundary_evidence[0]
+    assert gate_payload["ssot_authority_finding_count"] == 1
     assert raw_payload["supporting_raw_findings"][0]["stable_id"] == critical.stable_id
 
 

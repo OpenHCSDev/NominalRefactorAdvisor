@@ -1028,8 +1028,10 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     assert boundary.evidence_symbols == ("local_cases",)
     assert boundary.certificate_count == 1
     assert boundary.matched_fact_count == 2
-    assert boundary.authority_kinds == ("finding_declared_authority",)
-    assert boundary.projection_kinds == ("detector_finding",)
+    assert boundary.authority_kinds == (
+        SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
+    )
+    assert boundary.projection_kinds == (PresentationProjectionKind.DETECTOR_FINDING,)
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
