@@ -1400,7 +1400,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         "    def matches(self, value: str) -> bool:\n"
         "        return value == self.phase\n"
     )
-    _write_module(tmp_path, source)
+    module_path = _write_module(tmp_path, source)
     modules = parse_python_modules(tmp_path)
     finding = next(
         item
@@ -1432,13 +1432,24 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     )
     assert plan.records[0].refactor_concept == "auto_register_mro_ordering"
     assert [operation["operation"] for operation in operations] == [
-        "delete_class_assignments",
-        "delete_class_assignments",
-        "delete_class_assignments",
-        "delete_class_assignments",
-        "replace_text",
-        "insert_after_target",
+        "derive_auto_register_mro_ordering"
     ]
+    assert set(operations[0]) == {
+        "operation",
+        "target_id",
+        "participant_target_ids",
+        "rationale",
+    }
+    assert not {
+        "priority_field_name",
+        "sorted_call_source",
+        "resolution_class_name",
+        "resolution_class_source",
+    }.intersection(operations[0])
+    assert len(operations[0]["participant_target_ids"]) == 3
+    assert type(RefactorRecipeOperation.from_dict(operations[0])).__name__ == (
+        "DeriveAutoRegisterMroOrderingOperation"
+    )
     assert "priority" not in rewritten
     assert (
         "class _PhaseResolutionMro(\n"
@@ -1447,7 +1458,11 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         "    FinalPhase,\n"
         "):" in rewritten
     )
-    assert "_PhaseResolutionMro.registered_types()" in rewritten
+    assert (
+        "        return tuple(\n"
+        "            _PhaseResolutionMro.registered_types()\n"
+        "        )" in rewritten
+    )
     assert [item.__name__ for item in ordered_types] == [
         "FirstPhase",
         "SecondPhase",
@@ -1458,6 +1473,57 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         for item in projected_findings
     )
     assert simulation.is_clean is True
+    replay = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).simulate_snapshot(snapshot)
+    assert (
+        replay.simulation.rewritten_sources == simulation.simulation.rewritten_sources
+    )
+    operation = plan.document.recipes[0].operations[0]
+    under_scoped_operation = replace(
+        operation,
+        participant_target_ids=operation.participant_target_ids[:2],
+    )
+    under_scoped_document = replace(
+        plan.document,
+        recipes=(
+            replace(
+                plan.document.recipes[0],
+                operations=(under_scoped_operation,),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="leaf identities differ"):
+        under_scoped_document.simulate_snapshot(snapshot)
+
+    module_path.write_text(
+        source.replace("    priority = 10\n", "    priority = 30\n").replace(
+            "    priority = 20\n",
+            "    priority = 10\n",
+        ),
+        encoding="utf-8",
+    )
+    reprioritized_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    reprioritized = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).simulate_snapshot(reprioritized_snapshot)
+    reprioritized_source = next(
+        iter(reprioritized.simulation.rewritten_sources.values())
+    )
+    assert (
+        "class _PhaseResolutionMro(\n"
+        "    SecondPhase,\n"
+        "    FirstPhase,\n"
+        "    FinalPhase,\n"
+        "):" in reprioritized_source
+    )
+    reprioritized_namespace: dict[str, object] = {}
+    exec(reprioritized_source, reprioritized_namespace)
+    assert [
+        item.__name__ for item in reprioritized_namespace["Phase"].ordered_types()
+    ] == ["SecondPhase", "FirstPhase", "FinalPhase"]
 
     def plan_for_source(source_root: Path, source_text: str):
         _write_module(source_root, source_text)
@@ -2742,10 +2808,14 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         "rationale",
     }
     replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
-    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
-        "    model: WorkflowModel",
-        "    record: WorkflowModel",
-    ).replace("self.model", "self.record")
+    changed_source = (
+        snapshot.sources_by_file_path[module_path.as_posix()]
+        .replace(
+            "    model: WorkflowModel",
+            "    record: WorkflowModel",
+        )
+        .replace("self.model", "self.record")
+    )
     changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
         snapshot.source_index,
         {module_path.as_posix(): changed_source},

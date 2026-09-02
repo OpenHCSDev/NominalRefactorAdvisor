@@ -2126,6 +2126,21 @@ class ResolvedClassTarget:
     target: AstTargetDigest
     node: ast.ClassDef
 
+    @classmethod
+    def from_rewrite_target(
+        cls,
+        context: CodemodSelectorContext,
+        target_reference: SourceRewriteTarget,
+    ) -> "ResolvedClassTarget":
+        """Resolve one exact class identity from a recipe target."""
+
+        _target_id, target, node = context.target_node_for_rewrite_target(
+            target_reference
+        )
+        if not target.is_class or not isinstance(node, ast.ClassDef):
+            raise ValueError("Source rewrite target must identify one class")
+        return cls(target=target, node=node)
+
     @property
     def file_path(self) -> str:
         return self.target.file_path
@@ -15120,278 +15135,227 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
 
 
 @dataclass(frozen=True)
-class AutoRegisterMroOrderingExtraction(AuthorityClaimCarrier):
-    """Proven source facts for replacing priority fields with one MRO view."""
+class AutoRegisterMroOrderingDerivation:
+    """Current-source proof that one registered family can own ordering in its MRO."""
 
-    ordering_method_target: AstTargetDigest
-    insertion_target: AstTargetDigest
-    priority_targets: tuple[AstTargetDigest, ...]
-    priority_field_name: str
-    sorted_call_source: str
-    ordering_statement_indentation: int
-    resolution_class_name: str
-    resolution_class_source: str
+    context: CodemodSelectorContext = field(repr=False, compare=False)
+    root: ResolvedClassTarget
+    registered_leaves: tuple[tuple[int, ResolvedClassTarget], ...]
+    registry_key_name: str
+    ordering_field_name: str
+    ordering_method: ResolvedFunctionProjectionTarget
+    sorted_call: ast.Call = field(repr=False, compare=False)
 
-    @property
-    def registered_types_call_source(self) -> str:
-        statement_indentation = " " * self.ordering_statement_indentation
-        continuation_indentation = f"{statement_indentation}    "
-        return (
-            "(\n"
-            f"{continuation_indentation}{self.resolution_class_name}.registered_types()\n"
-            f"{statement_indentation})"
-        )
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-mro-ordering",
-            reason="Derive registered-family precedence from one nominal MRO composition.",
-        ).with_authority_claim(self.authority_claim)
-        for target in self.priority_targets:
-            recipe = recipe.with_operation(
-                DeleteClassAssignmentsOperation(
-                    target=SourceRewriteTarget(target_id=target.target_id),
-                    assignment_names=(self.priority_field_name,),
-                    rationale=(
-                        "Delete the explicit priority axis superseded by the family MRO."
-                    ),
-                )
-            )
-        return recipe.with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    target_id=self.ordering_method_target.target_id
-                ),
-                old_source=self.sorted_call_source,
-                new_source=self.registered_types_call_source,
-                rationale="Read family precedence from the declared MRO projection.",
-            )
-        ).with_operation(
-            InsertAfterTargetOperation(
-                target=SourceRewriteTarget(target_id=self.insertion_target.target_id),
-                source=self.resolution_class_source,
-                rationale="Declare the family MRO projection beside its leaves.",
-            )
-        )
-
-
-class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
-    FindingRecipeSynthesizer,
-    AutoRegisterMroOrderingConcept,
-    SingleSourcePathFindingMixin,
-):
-    """Batch an explicit registered priority axis into one nominal MRO view."""
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return self.rejected_evaluation(
-                "MRO ordering extraction requires a source selector context"
-            )
-        extraction, rejection_reason = self.extraction_for_finding(finding, context)
-        if extraction is None:
-            return self.rejected_evaluation(rejection_reason)
-        return self.executable_evaluation(extraction.recipe_for(finding))
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if (
-            evidence is None
-            or not isinstance(finding.metrics, MappingMetrics)
-            or len(finding.metrics.plan_field_names) != 1
-        ):
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (
-                    evidence.file_path,
-                    FindingRecipeActionKey.child_subject(
-                        evidence.symbol,
-                        finding.metrics.plan_field_names[0],
-                    ),
-                ),
-            ),
-        )
-
-    def extraction_for_finding(
-        self,
-        finding: RefactorFinding,
+    @classmethod
+    def discover(
+        cls,
         context: CodemodSelectorContext,
-    ) -> tuple[AutoRegisterMroOrderingExtraction | None, str]:
-        source_path = self.source_path(finding)
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if source_path is None or evidence is None:
-            return None, "MRO ordering extraction requires one source file and root"
-        if not isinstance(finding.metrics, MappingMetrics):
-            return None, "MRO ordering extraction requires mapping metrics"
-        if len(finding.metrics.plan_field_names) != 1:
-            return None, "MRO ordering extraction requires one priority field"
-        priority_field_name = finding.metrics.plan_field_names[0]
-        root = self.class_target(
-            context,
-            source_path=source_path,
-            class_name=evidence.symbol,
-        )
-        if root is None:
-            return None, "MRO ordering extraction cannot resolve the family root"
-        root_target, root_node = root
-        if not self.direct_assignment_declared(root_node, priority_field_name):
-            return None, "MRO ordering extraction requires a root priority declaration"
-        source = context.sources_by_file_path.get(source_path)
-        if source is None:
-            return None, "MRO ordering extraction requires source text"
-        root_registry_authority = AutoRegisterClassAuthority(root_node)
+        root_reference: SourceRewriteTarget,
+    ) -> "AutoRegisterMroOrderingDerivation":
+        root = ResolvedClassTarget.from_rewrite_target(context, root_reference)
+        if "." in root.qualname:
+            raise ValueError("MRO ordering derivation requires a top-level authority")
+        root_registry_authority = AutoRegisterClassAuthority(root.node)
         registry_key_name = root_registry_authority.registry_key_attribute
         if (
             registry_key_name is None
             or not root_registry_authority.skips_missing_keys
             or root_registry_authority.declares_key_extractor
-            or not self.has_plain_root_bases(root_node)
+            or not cls.has_plain_root_bases(root.node)
         ):
-            return (
-                None,
-                "MRO ordering extraction requires a plain enum-keyed root without a custom key extractor",
+            raise ValueError(
+                "MRO ordering derivation requires a plain enum-keyed root without "
+                "a custom key extractor"
             )
-        class_targets = self.top_level_class_targets(context, source_path)
-        class_nodes_by_name = {
-            node.name: (target, node) for target, node in class_targets
-        }
-        descendant_names = self.descendant_names(
-            class_nodes_by_name,
-            root_node.name,
+        ordering_projection = cls.ordering_projection(root.node)
+        if ordering_projection is None:
+            raise ValueError(
+                "MRO ordering derivation requires one registry ordering projection"
+            )
+        ordering_node, sorted_call, ordering_field_name = ordering_projection
+        if not cls.direct_assignment_declared(root.node, ordering_field_name):
+            raise ValueError(
+                "MRO ordering derivation requires the root to declare its ordering axis"
+            )
+        ordering_method = ResolvedFunctionProjectionTarget.from_function_identity(
+            context,
+            source_path=root.file_path,
+            function_qualname=f"{root.qualname}.{ordering_node.name}",
         )
-        registered_leaves = self.registered_leaves(
+        if ordering_method is None:
+            raise ValueError("MRO ordering derivation cannot resolve its consumer")
+        class_targets = cls.top_level_class_targets(context, root.file_path)
+        class_nodes_by_name = {target.node.name: target for target in class_targets}
+        descendant_names = cls.descendant_names(
+            class_nodes_by_name,
+            root.node.name,
+        )
+        registered_leaves = cls.registered_leaf_targets(
             class_nodes_by_name,
             descendant_names,
-            root_node.name,
+            root.node.name,
             registry_key_name,
-            priority_field_name,
+            ordering_field_name,
         )
         if registered_leaves is None or len(registered_leaves) < 2:
-            return (
-                None,
-                "MRO ordering extraction requires incomparable single-inheritance leaves with unique integer priorities",
+            raise ValueError(
+                "MRO ordering derivation requires incomparable single-inheritance "
+                "leaves with unique integer ordering values"
             )
-        if not self.registered_leaves_exhaust_enum_key(
-            root_node,
+        if not cls.registered_leaves_exhaust_enum_key(
+            root.node,
             class_nodes_by_name,
             registered_leaves,
             registry_key_name,
         ):
-            return (
-                None,
-                "MRO ordering extraction requires registered leaves to exhaust one local enum key",
+            raise ValueError(
+                "MRO ordering derivation requires registered leaves to exhaust one "
+                "local enum key"
             )
-        priority_targets = (
-            root_target,
-            *(target for _priority, target, _node in registered_leaves),
-        )
-        if len(priority_targets) != finding.metrics.mapping_site_count:
-            return (
-                None,
-                "MRO ordering extraction priority sites do not match finding evidence",
+        resolution_class_name = cls.resolution_class_name_for(root.node.name)
+        module = context.module_nodes_by_file_path[root.file_path]
+        if resolution_class_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            module.body
+        ):
+            raise ValueError(
+                "MRO ordering derivation will not overwrite its resolution authority"
             )
-        ordering_call = self.ordering_call(root_node, priority_field_name)
-        if ordering_call is None:
-            return None, "MRO ordering extraction cannot resolve one registry sort"
-        ordering_method, sorted_call = ordering_call
-        ordering_statement = self.containing_statement(ordering_method, sorted_call)
-        if ordering_statement is None:
-            return (
-                None,
-                "MRO ordering extraction cannot resolve the registry sort statement",
+        return cls(
+            context=context,
+            root=root,
+            registered_leaves=registered_leaves,
+            registry_key_name=registry_key_name,
+            ordering_field_name=ordering_field_name,
+            ordering_method=ordering_method,
+            sorted_call=sorted_call,
+        )
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        root_reference: SourceRewriteTarget,
+        participant_references: tuple[SourceRewriteTarget, ...],
+    ) -> "AutoRegisterMroOrderingDerivation":
+        participants = tuple(
+            ResolvedClassTarget.from_rewrite_target(context, reference)
+            for reference in participant_references
+        )
+        if len(participants) < 2 or len(
+            {participant.target.target_id for participant in participants}
+        ) != len(participants):
+            raise ValueError(
+                "MRO ordering derivation requires at least two unique leaf targets"
             )
-        ordering_method_target = self.function_target(
-            context,
-            source_path=source_path,
-            qualname=f"{root_node.name}.{ordering_method.name}",
+        derivation = cls.discover(context, root_reference)
+        expected_target_ids = frozenset(
+            participant.target.target_id for participant in participants
         )
-        if ordering_method_target is None:
-            return None, "MRO ordering extraction cannot resolve the ordering method"
-        resolution_class_name = f"_{root_node.name}ResolutionMro"
-        if resolution_class_name in class_nodes_by_name:
-            return None, "MRO ordering extraction will not overwrite a resolution class"
-        ordered_leaf_names = tuple(
-            node.name for _priority, _target, node in registered_leaves
+        derived_target_ids = frozenset(
+            leaf.target.target_id for _priority, leaf in derivation.registered_leaves
         )
-        insertion_target = max(
-            (target for _priority, target, _node in registered_leaves),
-            key=lambda target: target.end_line,
+        if expected_target_ids != derived_target_ids:
+            raise ValueError(
+                "MRO ordering derivation leaf identities differ from the current "
+                "registered family"
+            )
+        return derivation
+
+    @property
+    def ordering_axis_targets(self) -> tuple[ResolvedClassTarget, ...]:
+        return (self.root, *(leaf for _priority, leaf in self.registered_leaves))
+
+    @property
+    def resolution_class_name(self) -> str:
+        return self.resolution_class_name_for(self.root.node.name)
+
+    @staticmethod
+    def resolution_class_name_for(root_name: str) -> str:
+        return f"_{root_name}ResolutionMro"
+
+    @property
+    def insertion_target(self) -> ResolvedClassTarget:
+        return max(
+            (leaf for _priority, leaf in self.registered_leaves),
+            key=lambda leaf: leaf.target.end_line,
         )
-        sorted_call_source = SourceTextGeometry(source).segment_for_node(sorted_call)
+
+    @property
+    def registered_types_call_source(self) -> str:
+        return f"{self.resolution_class_name}.registered_types()"
+
+    @property
+    def resolution_class_source(self) -> str:
+        bases = "".join(
+            f"    {leaf.node.name},\n" for _priority, leaf in self.registered_leaves
+        )
+        return (
+            f"\n\nclass {self.resolution_class_name}(\n"
+            f"{bases}"
+            "):\n"
+            f"    {self.registry_key_name} = None\n\n"
+            "    @classmethod\n"
+            f"    def registered_types(cls) -> tuple[type[{self.root.node.name}], ...]:\n"
+            "        return tuple(\n"
+            "            candidate\n"
+            "            for candidate in cls.__mro__[1:]\n"
+            f"            if candidate in {self.root.node.name}.{REGISTRY_ATTRIBUTE_NAME}.values()\n"
+            "        )\n"
+        )
+
+    def source_edits(self) -> tuple[NominalSourceEdit, ...]:
+        source_by_path = self.context.sources_by_file_path
+        source_index = self.context.source_index
+        sorted_call_source = SourceTextGeometry(
+            source_by_path[self.root.file_path]
+        ).segment_for_node(self.sorted_call)
         if sorted_call_source is None:
-            return None, "MRO ordering extraction cannot recover registry sort source"
-        return (
-            AutoRegisterMroOrderingExtraction(
-                ordering_method_target=ordering_method_target[0],
-                insertion_target=insertion_target,
-                priority_targets=priority_targets,
-                priority_field_name=priority_field_name,
-                sorted_call_source=sorted_call_source,
-                ordering_statement_indentation=ordering_statement.col_offset,
-                resolution_class_name=resolution_class_name,
-                resolution_class_source=self.resolution_class_source(
-                    root_name=root_node.name,
-                    resolution_class_name=resolution_class_name,
-                    registry_key_name=registry_key_name,
-                    ordered_leaf_names=ordered_leaf_names,
+            raise ValueError(
+                "MRO ordering derivation cannot recover its current ordering source"
+            )
+        deletion_edits = tuple(
+            edit
+            for target in self.ordering_axis_targets
+            for edit in DeleteClassAssignmentsOperation(
+                target=SourceRewriteTarget(target_id=target.target.target_id),
+                assignment_names=(self.ordering_field_name,),
+                rationale=(
+                    "Delete the explicit ordering axis superseded by the family MRO."
                 ),
-                authority_claim=AstTargetAuthorityClaim.from_target(root_target),
+            ).source_edits_with_context(
+                source_index,
+                source_by_path,
+                selector_context=self.context,
+            )
+        )
+        ordering_edits = ReplaceTextOperation(
+            target=SourceRewriteTarget(target_id=self.ordering_method.target.target_id),
+            old_source=sorted_call_source,
+            new_source=self.registered_types_call_source,
+            rationale="Read family precedence from the declared MRO projection.",
+        ).source_edits_with_context(
+            source_index,
+            source_by_path,
+            selector_context=self.context,
+        )
+        insertion_edits = InsertAfterTargetOperation(
+            target=SourceRewriteTarget(
+                target_id=self.insertion_target.target.target_id
             ),
-            "",
+            source=self.resolution_class_source,
+            rationale="Declare the family MRO projection beside its leaves.",
+        ).source_edits_with_context(
+            source_index,
+            source_by_path,
+            selector_context=self.context,
         )
-
-    @staticmethod
-    def class_target(
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        class_name: str,
-    ) -> tuple[AstTargetDigest, ast.ClassDef] | None:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(source_path,),
-            qualnames=(class_name,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id.get(target.target_id)
-        return (target, node) if isinstance(node, ast.ClassDef) else None
-
-    @staticmethod
-    def function_target(
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        qualname: str,
-    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path,
-            qualname=qualname,
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id.get(target.target_id)
-        return (
-            (target, node)
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            else None
-        )
+        return (*deletion_edits, *ordering_edits, *insertion_edits)
 
     @staticmethod
     def top_level_class_targets(
         context: CodemodSelectorContext,
         source_path: str,
-    ) -> tuple[tuple[AstTargetDigest, ast.ClassDef], ...]:
+    ) -> tuple[ResolvedClassTarget, ...]:
         rows = []
         for target in context.source_index.ast_targets:
             if (
@@ -15402,12 +15366,12 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
                 continue
             node = context.ast_target_nodes_by_id.get(target.target_id)
             if isinstance(node, ast.ClassDef):
-                rows.append((target, node))
-        return sorted_tuple(rows, key=lambda row: row[0].line)
+                rows.append(ResolvedClassTarget(target=target, node=node))
+        return sorted_tuple(rows, key=lambda row: row.line)
 
     @staticmethod
     def descendant_names(
-        class_nodes_by_name: Mapping[str, tuple[AstTargetDigest, ast.ClassDef]],
+        class_nodes_by_name: Mapping[str, ResolvedClassTarget],
         root_name: str,
     ) -> frozenset[str]:
         descendants: set[str] = set()
@@ -15415,12 +15379,12 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         while changed:
             changed = False
             family_names = descendants | {root_name}
-            for class_name, (_target, node) in class_nodes_by_name.items():
+            for class_name, target in class_nodes_by_name.items():
                 if class_name in family_names:
                     continue
                 base_names = {
                     base_name
-                    for base in node.bases
+                    for base in target.node.bases
                     if (base_name := _terminal_name(base)) is not None
                 }
                 if family_names.isdisjoint(base_names):
@@ -15430,57 +15394,63 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         return frozenset(descendants)
 
     @classmethod
-    def registered_leaves(
+    def registered_leaf_targets(
         cls,
-        class_nodes_by_name: Mapping[str, tuple[AstTargetDigest, ast.ClassDef]],
+        class_nodes_by_name: Mapping[str, ResolvedClassTarget],
         descendant_names: frozenset[str],
         root_name: str,
         registry_key_name: str,
-        priority_field_name: str,
-    ) -> tuple[tuple[int, AstTargetDigest, ast.ClassDef], ...] | None:
+        ordering_field_name: str,
+    ) -> tuple[tuple[int, ResolvedClassTarget], ...] | None:
         family_names = descendant_names | {root_name}
         child_names_by_parent: dict[str, set[str]] = defaultdict(set)
         for class_name in descendant_names:
-            _target, node = class_nodes_by_name[class_name]
+            target = class_nodes_by_name[class_name]
             direct_assignment_names = frozenset(
                 name
-                for statement in node.body
+                for statement in target.node.body
                 for name in AssignmentStatementNameProjection(statement).names
             )
             if (
-                len(node.bases) != 1
+                len(target.node.bases) != 1
                 or direct_assignment_names & AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
                 or any(
                     isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
                     and statement.name == "__init_subclass__"
-                    for statement in node.body
+                    for statement in target.node.body
                 )
             ):
                 return None
-            base_name = _terminal_name(node.bases[0])
+            base_name = _terminal_name(target.node.bases[0])
             if base_name not in family_names:
                 return None
             child_names_by_parent[base_name].add(class_name)
 
         leaves = []
         for class_name in descendant_names:
-            target, node = class_nodes_by_name[class_name]
-            registry_key = cls.direct_assignment_value(node, registry_key_name)
+            target = class_nodes_by_name[class_name]
+            registry_key = cls.direct_assignment_value(
+                target.node,
+                registry_key_name,
+            )
             if registry_key is None or (
                 isinstance(registry_key, ast.Constant) and registry_key.value is None
             ):
                 continue
             if child_names_by_parent[class_name]:
                 return None
-            priority = cls.direct_assignment_value(node, priority_field_name)
+            priority = cls.direct_assignment_value(
+                target.node,
+                ordering_field_name,
+            )
             if not (
                 isinstance(priority, ast.Constant)
                 and isinstance(priority.value, int)
                 and not isinstance(priority.value, bool)
             ):
                 return None
-            leaves.append((priority.value, target, node))
-        if len({priority for priority, _target, _node in leaves}) != len(leaves):
+            leaves.append((priority.value, target))
+        if len({priority for priority, _target in leaves}) != len(leaves):
             return None
         return sorted_tuple(leaves, key=lambda row: row[0])
 
@@ -15488,8 +15458,8 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
     def registered_leaves_exhaust_enum_key(
         cls,
         root_node: ast.ClassDef,
-        class_nodes_by_name: Mapping[str, tuple[AstTargetDigest, ast.ClassDef]],
-        registered_leaves: tuple[tuple[int, AstTargetDigest, ast.ClassDef], ...],
+        class_nodes_by_name: Mapping[str, ResolvedClassTarget],
+        registered_leaves: tuple[tuple[int, ResolvedClassTarget], ...],
         registry_key_name: str,
     ) -> bool:
         enum_declaration = cls.registry_key_enum_declaration(
@@ -15508,10 +15478,10 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         )
         registered_members = tuple(
             cls.enum_member_name(
-                cls.direct_assignment_value(node, registry_key_name),
+                cls.direct_assignment_value(target.node, registry_key_name),
                 enum_name,
             )
-            for _priority, _target, node in registered_leaves
+            for _priority, target in registered_leaves
         )
         return bool(
             enum_members
@@ -15520,11 +15490,10 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
             and frozenset(registered_members) == enum_members
         )
 
-    @classmethod
+    @staticmethod
     def registry_key_enum_declaration(
-        cls,
         root_node: ast.ClassDef,
-        class_nodes_by_name: Mapping[str, tuple[AstTargetDigest, ast.ClassDef]],
+        class_nodes_by_name: Mapping[str, ResolvedClassTarget],
         registry_key_name: str,
     ) -> tuple[str, ast.ClassDef] | None:
         annotations = tuple(
@@ -15540,10 +15509,13 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
             node.id for node in ast.walk(annotations[0]) if isinstance(node, ast.Name)
         )
         enum_declarations = tuple(
-            (class_name, node)
-            for class_name, (_target, node) in class_nodes_by_name.items()
+            (class_name, target.node)
+            for class_name, target in class_nodes_by_name.items()
             if class_name in annotation_names
-            and any(_terminal_name(base) in {"Enum", "StrEnum"} for base in node.bases)
+            and any(
+                _terminal_name(base) in {"Enum", "StrEnum"}
+                for base in target.node.bases
+            )
         )
         return enum_declarations[0] if len(enum_declarations) == 1 else None
 
@@ -15595,32 +15567,27 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         )
 
     @classmethod
-    def ordering_call(
+    def ordering_projection(
         cls,
         root_node: ast.ClassDef,
-        priority_field_name: str,
-    ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call] | None:
-        matches = []
-        for statement in root_node.body:
-            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            for node in ast.walk(statement):
-                if isinstance(node, ast.Call) and cls.is_registry_priority_sort(
-                    node,
-                    priority_field_name,
-                ):
-                    matches.append((statement, node))
+    ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call, str] | None:
+        matches = tuple(
+            (statement, node, ordering_field_name)
+            for statement in root_node.body
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Call)
+            and (ordering_field_name := cls.registry_ordering_field_name(node))
+            is not None
+        )
         return matches[0] if len(matches) == 1 else None
 
     @staticmethod
-    def is_registry_priority_sort(
-        node: ast.Call,
-        priority_field_name: str,
-    ) -> bool:
+    def registry_ordering_field_name(node: ast.Call) -> str | None:
         if not isinstance(node.func, ast.Name) or node.func.id != "sorted":
-            return False
+            return None
         if len(node.args) != 1 or len(node.keywords) != 1:
-            return False
+            return None
         registry_values = node.args[0]
         if not (
             isinstance(registry_values, ast.Call)
@@ -15633,61 +15600,182 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
             and isinstance(registry_values.func.value.value, ast.Name)
             and registry_values.func.value.value.id == "cls"
         ):
-            return False
+            return None
         keyword = node.keywords[0]
         key_function = keyword.value
-        return bool(
+        if not (
             keyword.arg == "key"
             and isinstance(key_function, ast.Lambda)
             and isinstance(key_function.body, ast.Attribute)
-            and key_function.body.attr == priority_field_name
             and isinstance(key_function.body.value, ast.Name)
             and len(key_function.args.args) == 1
             and key_function.body.value.id == key_function.args.args[0].arg
+        ):
+            return None
+        return key_function.body.attr
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveAutoRegisterMroOrderingOperation(RefactorRecipeOperation):
+    """Re-prove one registered family and derive its ordering from current source."""
+
+    participant_target_ids: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+
+    def __post_init__(self) -> None:
+        if len(self.participant_target_ids) < 2 or len(
+            frozenset(self.participant_target_ids)
+        ) != len(self.participant_target_ids):
+            raise ValueError(
+                "derive_auto_register_mro_ordering requires at least two unique "
+                "participant_target_ids"
+            )
+
+    @property
+    def participant_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return tuple(
+            SourceRewriteTarget(target_id=target_id)
+            for target_id in self.participant_target_ids
         )
 
-    @staticmethod
-    def containing_statement(
-        method: ast.FunctionDef | ast.AsyncFunctionDef,
-        expression: ast.expr,
-    ) -> ast.stmt | None:
-        containing_statements = tuple(
-            statement
-            for statement in ast.walk(method)
-            if isinstance(statement, ast.stmt)
-            and statement is not method
-            and statement.lineno <= expression.lineno
-            and statement.end_lineno is not None
-            and expression.end_lineno is not None
-            and statement.end_lineno >= expression.end_lineno
-        )
-        return (
-            max(containing_statements, key=lambda statement: statement.col_offset)
-            if containing_statements
-            else None
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), *self.participant_targets)
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> AutoRegisterMroOrderingDerivation:
+        return AutoRegisterMroOrderingDerivation.from_context(
+            context,
+            self.target,
+            self.participant_targets,
         )
 
-    @staticmethod
-    def resolution_class_source(
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
         *,
-        root_name: str,
-        resolution_class_name: str,
-        registry_key_name: str,
-        ordered_leaf_names: tuple[str, ...],
-    ) -> str:
-        bases = "".join(f"    {leaf_name},\n" for leaf_name in ordered_leaf_names)
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
+        )
+        return self.required_derivation(context).source_edits()
+
+
+class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    AutoRegisterMroOrderingConcept,
+    SingleSourcePathFindingMixin,
+):
+    """Batch an explicit registered priority axis into one nominal MRO view."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "MRO ordering extraction requires a source selector context"
+            )
+        recipe, rejection_reason = self.recipe_for_finding(finding, context)
+        if recipe is None:
+            return self.rejected_evaluation(rejection_reason)
+        return self.executable_evaluation(recipe)
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if (
+            evidence is None
+            or not isinstance(finding.metrics, MappingMetrics)
+            or len(finding.metrics.plan_field_names) != 1
+        ):
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (
+                    evidence.file_path,
+                    FindingRecipeActionKey.child_subject(
+                        evidence.symbol,
+                        finding.metrics.plan_field_names[0],
+                    ),
+                ),
+            ),
+        )
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> tuple[RefactorRecipe | None, str]:
+        source_path = self.source_path(finding)
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if source_path is None or evidence is None:
+            return None, "MRO ordering extraction requires one source file and root"
+        if not isinstance(finding.metrics, MappingMetrics):
+            return None, "MRO ordering extraction requires mapping metrics"
+        if len(finding.metrics.plan_field_names) != 1:
+            return None, "MRO ordering extraction requires one priority field"
+        root = ClassMemberPromotionTargets.optional_class_target(
+            context.source_index,
+            context.ast_target_nodes_by_id,
+            source_path=source_path,
+            class_name=evidence.symbol,
+        )
+        if root is None:
+            return None, "MRO ordering extraction cannot resolve the family root"
+        root_target = root.target
+        try:
+            derivation = AutoRegisterMroOrderingDerivation.discover(
+                context,
+                SourceRewriteTarget(target_id=root_target.target_id),
+            )
+        except ValueError as error:
+            return None, str(error)
+        if derivation.ordering_field_name != finding.metrics.plan_field_names[0]:
+            return None, "MRO ordering extraction axis differs from finding evidence"
+        if len(derivation.ordering_axis_targets) != finding.metrics.mapping_site_count:
+            return (
+                None,
+                "MRO ordering extraction priority sites do not match finding evidence",
+            )
+        operation = DeriveAutoRegisterMroOrderingOperation(
+            target=SourceRewriteTarget(target_id=root_target.target_id),
+            participant_target_ids=tuple(
+                sorted(
+                    leaf.target.target_id
+                    for _priority, leaf in derivation.registered_leaves
+                )
+            ),
+            rationale="Derive registered-family precedence from its nominal MRO.",
+        )
         return (
-            f"\n\nclass {resolution_class_name}(\n"
-            f"{bases}"
-            "):\n"
-            f"    {registry_key_name} = None\n\n"
-            "    @classmethod\n"
-            f"    def registered_types(cls) -> tuple[type[{root_name}], ...]:\n"
-            "        return tuple(\n"
-            "            candidate\n"
-            "            for candidate in cls.__mro__[1:]\n"
-            f"            if candidate in {root_name}.{REGISTRY_ATTRIBUTE_NAME}.values()\n"
-            "        )\n"
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-derive-mro-ordering",
+                reason=(
+                    "Derive registered-family precedence from one nominal MRO "
+                    "composition."
+                ),
+            )
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(root_target))
+            .with_operation(operation),
+            "",
         )
 
 
