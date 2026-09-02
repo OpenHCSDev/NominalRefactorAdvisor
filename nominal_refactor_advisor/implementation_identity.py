@@ -108,7 +108,7 @@ class _ImplementationDependencyTraversal:
             for owner in value.__mro__:
                 for declared_value in vars(owner).values():
                     self._visit(declared_value)
-        elif is_dataclass(value):
+        elif is_dataclass(value) and not isinstance(value, type):
             self._module_names.add(type(value).__module__)
             self._visit(type(value))
             for declared_field in fields(value):

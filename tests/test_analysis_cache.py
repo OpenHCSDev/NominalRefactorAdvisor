@@ -63,6 +63,9 @@ from nominal_refactor_advisor import (
 )
 from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
+from nominal_refactor_advisor import (
+    implementation_identity as implementation_identity_module,
+)
 from nominal_refactor_advisor import native_syntax as native_syntax_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
@@ -3500,45 +3503,52 @@ def test_mixed_projection_shard_uses_only_python_ast(
         del cls, source_text
         raise AssertionError("mixed shard should not build a second syntax tree")
 
-    monkeypatch.setattr(
-        NativePythonSyntaxIndex,
-        "from_source",
-        classmethod(unexpected_native_parse),
-    )
-    result = analysis_module.build_compact_projection_shard(
-        analysis_module.CompactProjectionBuildRequest(
-            source=projection_source,
-            missing_families=(
+    try:
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                NativePythonSyntaxIndex,
+                "from_source",
+                classmethod(unexpected_native_parse),
+            )
+            result = analysis_module.build_compact_projection_shard(
+                analysis_module.CompactProjectionBuildRequest(
+                    source=projection_source,
+                    missing_families=(
+                        RegistrationShapeFamily,
+                        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
+                    ),
+                    config=DetectorConfig(),
+                    bundle_families=(
+                        RegistrationShapeFamily,
+                        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
+                    ),
+                )
+            )
+            assert [batch.family for batch in result.projection_batches] == [
                 RegistrationShapeFamily,
                 systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
-            ),
-            config=DetectorConfig(),
-            bundle_families=(
-                RegistrationShapeFamily,
-                systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
-            ),
+            ]
+            assert result.cache_bundle_complete
+            assert {
+                batch.family: batch.content_signature
+                for batch in result.projection_batches
+            } == {
+                batch.family: ast_tools_module.collected_family_items_content_signature(
+                    batch.items
+                )
+                for batch in result.projection_batches
+            }
+            assert (
+                projection_source.load_content_signature(
+                    systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
+                )
+                is not None
+            )
+    finally:
+        CollectedFamily.implementation_identity.cache_clear()
+        (
+            implementation_identity_module._declaration_implementation_module_names.cache_clear()
         )
-    )
-
-    assert [batch.family for batch in result.projection_batches] == [
-        RegistrationShapeFamily,
-        systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
-    ]
-    assert result.cache_bundle_complete
-    assert {
-        batch.family: batch.content_signature for batch in result.projection_batches
-    } == {
-        batch.family: ast_tools_module.collected_family_items_content_signature(
-            batch.items
-        )
-        for batch in result.projection_batches
-    }
-    assert (
-        projection_source.load_content_signature(
-            systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
-        )
-        is not None
-    )
 
 
 def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
