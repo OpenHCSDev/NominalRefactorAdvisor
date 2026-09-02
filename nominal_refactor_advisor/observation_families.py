@@ -55,8 +55,8 @@ from .ast_tools import (
     SingleSpecCollectedFamily,
     SourceModule,
     module_syntax_index,
-    _REGISTRATION_CALL_FAMILY,
-    _REGISTRATION_DECORATOR_FAMILY,
+    REGISTRATION_CALL_FAMILY,
+    REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
     _class_body_field_observation,
     _class_marker_observations,
@@ -427,9 +427,7 @@ def _literal_spec(
     )
 
 
-_materialize_class_declarations(
-    (_ctx_shape("BuilderCall", ast.Call),)
-)
+_materialize_class_declarations((_ctx_shape("BuilderCall", ast.Call),))
 
 
 BuilderCallShapeSpec.shape_helper = _builder_call_shape
@@ -828,7 +826,7 @@ def _native_registration_shapes(
             if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
-                and node.func.attr in _REGISTRATION_CALL_FAMILY.names
+                and node.func.attr in REGISTRATION_CALL_FAMILY.names
                 and node.args
             ):
                 return None
@@ -863,7 +861,7 @@ def _native_registration_shapes(
                 if not (
                     isinstance(decorator, ast.Call)
                     and _terminal_name(decorator.func)
-                    in _REGISTRATION_DECORATOR_FAMILY.names
+                    in REGISTRATION_DECORATOR_FAMILY.names
                     and decorator.args
                 ):
                     continue
@@ -879,6 +877,7 @@ def _native_registration_shapes(
                     RegistrationShape.from_decorator(
                         source_module,  # type: ignore[arg-type]
                         statement,
+                        decorator,
                         registry_name,
                         _fingerprint_builder_value(key_expression),
                     )
@@ -969,7 +968,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
     ) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
         for observation in _iter_attribute_family_calls(
-            parsed_module, _REGISTRATION_CALL_FAMILY
+            parsed_module, REGISTRATION_CALL_FAMILY
         ):
             node = observation.call
             assert isinstance(node.func, ast.Attribute)
@@ -995,7 +994,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
     def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
         for node, decorator, _matched_name in _iter_class_decorator_family_calls(
-            parsed_module, _REGISTRATION_DECORATOR_FAMILY
+            parsed_module, REGISTRATION_DECORATOR_FAMILY
         ):
             if not decorator.args:
                 continue
@@ -1011,6 +1010,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
                 RegistrationShape.from_decorator(
                     parsed_module,
                     node,
+                    decorator,
                     registry_name,
                     _fingerprint_builder_value(key_expr),
                 )

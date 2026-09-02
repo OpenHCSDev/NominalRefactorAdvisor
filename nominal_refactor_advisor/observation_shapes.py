@@ -276,7 +276,6 @@ class FieldObservation(
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
 
 
-
 @dataclass(frozen=True)
 class LiteralDispatchObservation(
     ExecutionLevelObservationMixin,
@@ -500,7 +499,13 @@ class RegistrationShape:
             ),
             ConstructorVariantSpec(
                 "from_decorator",
-                ("parsed_module", "node", "registry_name", "key_fingerprint"),
+                (
+                    "parsed_module",
+                    "node",
+                    "decorator",
+                    "registry_name",
+                    "key_fingerprint",
+                ),
                 parameter_fields=("registry_name", "key_fingerprint"),
                 derived_fields=(
                     ConstructorDerivedField(
@@ -513,7 +518,12 @@ class RegistrationShape:
                         "registered_class", lambda bound: bound["node"].name
                     ),
                     ConstructorDerivedField(
-                        "key_expression", lambda bound: bound["node"].name
+                        "key_expression",
+                        lambda bound: ast.unparse(
+                            bound["decorator"].args[1]
+                            if len(bound["decorator"].args) >= 2
+                            else ast.Constant(value=bound["node"].name)
+                        ),
                     ),
                 ),
                 constants=(

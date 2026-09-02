@@ -5178,14 +5178,15 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaHandler"
+    )
 
     recipe = RefactorRecipe(recipe_id="manual-registry-to-autoregister").with_operation(
         ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            base_name="RegisteredHandler",
-            registry_name="REGISTRY",
-            registry_key_attribute="registry_key",
-            class_key_pairs=("AlphaHandler='alpha'", "BetaHandler='beta'"),
+            target=SourceRewriteTarget(target_id=alpha_target.target_id),
         )
     )
     simulation = recipe.simulate(
@@ -5204,10 +5205,173 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
     assert '-REGISTRY["alpha"] = AlphaHandler' in diff
     simulation.apply()
     rewritten = module_path.read_text()
-    assert "REGISTRY = {}" not in rewritten
+    assert "REGISTRY = {}" in rewritten
+    assert "__registry__ = REGISTRY" in rewritten
     assert 'REGISTRY["alpha"]' not in rewritten
     assert "class BetaHandler(RegisteredHandler):" in rewritten
     assert "registry_key = 'beta'" in rewritten
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+    registry = cast(dict[str, type[object]], namespace["REGISTRY"])
+    assert registry == {
+        "alpha": namespace["AlphaHandler"],
+        "beta": namespace["BetaHandler"],
+    }
+
+
+def test_manual_registry_operation_target_selects_one_source_component(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\n"
+        "HANDLERS = {}\n"
+        "CODECS = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        "class JsonCodec:\n"
+        "    pass\n\n\n"
+        "class CsvCodec:\n"
+        "    pass\n\n\n"
+        "HANDLERS['alpha'] = AlphaHandler\n"
+        "HANDLERS['beta'] = BetaHandler\n"
+        "CODECS['json'] = JsonCodec\n"
+        "CODECS['csv'] = CsvCodec\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaHandler"
+    )
+    recipe = RefactorRecipe("convert-handlers-only").with_operation(
+        ConvertManualRegistryToAutoregisterOperation(
+            target=SourceRewriteTarget(target_id=alpha_target.target_id)
+        )
+    )
+
+    simulation = recipe.simulate(source_index, source_by_path)
+    simulation.apply()
+    rewritten = module_path.read_text()
+
+    assert "class RegisteredHandler" in rewritten
+    assert "HANDLERS['alpha'] = AlphaHandler" not in rewritten
+    assert "CODECS['json'] = JsonCodec" in rewritten
+    assert "class JsonCodec(Registered" not in rewritten
+
+
+def test_manual_registry_operation_rederives_source_instead_of_replaying_payload(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = (
+        "REGISTRY = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        "REGISTRY['alpha'] = AlphaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaHandler"
+    )
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(target_id=alpha_target.target_id)
+    )
+    changed_source = original_source.replace(
+        "REGISTRY['alpha'] = AlphaHandler",
+        "REGISTRY['alpha'] = BetaHandler",
+    )
+
+    with pytest.raises(ValueError, match="exactly one direct registry component"):
+        operation.source_edits(source_index, {module_path.as_posix(): changed_source})
+
+
+@pytest.mark.parametrize(
+    ("registration_source", "expected_error"),
+    (
+        (
+            "REGISTRY[1] = AlphaHandler\nREGISTRY[1.0] = BetaHandler\n",
+            "keys must be unique",
+        ),
+        (
+            "REGISTRY['beta'] = BetaHandler\nREGISTRY['alpha'] = AlphaHandler\n",
+            "order must match class declaration order",
+        ),
+        (
+            "OBSERVED_DURING_IMPORT = bool(REGISTRY)\n"
+            "REGISTRY['alpha'] = AlphaHandler\n"
+            "REGISTRY['beta'] = BetaHandler\n",
+            "observed while its manual population is still in progress",
+        ),
+    ),
+)
+def test_manual_registry_operation_fails_closed_on_unproved_mapping_semantics(
+    tmp_path: Path,
+    registration_source: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = (
+        "REGISTRY = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        f"{registration_source}"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaHandler"
+    )
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(target_id=alpha_target.target_id)
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        operation.source_edits(source_index, {module_path.as_posix(): source})
+
+
+def test_manual_registry_operation_rejects_generated_authority_import_collision(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = (
+        "from pkg.shared import Base as RegisteredHandler\n\n"
+        "REGISTRY = {}\n\n\n"
+        "class AlphaHandler:\n"
+        "    pass\n\n\n"
+        "class BetaHandler:\n"
+        "    pass\n\n\n"
+        "REGISTRY['alpha'] = AlphaHandler\n"
+        "REGISTRY['beta'] = BetaHandler\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaHandler"
+    )
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(target_id=alpha_target.target_id)
+    )
+
+    with pytest.raises(ValueError, match="RegisteredHandler.*is bound"):
+        operation.source_edits(source_index, {module_path.as_posix(): source})
 
 
 def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
@@ -13234,20 +13398,14 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["applied"] is False
     assert payload["preflight_failed"] is False
     assert payload["is_clean"] is True
-    assert payload["report_count"] == 1
+    assert payload["report_count"] == 0
     assert payload["expected_removed_finding_count"] == 1
     assert payload["synthesis_report"]["candidate_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
     assert payload["preflight_report"]["is_clean"] is True
-    report = payload["preflight_report"]["reports"][0]
-    assert report["operation"] == "authority_claims"
-    assert report["status"] == "passed"
-    resolution = report["details"]["resolutions"][0]
-    assert resolution["claim"]["claimed_symbol"] == "RegisteredHandler"
-    assert resolution["claim"]["authority_kind"] == "autoregister_family"
-    assert resolution["status"] == "declared"
+    assert payload["preflight_report"]["reports"] == []
     assert module_path.read_text() == original_source
 
 
@@ -16726,17 +16884,28 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     operation_declaration = plan.document.recipes[0].operations[0]
     operation = operation_declaration.to_dict()
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert operation["base_name"] == "RegisteredHandler"
-    assert operation["class_key_pairs"] == (
-        "AlphaHandler='alpha'",
-        "BetaHandler='beta'",
-    )
-    assert len(operation_declaration.declared_authority_claims) == 1
-    declared_claim = operation_declaration.declared_authority_claims[0]
-    assert declared_claim.claimed_symbol == "RegisteredHandler"
-    assert declared_claim.file_path == module_path.as_posix()
-    assert declared_claim.qualname == "RegisteredHandler"
-    assert declared_claim.authority_kind == SemanticAuthorityKind.AUTOREGISTER_FAMILY
+    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert operation["target_id"] in {
+        target.target_id
+        for target in source_index.ast_targets
+        if target.qualname in {"AlphaHandler", "BetaHandler"}
+    }
+    assert RefactorRecipeOperation.from_dict(operation) == operation_declaration
+    assert operation_declaration.declared_authority_claims == ()
+    with pytest.raises(
+        ValueError,
+        match="Unsupported ConvertManualRegistryToAutoregisterOperation payload field",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **operation,
+                "registry_name": "REGISTRY",
+                "class_key_pairs": [
+                    "AlphaHandler='alpha'",
+                    "BetaHandler='beta'",
+                ],
+            }
+        )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     assert simulation.to_dict()["expected_removed_finding_count"] == 1
@@ -16802,16 +16971,27 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
-    operation = plan.document.recipes[0].operations[0].to_dict()
+    recipe = plan.document.recipes[0]
+    operation = recipe.operations[0].to_dict()
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert operation["registry_name"] == "STEP_TABLE"
-    assert operation["class_key_pairs"] == (
-        "LoadStep='load'",
-        "SaveStep='save'",
-    )
+    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    assert len(recipe.authority_claims) == 1
+    assert recipe.authority_claims[0].claimed_symbol == "Step"
     assert simulation.is_clean is True
     assert simulation.simulation.parse_valid is True
     simulation.document_simulation.apply()
+    rewritten = module_path.read_text()
+    assert "class RegisteredStep" not in rewritten
+    assert "class Step(metaclass=AutoRegisterMeta):" in rewritten
+    assert "STEP_TABLE = Step.__registry__" in rewritten
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+    table = cast(dict[str, type[object]], namespace["STEP_TABLE"])
+    assert table == {
+        "load": namespace["LoadStep"],
+        "save": namespace["SaveStep"],
+    }
     remaining = tuple(
         finding
         for finding in analyze_modules(parse_python_modules(tmp_path))
@@ -17644,6 +17824,64 @@ def test_detects_auto_register_decorator_family(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 6 for finding in findings))
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "class Registry:\n"
+            "    def register(self, cls, key):\n"
+            "        return cls\n\n\n"
+            "registry = Registry()\n\n\n"
+            "class Alpha:\n"
+            "    pass\n\n\n"
+            "class Beta:\n"
+            "    pass\n\n\n"
+            "registry.register(Alpha, 'alpha')\n"
+            "registry.register(Beta, 'beta')\n"
+        ),
+        (
+            "def register(registry, key):\n"
+            "    def decorate(cls):\n"
+            "        return cls\n"
+            "    return decorate\n\n\n"
+            "REGISTRY = {}\n\n\n"
+            "@register(REGISTRY, 'alpha')\n"
+            "class Alpha:\n"
+            "    pass\n\n\n"
+            "@register(REGISTRY, 'beta')\n"
+            "class Beta:\n"
+            "    pass\n"
+        ),
+    ),
+)
+def test_behavior_bearing_registration_syntax_is_detected_but_not_deleted(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "manual_class_registration"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("manual_class_registration",),
+        selector_context=snapshot,
+    )
+
+    assert len(findings) == 1
+    assert plan.expected_removed_finding_count == 0
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert module_path.read_text() == source
+
+
 def test_collects_scoped_call_observations(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -17786,6 +18024,10 @@ def test_collects_registration_shapes_via_spec_family(
     assert {shape.registration_style for shape in shapes} == {
         "decorator_registration",
         "subscript_assignment",
+    }
+    assert {shape.registration_style: shape.key_expression for shape in shapes} == {
+        "decorator_registration": "'alpha'",
+        "subscript_assignment": "'beta'",
     }
 
 

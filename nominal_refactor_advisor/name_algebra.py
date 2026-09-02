@@ -19,12 +19,44 @@ class ClassNameAlgebra:
         return tuple(
             (
                 token.lower()
-                for token in re.findall(
-                    "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
-                    name.lstrip("_"),
-                )
+                for token in self.declared_tokens(name)
                 if token.lower() not in self.ignored_tokens
             )
+        )
+
+    @staticmethod
+    def declared_tokens(name: str) -> tuple[str, ...]:
+        """Split a declared identifier without applying semantic token filters."""
+
+        return tuple(
+            re.findall(
+                "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                name.lstrip("_"),
+            )
+        )
+
+    def shared_declared_suffix(self, values: tuple[str, ...]) -> str:
+        """Return the exact common class-name suffix used for generated names."""
+
+        sequences = tuple(self.declared_tokens(value) for value in values)
+        if not sequences or any(not sequence for sequence in sequences):
+            return ""
+        suffix: list[str] = []
+        for offset in range(1, min(len(sequence) for sequence in sequences) + 1):
+            tokens = {sequence[-offset] for sequence in sequences}
+            if len(tokens) != 1:
+                break
+            suffix.insert(0, next(iter(tokens)))
+        return "".join(suffix)
+
+    @staticmethod
+    def pascal_identifier(value: str) -> str:
+        """Project arbitrary word-separated text to a PascalCase identifier."""
+
+        return "".join(
+            part[:1].upper() + part[1:]
+            for part in re.split(r"[^0-9A-Za-z]+", value)
+            if part
         )
 
     def longest_common_prefix(self, values: tuple[str, ...]) -> str:
@@ -47,7 +79,10 @@ class ClassNameAlgebra:
             return ()
         prefix: list[str] = []
         for index, token in enumerate(sequences[0]):
-            if all(index < len(sequence) and sequence[index] == token for sequence in sequences):
+            if all(
+                index < len(sequence) and sequence[index] == token
+                for sequence in sequences
+            ):
                 prefix.append(token)
                 continue
             break

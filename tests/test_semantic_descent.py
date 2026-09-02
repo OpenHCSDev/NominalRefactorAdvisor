@@ -1205,8 +1205,9 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
         record.executable_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert operation["registry_name"] == "STEP_TABLE"
-    assert operation["class_key_pairs"] == ("LoadStep='load'", "SaveStep='save'")
+    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert operation["target_id"]
+    assert plan.document.recipes[0].authority_claims[0].claimed_symbol == "Step"
     assert record.action_keys
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
@@ -1773,7 +1774,8 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert operation["registry_name"] == "STEP_TABLE"
+    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert operation["target_id"]
     assert simulation.is_clean is True
 
 

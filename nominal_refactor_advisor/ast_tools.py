@@ -2616,11 +2616,11 @@ _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
 _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
 _HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
 _GETATTR_CALL_FAMILY = AstNameFamily(frozenset({"getattr"}))
-_REGISTRATION_CALL_FAMILY = AstNameFamily(
+REGISTRATION_CALL_FAMILY = AstNameFamily(
     frozenset({"register", "add", "register_class", "register_type"})
 )
-_REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
-    _REGISTRATION_CALL_FAMILY.names | frozenset({"auto_register"})
+REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
+    REGISTRATION_CALL_FAMILY.names | frozenset({"auto_register"})
 )
 
 

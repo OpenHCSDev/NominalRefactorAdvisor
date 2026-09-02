@@ -114,6 +114,10 @@ from .models import (
     RegistrationMetrics,
     SourceLocation,
 )
+from .manual_registry import (
+    DirectManualRegistryComponent,
+    RegistryAssignment,
+)
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .parameter_conveyor import (
     ClosedParameterConveyorComponent,
@@ -131,8 +135,11 @@ from .planner import (
 from .product_flow import LexicalValueReference
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
+    AUTOREGISTER_META_NAME,
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     REGISTRY_ATTRIBUTE_NAME,
+    REGISTRY_KEY_ATTRIBUTE_NAME,
+    SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
     class_name_registry_key,
 )
@@ -9229,26 +9236,129 @@ class ClassRegistryKeyPair:
             raise ValueError(f"Invalid class/key pair {source!r}")
         return cls(class_name=class_name, key_source=key_source)
 
+    @classmethod
+    def for_class_name(
+        cls,
+        class_name: str,
+        pairs: tuple["ClassRegistryKeyPair", ...],
+    ) -> "ClassRegistryKeyPair | None":
+        return next((pair for pair in pairs if pair.class_name == class_name), None)
 
-@dataclass(frozen=True, kw_only=True)
-class ManualRegistryConversionCarrier:
-    """Shared registry conversion facts used by planning and operations."""
-
-    registry_name: str
-    class_key_pairs: tuple[str, ...]
+    @property
+    def key_node(self) -> ast.expr:
+        return ast.parse(self.key_source, mode="eval").body
 
 
 @dataclass(frozen=True)
-class ManualRegistrationDeletionSelection:
-    """Matched manual registration deletions for one registry conversion."""
+class RegistryKeyDeclaration:
+    """One class-owned key declaration derived from a source registry edge."""
 
-    replacements: tuple[PhysicalSourceEdit, ...]
-    deleted_pair_count: int
-    expected_pair_count: int
+    class_name: str
+    key_node: ast.expr
 
     @property
-    def is_complete(self) -> bool:
-        return self.deleted_pair_count == self.expected_pair_count
+    def key_source(self) -> str:
+        return ast.unparse(self.key_node)
+
+
+class RegistryKeyDeclarationRewriteMixin:
+    """Reuse exact class-key declaration rewrites across registry operations."""
+
+    def registry_key_declaration_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+        declarations: tuple[RegistryKeyDeclaration, ...],
+        registry_key_attribute: str,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        declarations_by_class = {
+            declaration.class_name: declaration for declaration in declarations
+        }
+        replacements = []
+        for class_target in targets.targets:
+            declaration = declarations_by_class[class_target.node.name]
+            existing = tuple(
+                statement
+                for statement in class_target.node.body
+                if ClassDeclarationPromotionStatement(statement).name
+                == registry_key_attribute
+            )
+            if existing:
+                if len(existing) != 1 or not self.declaration_matches_value(
+                    existing[0], declaration.key_node
+                ):
+                    raise ValueError(
+                        f"Registry key on {class_target.qualname!r} conflicts with "
+                        "the source registry"
+                    )
+                continue
+            replacements.append(
+                self.registry_key_declaration_replacement(
+                    targets,
+                    class_target,
+                    declaration,
+                    registry_key_attribute,
+                )
+            )
+        return tuple(replacements)
+
+    def registry_key_declaration_replacement(
+        self,
+        targets: ClassMemberPromotionTargets,
+        target: ResolvedClassTarget,
+        declaration: RegistryKeyDeclaration,
+        registry_key_attribute: str,
+    ) -> PhysicalSourceEdit:
+        source_lines = targets.source_for(target.file_path).splitlines(keepends=True)
+        indent = DeriveAutoregisterInstanceViewOperation.class_body_indent(
+            target.node,
+            source_lines,
+        )
+        assignment_line = (
+            f"{indent}{registry_key_attribute} = {declaration.key_source}\n"
+        )
+        body = statements_without_docstring(target.node.body)
+        if len(body) == 1 and isinstance(body[0], ast.Pass):
+            statement = body[0]
+            return SourceSpanReplacement(
+                file_path=target.file_path,
+                start_line=statement.lineno,
+                end_line=statement.end_lineno or statement.lineno,
+                replacement_lines=(assignment_line,),
+                rationale=self.rationale_text(
+                    f"Declare registry key on {target.qualname!r}."
+                ),
+            )
+        insertion_line = self.class_declaration_insert_line(target.node)
+        return SourceInsertion(
+            file_path=target.file_path,
+            insertion_line=insertion_line + 1,
+            inserted_lines=(assignment_line,),
+            rationale=self.rationale_text(
+                f"Declare registry key on {target.qualname!r}."
+            ),
+        )
+
+    @staticmethod
+    def declaration_matches_value(statement: ast.stmt, expected: ast.expr) -> bool:
+        value = (
+            statement.value
+            if isinstance(statement, ast.Assign | ast.AnnAssign)
+            else None
+        )
+        return value is not None and ast.dump(
+            value, include_attributes=False
+        ) == ast.dump(expected, include_attributes=False)
+
+    @staticmethod
+    def class_declaration_insert_line(node: ast.ClassDef) -> int:
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            return node.body[0].end_lineno or node.body[0].lineno
+        return node.lineno
 
 
 class SharedAssignmentValueMixin:
@@ -9259,6 +9369,7 @@ class SharedAssignmentValueMixin:
 
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
+    RegistryKeyDeclarationRewriteMixin,
     SharedAssignmentValueMixin,
     BaseNamePayloadOperation,
 ):
@@ -9377,7 +9488,7 @@ class DeriveAutoregisterInstanceViewOperation(
             class_name = self.constructor_call_class_name(value_node)
             if class_name is None:
                 return ()
-            pair = ConvertManualRegistryToAutoregisterOperation.class_key_pair_for(
+            pair = ClassRegistryKeyPair.for_class_name(
                 class_name,
                 class_key_pairs,
             )
@@ -9398,15 +9509,14 @@ class DeriveAutoregisterInstanceViewOperation(
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
         registry_key_attribute: str,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        operation = ConvertManualRegistryToAutoregisterOperation(
-            target=self.target,
-            base_name=self.base_name,
-            registry_name=self.assignment_name,
-            registry_key_attribute=registry_key_attribute,
-            class_key_pairs=self.class_key_pairs,
-            rationale=self.rationale,
+        return self.registry_key_declaration_replacements(
+            targets,
+            tuple(
+                RegistryKeyDeclaration(pair.class_name, pair.key_node)
+                for pair in class_key_pairs
+            ),
+            registry_key_attribute,
         )
-        return operation.class_key_replacements(targets, class_key_pairs)
 
     def instance_method_replacements(
         self,
@@ -9537,10 +9647,11 @@ class DeriveAutoregisterInstanceViewOperation(
             "\n"
             f"{indent}@classmethod\n"
             f"{indent}def {self.method_name}(cls):\n"
-            f"{indent}    key_attribute = cls.__registry_key__\n"
+            f"{indent}    key_attribute = cls.{REGISTRY_KEY_ATTRIBUTE_NAME}\n"
             f"{indent}    return {{\n"
             f"{indent}        registered_type.__dict__[key_attribute]: registered_type()\n"
-            f"{indent}        for registered_type in cls.__registry__.values()\n"
+            f"{indent}        for registered_type in "
+            f"cls.{REGISTRY_ATTRIBUTE_NAME}.values()\n"
             f"{filter_source}"
             f"{indent}    }}\n"
         )
@@ -9606,497 +9717,326 @@ class DeriveAutoregisterInstanceViewOperation(
 
 @dataclass(frozen=True, kw_only=True)
 class ConvertManualRegistryToAutoregisterOperation(
-    BaseNamePayloadOperation,
-    ManualRegistryConversionCarrier,
+    RegistryKeyDeclarationRewriteMixin,
+    RefactorRecipeOperation,
 ):
-    """Convert manual class registry writes into an AutoRegisterMeta base."""
-
-    registry_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    class_key_pairs: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
-    registry_key_attribute: str = codemod_payload_field(
-        RequiredStringPayloadValueCodec()
-    )
-
-    @property
-    def declared_authority_claims(self) -> tuple[AuthorityClaim, ...]:
-        return (
-            AuthorityClaim(
-                claimed_symbol=self.base_name,
-                authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
-                file_path=self.target.file_path or "",
-                qualname=self.base_name,
-            ),
-        )
-
-    @property
-    def parsed_class_key_pairs(self) -> tuple[ClassRegistryKeyPair, ...]:
-        return tuple(
-            ClassRegistryKeyPair.parse(source) for source in self.class_key_pairs
-        )
+    """Derive and convert one direct registry component from an anchor class."""
 
     def source_edits(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[NominalSourceEdit, ...]:
-        source_path = self.required_source_path(source_index, "registry conversion")
-        if not self.registry_key_attribute.isidentifier():
-            raise ValueError(
-                f"Registry key attribute must be an identifier: {self.registry_key_attribute!r}"
-            )
-        module = ast.parse(source_by_path[source_path], filename=source_path)
-        class_key_pairs = self.parsed_class_key_pairs
-        class_targets = ClassMemberPromotionTargets.resolve(
-            CodemodSelectorContext(
-                source_index=source_index,
-                sources_by_file_path=source_by_path,
-            ),
-            source_path=source_path,
-            class_names=tuple(pair.class_name for pair in class_key_pairs),
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
         )
-        deletion_replacements = self.registration_deletion_replacements(
-            source_path,
+        _target_id, anchor_target, anchor_node = self.target_node_from_context(context)
+        if not anchor_target.is_class or not isinstance(anchor_node, ast.ClassDef):
+            raise ValueError("Manual registry conversion target must be a class")
+        if "." in anchor_target.qualname:
+            raise ValueError("Manual registry conversion requires a top-level class")
+        source_path = anchor_target.file_path
+        module = context.module_nodes_by_file_path[source_path]
+        component = DirectManualRegistryComponent.from_module_anchor(
             module,
-            class_key_pairs,
+            anchor_node.name,
         )
+        targets = ClassMemberPromotionTargets.resolve(
+            context,
+            source_path=source_path,
+            class_names=component.class_names,
+        )
+        if not targets.supports_base_rewrites():
+            raise ValueError("Registry classes require lossless header rewrites")
+        authority_target = self.authority_target(context, source_path, component)
         return (
             *self.required_import_mutations(
                 source_index,
                 source_by_path,
                 source_path,
-                import_source="from metaclass_registry import AutoRegisterMeta\n",
-                default_rationale=(
-                    "Import AutoRegisterMeta for class-time registration."
+                import_source=(
+                    f"from metaclass_registry import {AUTOREGISTER_META_NAME}\n"
                 ),
+                default_rationale="Import AutoRegisterMeta for class-time registration.",
             ),
-            *self.base_insertion_replacements(source_index, class_targets),
-            *self.class_base_replacements(class_targets),
-            *self.class_key_replacements(
-                class_targets,
-                class_key_pairs,
-            ),
-            *deletion_replacements,
-            *self.empty_registry_assignment_replacements(
+            *self.authority_replacements(
                 source_path,
-                module,
-                deletion_replacements,
+                source_by_path[source_path],
+                component,
+                authority_target,
+                targets,
             ),
+            *self.registry_key_declaration_replacements(
+                targets,
+                tuple(
+                    RegistryKeyDeclaration(entry.class_name, entry.key_node)
+                    for entry in component.entries
+                ),
+                DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+            ),
+            *self.registration_replacements(source_path, component),
         )
 
-    def base_insertion_replacements(
+    @staticmethod
+    def authority_target(
+        context: CodemodSelectorContext,
+        source_path: str,
+        component: DirectManualRegistryComponent,
+    ) -> ResolvedClassTarget | None:
+        authority_node = component.existing_authority_node
+        if authority_node is None:
+            return None
+        return ClassMemberPromotionTargets.class_target(
+            context.source_index,
+            context.ast_target_nodes_by_id,
+            source_path=source_path,
+            class_name=authority_node.name,
+        )
+
+    def authority_replacements(
         self,
-        source_index: SourceIndex,
+        source_path: str,
+        source: str,
+        component: DirectManualRegistryComponent,
+        authority_target: ResolvedClassTarget | None,
         targets: ClassMemberPromotionTargets,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        if any(
-            target.is_class
-            and target.file_path == targets.insertion_target.file_path
-            and target.matches_symbol(self.base_name)
-            for target in source_index.ast_targets
-        ):
-            return ()
-        class_target = targets.insertion_target
+        if authority_target is None:
+            return (
+                self.generated_authority_insertion(component, targets),
+                *self.generated_authority_base_replacements(component, targets),
+            )
         return (
-            SourceInsertion(
-                file_path=class_target.file_path,
-                insertion_line=targets.insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(
-                    self.autoregister_base_source
-                ),
-                rationale=self.rationale_text(
-                    f"Insert AutoRegisterMeta base {self.base_name!r}."
-                ),
+            *self.existing_authority_header_replacements(authority_target, source),
+            *self.existing_authority_declaration_replacements(
+                authority_target,
+                source,
+                component,
             ),
         )
 
-    @property
-    def autoregister_base_source(self) -> str:
-        return (
-            f"class {self.base_name}(metaclass=AutoRegisterMeta):\n"
-            f"    __registry_key__ = {self.registry_key_attribute!r}\n"
-            "    __skip_if_no_key__ = True\n"
-            f"    {self.registry_key_attribute} = None\n\n"
+    def generated_authority_insertion(
+        self,
+        component: DirectManualRegistryComponent,
+        targets: ClassMemberPromotionTargets,
+    ) -> PhysicalSourceEdit:
+        class_target = targets.insertion_target
+        registry_source = (
+            f"    __registry__ = {component.registry_name}\n"
+            if component.initializes_empty_registry
+            else ""
+        )
+        authority_source = (
+            f"class {component.authority_name}(metaclass={AUTOREGISTER_META_NAME}):\n"
+            f"{registry_source}"
+            f"    {REGISTRY_KEY_ATTRIBUTE_NAME} = {DEFAULT_REGISTRY_KEY_ATTRIBUTE!r}\n"
+            f"    {SKIP_IF_NO_KEY_ATTRIBUTE_NAME} = True\n"
+            f"    {DEFAULT_REGISTRY_KEY_ATTRIBUTE} = None\n\n"
+        )
+        return SourceInsertion(
+            file_path=class_target.file_path,
+            insertion_line=targets.insertion_line,
+            inserted_lines=SourceTargetEditor.source_lines(authority_source),
+            rationale=self.rationale_text(
+                f"Insert AutoRegisterMeta base {component.authority_name!r}."
+            ),
         )
 
-    def class_base_replacements(
+    def generated_authority_base_replacements(
         self,
+        component: DirectManualRegistryComponent,
         targets: ClassMemberPromotionTargets,
     ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for class_target in targets.targets:
-            if self.base_name in _class_base_source_names(class_target.node):
-                continue
-            header_authority = ClassHeaderSpanSourceAuthority(
+            header = ClassHeaderSpanSourceAuthority(
                 node=class_target.node,
                 source=targets.source_for(class_target.file_path),
             )
             replacements.append(
                 SourceSpanReplacement(
                     file_path=class_target.file_path,
-                    start_line=header_authority.start_line,
-                    end_line=header_authority.end_line,
-                    replacement_lines=header_authority.with_added_base(self.base_name),
+                    start_line=header.start_line,
+                    end_line=header.end_line,
+                    replacement_lines=header.with_added_base(component.authority_name),
                     rationale=self.rationale_text(
-                        f"Add AutoRegisterMeta base to {class_target.qualname!r}."
+                        f"Add registry authority to {class_target.qualname!r}."
                     ),
                 )
             )
         return tuple(replacements)
 
-    def class_key_replacements(
+    def existing_authority_header_replacements(
         self,
-        targets: ClassMemberPromotionTargets,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+        authority_target: ResolvedClassTarget,
+        source: str,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        pair_by_class_name = {pair.class_name: pair for pair in class_key_pairs}
-        replacements = []
-        for class_target in targets.targets:
-            if self.class_declares_registry_key(class_target.node):
-                continue
-            pair = pair_by_class_name[class_target.node.name]
-            replacements.append(
-                self.class_key_replacement(
-                    targets,
-                    class_target.target,
-                    class_target.node,
-                    pair,
-                )
-            )
-        return tuple(replacements)
-
-    def class_declares_registry_key(self, node: ast.ClassDef) -> bool:
-        return any(
-            ClassDeclarationPromotionStatement(statement).name
-            == self.registry_key_attribute
-            for statement in node.body
+        header = ClassHeaderSpanSourceAuthority(authority_target.node, source)
+        metaclass_keywords = tuple(
+            keyword
+            for keyword in authority_target.node.keywords
+            if keyword.arg == "metaclass"
         )
-
-    def class_key_replacement(
-        self,
-        targets: ClassMemberPromotionTargets,
-        target: AstTargetDigest,
-        node: ast.ClassDef,
-        pair: ClassRegistryKeyPair,
-    ) -> PhysicalSourceEdit:
-        body_without_docstring = self.class_body_without_docstring(node)
-        if len(body_without_docstring) == 1 and isinstance(
-            body_without_docstring[0],
-            ast.Pass,
-        ):
-            pass_statement = body_without_docstring[0]
-            return SourceSpanReplacement(
-                file_path=target.file_path,
-                start_line=pass_statement.lineno,
-                end_line=pass_statement.end_lineno or pass_statement.lineno,
-                replacement_lines=(
-                    self.class_key_assignment_line(
-                        targets,
-                        target,
-                        node,
-                        pair,
+        if metaclass_keywords:
+            if len(metaclass_keywords) != 1 or not (
+                isinstance(metaclass_keywords[0].value, ast.Name)
+                and metaclass_keywords[0].value.id == AUTOREGISTER_META_NAME
+            ):
+                raise ValueError(
+                    f"Registry authority {authority_target.qualname!r} has an "
+                    "incompatible metaclass"
+                )
+            return ()
+        return (
+            SourceSpanReplacement(
+                file_path=authority_target.file_path,
+                start_line=header.start_line,
+                end_line=header.end_line,
+                replacement_lines=header.with_items(
+                    header.base_items,
+                    (
+                        *header.keyword_items,
+                        f"metaclass={AUTOREGISTER_META_NAME}",
                     ),
                 ),
                 rationale=self.rationale_text(
-                    f"Replace pass with registry key on {target.qualname!r}."
+                    f"Make {authority_target.qualname!r} own class registration."
+                ),
+            ),
+        )
+
+    def existing_authority_declaration_replacements(
+        self,
+        authority_target: ResolvedClassTarget,
+        source: str,
+        component: DirectManualRegistryComponent,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        registry_values: tuple[tuple[str, ast.expr], ...] = (
+            (
+                (
+                    REGISTRY_ATTRIBUTE_NAME,
+                    ast.Name(id=component.registry_name, ctx=ast.Load()),
                 ),
             )
-        insert_after_line = self.class_key_insert_after_line(node)
-        return SourceInsertion(
-            file_path=target.file_path,
-            insertion_line=insert_after_line + 1,
-            inserted_lines=(
-                self.class_key_assignment_line(targets, target, node, pair),
+            if component.initializes_empty_registry
+            else ()
+        )
+        required_values = (
+            *registry_values,
+            (
+                REGISTRY_KEY_ATTRIBUTE_NAME,
+                ast.Constant(DEFAULT_REGISTRY_KEY_ATTRIBUTE),
             ),
-            rationale=self.rationale_text(
-                f"Insert registry key on {target.qualname!r}."
-            ),
+            (SKIP_IF_NO_KEY_ATTRIBUTE_NAME, ast.Constant(True)),
+            (DEFAULT_REGISTRY_KEY_ATTRIBUTE, ast.Constant(None)),
         )
-
-    @staticmethod
-    def class_body_without_docstring(node: ast.ClassDef) -> list[ast.stmt]:
-        if (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            return list(node.body[1:])
-        return list(node.body)
-
-    @staticmethod
-    def class_key_insert_after_line(node: ast.ClassDef) -> int:
-        if (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            return node.body[0].end_lineno or node.body[0].lineno
-        return node.lineno
-
-    def class_key_assignment_line(
-        self,
-        targets: ClassMemberPromotionTargets,
-        target: AstTargetDigest,
-        node: ast.ClassDef,
-        pair: ClassRegistryKeyPair,
-    ) -> str:
-        source_lines = targets.source_for(target.file_path).splitlines(keepends=True)
-        if node.body:
-            body_line = source_lines[node.body[0].lineno - 1]
-            indent = body_line[: len(body_line) - len(body_line.lstrip())]
-        else:
-            indent = ""
-        if not indent:
-            indent = "    "
-        return f"{indent}{self.registry_key_attribute} = {pair.key_source}\n"
-
-    def registration_deletion_replacements(
-        self,
-        source_path: str,
-        module: ast.Module,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        selection = self.registration_deletion_selection(
-            source_path,
-            module,
-            class_key_pairs,
-        )
-        if not selection.is_complete:
-            raise ValueError(
-                "Expected one manual registration deletion per class/key pair"
+        missing = []
+        for name, expected_value in required_values:
+            declarations = tuple(
+                statement
+                for statement in authority_target.node.body
+                if ClassDeclarationPromotionStatement(statement).name == name
             )
-        return selection.replacements
-
-    def registration_deletion_selection(
-        self,
-        source_path: str,
-        module: ast.Module,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> ManualRegistrationDeletionSelection:
-        replacements = []
-        deleted_pair_count = 0
-        for statement in module.body:
-            dict_literal_deletion = self.dict_literal_deletion_replacement(
-                source_path,
-                statement,
-                class_key_pairs,
-            )
-            if dict_literal_deletion is not None:
-                replacement, matched_count = dict_literal_deletion
-                replacements.append(replacement)
-                deleted_pair_count += matched_count
+            if not declarations:
+                missing.append((name, expected_value))
                 continue
-            if self.assignment_matches_registration(statement, class_key_pairs):
-                replacements.append(
-                    self.delete_statement_replacement(source_path, statement)
+            if len(declarations) != 1 or not self.declaration_matches_value(
+                declarations[0], expected_value
+            ):
+                raise ValueError(
+                    f"Registry authority declaration {name!r} conflicts with "
+                    "the derived registry component"
                 )
-                deleted_pair_count += 1
-                continue
-            if self.call_statement_matches_registration(statement, class_key_pairs):
-                replacements.append(
-                    self.delete_statement_replacement(source_path, statement)
-                )
-                deleted_pair_count += 1
-                continue
-            if isinstance(statement, ast.ClassDef):
-                decorator_replacements = self.decorator_deletion_replacements(
-                    source_path,
-                    statement,
-                    class_key_pairs,
-                )
-                replacements.extend(decorator_replacements)
-                deleted_pair_count += len(decorator_replacements)
-        return ManualRegistrationDeletionSelection(
-            replacements=tuple(replacements),
-            deleted_pair_count=deleted_pair_count,
-            expected_pair_count=len(class_key_pairs),
-        )
-
-    def dict_literal_deletion_replacement(
-        self,
-        source_path: str,
-        statement: ast.stmt,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[SourceSpanReplacement, int] | None:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            return None
-        target = statement.targets[0]
-        if not isinstance(target, ast.Name) or target.id != self.registry_name:
-            return None
-        if not isinstance(statement.value, ast.Dict):
-            return None
-        matched_pairs = self.dict_literal_matched_pairs(
-            statement.value,
-            class_key_pairs,
-        )
-        if len(matched_pairs) != len(class_key_pairs):
-            return None
-        return (
-            self.delete_statement_replacement(source_path, statement),
-            len(matched_pairs),
-        )
-
-    def dict_literal_matched_pairs(
-        self,
-        node: ast.Dict,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[ClassRegistryKeyPair, ...]:
-        matched_pairs = []
-        for key_node, value_node in zip(node.keys, node.values, strict=True):
-            if key_node is None:
-                return ()
-            class_name = _name_id(value_node)
-            if class_name is None:
-                return ()
-            pair = self.class_key_pair_for(class_name, class_key_pairs)
-            if pair is None or ast.unparse(key_node) != pair.key_source:
-                return ()
-            matched_pairs.append(pair)
-        return tuple(matched_pairs)
-
-    def assignment_matches_registration(
-        self,
-        statement: ast.stmt,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> bool:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            return False
-        class_name = _name_id(statement.value)
-        if class_name is None:
-            return False
-        pair = self.class_key_pair_for(class_name, class_key_pairs)
-        if pair is None:
-            return False
-        target = statement.targets[0]
-        return (
-            isinstance(target, ast.Subscript)
-            and _terminal_name(target.value) == self.registry_name
-            and ast.unparse(target.slice) == pair.key_source
-        )
-
-    def call_statement_matches_registration(
-        self,
-        statement: ast.stmt,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> bool:
-        if not isinstance(statement, ast.Expr) or not isinstance(
-            statement.value,
-            ast.Call,
-        ):
-            return False
-        call = statement.value
-        if not isinstance(call.func, ast.Attribute):
-            return False
-        if _terminal_name(call.func.value) != self.registry_name or not call.args:
-            return False
-        class_name = _terminal_name(call.args[0])
-        if class_name is None:
-            return False
-        pair = self.class_key_pair_for(class_name, class_key_pairs)
-        key_node = call.args[1] if len(call.args) >= 2 else call.args[0]
-        return pair is not None and ast.unparse(key_node) == pair.key_source
-
-    def decorator_deletion_replacements(
-        self,
-        source_path: str,
-        node: ast.ClassDef,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        pair = self.class_key_pair_for(node.name, class_key_pairs)
-        if pair is None:
+        if not missing:
             return ()
+        source_lines = source.splitlines(keepends=True)
+        indent = DeriveAutoregisterInstanceViewOperation.class_body_indent(
+            authority_target.node,
+            source_lines,
+        )
+        inserted_lines = tuple(
+            f"{indent}{name} = {ast.unparse(value)}\n" for name, value in missing
+        )
+        body = statements_without_docstring(authority_target.node.body)
+        if len(body) == 1 and isinstance(body[0], ast.Pass):
+            statement = body[0]
+            return (
+                SourceSpanReplacement(
+                    file_path=authority_target.file_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    replacement_lines=inserted_lines,
+                    rationale=self.rationale_text(
+                        f"Declare registry semantics on {authority_target.qualname!r}."
+                    ),
+                ),
+            )
+        insertion_line = self.class_declaration_insert_line(authority_target.node)
+        return (
+            SourceInsertion(
+                file_path=authority_target.file_path,
+                insertion_line=insertion_line + 1,
+                inserted_lines=inserted_lines,
+                rationale=self.rationale_text(
+                    f"Declare registry semantics on {authority_target.qualname!r}."
+                ),
+            ),
+        )
+
+    def registration_replacements(
+        self,
+        source_path: str,
+        component: DirectManualRegistryComponent,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        if component.declares_registry_entries:
+            statement = component.registry_assignment
+            return (
+                SourceSpanReplacement(
+                    file_path=source_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    replacement_lines=SourceTargetEditor.source_lines(
+                        self.derived_registry_assignment_source(statement, component)
+                    ),
+                    rationale=self.rationale_text(
+                        f"Derive {component.registry_name!r} from its class authority."
+                    ),
+                ),
+            )
         return tuple(
             SourceSpanReplacement(
                 file_path=source_path,
-                start_line=decorator.lineno,
-                end_line=decorator.end_lineno or decorator.lineno,
+                start_line=statement.lineno,
+                end_line=statement.end_lineno or statement.lineno,
                 replacement_lines=(),
-                rationale=self.rationale_text(
-                    f"Delete manual registration decorator for {node.name!r}."
-                ),
+                rationale=self.rationale_text("Delete manual registry write."),
             )
-            for decorator in node.decorator_list
-            if self.decorator_matches_registration(decorator, pair)
+            for statement in component.registration_statements
         )
-
-    def decorator_matches_registration(
-        self,
-        decorator: ast.expr,
-        pair: ClassRegistryKeyPair,
-    ) -> bool:
-        if not isinstance(decorator, ast.Call) or not decorator.args:
-            return False
-        if _terminal_name(decorator.args[0]) != self.registry_name:
-            return False
-        if len(decorator.args) >= 2:
-            key_source = ast.unparse(decorator.args[1])
-        else:
-            key_source = pair.key_source
-        return key_source == pair.key_source
 
     @staticmethod
-    def class_key_pair_for(
-        class_name: str,
-        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-    ) -> ClassRegistryKeyPair | None:
-        for pair in class_key_pairs:
-            if pair.class_name == class_name:
-                return pair
-        return None
-
-    def empty_registry_assignment_replacements(
-        self,
-        source_path: str,
-        module: ast.Module,
-        deletion_replacements: tuple[PhysicalSourceEdit, ...],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        assignment = self.empty_registry_assignment(module)
-        if assignment is None:
-            return ()
-        deleted_lines = {
-            line_number
-            for replacement in deletion_replacements
-            for line_number in range(replacement.start_line, replacement.end_line + 1)
-        }
-        empty_assignment_lines = set(
-            range(assignment.lineno, (assignment.end_lineno or assignment.lineno) + 1)
-        )
-        registry_use_lines = {
-            node.lineno
-            for node in ast.walk(module)
-            if isinstance(node, ast.Name) and node.id == self.registry_name
-        }
-        if registry_use_lines - deleted_lines - empty_assignment_lines:
-            return ()
-        return (self.delete_statement_replacement(source_path, assignment),)
-
-    def empty_registry_assignment(self, module: ast.Module) -> ast.Assign | None:
-        for statement in module.body:
-            if (
-                isinstance(statement, ast.Assign)
-                and len(statement.targets) == 1
-                and _name_id(statement.targets[0]) == self.registry_name
-                and isinstance(statement.value, ast.Dict)
-                and not statement.value.keys
-            ):
-                return statement
-        return None
-
-    def delete_statement_replacement(
-        self,
-        source_path: str,
-        statement: ast.stmt,
-    ) -> SourceSpanReplacement:
-        return SourceSpanReplacement(
-            file_path=source_path,
-            start_line=statement.lineno,
-            end_line=statement.end_lineno or statement.lineno,
-            replacement_lines=(),
-            rationale=self.rationale_text("Delete manual registry write."),
-        )
+    def derived_registry_assignment_source(
+        statement: RegistryAssignment,
+        component: DirectManualRegistryComponent,
+    ) -> str:
+        value_source = f"{component.authority_name}.{REGISTRY_ATTRIBUTE_NAME}"
+        if isinstance(statement, ast.AnnAssign):
+            return (
+                f"{component.registry_name}: {ast.unparse(statement.annotation)} = "
+                f"{value_source}"
+            )
+        return f"{component.registry_name} = {value_source}"
 
 
 @dataclass(frozen=True)
@@ -10118,7 +10058,7 @@ class DispatchPolymorphismCase:
         return ast.unparse(self.literal)
 
     def class_name_for(self, base_name: str) -> str:
-        case_name = _pascal_case_identifier(str(self.registry_key))
+        case_name = CLASS_NAME_ALGEBRA.pascal_identifier(str(self.registry_key))
         if not case_name or not case_name.isidentifier():
             digest = hashlib.blake2s(
                 self.literal_source.encode("utf-8"),
@@ -15722,10 +15662,11 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
 
 
 @dataclass(frozen=True)
-class ManualRegistryRecipeParts(ManualRegistryConversionCarrier):
-    """Validated source facts needed to build a manual-registry codemod recipe."""
+class ManualRegistryRecipeParts:
+    """Source-proved manual registry component and its exact operation anchor."""
 
-    source_path: str
+    anchor_target: AstTargetDigest
+    authority_target: AstTargetDigest | None
 
 
 class ManualClassRegistrationFindingRecipeSynthesizer(
@@ -15748,51 +15689,61 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 self.recipe_rejection_reason(finding, context)
             )
-        return self.executable_evaluation(
-            self.recipe_from_parts(
-                finding,
-                parts.source_path,
-                parts.registry_name,
-                parts.class_key_pairs,
-            )
-        )
+        return self.executable_evaluation(self.recipe_from_parts(finding, parts))
 
     def recipe_parts_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext,
     ) -> ManualRegistryRecipeParts | None:
-        return (
-            Maybe.of(self.action_keys_for_finding(finding))
-            .filter(bool)
-            .combine(
-                self.single_file_path,
-                lambda action_keys, source_path: source_path,
+        registry_name = finding.metrics.plan_registry_name
+        expected_class_names = frozenset(finding.metrics.plan_class_names)
+        if registry_name is None or not expected_class_names:
+            return None
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return None
+        source_paths = context.resolve_source_paths((evidence.file_path,))
+        if len(source_paths) != 1:
+            return None
+        source_path = next(iter(source_paths))
+        targets = tuple(
+            ClassMemberPromotionTargets.optional_class_target(
+                context.source_index,
+                context.ast_target_nodes_by_id,
+                source_path=source_path,
+                class_name=class_name,
             )
-            .combine(
-                lambda source_path: finding.metrics.plan_registry_name,
-                lambda source_path, registry_name: (
-                    source_path,
-                    registry_name,
-                ),
+            for class_name in sorted(expected_class_names)
+        )
+        if any(target is None or "." in target.qualname for target in targets):
+            return None
+        resolved_targets = tuple(target for target in targets if target is not None)
+        anchor_target = min(resolved_targets, key=lambda target: target.line)
+        try:
+            component = DirectManualRegistryComponent.from_module_anchor(
+                context.module_nodes_by_file_path[source_path],
+                anchor_target.node.name,
             )
-            .combine(
-                lambda source_context: self.nonempty_class_key_pairs(finding),
-                lambda source_context, class_key_pairs: ManualRegistryRecipeParts(
-                    source_path=source_context[0],
-                    registry_name=source_context[1],
-                    class_key_pairs=class_key_pairs,
-                ),
+        except ValueError:
+            return None
+        if (
+            component.registry_name != registry_name
+            or frozenset(component.class_names) != expected_class_names
+        ):
+            return None
+        authority_target = (
+            ConvertManualRegistryToAutoregisterOperation.authority_target(
+                context,
+                source_path,
+                component,
             )
-            .filter(
-                lambda parts: self.class_targets_are_safe(
-                    context,
-                    parts.source_path,
-                    parts.registry_name,
-                    parts.class_key_pairs,
-                )
-            )
-            .unwrap_or_none()
+        )
+        return ManualRegistryRecipeParts(
+            anchor_target=anchor_target.target,
+            authority_target=(
+                authority_target.target if authority_target is not None else None
+            ),
         )
 
     def recipe_rejection_reason(
@@ -15800,126 +15751,36 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         finding: RefactorFinding,
         context: CodemodSelectorContext,
     ) -> str:
-        action_keys = self.action_keys_for_finding(finding)
-        source_path = self.single_file_path(action_keys)
-        if source_path is None:
-            return "manual-registry conversion requires one source file"
-        registry_name = finding.metrics.plan_registry_name
-        if registry_name is None:
+        if finding.metrics.plan_registry_name is None:
             return "manual-registry finding exposes no registry name"
-        class_key_pairs = self.nonempty_class_key_pairs(finding)
-        if class_key_pairs is None:
-            return "manual-registry finding exposes no class key pairs"
-        if not self.class_targets_are_safe(
-            context,
-            source_path,
-            registry_name,
-            class_key_pairs,
-        ):
+        if not finding.metrics.plan_class_names:
+            return "manual-registry finding exposes no registered classes"
+        if self.recipe_parts_for_finding(finding, context) is None:
             return (
-                "manual-registry conversion target has unsupported class header "
-                "or non-deletable registration sites"
+                "manual-registry conversion requires one complete direct dict "
+                "component with an exact registered-class anchor"
             )
         return "manual-registry conversion produced no executable recipe"
-
-    @staticmethod
-    def single_file_path(
-        action_keys: tuple[FindingRecipeActionKey, ...],
-    ) -> str | None:
-        file_paths = frozenset(action_key.file_path for action_key in action_keys)
-        if len(file_paths) != 1:
-            return None
-        for file_path in file_paths:
-            return file_path
-        return None
-
-    @staticmethod
-    def nonempty_class_key_pairs(
-        finding: RefactorFinding,
-    ) -> tuple[str, ...] | None:
-        class_key_pairs = finding.metrics.plan_class_key_pairs
-        if class_key_pairs:
-            return class_key_pairs
-        return None
-
-    @staticmethod
-    def class_targets_are_safe(
-        context: CodemodSelectorContext,
-        source_path: str,
-        registry_name: str,
-        class_key_pairs: tuple[str, ...],
-    ) -> bool:
-        class_names = tuple(
-            ClassRegistryKeyPair.parse(source).class_name for source in class_key_pairs
-        )
-        targets = ClassMemberPromotionTargets.resolve_or_none(
-            context,
-            source_path=source_path,
-            class_names=class_names,
-        )
-        return (
-            targets is not None
-            and targets.supports_base_rewrites()
-            and ManualClassRegistrationFindingRecipeSynthesizer.registration_sites_are_safe(
-                context,
-                source_path,
-                registry_name,
-                class_key_pairs,
-            )
-        )
-
-    @staticmethod
-    def registration_sites_are_safe(
-        context: CodemodSelectorContext,
-        source_path: str,
-        registry_name: str,
-        class_key_pairs: tuple[str, ...],
-    ) -> bool:
-        resolved_source_path = SourcePathResolutionAuthority.from_source_index(
-            source_path,
-            context.source_index,
-        ).optional_path()
-        if resolved_source_path is None:
-            return False
-        if resolved_source_path not in context.sources_by_file_path:
-            return False
-        module = ast.parse(
-            context.sources_by_file_path[resolved_source_path],
-            filename=resolved_source_path,
-        )
-        operation = ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(file_path=resolved_source_path),
-            base_name="RegisteredClass",
-            registry_name=registry_name,
-            registry_key_attribute=DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-            class_key_pairs=class_key_pairs,
-        )
-        selection = operation.registration_deletion_selection(
-            resolved_source_path,
-            module,
-            operation.parsed_class_key_pairs,
-        )
-        return selection.is_complete
 
     def recipe_from_parts(
         self,
         finding: RefactorFinding,
-        source_path: str,
-        registry_name: str,
-        class_key_pairs: tuple[str, ...],
+        parts: ManualRegistryRecipeParts,
     ) -> RefactorRecipe:
-        return RefactorRecipe(
+        recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-convert-manual-registry",
             reason="Replace manual registry writes with AutoRegisterMeta.",
-        ).with_operation(
+        )
+        if parts.authority_target is not None:
+            recipe = recipe.with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    parts.authority_target,
+                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
+                )
+            )
+        return recipe.with_operation(
             ConvertManualRegistryToAutoregisterOperation(
-                target=SourceRewriteTarget(file_path=source_path),
-                base_name=autoregister_base_name(
-                    finding.metrics.plan_class_names, registry_name
-                ),
-                registry_name=registry_name,
-                registry_key_attribute=DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-                class_key_pairs=tuple(class_key_pairs),
+                target=SourceRewriteTarget(target_id=parts.anchor_target.target_id),
                 rationale="",
             )
         )
@@ -20054,12 +19915,12 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
     def authority_stem(self) -> str:
         source_name = self.finding.metrics.plan_source_name
         if source_name:
-            return _pascal_case_identifier(source_name)
+            return CLASS_NAME_ALGEBRA.pascal_identifier(source_name)
         evidence = FindingPrimaryEvidence(self.finding).source_location
         if evidence is None:
             return "RoleCase"
         function_name = EvidenceSymbol(evidence.symbol).subject.rsplit(".", 1)[-1]
-        return _pascal_case_identifier(function_name) or "RoleCase"
+        return CLASS_NAME_ALGEBRA.pascal_identifier(function_name) or "RoleCase"
 
     def class_name_conflicts(self, *class_names: str) -> bool:
         requested = frozenset(class_names)
@@ -21251,52 +21112,11 @@ class DispatchMetricsFindingRecipeSynthesizer(
         )
 
 
-def autoregister_base_name(
-    class_names: tuple[str, ...],
-    registry_name: str,
-) -> str:
-    suffix = shared_pascal_suffix(class_names)
-    if suffix:
-        return f"Registered{suffix}"
-    registry_suffix = _pascal_case_identifier(registry_name.lower())
-    if registry_suffix:
-        return f"Registered{registry_suffix}"
-    return "RegisteredRegistry"
-
-
 def dispatch_strategy_base_name(function_name: str) -> str:
-    function_suffix = _pascal_case_identifier(function_name)
+    function_suffix = CLASS_NAME_ALGEBRA.pascal_identifier(function_name)
     if function_suffix:
         return f"{function_suffix}DispatchCase"
     return "DispatchCase"
-
-
-def shared_pascal_suffix(class_names: tuple[str, ...]) -> str:
-    token_rows = tuple(
-        tuple(
-            re.findall(
-                r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
-                class_name,
-            )
-        )
-        for class_name in class_names
-    )
-    if not token_rows or any(not row for row in token_rows):
-        return ""
-    suffix: list[str] = []
-    for offset in range(1, min(len(row) for row in token_rows) + 1):
-        tokens = {row[-offset] for row in token_rows}
-        if len(tokens) != 1:
-            break
-        suffix.insert(0, next(iter(tokens)))
-    return "".join(suffix)
-
-
-def _pascal_case_identifier(value: str) -> str:
-    parts = tuple(part for part in re.split(r"[^0-9A-Za-z]+", value) if part)
-    if not parts:
-        return ""
-    return "".join(part[:1].upper() + part[1:] for part in parts)
 
 
 @dataclass(frozen=True)
