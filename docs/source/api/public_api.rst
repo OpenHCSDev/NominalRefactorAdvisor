@@ -99,8 +99,18 @@ Exact byte spans distinguish multiple calls on the same line.  Source forms
 that cannot be edited without losing comments or lexical-scope semantics remain
 rejected; field mappings are never copied into the recipe payload.
 
+Class-family and enum projection recipes follow the same source-derived
+contract.  ``DeriveClassFamilyCollectionOperation`` and
+``DeriveEnumSubsetOperation`` serialise only the exact authority class and
+projection module targets.  On every simulation or application, each operation
+re-resolves those targets, proves one unambiguous projection against the current
+declarations, derives the required import and replacement source, and rejects
+shadowed builtins, name collisions, or changed relations.  Collection members,
+assignment names, generated source, and finding metrics are not copied into the
+persisted plan.
+
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

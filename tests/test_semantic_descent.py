@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
+    DeriveEnumSubsetOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
     SourceRewriteTarget,
@@ -3114,21 +3115,291 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     assert claim.qualname == "ConfidenceLevel"
     assert claim.authority_id
     assert simulation.is_clean is True
-    assert (
-        "def actionable_confidence_levels(cls) -> frozenset[str]"
-        in operations[0]["replacement_source"]
-    )
     assert [operation["operation"] for operation in operations] == [
-        "replace_target",
-        "ensure_import",
-        "replace_module_assignment",
+        "derive_enum_subset",
+    ]
+    operation = operations[0]
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    with pytest.raises(
+        ValueError,
+        match="Unsupported DeriveEnumSubsetOperation payload field",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **operation,
+                "mapping_name": "_ACTIONABLE_CONFIDENCE_LEVELS",
+                "selected_names": ["HIGH", "MEDIUM"],
+                "class_source": "copied authority source",
+                "source": "copied projection source",
+            }
+        )
+    rewritten_taxonomy = simulation.simulation.rewritten_sources[
+        (package_dir / "taxonomy.py").as_posix()
+    ]
+    rewritten_codemod = simulation.simulation.rewritten_sources[
+        (package_dir / "codemod.py").as_posix()
     ]
     assert (
-        operations[1]["import_source"] == "from pkg.taxonomy import ConfidenceLevel\n"
+        "def actionable_confidence_levels(cls) -> frozenset[str]" in rewritten_taxonomy
     )
-    assert operations[2]["source"] == (
-        "_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()"
+    assert "cls.HIGH.value" in rewritten_taxonomy
+    assert "cls.MEDIUM.value" in rewritten_taxonomy
+    assert "from pkg.taxonomy import ConfidenceLevel\n" in rewritten_codemod
+    assert (
+        "_ACTIONABLE_CONFIDENCE_LEVELS: "
+        "frozenset[pkg.taxonomy.ConfidenceLevel] = "
+        "ConfidenceLevel.actionable_confidence_levels()" in rewritten_codemod
     )
+
+
+def _enum_subset_operation(
+    snapshot: CodemodSourceSnapshot,
+    authority_qualname: str,
+    projection_path: Path,
+) -> DeriveEnumSubsetOperation:
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == authority_qualname
+    )
+    projection_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.is_module and target.file_path == projection_path.as_posix()
+    )
+    return DeriveEnumSubsetOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id),
+        projection_target_id=projection_target.target_id,
+    )
+
+
+def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    taxonomy_path = package_dir / "taxonomy.py"
+    projection_path = package_dir / "projection.py"
+    taxonomy_source = (
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n"
+        "    LOW = 'low'\n"
+    )
+    projection_source = (
+        "from .taxonomy import ConfidenceLevel\n\n"
+        "ACTIONABLE = frozenset(('high', 'medium'))\n"
+    )
+    taxonomy_path.write_text(taxonomy_source, encoding="utf-8")
+    projection_path.write_text(projection_source, encoding="utf-8")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
+    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    changed_projection_source = projection_source.replace("medium", "low")
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {
+            taxonomy_path.as_posix(): taxonomy_source,
+            projection_path.as_posix(): changed_projection_source,
+        },
+    )
+
+    edits = replayed.source_edits_with_context(
+        changed_snapshot.source_index,
+        changed_snapshot.sources_by_file_path,
+        selector_context=changed_snapshot,
+    )
+    rendered_edits = "\n".join(
+        "".join(edit.inserted_lines)
+        if hasattr(edit, "inserted_lines")
+        else "".join(edit.replacement_lines)
+        for edit in edits
+    )
+
+    assert "cls.HIGH.value" in rendered_edits
+    assert "cls.LOW.value" in rendered_edits
+    assert "cls.MEDIUM.value" not in rendered_edits
+
+
+def test_enum_subset_operation_rejects_authority_value_drift(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n\n"
+        "ACTIONABLE = frozenset(('high', 'medium'))\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "MEDIUM = 'medium'",
+        "MEDIUM = 'moderate'",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+
+    with pytest.raises(ValueError, match="exactly one literal frozenset subset"):
+        operation.source_edits_with_context(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+
+
+def test_enum_subset_operation_rejects_ambiguous_projections(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n\n"
+        "FIRST = frozenset(('high', 'medium'))\n"
+        "SECOND = frozenset(('medium',))\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
+
+    with pytest.raises(
+        ValueError,
+        match="exactly one literal frozenset subset; found 2",
+    ):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
+
+
+@pytest.mark.parametrize("shadow_module", ("authority", "projection"))
+def test_enum_subset_operation_rejects_shadowed_frozenset(
+    tmp_path: Path,
+    shadow_module: str,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    taxonomy_path = package_dir / "taxonomy.py"
+    projection_path = package_dir / "projection.py"
+    shadow_source = "frozenset = lambda values: tuple(values)\n"
+    taxonomy_path.write_text(
+        (shadow_source if shadow_module == "authority" else "")
+        + "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n",
+        encoding="utf-8",
+    )
+    projection_path.write_text(
+        "from .taxonomy import ConfidenceLevel\n"
+        + (shadow_source if shadow_module == "projection" else "")
+        + "\nACTIONABLE = frozenset(('high', 'medium'))\n",
+        encoding="utf-8",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
+
+    with pytest.raises(ValueError):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
+
+
+def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'shared'\n"
+        "    MEDIUM = 'shared'\n\n"
+        "ACTIONABLE = frozenset(('shared',))\n",
+    )
+    aliased_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    aliased_operation = _enum_subset_operation(
+        aliased_snapshot,
+        "ConfidenceLevel",
+        module_path,
+    )
+
+    with pytest.raises(ValueError, match="aliased string values"):
+        aliased_operation.source_edits_with_context(
+            aliased_snapshot.source_index,
+            aliased_snapshot.sources_by_file_path,
+            selector_context=aliased_snapshot,
+        )
+
+    module_path.write_text(
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n"
+        "    actionable = None\n\n"
+        "ACTIONABLE = frozenset(('high', 'medium'))\n",
+        encoding="utf-8",
+    )
+    collision_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    collision_operation = _enum_subset_operation(
+        collision_snapshot,
+        "ConfidenceLevel",
+        module_path,
+    )
+
+    with pytest.raises(ValueError, match="already binds 'actionable'"):
+        collision_operation.source_edits_with_context(
+            collision_snapshot.source_index,
+            collision_snapshot.sources_by_file_path,
+            selector_context=collision_snapshot,
+        )
+
+
+def test_enum_subset_operation_executes_source_derived_view(tmp_path: Path) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from enum import StrEnum\n\n"
+        "class ConfidenceLevel(StrEnum):\n"
+        '    """Confidence semantics remain declaration owned."""\n'
+        "    HIGH = 'high'\n"
+        "    MEDIUM = 'medium'\n"
+        "    LOW = 'low'\n\n"
+        "ACTIONABLE = frozenset(('high', 'medium'))\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
+
+    simulation = (
+        RefactorRecipe("derive-enum-subset")
+        .with_operation(operation)
+        .simulate(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+        )
+    )
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+
+    confidence_level = namespace["ConfidenceLevel"]
+    assert confidence_level.__doc__ == "Confidence semantics remain declaration owned."
+    assert namespace["ACTIONABLE"] == frozenset(("high", "medium"))
+    assert confidence_level.actionable() == namespace["ACTIONABLE"]
 
 
 def test_role_case_recipe_declares_its_new_authority_boundary(
@@ -4208,13 +4479,12 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     )
 
     assert plan.records[0].status.value == "executable_candidate"
-    import_operation = next(
-        operation
-        for operation in plan.document.recipes[0].operations
-        if operation.operation_key() == "ensure_import"
-    )
-    assert import_operation.to_dict()["import_source"] == (
-        "from pkg.taxonomy import ConfidenceLevel\n"
+    operation = plan.document.recipes[0].operations[0]
+    assert isinstance(operation, DeriveEnumSubsetOperation)
+    assert operation.to_dict()["projection_target_id"] == next(
+        target.target_id
+        for target in snapshot.source_index.ast_targets
+        if target.is_module and target.file_path == "pkg/codemod.py"
     )
 
 

@@ -22,6 +22,7 @@ import hashlib
 import importlib
 import importlib.util
 import io
+import keyword as keyword_module
 import os
 import re
 import stat
@@ -8403,6 +8404,111 @@ def _statement_source(source: str, statement: ast.stmt) -> str:
     return "".join(lines[span.start_line - 1 : span.end_line])
 
 
+@dataclass(frozen=True)
+class ClassAuthorityReferenceProof:
+    """Prove one generated class-authority reference at a module boundary."""
+
+    authority: ResolvedClassTarget
+    authority_symbol: str
+    projection_module: ParsedModule
+    resolver: ModuleClassReferenceResolver
+    symbol_table: ModuleSymbolTable
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority: ResolvedClassTarget,
+        projection_path: str,
+    ) -> "ClassAuthorityReferenceProof":
+        source_file = context.module_import_graph.source_file_for_path(projection_path)
+        module = context.module_nodes_by_file_path.get(projection_path)
+        source = context.sources_by_file_path.get(projection_path)
+        authority_symbol = context.required_class_family_index.symbol_for(
+            file_path=authority.file_path,
+            qualname=authority.qualname,
+        )
+        if (
+            source_file is None
+            or module is None
+            or source is None
+            or authority_symbol is None
+        ):
+            raise ValueError("Class authority reference source is unavailable")
+        projection_module = ParsedModule(
+            path=Path(projection_path),
+            module_name=source_file.module_name,
+            is_package_init=source_file.is_package_init,
+            module=module,
+            source=source,
+        )
+        return cls(
+            authority=authority,
+            authority_symbol=authority_symbol,
+            projection_module=projection_module,
+            resolver=ModuleClassReferenceResolver(
+                projection_module,
+                context.required_class_family_index,
+            ),
+            symbol_table=ModuleSymbolTable(
+                file_path=projection_path,
+                source=source,
+                module=module,
+            ),
+        )
+
+    @property
+    def unavailable_builtin_names(self) -> frozenset[str]:
+        return frozenset(
+            (
+                *self.symbol_table.top_level_names,
+                *self.symbol_table.import_sources_by_name,
+            )
+        )
+
+    def required_import_source(
+        self,
+        context: CodemodSelectorContext,
+    ) -> str | None:
+        if any(
+            isinstance(statement, ast.ImportFrom)
+            and any(alias.name == "*" for alias in statement.names)
+            for statement in self.projection_module.module.body
+        ):
+            raise ValueError("Class authority projection has an ambiguous star import")
+        authority_name = self.authority.target.name
+        declaration_bindings = self.symbol_table.binding_statements(authority_name)
+        import_binding = self.symbol_table.import_sources_by_name.get(authority_name)
+        if self.projection_module.file_path == self.authority.file_path:
+            authority_binding_is_exact = (
+                len(declaration_bindings) == 1
+                and isinstance(declaration_bindings[0], ast.ClassDef)
+                and declaration_bindings[0].lineno == self.authority.target.line
+                and declaration_bindings[0].name == authority_name
+            )
+            if not authority_binding_is_exact or import_binding is not None:
+                raise ValueError(f"Class authority name {authority_name!r} is rebound")
+            return None
+        if declaration_bindings:
+            raise ValueError(f"Class authority name {authority_name!r} is rebound")
+        reference = ast.Name(id=authority_name, ctx=ast.Load())
+        if self.resolver.symbol_for_reference(reference) == self.authority_symbol:
+            return None
+        if import_binding is not None:
+            raise ValueError(
+                f"Class authority name {authority_name!r} is imported from another "
+                "declaration"
+            )
+        import_source = context.module_import_graph.import_source(
+            importing_file_path=self.projection_module.file_path,
+            imported_file_path=self.authority.file_path,
+            imported_name=authority_name,
+        )
+        if import_source is None:
+            raise ValueError("Class authority has no cycle-safe canonical import")
+        return import_source
+
+
 class _LoadedAndBoundNameVisitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.loaded_names: set[str] = set()
@@ -15676,6 +15782,59 @@ class FindingSemanticMirrorLocations:
         return None if locations is None else locations[1]
 
 
+@dataclass(frozen=True)
+class SemanticMirrorOperationTargets:
+    """Exact authority class and projection module for a mirror finding."""
+
+    authority: ResolvedClassTarget
+    projection_module: AstTargetDigest
+
+    @classmethod
+    def from_finding(
+        cls,
+        context: CodemodSelectorContext,
+        finding: RefactorFinding,
+    ) -> "SemanticMirrorOperationTargets | None":
+        locations = FindingSemanticMirrorLocations(finding).optional_locations()
+        if locations is None:
+            return None
+        projection_location, authority_location = locations
+        try:
+            projection_paths = context.resolve_source_paths(
+                (projection_location.file_path,)
+            )
+            authority_paths = context.resolve_source_paths(
+                (authority_location.file_path,)
+            )
+        except ValueError:
+            return None
+        if len(projection_paths) != 1 or len(authority_paths) != 1:
+            return None
+        authority_target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=tuple(authority_paths),
+            qualnames=(authority_location.symbol,),
+        ).target_ids(context)
+        if len(authority_target_ids) != 1:
+            return None
+        authority_target = context.source_index.target_by_id[authority_target_ids[0]]
+        authority_node = context.ast_target_nodes_by_id.get(authority_target.target_id)
+        if not isinstance(authority_node, ast.ClassDef):
+            return None
+        projection_target_id = SourceRewriteTarget(
+            file_path=next(iter(projection_paths))
+        ).optional_target_id(context.source_index)
+        if projection_target_id is None:
+            return None
+        projection_module = context.source_index.target_by_id[projection_target_id]
+        if not projection_module.is_module:
+            return None
+        return cls(
+            authority=ResolvedClassTarget(authority_target, authority_node),
+            projection_module=projection_module,
+        )
+
+
 class SemanticMirrorEndpointRole(StrEnum):
     """Nominal roles for the two endpoints in a semantic mirror."""
 
@@ -15919,320 +16078,412 @@ class PartsBackedMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class EnumSubsetProjectionTarget:
-    """Module-level projection replaced by a derived enum authority call."""
+class EnumStringMemberDeclaration:
+    """One direct enum member with a source-declared string value."""
 
-    projection_path: str
-    mapping_name: str
-
-
-@dataclass(frozen=True)
-class EnumSubsetAuthorityTarget:
-    """Enum authority receiving the subset policy method."""
-
-    target: AstTargetDigest
-    import_source: str
-
-    @property
-    def source_path(self) -> str:
-        return self.target.file_path
-
-    @property
-    def class_name(self) -> str:
-        return self.target.name
-
-    @property
-    def qualname(self) -> str:
-        return self.target.qualname
-
-
-@dataclass(frozen=True)
-class EnumSubsetMemberSelection:
-    """Enum members projected by one subset policy."""
-
-    accessor_name: str
-    selected_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class EnumSubsetRecipeSeed(SemanticMirrorRecipeSeedLocations):
-    """Initial semantic facts needed to attempt an enum subset recipe."""
-
-    mapping_name: str
-    authority_name: str
+    name: str
+    value: str
 
     @classmethod
-    def from_locations_and_metrics(
+    def from_statement(
+        cls, statement: ast.stmt
+    ) -> "EnumStringMemberDeclaration | None":
+        pair = SingleAssignmentAndValueNameProjection(statement).pair
+        if pair is None:
+            return None
+        name, value = pair
+        if (
+            name.startswith("_")
+            or not isinstance(value, ast.Constant)
+            or not isinstance(value.value, str)
+        ):
+            return None
+        return cls(name=name, value=value.value)
+
+
+@dataclass(frozen=True)
+class EnumStringAuthority:
+    """Exact enum class and its unambiguous string-valued members."""
+
+    target: ResolvedClassTarget
+    members: tuple[EnumStringMemberDeclaration, ...]
+
+    @classmethod
+    def from_target(cls, target: ResolvedClassTarget) -> "EnumStringAuthority":
+        if not ClassDeclarationPromotionClass(target.node).is_enum_class:
+            raise ValueError("Enum subset authority must be an enum class")
+        members = tuple(
+            member
+            for statement in target.node.body
+            if (member := EnumStringMemberDeclaration.from_statement(statement))
+            is not None
+        )
+        if not members:
+            raise ValueError("Enum subset authority has no string-valued members")
+        member_values = tuple(member.value for member in members)
+        if len(frozenset(member_values)) != len(member_values):
+            raise ValueError("Enum subset authority has aliased string values")
+        return cls(target=target, members=members)
+
+    def members_for_values(
+        self,
+        values: frozenset[str],
+    ) -> tuple[EnumStringMemberDeclaration, ...] | None:
+        selected = tuple(member for member in self.members if member.value in values)
+        if not selected or frozenset(member.value for member in selected) != values:
+            return None
+        return selected
+
+
+@dataclass(frozen=True)
+class EnumSubsetProjection:
+    """One literal enum-value subset to derive from its enum authority."""
+
+    assignment_name: str
+    statement: ast.Assign | ast.AnnAssign
+    accessor_name: str
+    members: tuple[EnumStringMemberDeclaration, ...]
+
+    @classmethod
+    def from_statement(
         cls,
-        locations: SemanticMirrorRecipeSeedLocations,
-        metrics: MappingMetrics,
-    ) -> "EnumSubsetRecipeSeed | None":
-        mapping_name = metrics.plan_mapping_name
-        authority_name = metrics.plan_source_name
-        if mapping_name is None or authority_name is None:
+        statement: ast.stmt,
+        authority: EnumStringAuthority,
+        reference: ClassAuthorityReferenceProof,
+    ) -> "EnumSubsetProjection | None":
+        pair = SingleAssignmentAndValueNameProjection(statement).pair
+        if pair is None or pair[0] == "__all__":
+            return None
+        assignment_name, value = pair
+        values = cls.frozenset_values(value, reference.unavailable_builtin_names)
+        if values is None:
+            return None
+        members = authority.members_for_values(values)
+        if members is None:
             return None
         return cls(
-            endpoints=locations.endpoints,
-            mapping_name=mapping_name,
-            authority_name=authority_name,
+            assignment_name=assignment_name,
+            statement=cast(ast.Assign | ast.AnnAssign, statement),
+            accessor_name=cls.accessor_name_for_assignment(assignment_name),
+            members=members,
         )
 
+    @staticmethod
+    def frozenset_values(
+        value: ast.AST,
+        unavailable_builtin_names: frozenset[str],
+    ) -> frozenset[str] | None:
+        if (
+            not isinstance(value, ast.Call)
+            or not isinstance(value.func, ast.Name)
+            or value.func.id != BuiltinCallName.FROZENSET.value
+            or value.func.id in unavailable_builtin_names
+            or len(value.args) != 1
+            or value.keywords
+            or not isinstance(value.args[0], ast.Tuple | ast.List | ast.Set)
+        ):
+            return None
+        elements = value.args[0].elts
+        values = frozenset(
+            element.value
+            for element in elements
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        )
+        if not values or len(values) != len(elements):
+            return None
+        return values
+
+    @staticmethod
+    def accessor_name_for_assignment(assignment_name: str) -> str:
+        identifier = re.sub(
+            r"[^0-9A-Za-z_]+",
+            "_",
+            assignment_name.strip("_").lower(),
+        )
+        identifier = re.sub(r"_+", "_", identifier).strip("_")
+        if not identifier:
+            return "derived_values"
+        if identifier[0].isdigit() or keyword_module.iskeyword(identifier):
+            return f"derived_{identifier}"
+        return identifier
+
 
 @dataclass(frozen=True)
-class EnumSubsetAuthorityResolution:
-    """Resolved enum authority target for an enum subset recipe."""
+class EnumSubsetDerivation:
+    """Current-source proof for one enum-owned subset projection."""
 
-    seed: EnumSubsetRecipeSeed
-    target: AstTargetDigest
-    node: ast.ClassDef
+    authority: EnumStringAuthority
+    projection_module: AstTargetDigest
+    projection: EnumSubsetProjection
+    import_source: str | None
 
-
-@dataclass(frozen=True)
-class EnumSubsetProjectionResolution:
-    """Resolved module assignment carrying an enum subset projection."""
-
-    authority: EnumSubsetAuthorityResolution
-    statement: ast.Assign | ast.AnnAssign
-
-
-@dataclass(frozen=True)
-class EnumSubsetRecipeSourceBundle:
-    """Rendered source fragments for one enum subset recipe."""
-
-    authority_import_source: str
-    mapping_replacement_source: str
-    authority_replacement_source: str
-
-
-@dataclass(frozen=True)
-class EnumSubsetRecipeSourceRenderer:
-    """Render source fragments from enum subset recipe facts."""
-
-    projection: EnumSubsetProjectionTarget
-    authority: EnumSubsetAuthorityTarget
-    selection: EnumSubsetMemberSelection
-    class_source: str
-
-    def bundle(self) -> EnumSubsetRecipeSourceBundle:
-        return EnumSubsetRecipeSourceBundle(
-            authority_import_source=self.authority.import_source,
-            mapping_replacement_source=(
-                f"{self.projection.mapping_name} = "
-                f"{self.authority.class_name}.{self.selection.accessor_name}()"
-            ),
-            authority_replacement_source=(
-                f"{self.class_source.rstrip()}\n\n{self.method_source}"
-            ),
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> "EnumSubsetDerivation":
+        _authority_id, authority_digest, authority_node = (
+            context.target_node_for_rewrite_target(authority_reference)
+        )
+        if not authority_digest.is_class or not isinstance(
+            authority_node, ast.ClassDef
+        ):
+            raise ValueError("Enum subset authority must target a class")
+        if "." in authority_digest.qualname:
+            raise ValueError("Enum subset authority must be top level")
+        projection_id = projection_reference.required_target_id(context.source_index)
+        projection_module = context.source_index.target_by_id[projection_id]
+        if not projection_module.is_module:
+            raise ValueError("Enum subset projection must target a module")
+        resolved_authority = ResolvedClassTarget(authority_digest, authority_node)
+        authority = EnumStringAuthority.from_target(resolved_authority)
+        authority_reference_proof = ClassAuthorityReferenceProof.from_context(
+            context,
+            resolved_authority,
+            resolved_authority.file_path,
+        )
+        authority_reference_proof.required_import_source(context)
+        if (
+            BuiltinCallName.FROZENSET.value
+            in authority_reference_proof.unavailable_builtin_names
+        ):
+            raise ValueError("Enum authority shadows the frozenset constructor")
+        projection_reference_proof = ClassAuthorityReferenceProof.from_context(
+            context,
+            resolved_authority,
+            projection_module.file_path,
+        )
+        projections = tuple(
+            projection
+            for statement in projection_reference_proof.projection_module.module.body
+            if (
+                projection := EnumSubsetProjection.from_statement(
+                    statement,
+                    authority,
+                    projection_reference_proof,
+                )
+            )
+            is not None
+        )
+        if len(projections) != 1:
+            raise ValueError(
+                "Enum authority and projection module must expose exactly one "
+                f"literal frozenset subset; found {len(projections)}"
+            )
+        projection = projections[0]
+        if projection.accessor_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            authority_node.body
+        ):
+            raise ValueError(
+                f"Enum authority already binds {projection.accessor_name!r}"
+            )
+        return cls(
+            authority=authority,
+            projection_module=projection_module,
+            projection=projection,
+            import_source=projection_reference_proof.required_import_source(context),
         )
 
     @property
-    def method_source(self) -> str:
+    def projection_path(self) -> str:
+        return self.projection_module.file_path
+
+    def method_source(self, indentation: str) -> str:
         member_lines = "".join(
-            f"            cls.{member_name}.value,\n"
-            for member_name in self.selection.selected_names
+            f"{indentation}        cls.{member.name}.value,\n"
+            for member in self.projection.members
         )
         return (
-            "    @classmethod\n"
-            f"    def {self.selection.accessor_name}(cls) -> frozenset[str]:\n"
-            "        return frozenset((\n"
+            "\n"
+            f"{indentation}@classmethod\n"
+            f"{indentation}def {self.projection.accessor_name}("
+            "cls) -> frozenset[str]:\n"
+            f"{indentation}    return frozenset((\n"
             f"{member_lines}"
-            "        ))\n"
+            f"{indentation}    ))\n"
         )
 
-
-@dataclass(frozen=True)
-class EnumSubsetSemanticMirrorRecipeParts(FindingRecipeParts):
-    """Source facts for moving an enum subset mirror onto the enum authority."""
-
-    projection: EnumSubsetProjectionTarget
-    authority: EnumSubsetAuthorityTarget
-    selection: EnumSubsetMemberSelection
-    class_source: str
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        source_bundle = EnumSubsetRecipeSourceRenderer(
-            projection=self.projection,
-            authority=self.authority,
-            selection=self.selection,
-            class_source=self.class_source,
-        ).bundle()
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-derive-enum-subset-mapping",
-                reason="Move enum subset projection behind the enum authority.",
+    def assignment_source(self) -> str:
+        projection = self.projection
+        value_source = (
+            f"{self.authority.target.target.name}.{projection.accessor_name}()"
+        )
+        if isinstance(projection.statement, ast.AnnAssign):
+            return (
+                f"{projection.assignment_name}: "
+                f"{ast.unparse(projection.statement.annotation)} = {value_source}"
             )
-            .with_authority_claim(
-                AstTargetAuthorityClaim.from_target(
-                    self.authority.target,
-                    authority_kind=SemanticAuthorityKind.ENUM,
+        return f"{projection.assignment_name} = {value_source}"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveEnumSubsetOperation(RefactorRecipeOperation):
+    """Move one literal enum-value subset behind its enum authority."""
+
+    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    @property
+    def projection_target(self) -> SourceRewriteTarget:
+        return SourceRewriteTarget(target_id=self.projection_target_id)
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), self.projection_target)
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
+        )
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
+        derivation = self.required_derivation(context)
+        authority_target = derivation.authority.target
+        body_authority = ClassBodySourceAuthority(
+            authority_target.node,
+            context.sources_by_file_path[authority_target.file_path],
+        )
+        edits: list[NominalSourceEdit] = [
+            SourceInsertion(
+                file_path=authority_target.file_path,
+                insertion_line=(authority_target.node.end_lineno or 0) + 1,
+                inserted_lines=SourceTargetEditor.source_lines(
+                    derivation.method_source(body_authority.indentation)
+                ),
+                rationale=self.rationale_text(
+                    f"Declare {derivation.projection.accessor_name!r} on "
+                    f"{authority_target.target.name!r}."
+                ),
+            )
+        ]
+        if derivation.import_source is not None:
+            edits.extend(
+                self.required_import_mutations(
+                    context.source_index,
+                    context.sources_by_file_path,
+                    derivation.projection_path,
+                    import_source=derivation.import_source,
+                    default_rationale="Import the enum subset authority.",
                 )
             )
-            .with_operation(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(
-                        target_id=None,
-                        qualname=self.authority.qualname,
-                        file_path=self.authority.source_path,
-                    ),
-                    replacement_source=source_bundle.authority_replacement_source,
-                    rationale="",
-                )
+        statement = derivation.projection.statement
+        edits.append(
+            SourceSpanReplacement(
+                file_path=derivation.projection_path,
+                start_line=statement.lineno,
+                end_line=statement.end_lineno or statement.lineno,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    derivation.assignment_source()
+                ),
+                rationale=self.rationale_text(
+                    f"Derive {derivation.projection.assignment_name!r} from "
+                    f"{authority_target.target.name!r}."
+                ),
             )
         )
-        if self.projection.projection_path != self.authority.source_path:
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(
-                        file_path=self.projection.projection_path
-                    ),
-                    import_source=source_bundle.authority_import_source,
-                    rationale="",
-                )
-            )
-        return recipe.with_operation(
-            ReplaceModuleAssignmentOperation(
-                target=SourceRewriteTarget(file_path=self.projection.projection_path),
-                assignment_name=self.projection.mapping_name,
-                source=source_bundle.mapping_replacement_source,
-                rationale="",
-            )
+        return tuple(edits)
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> EnumSubsetDerivation:
+        return EnumSubsetDerivation.from_context(
+            context,
+            self.target,
+            self.projection_target,
         )
 
 
 @dataclass(frozen=True, kw_only=True)
 class EnumSubsetSemanticMirrorRecipeBuilder(
-    PartsBackedMappingRecipeBuilder[EnumSubsetSemanticMirrorRecipeParts],
+    MappingSemanticMirrorRecipeBuilder,
     InferredSemanticMirrorMappingRecipeBuilder,
     DerivedProjectionConcept,
 ):
-    """Build enum subset recipe parts from a semantic mirror finding."""
+    """Build a source-derived enum subset recipe."""
 
     finding: RefactorFinding
 
-    def is_applicable(self) -> bool:
-        seed = self.seed()
-        return seed is not None and self.authority_resolution(seed) is not None
-
-    def rejection_reason(self) -> str:
-        if self.parts is not None:
-            return "enum subset projection has an executable authority recipe"
-        return (
-            "enum subset projection requires one module-level enum value "
-            "collection matching all observed members, a new valid authority "
-            "method name, and a cycle-safe authority reference"
-        )
+    @cached_property
+    def targets(self) -> SemanticMirrorOperationTargets | None:
+        targets = SemanticMirrorOperationTargets.from_finding(self, self.finding)
+        if (
+            targets is None
+            or not ClassDeclarationPromotionClass(targets.authority.node).is_enum_class
+        ):
+            return None
+        return targets
 
     @cached_property
-    def parts(self) -> EnumSubsetSemanticMirrorRecipeParts | None:
-        extraction = (
-            Maybe.of(self.seed())
-            .project(self.authority_resolution)
-            .project(self.projection_resolution)
-            .project(self.parts_from_resolution)
+    def candidate_operation(self) -> DeriveEnumSubsetOperation | None:
+        if self.targets is None:
+            return None
+        return DeriveEnumSubsetOperation(
+            target=SourceRewriteTarget(
+                target_id=self.targets.authority.target.target_id
+            ),
+            projection_target_id=self.targets.projection_module.target_id,
         )
-        return extraction.unwrap_or_none()
 
-    def seed(self) -> EnumSubsetRecipeSeed | None:
-        if not isinstance(self.finding.metrics, MappingMetrics):
+    def is_applicable(self) -> bool:
+        return self.candidate_operation is not None
+
+    @cached_property
+    def proven_operation(self) -> DeriveEnumSubsetOperation | None:
+        operation = self.candidate_operation
+        if operation is None:
+            return None
+        try:
+            operation.required_derivation(self)
+        except ValueError:
+            return None
+        return operation
+
+    def recipe(self) -> RefactorRecipe | None:
+        operation = self.proven_operation
+        if operation is None or self.targets is None:
             return None
         return (
-            Maybe.of(
-                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+            RefactorRecipe(
+                recipe_id=f"{self.finding.stable_id}-derive-enum-subset-mapping",
+                reason="Move enum subset projection behind the enum authority.",
             )
-            .project(
-                lambda locations: EnumSubsetRecipeSeed.from_locations_and_metrics(
-                    locations,
-                    self.finding.metrics,
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    self.targets.authority.target,
+                    authority_kind=SemanticAuthorityKind.ENUM,
                 )
             )
-            .unwrap_or_none()
+            .with_operation(operation)
         )
 
-    def authority_resolution(
-        self,
-        seed: EnumSubsetRecipeSeed,
-    ) -> EnumSubsetAuthorityResolution | None:
-        authority_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            seed.authority_source_location(),
-            seed.authority_name,
-        )
-        if authority_target is None:
-            return None
-        if not ClassDeclarationPromotionClass(authority_target.node).is_enum_class:
-            return None
-        return EnumSubsetAuthorityResolution(
-            seed=seed,
-            target=authority_target.target,
-            node=authority_target.node,
-        )
-
-    def projection_resolution(
-        self,
-        authority: EnumSubsetAuthorityResolution,
-    ) -> EnumSubsetProjectionResolution | None:
-        seed = authority.seed
-        projection_statement = self.module_assignment_statement(
-            seed.projection_file_path(),
-            seed.mapping_name,
-        )
-        if projection_statement is None or projection_statement.value is None:
-            return None
-        return EnumSubsetProjectionResolution(
-            authority=authority,
-            statement=projection_statement,
-        )
-
-    def parts_from_resolution(
-        self,
-        projection: EnumSubsetProjectionResolution,
-    ) -> EnumSubsetSemanticMirrorRecipeParts | None:
-        seed = projection.authority.seed
-        enum_value_tokens = MappingSemanticMirrorRecipeStrategy.enum_value_tokens(
-            projection.statement.value
-        )
-        if enum_value_tokens != frozenset(
-            self.finding.metrics.plan_identity_field_names
-        ):
-            return None
-        method_name = _semantic_mirror_method_name(seed.mapping_name)
-        if not method_name.isidentifier():
-            return None
-        if MappingSemanticMirrorRecipeStrategy.class_defines_method(
-            projection.authority.node,
-            method_name,
-        ):
-            return None
-        authority_import_source = (
-            MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-                self,
-                projection_path=seed.projection_file_path(),
-                authority_path=seed.authority_file_path(),
-                authority_name=seed.authority_name,
+    def rejection_reason(self) -> str:
+        operation = self.candidate_operation
+        if operation is None:
+            return (
+                "semantic mirror finding does not resolve one enum authority and "
+                "one projection module"
             )
-            if seed.projection_file_path() != seed.authority_file_path()
-            else ""
-        )
-        if authority_import_source is None:
-            return None
-        return EnumSubsetSemanticMirrorRecipeParts(
-            projection=EnumSubsetProjectionTarget(
-                projection_path=seed.projection_file_path(),
-                mapping_name=seed.mapping_name,
-            ),
-            authority=EnumSubsetAuthorityTarget(
-                target=projection.authority.target,
-                import_source=authority_import_source,
-            ),
-            selection=EnumSubsetMemberSelection(
-                accessor_name=method_name,
-                selected_names=self.finding.metrics.plan_field_names,
-            ),
-            class_source=MappingSemanticMirrorRecipeStrategy.target_source(
-                self,
-                projection.authority.target,
-            ),
-        )
+        try:
+            operation.required_derivation(self)
+        except ValueError as error:
+            return str(error)
+        return "enum subset projection has an executable authority recipe"
 
 
 @dataclass(frozen=True)
@@ -20160,21 +20411,11 @@ class ClassFamilyCollectionCandidate:
 class ClassFamilyCollectionAuthorityProof:
     """Authority and source context for proving one family projection."""
 
-    resolver: ModuleClassReferenceResolver
-    symbol_table: ModuleSymbolTable
+    reference: ClassAuthorityReferenceProof
     class_index: ClassFamilyIndex
     authority_symbol: str
     authority_declaration: IndexedClass
     descendant_symbols: tuple[str, ...]
-
-    @property
-    def unavailable_builtin_names(self) -> frozenset[str]:
-        return frozenset(
-            (
-                *self.symbol_table.top_level_names,
-                *self.symbol_table.import_sources_by_name,
-            )
-        )
 
     def candidate_for_statement(
         self,
@@ -20189,8 +20430,8 @@ class ClassFamilyCollectionAuthorityProof:
                 candidate
                 for collection in ClassFamilyCollectionProjection.from_value(
                     value,
-                    self.unavailable_builtin_names,
-                    self.resolver,
+                    self.reference.unavailable_builtin_names,
+                    self.reference.resolver,
                     self.descendant_symbols,
                 )
                 if (
@@ -20284,28 +20525,20 @@ class ClassFamilyCollectionDerivation:
             raise ValueError("Class-family collection projection must target a module")
         authority = ResolvedClassTarget(authority_digest, authority_node)
         class_index = context.required_class_family_index
-        authority_symbol = class_index.symbol_for(
-            file_path=authority.file_path,
-            qualname=authority.qualname,
+        reference_proof = ClassAuthorityReferenceProof.from_context(
+            context,
+            authority,
+            projection_module.file_path,
         )
-        if authority_symbol is None:
-            raise ValueError("Class-family authority has no indexed nominal identity")
+        authority_symbol = reference_proof.authority_symbol
         authority_declaration = class_index.class_for(authority_symbol)
         if authority_declaration is None:
             raise ValueError("Class-family authority declaration is unavailable")
         descendant_symbols = class_index.descendant_symbols(authority_symbol)
         if not descendant_symbols:
             raise ValueError("Class-family authority has no indexed descendants")
-        parsed_module = cls.parsed_projection_module(context, projection_module)
-        symbol_table = ModuleSymbolTable(
-            file_path=projection_module.file_path,
-            source=parsed_module.source,
-            module=parsed_module.module,
-        )
-        resolver = ModuleClassReferenceResolver(parsed_module, class_index)
         proof = ClassFamilyCollectionAuthorityProof(
-            resolver=resolver,
-            symbol_table=symbol_table,
+            reference=reference_proof,
             class_index=class_index,
             authority_symbol=authority_symbol,
             authority_declaration=authority_declaration,
@@ -20313,7 +20546,7 @@ class ClassFamilyCollectionDerivation:
         )
         candidates = tuple(
             candidate
-            for statement in parsed_module.module.body
+            for statement in reference_proof.projection_module.module.body
             if (candidate := proof.candidate_for_statement(statement)) is not None
         )
         if len(candidates) != 1:
@@ -20325,90 +20558,8 @@ class ClassFamilyCollectionDerivation:
             authority=authority,
             projection_module=projection_module,
             candidate=candidates[0],
-            import_source=cls.required_import_source(
-                context,
-                authority,
-                authority_symbol,
-                parsed_module,
-                symbol_table,
-                resolver,
-            ),
+            import_source=reference_proof.required_import_source(context),
         )
-
-    @staticmethod
-    def parsed_projection_module(
-        context: CodemodSelectorContext,
-        projection_module: AstTargetDigest,
-    ) -> ParsedModule:
-        source_file = context.module_import_graph.source_file_for_path(
-            projection_module.file_path
-        )
-        module = context.module_nodes_by_file_path.get(projection_module.file_path)
-        source = context.sources_by_file_path.get(projection_module.file_path)
-        if source_file is None or module is None or source is None:
-            raise ValueError("Class-family projection module source is unavailable")
-        return ParsedModule(
-            path=Path(projection_module.file_path),
-            module_name=source_file.module_name,
-            is_package_init=source_file.is_package_init,
-            module=module,
-            source=source,
-        )
-
-    @staticmethod
-    def required_import_source(
-        context: CodemodSelectorContext,
-        authority: ResolvedClassTarget,
-        authority_symbol: str,
-        parsed_module: ParsedModule,
-        symbol_table: ModuleSymbolTable,
-        resolver: ModuleClassReferenceResolver,
-    ) -> str | None:
-        if any(
-            isinstance(statement, ast.ImportFrom)
-            and any(alias.name == "*" for alias in statement.names)
-            for statement in parsed_module.module.body
-        ):
-            raise ValueError(
-                "Class-family projection module has an ambiguous star import"
-            )
-        authority_name = authority.target.name
-        declaration_bindings = symbol_table.binding_statements(authority_name)
-        import_binding = symbol_table.import_sources_by_name.get(authority_name)
-        if parsed_module.file_path == authority.file_path:
-            authority_binding_is_exact = (
-                len(declaration_bindings) == 1
-                and isinstance(declaration_bindings[0], ast.ClassDef)
-                and declaration_bindings[0].lineno == authority.target.line
-                and declaration_bindings[0].name == authority_name
-            )
-            if not authority_binding_is_exact or import_binding is not None:
-                raise ValueError(
-                    f"Class-family authority name {authority_name!r} is rebound"
-                )
-            return None
-        if declaration_bindings:
-            raise ValueError(
-                f"Class-family authority name {authority_name!r} is rebound"
-            )
-        reference = ast.Name(id=authority_name, ctx=ast.Load())
-        if resolver.symbol_for_reference(reference) == authority_symbol:
-            return None
-        if import_binding is not None:
-            raise ValueError(
-                f"Class-family authority name {authority_name!r} is imported from "
-                "another declaration"
-            )
-        import_source = context.module_import_graph.import_source(
-            importing_file_path=parsed_module.file_path,
-            imported_file_path=authority.file_path,
-            imported_name=authority_name,
-        )
-        if import_source is None:
-            raise ValueError(
-                "Class-family authority has no cycle-safe canonical import"
-            )
-        return import_source
 
     def replacement_source(self) -> str:
         candidate = self.candidate
@@ -20506,30 +20657,18 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     """Build a source-derived class-family projection recipe."""
 
     @cached_property
+    def targets(self) -> SemanticMirrorOperationTargets | None:
+        return SemanticMirrorOperationTargets.from_finding(self, self.finding)
+
+    @cached_property
     def candidate_operation(self) -> DeriveClassFamilyCollectionOperation | None:
-        locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
-        if locations is None:
-            return None
-        projection_location, authority_location = locations
-        projection_paths = self.resolve_source_paths((projection_location.file_path,))
-        if len(projection_paths) != 1:
-            return None
-        authority = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            authority_location,
-            authority_location.symbol,
-        )
-        if authority is None:
-            return None
-        projection_path = next(iter(projection_paths))
-        projection_target_id = SourceRewriteTarget(
-            file_path=projection_path
-        ).optional_target_id(self.source_index)
-        if projection_target_id is None:
+        if self.targets is None:
             return None
         return DeriveClassFamilyCollectionOperation(
-            target=SourceRewriteTarget(target_id=authority.target.target_id),
-            projection_target_id=projection_target_id,
+            target=SourceRewriteTarget(
+                target_id=self.targets.authority.target.target_id
+            ),
+            projection_target_id=self.targets.projection_module.target_id,
         )
 
     @cached_property
@@ -20545,10 +20684,8 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 
     def recipe(self) -> RefactorRecipe | None:
         operation = self.proven_operation
-        if operation is None:
+        if operation is None or self.targets is None:
             return None
-        authority_target_id = operation.target.required_target_id(self.source_index)
-        authority_target = self.source_index.target_by_id[authority_target_id]
         return (
             RefactorRecipe(
                 recipe_id=(f"{self.finding.stable_id}-derive-class-family-collection"),
@@ -20556,7 +20693,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
             )
             .with_authority_claim(
                 AstTargetAuthorityClaim.from_target(
-                    authority_target,
+                    self.targets.authority.target,
                     authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
                 )
             )
@@ -20792,32 +20929,6 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
             return None
         return ResolvedClassTarget(target=target, node=node)
 
-    @staticmethod
-    def enum_value_tokens(value: ast.AST) -> frozenset[str]:
-        return frozenset(
-            item.value
-            for item in ast.walk(value)
-            if isinstance(item, ast.Constant) and isinstance(item.value, str)
-        )
-
-    @staticmethod
-    def class_defines_method(node: ast.ClassDef, method_name: str) -> bool:
-        return any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and statement.name == method_name
-            for statement in node.body
-        )
-
-    @staticmethod
-    def target_source(
-        context: CodemodSelectorContext,
-        target: AstTargetDigest,
-    ) -> str:
-        source_lines = context.sources_by_file_path[target.file_path].splitlines(
-            keepends=True
-        )
-        return "".join(source_lines[target.line - 1 : target.end_line])
-
 
 class BranchSemanticMirrorRecipeStrategy(
     SharedActionKeysForFindingMixin,
@@ -20864,16 +20975,6 @@ class BranchSemanticMirrorRecipeStrategy(
             module_import_graph_cache=context.module_import_graph,
             finding=finding,
         )
-
-
-def _semantic_mirror_method_name(mapping_name: str) -> str:
-    identifier = re.sub(r"[^0-9A-Za-z_]+", "_", mapping_name.strip("_").lower())
-    identifier = re.sub(r"_+", "_", identifier).strip("_")
-    if not identifier:
-        return "derived_values"
-    if identifier[0].isdigit():
-        return f"derived_{identifier}"
-    return identifier
 
 
 class SemanticMirrorRegistrationFindingRecipeSynthesizer(
