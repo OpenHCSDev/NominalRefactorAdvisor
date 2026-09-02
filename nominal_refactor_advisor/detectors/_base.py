@@ -153,7 +153,6 @@ from ..models import (
     CallSiteCountMetric,
     CertifiedFindingSpec,
     DispatchCountMetrics,
-    ExactLeafMethodAncestorPromotionMetrics,
     FindingMetrics,
     FindingSemantics,
     FindingSpec,
@@ -1168,6 +1167,10 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     evidence: CandidateEvidenceRenderer[CandidateItemT]
     compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
+    authority_evidence: OptionalCandidateValueRenderer[
+        CandidateItemT,
+        SourceLocation,
+    ] = None
 
     @classmethod
     def presentation_context_tokens(cls) -> frozenset[str]:
@@ -1188,6 +1191,10 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
                 candidate, self.compression_certificate
             ),
             metrics=self._optional_value(candidate, self.metrics),
+            authority_evidence=self._optional_value(
+                candidate,
+                self.authority_evidence,
+            ),
         )
 
     def build(
@@ -2141,6 +2148,10 @@ def declare_candidate_rule_detector(
         CandidateItemT
     ] = None,
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None,
+    authority_evidence: OptionalCandidateValueRenderer[
+        CandidateItemT,
+        SourceLocation,
+    ] = None,
     **detector_options: Unpack[DetectorDeclarationOptionKwargs[CandidateItemT]],
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
@@ -2152,6 +2163,7 @@ def declare_candidate_rule_detector(
         evidence=evidence,
         compression_certificate=compression_certificate,
         metrics=metrics,
+        authority_evidence=authority_evidence,
     )
     try:
         return _declare_module_detector_in(
@@ -8765,40 +8777,6 @@ class ExactTinyMethodRoleCandidate(
             symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
         )
     )
-
-
-@dataclass(frozen=True)
-class ExactLeafMethodAncestorPromotionCandidate(
-    MethodFamilyLineCompressionSurface,
-    LineWitnessCandidate,
-):
-    """Exact methods owned by every leaf of one proved direct authority."""
-
-    authority_symbol: str
-    authority_name: str
-    authority_line: int
-    method_names: tuple[str, ...]
-    participant_class_symbols: tuple[str, ...]
-    participant_class_names: tuple[str, ...]
-    method_symbols: tuple[str, ...]
-    file_paths: tuple[str, ...]
-    statement_count: int
-    method_line_count: int
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return (
-            SourceLocation(self.file_path, self.authority_line, self.authority_name),
-            *(
-                SourceLocation(file_path, line, method_symbol)
-                for file_path, line, method_symbol in zip(
-                    self.file_paths,
-                    self.line_numbers,
-                    self.method_symbols,
-                    strict=True,
-                )
-            ),
-        )
 
 
 @dataclass(frozen=True)

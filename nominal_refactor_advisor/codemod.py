@@ -57,8 +57,6 @@ from .ast_tools import (
     walk_function_body_nodes,
 )
 from .class_index import (
-    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
-    ClosedLeafMethodAuthorityProof,
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
     ClassHeaderSourceSpan,
@@ -67,7 +65,6 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
-    declared_nominal_base_count,
 )
 from .codemod_payload import (
     BooleanPayloadValueCodec,
@@ -101,11 +98,14 @@ from .detectors._base import (
     IssueDetector,
 )
 from .descriptor_algebra import ConstantProperty
+from .exact_method_authority import (
+    ExactLeafMethodAncestorPromotionComponent,
+    ExactLeafMethodAncestorPromotionComponentBuilder,
+)
 from .models import (
     AutoRegisterMetaRentMetrics,
     BranchCountMetrics,
     EnvironmentBooleanDriftMetrics,
-    ExactLeafMethodAncestorPromotionMetrics,
     EvidenceSymbol,
     FindingMetrics,
     MappingMetrics,
@@ -2034,6 +2034,27 @@ class CodemodSelectorContext:
             self.source_index.target_by_id[target_identifier],
             self.ast_target_nodes_by_id[target_identifier],
         )
+
+    def required_class_target_for_authority_evidence(
+        self,
+        evidence: SourceLocation,
+    ) -> AstTargetDigest:
+        """Resolve a class authority by declaration identity, not stale geometry."""
+
+        source_paths = self.resolve_source_paths((evidence.file_path,))
+        targets = tuple(
+            target
+            for target in self.source_index.targets_matching_repository_symbol(
+                evidence.symbol
+            )
+            if target.is_class and target.file_path in source_paths
+        )
+        if len(targets) != 1:
+            raise ValueError(
+                f"Class authority evidence {evidence.symbol!r} resolves to "
+                f"{len(targets)} source targets"
+            )
+        return targets[0]
 
 
 @dataclass(frozen=True)
@@ -5985,9 +6006,10 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
 
 
 @dataclass(frozen=True)
-class ExistingAncestorMethodPromotionTargets:
-    """Resolved existing authority and complete leaf family for method promotion."""
+class ExactLeafMethodAncestorPromotionTargets:
+    """Physical targets for one currently proven exact-method component."""
 
+    component: ExactLeafMethodAncestorPromotionComponent
     authority: ResolvedClassTarget
     participants: ClassMemberPromotionTargets
 
@@ -5995,179 +6017,23 @@ class ExistingAncestorMethodPromotionTargets:
     def resolve(
         cls,
         context: CodemodSelectorContext,
-        *,
-        source_path: str | None,
-        authority_name: str,
-        class_names: tuple[str, ...],
-    ) -> "ExistingAncestorMethodPromotionTargets":
+        component: ExactLeafMethodAncestorPromotionComponent,
+    ) -> "ExactLeafMethodAncestorPromotionTargets":
         resolved = ClassMemberPromotionTargets.resolve(
             context,
-            source_path=source_path,
-            class_names=(authority_name, *class_names),
+            source_path=component.file_path,
+            class_names=(
+                component.authority_name,
+                *component.participant_class_names,
+            ),
         )
         return cls(
+            component=component,
             authority=resolved.targets[0],
             participants=replace(resolved, targets=resolved.targets[1:]),
         )
 
-    @property
-    def class_index(self) -> ClassFamilyIndex:
-        return self.participants.required_class_family_index
-
-    @cached_property
-    def authority_symbol(self) -> str:
-        symbol = self.class_index.symbol_for(
-            file_path=self.authority.file_path,
-            qualname=self.authority.qualname,
-        )
-        if symbol is None:
-            raise ValueError("Existing method authority is absent from the class index")
-        return symbol
-
-    @cached_property
-    def authority_class(self) -> IndexedClass:
-        indexed_class = self.class_index.class_for(self.authority_symbol)
-        if indexed_class is None:
-            raise ValueError("Existing method authority is absent from the class index")
-        return indexed_class
-
-    @cached_property
-    def participant_symbols(self) -> tuple[str, ...]:
-        return self.participants.required_class_symbols
-
-    @cached_property
-    def participant_classes(self) -> tuple[IndexedClass, ...]:
-        return self.participants.indexed_classes
-
-    @staticmethod
-    def declared_member_names(indexed_class: IndexedClass) -> frozenset[str]:
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(indexed_class.node.body)
-
-    def class_decorators_are_method_ownership_neutral(
-        self,
-        indexed_class: IndexedClass,
-    ) -> bool:
-        return indexed_class.class_decorators_are_promotion_safe
-
-    def proof(self, method_names: tuple[str, ...]) -> ClosedLeafMethodAuthorityProof:
-        common_direct_base_symbols = tuple(
-            sorted(
-                set.intersection(
-                    *(
-                        set(indexed_class.resolved_base_symbols)
-                        for indexed_class in self.participant_classes
-                    )
-                )
-            )
-        )
-        common_declared_nominal_base_names = tuple(
-            sorted(
-                set.intersection(
-                    *(
-                        {
-                            base_name
-                            for base_name in indexed_class.declared_base_names
-                            if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                                base_name
-                            )
-                        }
-                        for indexed_class in self.participant_classes
-                    )
-                )
-            )
-        )
-        authority_lineage_symbols = frozenset(
-            (
-                self.authority_symbol,
-                *self.class_index.ancestor_symbols(self.authority_symbol),
-            )
-        )
-        participant_ancestor_symbols = frozenset(
-            ancestor_symbol
-            for participant_symbol in self.participant_symbols
-            for ancestor_symbol in self.class_index.ancestor_symbols(participant_symbol)
-        )
-        relevant_symbols = frozenset(
-            (*self.participant_symbols, *participant_ancestor_symbols)
-        )
-        directly_rewritten_symbols = frozenset(
-            (self.authority_symbol, *self.participant_symbols)
-        )
-        return ClosedLeafMethodAuthorityProof(
-            authority_symbol=self.authority_symbol,
-            authority_simple_name=self.authority_class.simple_name,
-            participant_symbols=self.participant_symbols,
-            common_direct_base_symbols=common_direct_base_symbols,
-            common_declared_nominal_base_names=(common_declared_nominal_base_names),
-            authority_direct_child_symbols=self.class_index.children_by_symbol.get(
-                self.authority_symbol,
-                (),
-            ),
-            non_leaf_participant_symbols=tuple(
-                symbol
-                for symbol in self.participant_symbols
-                if self.class_index.children_by_symbol.get(symbol)
-            ),
-            incompletely_resolved_symbols=tuple(
-                sorted(
-                    symbol
-                    for symbol in relevant_symbols
-                    if (indexed_class := self.class_index.class_for(symbol)) is not None
-                    and len(indexed_class.resolved_base_symbols)
-                    != declared_nominal_base_count(indexed_class)
-                )
-            ),
-            method_ownership_sensitive_symbols=tuple(
-                sorted(
-                    symbol
-                    for symbol in relevant_symbols
-                    if (indexed_class := self.class_index.class_for(symbol)) is not None
-                    and (
-                        indexed_class.node.keywords
-                        or indexed_class.declares_autoregister_meta
-                        or bool(
-                            self.declared_member_names(indexed_class)
-                            & CLASS_METHOD_OWNERSHIP_HOOK_NAMES
-                        )
-                        or (
-                            symbol in directly_rewritten_symbols
-                            and not self.class_decorators_are_method_ownership_neutral(
-                                indexed_class
-                            )
-                        )
-                    )
-                )
-            ),
-            authority_lineage_member_names=tuple(
-                sorted(
-                    {
-                        member_name
-                        for symbol in authority_lineage_symbols
-                        if (indexed_class := self.class_index.class_for(symbol))
-                        is not None
-                        for member_name in self.declared_member_names(indexed_class)
-                    }
-                )
-            ),
-            competing_ancestor_member_names=tuple(
-                sorted(
-                    {
-                        member_name
-                        for symbol in participant_ancestor_symbols
-                        - authority_lineage_symbols
-                        if (indexed_class := self.class_index.class_for(symbol))
-                        is not None
-                        for member_name in self.declared_member_names(indexed_class)
-                    }
-                )
-            ),
-            promoted_method_names=method_names,
-            receiver_member_names=tuple(
-                sorted(self.participants.receiver_member_names(method_names))
-            ),
-        )
-
-    def validation_failure(self, method_names: tuple[str, ...]) -> str | None:
+    def validation_failure(self) -> str | None:
         if not self.participants.targets:
             return "Existing-ancestor method promotion requires participating leaves"
         if "." in self.authority.qualname:
@@ -6178,13 +6044,10 @@ class ExistingAncestorMethodPromotionTargets:
         ):
             return "Existing-ancestor method promotion requires one source file"
         declaration_failure = self.participants.exact_method_declaration_failure(
-            method_names
+            self.component.method_names
         )
         if declaration_failure is not None:
             return declaration_failure
-        proof = self.proof(method_names)
-        if not proof.is_proven:
-            return proof.rejection_reason
         return None
 
 
@@ -6369,15 +6232,57 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
         return f"class {self.base_name}:\n    __slots__ = ()\n\n{''.join(members)}"
 
 
+@dataclass(frozen=True)
+class _ExactLeafMethodAncestorPromotionSourceRewrite:
+    """Source edits derived from one currently proven method component."""
+
+    targets: ExactLeafMethodAncestorPromotionTargets
+    rationale: str
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return (
+            self.authority_replacement(),
+            *ClassMemberDeletionReplacementPlan(
+                member_names=self.targets.component.method_names,
+                statement_type=ClassMethodPromotionStatement,
+                rationale=self.rationale,
+            ).source_edits(self.targets.participants),
+        )
+
+    def authority_replacement(self) -> SourceSpanReplacement:
+        authority = self.targets.authority
+        source = self.targets.participants.source_for(authority.file_path)
+        source_class = self.targets.participants.targets[0].node
+        member_sources = ClassMemberSourceSelection(
+            member_names=self.targets.component.method_names,
+            statement_type=ClassMethodPromotionStatement,
+            source_text=source,
+            source_class=source_class,
+        ).member_sources
+        insertion_point = ClassBodyInsertionPoint(source, authority.node)
+        replacement_source = SourceTextGeometry(source).target_source_with_replacements(
+            authority.target,
+            (
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=insertion_point.before_first_method_offset,
+                    end_offset=insertion_point.before_first_method_offset,
+                    replacement_source=insertion_point.member_source(member_sources),
+                ),
+            ),
+        )
+        return SourceSpanReplacement(
+            file_path=authority.file_path,
+            start_line=authority.target.line,
+            end_line=authority.target.end_line,
+            replacement_lines=SourceTargetEditor.source_lines(replacement_source),
+            rationale=self.rationale
+            or f"Move exact shared methods to {authority.qualname!r}.",
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
-    """Move a complete exact leaf-method set to its proved existing authority."""
-
-    authority_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    class_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
-    method_names: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
+    """Re-prove and promote one authority-wide exact leaf-method component."""
 
     def source_edits(
         self,
@@ -6393,40 +6298,19 @@ class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        context = (
-            CodemodSourceSnapshot.from_indexed_sources(
-                source_index,
-                source_by_path,
-            )
-            if selector_context is None
-            else selector_context
-        )
-        targets = self.resolved_targets(context, source_index)
-        failure = targets.validation_failure(self.method_names)
-        if failure is not None:
-            raise self.failed_preflight(failure)
-        return (
-            self.authority_replacement(targets),
-            *ClassMemberDeletionReplacementPlan(
-                member_names=self.method_names,
-                statement_type=ClassMethodPromotionStatement,
-                rationale=self.rationale,
-            ).source_edits(targets.participants),
-        )
-
-    def resolved_targets(
-        self,
-        context: CodemodSelectorContext,
-        source_index: SourceIndex,
-    ) -> ExistingAncestorMethodPromotionTargets:
         try:
-            return ExistingAncestorMethodPromotionTargets.resolve(
-                context,
-                source_path=self.target.optional_file_path(source_index),
-                authority_name=self.authority_name,
-                class_names=self.class_names,
+            snapshot = (
+                CodemodSourceSnapshot.from_indexed_sources(
+                    source_index,
+                    source_by_path,
+                )
+                if selector_context is None
+                else selector_context.execution_snapshot()
             )
-        except ValueError as error:
+            return self._source_rewrite(snapshot).source_edits()
+        except CodemodOperationPreflightError:
+            raise
+        except (TypeError, ValueError) as error:
             raise self.failed_preflight(str(error)) from error
 
     def preflight_reports(
@@ -6436,19 +6320,12 @@ class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        context = (
-            CodemodSourceSnapshot.from_indexed_sources(
+        try:
+            self.source_edits_with_context(
                 source_index,
                 source_by_path,
+                selector_context=selector_context,
             )
-            if selector_context is None
-            else selector_context
-        )
-        try:
-            targets = self.resolved_targets(context, source_index)
-            failure = targets.validation_failure(self.method_names)
-            if failure is not None:
-                raise self.failed_preflight(failure)
         except CodemodOperationPreflightError as error:
             return (error.report,)
         return ()
@@ -6459,50 +6336,33 @@ class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
                 operation=self.operation_key(),
                 status=CodemodPreflightStatus.FAILED,
                 message=message,
-                details={
-                    "authority_name": self.authority_name,
-                    "class_names": self.class_names,
-                    "method_names": self.method_names,
-                },
+                details={"target": self.target.to_dict()},
             )
         )
 
-    def authority_replacement(
+    def _source_rewrite(
         self,
-        targets: ExistingAncestorMethodPromotionTargets,
-    ) -> SourceSpanReplacement:
-        authority = targets.authority
-        source = targets.participants.source_for(authority.file_path)
-        source_class = targets.participants.targets[0].node
-        member_sources = ClassMemberSourceSelection(
-            member_names=self.method_names,
-            statement_type=ClassMethodPromotionStatement,
-            source_text=source,
-            source_class=source_class,
-        ).member_sources
-        insertion_point = ClassBodyInsertionPoint(
-            source,
-            authority.node,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _ExactLeafMethodAncestorPromotionSourceRewrite:
+        _target_identifier, authority_target, _authority_node = (
+            self.target_node_from_context(snapshot)
         )
-        insertion_offset = insertion_point.before_first_method_offset
-        insertion_source = insertion_point.member_source(member_sources)
-        replacement_source = SourceTextGeometry(source).target_source_with_replacements(
-            authority.target,
-            (
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_offset,
-                    end_offset=insertion_offset,
-                    replacement_source=insertion_source,
-                ),
-            ),
+        if not authority_target.is_class:
+            raise ValueError("exact method authority target must be a class")
+        authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
+        component = ExactLeafMethodAncestorPromotionComponentBuilder.from_modules(
+            snapshot.parsed_modules
+        ).required_proven_component(authority_symbol)
+        targets = ExactLeafMethodAncestorPromotionTargets.resolve(
+            snapshot,
+            component,
         )
-        return SourceSpanReplacement(
-            file_path=authority.file_path,
-            start_line=authority.target.line,
-            end_line=authority.target.end_line,
-            replacement_lines=SourceTargetEditor.source_lines(replacement_source),
-            rationale=self.rationale
-            or f"Move exact shared methods to {authority.qualname!r}.",
+        failure = targets.validation_failure()
+        if failure is not None:
+            raise ValueError(failure)
+        return _ExactLeafMethodAncestorPromotionSourceRewrite(
+            targets=targets,
+            rationale=self.rationale,
         )
 
 
@@ -13818,24 +13678,11 @@ class ClosedParameterConveyorFindingRecipeSynthesizer(
                 "parameter-conveyor finding lacks authority evidence"
             )
         try:
-            file_paths = context.resolve_source_paths((authority_location.file_path,))
+            authority_target = context.required_class_target_for_authority_evidence(
+                authority_location
+            )
         except ValueError as error:
             return self.rejected_evaluation(str(error))
-        authority_targets = tuple(
-            target
-            for target in context.source_index.ast_targets
-            if target.is_class
-            and target.file_path in file_paths
-            and target.line == authority_location.line
-            and context.source_index.symbol_for_target(target)
-            == authority_location.symbol
-        )
-        if len(authority_targets) != 1:
-            return self.rejected_evaluation(
-                f"parameter-conveyor authority evidence resolves to "
-                f"{len(authority_targets)} class targets"
-            )
-        authority_target = authority_targets[0]
         operation = CollapseClosedParameterConveyorOperation(
             target=SourceRewriteTarget(target_id=authority_target.target_id),
         )
@@ -15045,50 +14892,19 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "closed-family method promotion requires source context"
             )
-        metrics = finding.metrics
-        if not isinstance(metrics, ExactLeafMethodAncestorPromotionMetrics):
+        authority_location = finding.authority_evidence
+        if authority_location is None:
             return self.rejected_evaluation(
-                "closed-family method promotion lacks typed authority facts"
+                "closed-family method promotion lacks authority evidence"
             )
-        class_index = context.required_class_family_index
-        authority = class_index.class_for(metrics.authority_symbol)
-        participants = tuple(
-            class_index.class_for(symbol)
-            for symbol in metrics.participant_class_symbols
-        )
-        if authority is None or any(
-            participant is None for participant in participants
-        ):
-            return self.rejected_evaluation(
-                "closed-family method promotion targets are no longer indexed"
+        try:
+            authority_target = context.required_class_target_for_authority_evidence(
+                authority_location
             )
-        indexed_participants = tuple(
-            participant for participant in participants if participant is not None
-        )
-        if any(
-            participant.file_path != authority.file_path
-            for participant in indexed_participants
-        ):
-            return self.rejected_evaluation(
-                "closed-family method promotion no longer occupies one source file"
-            )
-        authority_target = ClassMemberPromotionTargets.optional_class_target(
-            context.source_index,
-            context.ast_target_nodes_by_id,
-            source_path=authority.file_path,
-            class_name=authority.qualname,
-        )
-        if authority_target is None:
-            return self.rejected_evaluation(
-                "closed-family method authority has no unique source target"
-            )
+        except ValueError as error:
+            return self.rejected_evaluation(str(error))
         operation = PromoteExactLeafMethodsToAncestorOperation(
-            target=SourceRewriteTarget(file_path=authority.file_path),
-            authority_name=authority.qualname,
-            class_names=tuple(
-                participant.qualname for participant in indexed_participants
-            ),
-            method_names=metrics.method_names,
+            target=SourceRewriteTarget(target_id=authority_target.target_id),
             rationale="",
         )
         recipe = (
@@ -15099,9 +14915,7 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
                     "nominal authority."
                 ),
             )
-            .with_authority_claim(
-                AstTargetAuthorityClaim.from_target(authority_target.target)
-            )
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(authority_target))
             .with_operation(operation)
         )
         return self.executable_evaluation(recipe)
@@ -15110,28 +14924,13 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        metrics = finding.metrics
-        if not isinstance(metrics, ExactLeafMethodAncestorPromotionMetrics):
-            return ()
-        authority_location = next(
-            (
-                evidence
-                for evidence in finding.evidence
-                if EvidenceSymbol(evidence.symbol).subject
-                == metrics.authority_symbol.rsplit(".", 1)[-1]
-            ),
-            None,
-        )
-        if authority_location is None:
-            return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            (
-                (authority_location.file_path, metrics.authority_symbol),
-                *(
-                    (authority_location.file_path, method_symbol)
-                    for method_symbol in metrics.method_symbols
-                ),
+            sorted(
+                {
+                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
+                    for evidence in finding.evidence
+                }
             ),
         )
 

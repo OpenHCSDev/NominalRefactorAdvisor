@@ -422,8 +422,23 @@ class SourceIndex:
                 builder.append(symbol, target)
         return builder.to_tuple_index()
 
+    @cached_property
+    def targets_by_repository_symbol(self) -> TupleIndex[str, AstTargetDigest]:
+        """Index declarations by their module-qualified source identity."""
+
+        builder = TupleListIndexBuilder[str, AstTargetDigest]()
+        for target in self.ast_targets:
+            builder.append(self.symbol_for_target(target), target)
+        return builder.to_tuple_index()
+
     def targets_matching_symbol(self, symbol: str) -> tuple[AstTargetDigest, ...]:
         return self.targets_by_symbol.tuple_for_key(symbol)
+
+    def targets_matching_repository_symbol(
+        self,
+        symbol: str,
+    ) -> tuple[AstTargetDigest, ...]:
+        return self.targets_by_repository_symbol.tuple_for_key(symbol)
 
     @cached_property
     def evidence_target_relation(self) -> EvidenceTargetRelation:

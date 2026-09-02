@@ -15,6 +15,7 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
 from ..codemod import ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer
+from ..exact_method_authority import ExactLeafMethodAncestorPromotionComponent
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
 from ..source_identity import source_path_text
@@ -267,13 +268,13 @@ class _CompactExactTinyMethodRoleDetectorBase(
 
 class _CompactExactLeafMethodAncestorPromotionDetectorBase(
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
-    _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionCandidate],
+    _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionComponent],
 ):
     def _candidates_from_compact_context(
         self,
         context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[ExactLeafMethodAncestorPromotionCandidate]:
+    ) -> Sequence[ExactLeafMethodAncestorPromotionComponent]:
         del config
         return context.exact_ancestor_promotion_candidates
 
@@ -352,7 +353,7 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    ExactLeafMethodAncestorPromotionCandidate,
+    ExactLeafMethodAncestorPromotionComponent,
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Closed leaf family repeats methods owned by its direct authority",
@@ -377,15 +378,13 @@ declare_candidate_rule_detector(
         "that existing class as the unique owner."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
+    authority_evidence=lambda candidate: candidate.evidence_locations[0],
     compression_certificate=lambda candidate: candidate.compression_certificate,
-    metrics=lambda candidate: ExactLeafMethodAncestorPromotionMetrics(
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.participant_class_symbols),
         statement_count=candidate.statement_count,
         class_count=len(candidate.participant_class_symbols),
         method_symbols=candidate.method_symbols,
-        authority_symbol=candidate.authority_symbol,
-        participant_class_symbols=candidate.participant_class_symbols,
-        method_names=candidate.method_names,
     ),
     detector_name="ExactLeafMethodAncestorPromotionDetector",
     detector_base=_CompactExactLeafMethodAncestorPromotionDetectorBase,

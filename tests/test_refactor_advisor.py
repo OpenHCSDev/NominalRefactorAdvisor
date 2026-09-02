@@ -105,6 +105,7 @@ from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodProjectedScanMode,
+    CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryBudget,
     CodemodRefactorTrajectoryObstacleKind,
     CodemodRefactorTrajectoryStatus,
@@ -3672,6 +3673,8 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
+    assert findings[0].authority_evidence is findings[0].evidence[0]
+    assert findings[0].authority_evidence.symbol == "pkg.mod.CommonRole"
     plan = snapshot.plan_from_findings(
         findings,
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
@@ -3691,9 +3694,10 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     assert type(RefactorRecipeOperation.from_dict(operation)) is (
         PromoteExactLeafMethodsToAncestorOperation
     )
-    assert operation["authority_name"] == "CommonRole"
-    assert operation["method_names"] == ("render", "slug")
-    assert operation["class_names"] == _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    assert operation["target_id"] is not None
+    assert "authority_name" not in operation
+    assert "method_names" not in operation
+    assert "class_names" not in operation
     assert simulation.is_clean is True
     assert rewritten.count("def render") == 1
     assert rewritten.count("def slug") == 1
@@ -3719,6 +3723,24 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
         )
         assert "render" not in class_type.__dict__
         assert "slug" not in class_type.__dict__
+
+    goal_report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=ClassFamilyAuthorityConcept,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert goal_report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PROVED
+    assert goal_report.stage_count == 1
+    assert goal_report.final_target_finding_ids == ()
+    assert (
+        goal_report.replay_sequence.documents[0].recipes[0].operations[0].to_dict()
+        == operation
+    )
     simulation.document_simulation.apply()
     assert (
         _exact_leaf_method_ancestor_promotion_findings(parse_python_modules(tmp_path))
@@ -9828,7 +9850,9 @@ def require_secondary_executor(value):
     assert "require_shard_executor" in finding.summary
     assert "ShardExecutor" in finding.summary
     assert "ExactScoreShardExecutor" in finding.summary
-    assert finding.title == "Exact-type boundary guard conflicts with nominal descendants"
+    assert (
+        finding.title == "Exact-type boundary guard conflicts with nominal descendants"
+    )
     assert "one declared boundary-membership contract" in finding.capability_gap
     assert "incompatible membership sets" in finding.relation_context
     assert isinstance(finding.metrics, HierarchyCandidateMetrics)
