@@ -1728,11 +1728,8 @@ class CodemodRefactorGoalRunner:
 
             valid_transition_count = 0
             for branch in frontier.branches:
-                simulation = branch.document.simulate_snapshot(snapshot)
-                if (
-                    not simulation.is_clean
-                    or simulation.simulation.applied_rewrite_count == 0
-                ):
+                simulation = branch.document_simulation
+                if simulation.simulation.applied_rewrite_count == 0:
                     continue
                 valid_transition_count += 1
                 transition_count += 1

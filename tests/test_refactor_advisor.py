@@ -1877,14 +1877,23 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
         "a = 2\nb = 2\n"
     )
     assert batch_evaluation.trajectory_frontier.complete
-    assert {
-        frozenset(branch.candidate_indices)
+    branches_by_candidate_indices = {
+        frozenset(branch.candidate_indices): branch
         for branch in batch_evaluation.trajectory_frontier.branches
-    } == {
+    }
+    assert set(branches_by_candidate_indices) == {
         frozenset((0,)),
         frozenset((1,)),
         frozenset((0, 1)),
     }
+    for candidate_indices, branch in branches_by_candidate_indices.items():
+        cached_result = batch_evaluation.simulate_recipe_set(
+            tuple(sorted(candidate_indices))
+        )
+        assert branch.document_simulation is (
+            cached_result.required_document_simulation
+        )
+        assert branch.assessment is cached_result.assessment
 
 
 def test_finding_recipe_trajectory_frontier_fails_closed_at_enumeration_budget(
@@ -15306,6 +15315,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
 
 def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
@@ -15364,6 +15374,29 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
 
     previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
     _FINDING_RECIPE_TEST_REGISTRY[detector_id] = GoalTestSynthesizer
+    simulated_documents: list[CodemodPlanDocument] = []
+    simulation_call_counts: dict[int, int] = {}
+    original_simulate_snapshot = CodemodPlanDocument.simulate_snapshot
+
+    def track_document_simulation(
+        document: CodemodPlanDocument,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ):
+        document_identity = id(document)
+        if document_identity not in simulation_call_counts:
+            simulated_documents.append(document)
+        simulation_call_counts[document_identity] = (
+            simulation_call_counts.get(document_identity, 0) + 1
+        )
+        return original_simulate_snapshot(document, snapshot, backend=backend)
+
+    monkeypatch.setattr(
+        CodemodPlanDocument,
+        "simulate_snapshot",
+        track_document_simulation,
+    )
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -15407,6 +15440,8 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     assert report.final_target_finding_ids == ()
     assert report.trajectory_proof.status.proved is True
     assert report.trajectory_proof.visited_state_count == 2
+    assert simulated_documents
+    assert max(simulation_call_counts.values()) == 1
     assert state_limited_report.stages == ()
     assert (
         state_limited_report.trajectory_proof.status

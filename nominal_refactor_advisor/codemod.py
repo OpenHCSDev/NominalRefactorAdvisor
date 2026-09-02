@@ -12093,6 +12093,16 @@ class CodemodSimulationReport:
     def changed_file_paths(self) -> tuple[str, ...]:
         return tuple(sorted(self.rewritten_sources))
 
+    @cached_property
+    def rewritten_source_digest(self) -> str:
+        return hashlib.blake2s(
+            "\0".join(
+                f"{file_path}\0{self.rewritten_sources[file_path]}"
+                for file_path in self.changed_file_paths
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
     @property
     def validated_file_paths(self) -> tuple[str, ...]:
         return self.parse_validation.validated_file_paths
@@ -12478,6 +12488,36 @@ class FindingRecipeSetAssessment(CodemodJsonReport):
     rewritten_file_paths: tuple[str, ...] = ()
     rewritten_source_digest: str = ""
 
+    @classmethod
+    def from_clean_document_simulation(
+        cls,
+        candidate_indices: tuple[int, ...],
+        document_simulation: CodemodPlanDocumentSimulation,
+    ) -> "FindingRecipeSetAssessment":
+        """Project public proof evidence from one clean document simulation."""
+
+        if not document_simulation.is_clean:
+            raise ValueError("clean recipe-set evidence requires a clean simulation")
+        simulation = document_simulation.simulation
+        return cls(
+            candidate_indices=candidate_indices,
+            disposition=FindingRecipeSetDisposition.CLEAN,
+            reason="the recipe set simulates with clean architecture guards",
+            rewritten_file_paths=simulation.changed_file_paths,
+            rewritten_source_digest=simulation.rewritten_source_digest,
+        )
+
+    def require_matches_document_simulation(
+        self,
+        document_simulation: CodemodPlanDocumentSimulation,
+    ) -> None:
+        expected_assessment = type(self).from_clean_document_simulation(
+            self.candidate_indices,
+            document_simulation,
+        )
+        if self != expected_assessment:
+            raise ValueError("recipe-set assessment does not describe its simulation")
+
     @property
     def proved(self) -> bool:
         return self.disposition.proved
@@ -12497,16 +12537,26 @@ class FindingRecipeSetSimulation:
     """Internal source result paired with its public proof assessment."""
 
     assessment: FindingRecipeSetAssessment
-    document: CodemodPlanDocument | None = field(
+    document_simulation: CodemodPlanDocumentSimulation | None = field(
         default=None,
         compare=False,
         repr=False,
     )
-    rewritten_sources: Mapping[str, str] = field(
-        default_factory=dict,
-        compare=False,
-        repr=False,
-    )
+
+    def __post_init__(self) -> None:
+        if self.document_simulation is None:
+            if self.assessment.disposition.clean:
+                raise ValueError("clean recipe-set evidence lost its simulation")
+            return
+        self.assessment.require_matches_document_simulation(
+            self.document_simulation
+        )
+
+    @property
+    def required_document_simulation(self) -> CodemodPlanDocumentSimulation:
+        if self.document_simulation is None:
+            raise RuntimeError("recipe-set result has no proved document simulation")
+        return self.document_simulation
 
 
 @dataclass(frozen=True)
@@ -12698,12 +12748,19 @@ class FindingRecipePlanCandidate:
 
 
 @dataclass(frozen=True)
-class FindingRecipeTrajectoryBranch(CodemodJsonReport):
+class FindingRecipeTrajectoryBranch(
+    CodemodDocumentSimulationCarrier,
+    CodemodJsonReport,
+):
     """One clean current-state transition without recommendation semantics."""
 
     finding_ids: tuple[str, ...]
     assessment: FindingRecipeSetAssessment
-    document: CodemodPlanDocument = field(compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.assessment.require_matches_document_simulation(
+            self.document_simulation
+        )
 
     @property
     def candidate_indices(self) -> tuple[int, ...]:
@@ -12714,7 +12771,7 @@ class FindingRecipeTrajectoryBranch(CodemodJsonReport):
             "candidate_indices": self.candidate_indices,
             "finding_ids": self.finding_ids,
             "assessment": self.assessment.to_dict(),
-            "document": self.document.to_dict(),
+            "document": self.document_simulation.document.to_dict(),
         }
 
 
@@ -20894,7 +20951,10 @@ class CurrentSnapshotRecipeBatchEvaluation:
                 "composed recipe simulation is unproved: "
                 + "; ".join(assessment.reason for assessment in unproved_compositions),
             )
-        if simulations[0].rewritten_sources != simulations[1].rewritten_sources:
+        if (
+            simulations[0].required_document_simulation.simulation.rewritten_sources
+            != simulations[1].required_document_simulation.simulation.rewritten_sources
+        ):
             return FindingRecipeCandidatePairAssessment(
                 left_index,
                 right_index,
@@ -21011,18 +21071,14 @@ class CurrentSnapshotRecipeBatchEvaluation:
         ) in self.trajectory_batch_enumeration.candidate_index_batches:
             simulation = self.simulate_recipe_set(candidate_indices)
             if simulation.assessment.disposition.clean:
-                if simulation.document is None:
-                    raise RuntimeError(
-                        "clean recipe batch simulation lost its document"
-                    )
                 branches.append(
                     FindingRecipeTrajectoryBranch(
+                        document_simulation=simulation.required_document_simulation,
                         finding_ids=tuple(
                             self.candidates[index].finding_id
                             for index in candidate_indices
                         ),
                         assessment=simulation.assessment,
-                        document=simulation.document,
                     )
                 )
                 continue
@@ -21212,24 +21268,12 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     ),
                 )
             )
-        rewritten_sources = simulation.simulation.rewritten_sources
-        source_digest = hashlib.blake2s(
-            "\0".join(
-                f"{file_path}\0{rewritten_sources[file_path]}"
-                for file_path in sorted(rewritten_sources)
-            ).encode("utf-8"),
-            digest_size=16,
-        ).hexdigest()
         return FindingRecipeSetSimulation(
-            assessment=FindingRecipeSetAssessment(
-                candidate_indices=candidate_indices,
-                disposition=FindingRecipeSetDisposition.CLEAN,
-                reason="the recipe set simulates with clean architecture guards",
-                rewritten_file_paths=tuple(sorted(rewritten_sources)),
-                rewritten_source_digest=source_digest,
+            assessment=FindingRecipeSetAssessment.from_clean_document_simulation(
+                candidate_indices,
+                simulation,
             ),
-            document=document,
-            rewritten_sources=rewritten_sources,
+            document_simulation=simulation,
         )
 
     def unproved_evaluation(
