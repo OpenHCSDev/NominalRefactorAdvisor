@@ -3452,10 +3452,10 @@ class ExactTypeGuardInheritanceRetreatDetector(
 ):
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Exact-type boundary guard retreats from nominal inheritance",
-        "A fail-loud boundary compares `type(value)` with a class that has resolved nominal descendants. The exact comparison rejects valid family members and weakens substitutability; membership belongs to the inheritance graph through `isinstance`.",
-        "inheritance-preserving runtime membership at the fail-loud boundary",
-        "exact concrete-type validation contradicts a resolved base-to-descendant class-family edge",
+        "Exact-type boundary guard conflicts with nominal descendants",
+        "A fail-loud boundary accepts exactly one class while the resolved inheritance graph declares descendants of that class. The source proves two incompatible membership surfaces, but not which declaration is wrong: the boundary may need nominal membership, or the hierarchy may not represent substitutability. The owning declaration must resolve that contract.",
+        "one declared boundary-membership contract consistent with the nominal class graph",
+        "exact concrete-type validation and a resolved base-to-descendant edge declare incompatible membership sets",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -4417,12 +4417,12 @@ class AlgebraicVariantMethodFamilyDetector(
     ],
 ):
     module_projection_family = CompactAlgebraicVariantModuleProjectionFamily
-    finding_spec = high_confidence_certified_spec(
+    finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Algebraic variant method family inflates public authority surface",
-        "A public authority class that grows sibling methods whose names encode operation variants is exporting the operation algebra in method names. If those methods share a product carrier/request parameter and forward to the same construction shape, the variant should live in a nominal context, request, or product type instead of multiplying public methods.",
-        "one algebraic operation over a nominal context/request/product variant",
-        "same owner exposes variant-named methods over the same product construction",
+        "Variant-named methods repeat one product construction",
+        "Sibling methods on one owner encode variants in their names while sharing a product carrier and construction shape. That proves a common construction orbit, but deciding whether the methods are distinct operations or one nominal variant axis requires domain identity evidence.",
+        "declared operation-axis ownership when the methods represent one semantic family",
+        "same owner exposes variant-named methods over one product construction while operation identity remains unresolved",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,

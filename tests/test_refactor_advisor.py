@@ -295,6 +295,7 @@ from nominal_refactor_advisor.source_index import (
 )
 from nominal_refactor_advisor.taxonomy import (
     CapabilityTag,
+    CertificationLevel,
     ConfidenceLevel,
     ObservationTag,
 )
@@ -8704,6 +8705,8 @@ def test_variant_method_detector_places_execution_on_nominal_variant(
     )
 
     assert len(findings) == 1
+    assert findings[0].certification == CertificationLevel.STRONG_HEURISTIC
+    assert "operation identity remains unresolved" in findings[0].relation_context
 
 
 def test_preserves_independent_nominal_and_generic_dispatch(
@@ -9061,6 +9064,8 @@ def test_detects_premature_registry_infrastructure(tmp_path: Path) -> None:
     assert "registered_case_axis" in finding.summary
     assert "lookup_lifecycle" in finding.summary
     assert "consumer_fanout" in finding.summary
+    assert finding.certification == CertificationLevel.STRONG_HEURISTIC
+    assert "maturity evidence" in finding.title
 
 
 def test_ignores_mature_registry_infrastructure(tmp_path: Path) -> None:
@@ -9097,6 +9102,8 @@ def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
     assert "ModeRunner" in finding.summary
     assert "mature injective registry" in finding.summary
     assert "AutoRegisterMeta" in finding.summary
+    assert finding.certification == CertificationLevel.STRONG_HEURISTIC
+    assert "migration lifecycle remains unproven" in finding.relation_context
 
 
 def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
@@ -9767,6 +9774,9 @@ def require_secondary_executor(value):
     assert "require_shard_executor" in finding.summary
     assert "ShardExecutor" in finding.summary
     assert "ExactScoreShardExecutor" in finding.summary
+    assert finding.title == "Exact-type boundary guard conflicts with nominal descendants"
+    assert "one declared boundary-membership contract" in finding.capability_gap
+    assert "incompatible membership sets" in finding.relation_context
     assert isinstance(finding.metrics, HierarchyCandidateMetrics)
     assert finding.metrics.class_count == 2
     assert finding.capability_tags == (

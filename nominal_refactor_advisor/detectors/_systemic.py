@@ -3076,12 +3076,12 @@ declare_candidate_rule_detector(
 
 declare_candidate_rule_detector(
     InjectiveTypeRegistryCandidate,
-    high_confidence_certified_spec(
+    high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
-        "Mature injective type registry should use metaclass registration",
-        "A registry with a stable key axis, lookup lifecycle, consumer fanout, and an injective type-to-key proof has reached the point where handwritten registration mechanics are declaration noise. The metaclass should own population while implementation classes declare only their canonical key and behavior hooks.",
+        "Mature injective registry is a metaclass-registration candidate",
+        "A registry with a stable key axis, lookup lifecycle, consumer fanout, and an injective type-to-key proof has the shape needed for declaration-owned registration. Replacing its mechanics with AutoRegisterMeta still requires proving that dynamic registration timing and external plugin lifecycle are compatible.",
         "AutoRegisterMeta-backed ABC with an injective type-key proof",
-        "registry axis proves one key per implementation type plus mature lookup and consumer fanout",
+        "registry axis proves one key per implementation type plus mature lookup and consumer fanout, but migration lifecycle remains unproven",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -3095,7 +3095,7 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}` is a mature injective registry over `{candidate.key_type_name}`: "
         f"keys {candidate.registered_case_names}, lookup {candidate.lookup_method_names}, "
-        f"consumers {candidate.consumer_symbols}; replace handwritten registry mechanics with AutoRegisterMeta."
+        f"consumers {candidate.consumer_symbols}; evaluate AutoRegisterMeta against its registration lifecycle."
     ),
     evidence=lambda candidate: (candidate.evidence,),
     metrics=lambda candidate: RegistrationMetrics(
@@ -3202,12 +3202,12 @@ declare_candidate_rule_detector(
 
 declare_candidate_rule_detector(
     PrematureRegistryInfrastructureCandidate,
-    high_confidence_certified_spec(
+    high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
-        "Registry infrastructure should prove key, lifecycle, and fanout maturity",
-        "The OpenHCS history showed that registries pay rent only when the key axis is stable, registration lifecycle is explicit, and more than one consumer uses the registry. A registry-shaped class without those signals is likely a premature abstraction boundary.",
-        "mature registry authority with stable key axis, class-time lifecycle, and consumer fanout",
-        "keyed registry infrastructure exists before registered cases and consumers prove the axis",
+        "Registry infrastructure lacks maturity evidence",
+        "A registry-shaped class has not exposed a stable key axis, explicit registration lifecycle, and multiple consumers in the analyzed source. That is a proof gap, not proof that the boundary must be removed; external registration or future consumers may supply the missing context.",
+        "source-backed registry maturity proof over key axis, lifecycle, and consumer fanout",
+        "keyed registry shape exists without enough observed cases, lifecycle, and consumers to prove its authority",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
