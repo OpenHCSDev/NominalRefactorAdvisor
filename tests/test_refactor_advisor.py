@@ -103,6 +103,7 @@ from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
+from nominal_refactor_advisor.cli import main as cli_main
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodProjectedScanMode,
     CodemodRefactorGoalRunner,
@@ -225,6 +226,7 @@ from nominal_refactor_advisor.factorization import (
 )
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
+    LeanExportError,
     findings_from_lean_export_payload,
 )
 from nominal_refactor_advisor.models import (
@@ -7191,6 +7193,9 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
     finding = findings[0]
     assert finding.detector_id == "lean_repeated_structural_signature"
     assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert finding.title == (
+        "Repeated Lean declaration signature should use a semantic abstraction"
+    )
     assert finding.confidence == "high"
     assert finding.certification == "strong_heuristic"
     assert "scaffold" not in {field_item.name for field_item in fields(RefactorFinding)}
@@ -7201,6 +7206,130 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
         SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
         SourceLocation("<lean-env>", 0, "Leverage.Beta"),
     )
+
+
+def test_lean_export_rejects_unregistered_detector_semantics() -> None:
+    payload = {
+        "schema": LEAN_EXPORT_SCHEMA,
+        "findings": [
+            {
+                "detector_id": "unknown_lean_detector",
+                "pattern_id": PatternId.AUTHORITATIVE_SCHEMA,
+                "title": "Unowned semantics",
+                "summary": "A free-text row cannot prove a finding contract",
+                "evidence": [],
+            }
+        ],
+    }
+
+    with pytest.raises(
+        LeanExportError,
+        match="Unknown Lean finding detector_id: 'unknown_lean_detector'",
+    ):
+        findings_from_lean_export_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        (
+            {"schema": LEAN_EXPORT_SCHEMA},
+            "Lean export is missing 'findings'",
+        ),
+        (
+            {
+                "schema": LEAN_EXPORT_SCHEMA,
+                "findings": [
+                    {
+                        "detector_id": "lean_repeated_structural_signature",
+                        "summary": "missing evidence",
+                    }
+                ],
+            },
+            "Lean finding is missing 'evidence'",
+        ),
+        (
+            {
+                "schema": LEAN_EXPORT_SCHEMA,
+                "findings": [
+                    {
+                        "detector_id": "lean_repeated_structural_signature",
+                        "summary": "incomplete evidence",
+                        "evidence": [
+                            {"file_path": "Proof.lean", "line": 1},
+                            {
+                                "file_path": "Proof.lean",
+                                "line": 2,
+                                "symbol": "Proof.Beta",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "Lean finding is missing 'symbol'",
+        ),
+        (
+            {
+                "schema": LEAN_EXPORT_SCHEMA,
+                "findings": [
+                    {
+                        "detector_id": "lean_repeated_structural_signature",
+                        "summary": "insufficient evidence",
+                        "evidence": [
+                            {
+                                "file_path": "Proof.lean",
+                                "line": 1,
+                                "symbol": "Proof.Alpha",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "requires at least two evidence declarations",
+        ),
+    ),
+)
+def test_lean_export_rejects_incomplete_proof_evidence(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(LeanExportError, match=message):
+        findings_from_lean_export_payload(payload)
+
+
+def test_lean_export_cli_reports_schema_failure_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    export_path = tmp_path / "invalid-lean-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "schema": LEAN_EXPORT_SCHEMA,
+                "findings": [
+                    {
+                        "detector_id": "unregistered_detector",
+                        "summary": "This row has no nominal semantic owner",
+                        "evidence": [],
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nominal-refactor-advisor", "--import-lean-export", str(export_path)],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 2
+    assert "Unknown Lean finding detector_id: 'unregistered_detector'" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_planner_uses_stable_identity_order_not_local_savings(

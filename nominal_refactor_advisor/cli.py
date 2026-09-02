@@ -110,6 +110,7 @@ from .economics import (
     build_economics_proof_report,
 )
 from .finding_counts import FindingSummary
+from .lean_export import LeanExportError
 from .structural_overlap import (
     StructuralOverlapReport,
     StructuralOverlapReportLimits,
@@ -3750,7 +3751,10 @@ def _main_without_deadline() -> int:
                 analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
-        findings = analyze_lean_export(args.import_lean_export)
+        try:
+            findings = analyze_lean_export(args.import_lean_export)
+        except (OSError, json.JSONDecodeError, LeanExportError) as error:
+            parser.error(str(error))
         parse_seconds = 0.0
         analysis_seconds = 0.0
         analysis_cache_status = None
