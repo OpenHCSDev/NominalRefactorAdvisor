@@ -3025,7 +3025,7 @@ class ParallelMirroredLeafFamilyDetector(
         "Parallel mirrored leaf families should factor into a multiple-inheritance product",
         "Mirrored registered leaf catalogs repeat the same role behavior across domain roots. The role behavior belongs on one reusable mixin axis, while each domain root retains its nominal identity; concrete products compose those independent authorities through multiple inheritance.",
         "one authoritative role-behavior mixin axis composed with domain roots through multiple inheritance",
-        "two registered abstract roots own mirrored concrete leaf catalogs over the same contract method family",
+        "registered abstract roots own mirrored concrete leaf catalogs over the same contract method family",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3054,33 +3054,26 @@ class ParallelMirroredLeafFamilyDetector(
     ) -> RefactorFinding:
         shared_preview = ", ".join(mirrored_candidate.shared_leaf_family_names[:4])
         contract_preview = ", ".join(mirrored_candidate.contract_method_names)
-        left_root_name = mirrored_candidate.left_root.simple_name
-        right_root_name = mirrored_candidate.right_root.simple_name
+        root_names = tuple(root.simple_name for root in mirrored_candidate.roots)
         class_names = (
-            left_root_name,
-            right_root_name,
+            *root_names,
             *(
                 indexed_class.simple_name
-                for indexed_class in (
-                    *mirrored_candidate.left_leaf_classes,
-                    *mirrored_candidate.right_leaf_classes,
-                )
+                for indexed_class in mirrored_candidate.leaf_classes
             ),
         )
         evidence = mirrored_candidate.evidence_locations
         return self.build_finding(
             (
-                f"`{left_root_name}` and `{right_root_name}` expose mirrored `{contract_preview}` leaf catalogs "
+                f"{', '.join(f'`{root_name}`' for root_name in root_names)} expose "
+                f"mirrored `{contract_preview}` leaf catalogs "
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
             evidence,
             authority_evidence=evidence[0],
             metrics=RegistrationMetrics.from_class_names(
-                registration_site_count=(
-                    len(mirrored_candidate.left_leaf_classes)
-                    + len(mirrored_candidate.right_leaf_classes)
-                ),
-                registry_name=f"{left_root_name}/{right_root_name}",
+                registration_site_count=len(mirrored_candidate.leaf_classes),
+                registry_name="/".join(root_names),
                 class_names=class_names,
             ),
         )

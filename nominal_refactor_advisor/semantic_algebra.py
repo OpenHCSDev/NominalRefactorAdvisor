@@ -271,8 +271,8 @@ class VertexIndexEdge:
 
 
 @dataclass(frozen=True)
-class ConfusabilityGraph(Generic[ObjectT]):
-    """Undirected confusability graph over finite semantic objects."""
+class UndirectedGraph(Generic[ObjectT]):
+    """Undirected graph with declaration-ordered maximal components."""
 
     vertices: tuple[ObjectT, ...]
     edges: tuple[VertexIndexEdge, ...]
@@ -327,16 +327,36 @@ class ConfusabilityGraph(Generic[ObjectT]):
             )
         )
 
+    def _component_indices_are_clique(self, component: tuple[int, ...]) -> bool:
+        return all(
+            self.adjacent(left, right)
+            for left, right in combinations(component, 2)
+        )
+
+    @property
+    def clique_components(self) -> tuple[tuple[ObjectT, ...], ...]:
+        """Return maximal connected components whose relation is complete."""
+
+        return tuple(
+            tuple(self.vertices[index] for index in component)
+            for component in self._connected_component_indices()
+            if self._component_indices_are_clique(component)
+        )
+
+    @property
+    def components_are_cliques(self) -> bool:
+        return len(self.clique_components) == len(self.connected_components)
+
+
+@dataclass(frozen=True)
+class ConfusabilityGraph(UndirectedGraph[ObjectT]):
+    """Undirected confusability graph over finite semantic objects."""
+
     @property
     def is_transitive(self) -> bool:
         """Confusability is transitive exactly when components are cliques."""
 
-        edge_set = set(self.edges)
-        for component in self._connected_component_indices():
-            for left, right in combinations(component, 2):
-                if VertexIndexEdge.from_indices(left, right) not in edge_set:
-                    return False
-        return True
+        return self.components_are_cliques
 
     @property
     def component_tag_bits(self) -> int:

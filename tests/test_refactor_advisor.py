@@ -111,6 +111,9 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorTrajectoryObstacleKind,
     CodemodRefactorTrajectoryStatus,
 )
+from nominal_refactor_advisor.exact_method_authority import (
+    ParallelMirroredLeafFamilyComponentBuilder,
+)
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -18361,6 +18364,7 @@ def _parallel_mirrored_leaf_family_source(
     divergent_receipt_methods: bool = False,
     duplicate_invoice_alpha_method: bool = False,
     module_prefix: str = "",
+    domains: tuple[str, ...] = _PARALLEL_LEAF_DOMAINS,
 ) -> str:
     root_header_suffix = ", metaclass=AutoRegisterMeta" if autoregister else ""
     registry_contract = (
@@ -18376,10 +18380,10 @@ def _parallel_mirrored_leaf_family_source(
         "    @abstractmethod\n"
         "    def emit(self, artifact):\n"
         "        raise NotImplementedError"
-        for domain in _PARALLEL_LEAF_DOMAINS
+        for domain in domains
     )
     leaves = []
-    for domain in _PARALLEL_LEAF_DOMAINS:
+    for domain in domains:
         for role in _PARALLEL_LEAF_ROLES:
             attribute_name = role.lower()
             if divergent_receipt_methods and domain == "Receipt":
@@ -18412,6 +18416,42 @@ def _parallel_mirrored_leaf_family_source(
     )
 
 
+def _overlapping_parallel_leaf_pair_source() -> str:
+    contracts_by_domain = {
+        "Invoice": ("emit", "normalize"),
+        "Receipt": ("emit",),
+        "Shipment": ("normalize",),
+    }
+    roots = []
+    leaves = []
+    for domain, contract_names in contracts_by_domain.items():
+        abstract_methods = "\n\n".join(
+            "    @abstractmethod\n"
+            f"    def {method_name}(self, artifact):\n"
+            "        raise NotImplementedError"
+            for method_name in contract_names
+        )
+        roots.append(
+            f"class {domain}FieldEmitter(ABC):\n"
+            "    _registered_types = []\n\n"
+            f"{abstract_methods}"
+        )
+        for role in _PARALLEL_LEAF_ROLES:
+            methods = "\n\n".join(
+                f"    def {method_name}(self, artifact):\n"
+                f"        return artifact.{role.lower()}"
+                for method_name in contract_names
+            )
+            leaves.append(
+                f"class {domain}{role}Emitter({domain}FieldEmitter):\n{methods}"
+            )
+    return (
+        "from abc import ABC, abstractmethod\n\n\n"
+        + "\n\n\n".join((*roots, *leaves))
+        + "\n"
+    )
+
+
 def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -18431,11 +18471,42 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "alpha emitter" in finding.summary
 
 
+def test_parallel_leaf_products_reject_overlapping_nonclique_pairs(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _overlapping_parallel_leaf_pair_source(),
+    )
+    builder = ParallelMirroredLeafFamilyComponentBuilder.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    graph = builder.root_compatibility_graph(
+        min_shared_roles=builder.minimum_product_role_count,
+    )
+
+    assert graph.edge_count == 2
+    assert tuple(len(component) for component in graph.connected_components) == (3,)
+    assert graph.clique_components == ()
+    assert builder.proven_components(
+        min_shared_roles=builder.minimum_product_role_count,
+    ) == ()
+    assert not any(
+        finding.detector_id == "parallel_mirrored_leaf_family"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     tmp_path: Path,
 ) -> None:
+    domains = (*_PARALLEL_LEAF_DOMAINS, "Shipment")
     module_path = tmp_path / "pkg/mod.py"
-    source = _parallel_mirrored_leaf_family_source(autoregister=True)
+    source = _parallel_mirrored_leaf_family_source(
+        autoregister=True,
+        domains=domains,
+    )
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -18453,9 +18524,10 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     )
-    assert len(plan.records[0].action_keys) == 8
+    expected_class_count = len(domains) * (len(_PARALLEL_LEAF_ROLES) + 1)
+    assert len(plan.records[0].action_keys) == expected_class_count
     recipe = plan.document.recipes[0]
-    assert len(recipe.authority_claims) == 8
+    assert len(recipe.authority_claims) == expected_class_count
     assert len(recipe.operations) == 1
     operation = recipe.operations[0]
     assert isinstance(operation, FactorParallelMirroredLeafFamilyOperation)
@@ -18472,10 +18544,10 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         plan.document.to_dict()
     ).simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
     assert replay.simulation.rewritten_sources[module_path.as_posix()] == rewritten
-    assert rewritten.count("def emit") == 5
+    assert rewritten.count("def emit") == len(domains) + len(_PARALLEL_LEAF_ROLES)
     for role in _PARALLEL_LEAF_ROLES:
         assert f"class {role}Emitter:" in rewritten
-        for domain in _PARALLEL_LEAF_DOMAINS:
+        for domain in domains:
             assert (
                 f"class {domain}{role}Emitter({role}Emitter, "
                 f"{domain}FieldEmitter):"
@@ -18491,7 +18563,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         beta = "beta"
         gamma = "gamma"
 
-    for domain in _PARALLEL_LEAF_DOMAINS:
+    for domain in domains:
         root_name = f"{domain}FieldEmitter"
         rewritten_root = rewritten_namespace[root_name]
         assert isinstance(rewritten_root, type)

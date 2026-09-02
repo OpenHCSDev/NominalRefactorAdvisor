@@ -5033,8 +5033,10 @@ def test_compact_concrete_family_candidates_preserve_semantics(
     )
     assert len(mirrored_candidates) == 1
     mirrored_candidate = mirrored_candidates[0]
-    assert mirrored_candidate.left_root.simple_name == "InvoiceFieldEmitter"
-    assert mirrored_candidate.right_root.simple_name == "ReceiptFieldEmitter"
+    assert tuple(root.simple_name for root in mirrored_candidate.roots) == (
+        "InvoiceFieldEmitter",
+        "ReceiptFieldEmitter",
+    )
     assert mirrored_candidate.contract_method_names == ("emit",)
     assert mirrored_candidate.shared_leaf_family_names == (
         "alpha emitter",

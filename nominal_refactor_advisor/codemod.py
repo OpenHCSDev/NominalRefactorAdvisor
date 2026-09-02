@@ -6097,17 +6097,16 @@ class ParallelMirroredLeafFamilyTargets:
         component: ParallelMirroredLeafFamilyComponent,
     ) -> "ParallelMirroredLeafFamilyTargets":
         class_names = (
-            component.left_root.qualname,
-            component.right_root.qualname,
+            *(root.qualname for root in component.roots),
             *(
                 indexed_class.qualname
                 for role in component.roles
-                for indexed_class in (role.left_class, role.right_class)
+                for indexed_class in role.classes
             ),
         )
         all_classes = ClassMemberPromotionTargets.resolve(
             context,
-            source_path=component.left_root.file_path,
+            source_path=component.roots[0].file_path,
             class_names=class_names,
         )
         targets_by_qualname = {
@@ -6121,7 +6120,7 @@ class ParallelMirroredLeafFamilyTargets:
                     all_classes,
                     targets=tuple(
                         targets_by_qualname[indexed_class.qualname]
-                        for indexed_class in (role.left_class, role.right_class)
+                        for indexed_class in role.classes
                     ),
                 )
                 for role in component.roles
@@ -6135,7 +6134,7 @@ class ParallelMirroredLeafFamilyTargets:
         if len(frozenset(authority_names)) != len(authority_names):
             return "Parallel leaf-family role authority names are ambiguous"
         module = self.all_classes.module_nodes_by_file_path[
-            self.component.left_root.file_path
+            self.component.roots[0].file_path
         ]
         bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
         colliding_names = tuple(
