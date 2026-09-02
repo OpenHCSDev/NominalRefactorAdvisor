@@ -166,6 +166,7 @@ from nominal_refactor_advisor.codemod import (
     ExposeGlobalCandidateCacheContextOperation,
     ExtractAuthorityOperation,
     ExtractMethodsToClassOperation,
+    FactorParallelMirroredLeafFamilyOperation,
     InheritanceEdgeTargetSelector,
     InsertAfterImportsOperation,
     InsertAfterTargetOperation,
@@ -18350,11 +18351,72 @@ def test_detects_predicate_selected_concrete_family_across_modules(
     assert "BetaRenderRule" in finding.summary
 
 
+_PARALLEL_LEAF_ROLES = ("Alpha", "Beta", "Gamma")
+_PARALLEL_LEAF_DOMAINS = ("Invoice", "Receipt")
+
+
+def _parallel_mirrored_leaf_family_source(
+    *,
+    autoregister: bool = False,
+    divergent_receipt_methods: bool = False,
+    duplicate_invoice_alpha_method: bool = False,
+    module_prefix: str = "",
+) -> str:
+    root_header_suffix = ", metaclass=AutoRegisterMeta" if autoregister else ""
+    registry_contract = (
+        "    __registry_key__ = 'role_key'\n"
+        "    __skip_if_no_key__ = True\n"
+        if autoregister
+        else ""
+    )
+    roots = "\n\n\n".join(
+        f"class {domain}FieldEmitter(ABC{root_header_suffix}):\n"
+        f"{registry_contract}"
+        "    _registered_types = []\n\n"
+        "    @abstractmethod\n"
+        "    def emit(self, artifact):\n"
+        "        raise NotImplementedError"
+        for domain in _PARALLEL_LEAF_DOMAINS
+    )
+    leaves = []
+    for domain in _PARALLEL_LEAF_DOMAINS:
+        for role in _PARALLEL_LEAF_ROLES:
+            attribute_name = role.lower()
+            if divergent_receipt_methods and domain == "Receipt":
+                attribute_name = f"receipt_{attribute_name}"
+            method = (
+                "    def emit(self, artifact):\n"
+                f"        return artifact.{attribute_name}"
+            )
+            methods = [method]
+            if duplicate_invoice_alpha_method and (domain, role) == (
+                "Invoice",
+                "Alpha",
+            ):
+                methods.append(method)
+            leaves.append(
+                f"class {domain}{role}Emitter({domain}FieldEmitter):\n"
+                + (f"    role_key = '{role.lower()}'\n\n" if autoregister else "")
+                + "\n".join(methods)
+            )
+    prefix = f"{module_prefix.rstrip()}\n\n" if module_prefix else ""
+    registry_import = (
+        "from metaclass_registry import AutoRegisterMeta\n" if autoregister else ""
+    )
+    return (
+        f"{prefix}from abc import ABC, abstractmethod\n\n\n"
+        f"{registry_import}"
+        f"{roots}\n\n\n"
+        + "\n\n\n".join(leaves)
+        + "\n"
+    )
+
+
 def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact):\n        raise NotImplementedError\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact):\n        raise NotImplementedError\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.alpha\n\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.beta\n\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.gamma\n\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.alpha\n\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.beta\n\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.gamma\n",
+        _parallel_mirrored_leaf_family_source(),
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -18369,13 +18431,175 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "alpha emitter" in finding.summary
 
 
+def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _parallel_mirrored_leaf_family_source(autoregister=True)
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "parallel_mirrored_leaf_family"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    assert len(findings) == 1
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("parallel_mirrored_leaf_family",),
+    )
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    )
+    assert len(plan.records[0].action_keys) == 8
+    recipe = plan.document.recipes[0]
+    assert len(recipe.authority_claims) == 8
+    assert len(recipe.operations) == 1
+    operation = recipe.operations[0]
+    assert isinstance(operation, FactorParallelMirroredLeafFamilyOperation)
+    assert set(operation.to_dict()) == {"operation", "target_id", "rationale"}
+    assert isinstance(
+        RefactorRecipeOperation.from_dict(operation.to_dict()),
+        FactorParallelMirroredLeafFamilyOperation,
+    )
+
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert simulation.is_clean is True
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    replay = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert replay.simulation.rewritten_sources[module_path.as_posix()] == rewritten
+    assert rewritten.count("def emit") == 5
+    for role in _PARALLEL_LEAF_ROLES:
+        assert f"class {role}Emitter:" in rewritten
+        for domain in _PARALLEL_LEAF_DOMAINS:
+            assert (
+                f"class {domain}{role}Emitter({role}Emitter, "
+                f"{domain}FieldEmitter):"
+            ) in rewritten
+
+    original_namespace: dict[str, object] = {}
+    rewritten_namespace: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), original_namespace)
+    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
+
+    class Artifact:
+        alpha = "alpha"
+        beta = "beta"
+        gamma = "gamma"
+
+    for domain in _PARALLEL_LEAF_DOMAINS:
+        root_name = f"{domain}FieldEmitter"
+        rewritten_root = rewritten_namespace[root_name]
+        assert isinstance(rewritten_root, type)
+        for role in _PARALLEL_LEAF_ROLES:
+            class_name = f"{domain}{role}Emitter"
+            original_type = original_namespace[class_name]
+            rewritten_type = rewritten_namespace[class_name]
+            role_type = rewritten_namespace[f"{role}Emitter"]
+            assert isinstance(original_type, type)
+            assert isinstance(rewritten_type, type)
+            assert isinstance(role_type, type)
+            assert rewritten_type().emit(Artifact()) == original_type().emit(Artifact())
+            assert issubclass(rewritten_type, rewritten_root)
+            assert rewritten_root.__registry__[role.lower()] is rewritten_type
+            assert rewritten_type.__mro__[:3] == (
+                rewritten_type,
+                role_type,
+                rewritten_root,
+            )
+            assert "emit" not in rewritten_type.__dict__
+            assert "emit" in role_type.__dict__
+
+
+def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _parallel_mirrored_leaf_family_source()
+    _write_module(tmp_path, "pkg/mod.py", source)
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "parallel_mirrored_leaf_family"
+    )
+    original_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        findings,
+    )
+    original_document = original_snapshot.plan_from_findings(
+        findings,
+        detector_ids=("parallel_mirrored_leaf_family",),
+    ).document
+    module_path.write_text(
+        source.replace(
+            "class ReceiptGammaEmitter(ReceiptFieldEmitter):\n"
+            "    def emit(self, artifact):\n"
+            "        return artifact.gamma",
+            "class ReceiptGammaEmitter(ReceiptFieldEmitter):\n"
+            "    def emit(self, artifact):\n"
+            "        return artifact.receipt_gamma",
+        ),
+        encoding="utf-8",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        findings,
+    )
+    preflight = original_document.preflight_snapshot(snapshot)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("parallel_mirrored_leaf_family",),
+    )
+
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "0 current exact parallel leaf-family components" in plan.records[0].reason
+    assert preflight.preflight_failed is True
+    assert preflight.reports[0].operation == "authority_claims"
+
+
+def test_parallel_mirrored_leaf_recipe_rejects_bound_role_authority_name(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _parallel_mirrored_leaf_family_source(
+            module_prefix="AlphaEmitter = object()",
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "parallel_mirrored_leaf_family"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("parallel_mirrored_leaf_family",),
+    )
+
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "Role authority names are already bound" in plan.records[0].reason
+
+
 def test_parallel_leaf_names_without_shared_implementations_are_not_mirrored(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_alpha\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_beta\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_gamma\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_alpha\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_beta\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_gamma\n",
+        _parallel_mirrored_leaf_family_source(divergent_receipt_methods=True),
     )
 
     assert not any(
@@ -18390,7 +18614,9 @@ def test_parallel_leaf_family_fails_closed_on_duplicate_method_declarations(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.alpha\n    def emit(self, artifact): return artifact.alpha\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.beta\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.gamma\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.alpha\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.beta\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.gamma\n",
+        _parallel_mirrored_leaf_family_source(
+            duplicate_invoice_alpha_method=True,
+        ),
     )
 
     assert not any(

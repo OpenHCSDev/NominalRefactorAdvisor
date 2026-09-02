@@ -103,6 +103,8 @@ from .descriptor_algebra import ConstantProperty
 from .exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
+    ParallelMirroredLeafFamilyComponent,
+    ParallelMirroredLeafFamilyComponentBuilder,
 )
 from .models import (
     AutoRegisterMetaRentMetrics,
@@ -5184,8 +5186,8 @@ class _ClosedParameterConveyorSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseClosedParameterConveyorOperation(RefactorRecipeOperation):
-    """Re-prove and atomically collapse one authority-wide parameter conveyor."""
+class SourceReprovedOperation(RefactorRecipeOperation, ABC):
+    """Operation whose physical edits must be re-derived from current source."""
 
     def source_edits(
         self,
@@ -5210,7 +5212,7 @@ class CollapseClosedParameterConveyorOperation(RefactorRecipeOperation):
                 if selector_context is None
                 else selector_context.execution_snapshot()
             )
-            return self._source_rewrite(snapshot).source_edits()
+            return self.source_edits_from_snapshot(snapshot)
         except CodemodOperationPreflightError:
             raise
         except (TypeError, ValueError) as error:
@@ -5242,6 +5244,24 @@ class CollapseClosedParameterConveyorOperation(RefactorRecipeOperation):
                 details={"target": self.target.to_dict()},
             )
         )
+
+    @abstractmethod
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseClosedParameterConveyorOperation(SourceReprovedOperation):
+    """Re-prove and atomically collapse one authority-wide parameter conveyor."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self._source_rewrite(snapshot).source_edits()
 
     def _source_rewrite(
         self,
@@ -6045,6 +6065,96 @@ class ExactLeafMethodAncestorPromotionTargets:
 
 
 @dataclass(frozen=True)
+class ParallelMirroredLeafFamilyTargets:
+    """Physical class targets for one currently proven role product."""
+
+    component: ParallelMirroredLeafFamilyComponent
+    all_classes: ClassMemberPromotionTargets
+    role_classes: tuple[ClassMemberPromotionTargets, ...]
+
+    @classmethod
+    def required_for_root_target(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        root_target: AstTargetDigest,
+    ) -> "ParallelMirroredLeafFamilyTargets":
+        if not root_target.is_class:
+            raise ValueError("parallel leaf-family authority target must be a class")
+        root_symbol = snapshot.source_index.symbol_for_target(root_target)
+        component = ParallelMirroredLeafFamilyComponentBuilder.from_modules(
+            snapshot.parsed_modules
+        ).required_proven_component(root_symbol)
+        targets = cls.resolve(snapshot, component)
+        failure = targets.validation_failure()
+        if failure is not None:
+            raise ValueError(failure)
+        return targets
+
+    @classmethod
+    def resolve(
+        cls,
+        context: CodemodSelectorContext,
+        component: ParallelMirroredLeafFamilyComponent,
+    ) -> "ParallelMirroredLeafFamilyTargets":
+        class_names = (
+            component.left_root.qualname,
+            component.right_root.qualname,
+            *(
+                indexed_class.qualname
+                for role in component.roles
+                for indexed_class in (role.left_class, role.right_class)
+            ),
+        )
+        all_classes = ClassMemberPromotionTargets.resolve(
+            context,
+            source_path=component.left_root.file_path,
+            class_names=class_names,
+        )
+        targets_by_qualname = {
+            target.qualname: target for target in all_classes.targets
+        }
+        return cls(
+            component=component,
+            all_classes=all_classes,
+            role_classes=tuple(
+                replace(
+                    all_classes,
+                    targets=tuple(
+                        targets_by_qualname[indexed_class.qualname]
+                        for indexed_class in (role.left_class, role.right_class)
+                    ),
+                )
+                for role in component.roles
+            ),
+        )
+
+    def validation_failure(self) -> str | None:
+        if not self.role_classes:
+            return "Parallel leaf-family factoring requires proven role classes"
+        authority_names = tuple(role.authority_name for role in self.component.roles)
+        if len(frozenset(authority_names)) != len(authority_names):
+            return "Parallel leaf-family role authority names are ambiguous"
+        module = self.all_classes.module_nodes_by_file_path[
+            self.component.left_root.file_path
+        ]
+        bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        colliding_names = tuple(
+            name for name in authority_names if name in bound_names
+        )
+        if colliding_names:
+            return f"Role authority names are already bound: {colliding_names!r}"
+        for role_targets in self.role_classes:
+            if not role_targets.supports_base_rewrites():
+                return "Parallel leaf-family factoring requires lossless class headers"
+            declaration_failure = role_targets.exact_method_declaration_failure(
+                self.component.contract_method_names
+            )
+            if declaration_failure is not None:
+                return declaration_failure
+        return None
+
+
+@dataclass(frozen=True)
 class ClassMemberSetSpec:
     """One typed set of class-body members."""
 
@@ -6274,64 +6384,14 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
+class PromoteExactLeafMethodsToAncestorOperation(SourceReprovedOperation):
     """Re-prove and promote one authority-wide exact leaf-method component."""
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        try:
-            snapshot = (
-                CodemodSourceSnapshot.from_indexed_sources(
-                    source_index,
-                    source_by_path,
-                )
-                if selector_context is None
-                else selector_context.execution_snapshot()
-            )
-            return self._source_rewrite(snapshot).source_edits()
-        except CodemodOperationPreflightError:
-            raise
-        except (TypeError, ValueError) as error:
-            raise self.failed_preflight(str(error)) from error
-
-    def preflight_reports(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return ()
-
-    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
-        return CodemodOperationPreflightError(
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.FAILED,
-                message=message,
-                details={"target": self.target.to_dict()},
-            )
-        )
+        return self._source_rewrite(snapshot).source_edits()
 
     def _source_rewrite(
         self,
@@ -6355,6 +6415,56 @@ class PromoteExactLeafMethodsToAncestorOperation(RefactorRecipeOperation):
             raise ValueError(failure)
         return _ExactLeafMethodAncestorPromotionSourceRewrite(
             targets=targets,
+            rationale=self.rationale,
+        )
+
+
+@dataclass(frozen=True)
+class _ParallelMirroredLeafFamilySourceRewrite:
+    """Generic promotion plans composed for every proved role axis."""
+
+    targets: ParallelMirroredLeafFamilyTargets
+    rationale: str
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return tuple(
+            edit
+            for role, role_targets in zip(
+                self.targets.component.roles,
+                self.targets.role_classes,
+                strict=True,
+            )
+            for edit in ClassMemberPromotionReplacementPlan(
+                base_name=role.authority_name,
+                member_names=self.targets.component.contract_method_names,
+                statement_type=ClassMethodPromotionStatement,
+                rationale=self.rationale,
+            ).source_edits(role_targets)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FactorParallelMirroredLeafFamilyOperation(SourceReprovedOperation):
+    """Re-prove and factor parallel leaf behavior into MI role authorities."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self._source_rewrite(snapshot).source_edits()
+
+    def _source_rewrite(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _ParallelMirroredLeafFamilySourceRewrite:
+        _target_identifier, root_target, _root_node = self.target_node_from_context(
+            snapshot
+        )
+        return _ParallelMirroredLeafFamilySourceRewrite(
+            targets=ParallelMirroredLeafFamilyTargets.required_for_root_target(
+                snapshot,
+                root_target,
+            ),
             rationale=self.rationale,
         )
 
@@ -14853,7 +14963,26 @@ class DeriveRepeatedBuilderAuthorityOperation(RefactorRecipeOperation):
         return self.required_derivation(context).required_source_edits(context)
 
 
+class FindingEvidenceActionKeysMixin:
+    """Derive conflict keys from every source subject carried by a finding."""
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            sorted(
+                {
+                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
+                    for evidence in finding.evidence
+                }
+            ),
+        )
+
+
 class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
+    FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     ClassFamilyAuthorityConcept,
 ):
@@ -14896,19 +15025,57 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
         )
         return self.executable_evaluation(recipe)
 
-    def action_keys_for_finding(
+
+
+class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
+    FindingEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """Factor a currently proved parallel leaf family through MI role axes."""
+
+    def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            sorted(
-                {
-                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
-                    for evidence in finding.evidence
-                }
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "parallel leaf-family factoring requires source context"
+            )
+        authority_location = finding.authority_evidence
+        if authority_location is None:
+            return self.rejected_evaluation(
+                "parallel leaf-family finding lacks authority evidence"
+            )
+        try:
+            snapshot = context.execution_snapshot()
+            authority_target = snapshot.required_class_target_for_authority_evidence(
+                authority_location
+            )
+            targets = ParallelMirroredLeafFamilyTargets.required_for_root_target(
+                snapshot,
+                authority_target,
+            )
+        except ValueError as error:
+            return self.rejected_evaluation(str(error))
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-factor-parallel-leaf-family",
+            reason=(
+                "Move exact role behavior to one authority per role and compose "
+                "each domain leaf through MRO."
             ),
+        ).with_operation(
+            FactorParallelMirroredLeafFamilyOperation(
+                target=SourceRewriteTarget(target_id=authority_target.target_id),
+                rationale="",
+            )
         )
+        for class_target in targets.all_classes.targets:
+            recipe = recipe.with_authority_claim(
+                AstTargetAuthorityClaim.from_target(class_target.target)
+            )
+        return self.executable_evaluation(recipe)
 
 
 @dataclass(frozen=True)

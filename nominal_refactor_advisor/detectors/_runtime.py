@@ -53,6 +53,7 @@ from ..codemod import (
     CancelableCompositionSignalTargetAuthority,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
+    ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
@@ -2594,8 +2595,12 @@ def _compact_parallel_mirrored_leaf_family_candidates(
     context: _CompactConcreteFamilyContext,
     config: DetectorConfig,
 ) -> tuple[ParallelMirroredLeafFamilyComponent, ...]:
-    return context.parallel_mirrored_leaf_family_builder.proven_components(
-        min_shared_roles=max(3, config.min_registration_sites),
+    builder = context.parallel_mirrored_leaf_family_builder
+    return builder.proven_components(
+        min_shared_roles=max(
+            builder.minimum_product_role_count,
+            config.min_registration_sites,
+        ),
     )
 
 
@@ -3013,6 +3018,7 @@ class PredicateSelectedConcreteFamilyDetector(
 
 class ParallelMirroredLeafFamilyDetector(
     _CompactConcreteFamilyDetectorBase[ParallelMirroredLeafFamilyComponent],
+    ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -3061,12 +3067,14 @@ class ParallelMirroredLeafFamilyDetector(
                 )
             ),
         )
+        evidence = mirrored_candidate.evidence_locations
         return self.build_finding(
             (
                 f"`{left_root_name}` and `{right_root_name}` expose mirrored `{contract_preview}` leaf catalogs "
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
-            mirrored_candidate.evidence_locations[:6],
+            evidence,
+            authority_evidence=evidence[0],
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=(
                     len(mirrored_candidate.left_leaf_classes)

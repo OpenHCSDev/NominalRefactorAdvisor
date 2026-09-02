@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import combinations
-from typing import Self
+from typing import ClassVar, Self
 
 from .ast_tools import ParsedModule
 from .class_index import (
@@ -87,6 +87,10 @@ class ExactMirroredLeafRoleComponent:
     right_class: CompactIndexedClass
     method_orbits: tuple[CompactExactMethodOrbit, ...]
 
+    @property
+    def authority_name(self) -> str:
+        return CLASS_NAME_ALGEBRA.pascal_identifier(self.role_name)
+
 
 @dataclass(frozen=True)
 class ParallelMirroredLeafFamilyComponent:
@@ -127,8 +131,8 @@ class ParallelMirroredLeafFamilyComponent:
                     indexed_class.symbol,
                 )
                 for indexed_class in (
-                    *self.left_leaf_classes[:2],
-                    *self.right_leaf_classes[:2],
+                    *self.left_leaf_classes,
+                    *self.right_leaf_classes,
                 )
             ),
         )
@@ -605,6 +609,7 @@ def receiver_closed_exact_method_orbits(
 class ParallelMirroredLeafFamilyComponentBuilder:
     """Prove exact reusable role behavior across nominal domain families."""
 
+    minimum_product_role_count: ClassVar[int] = 3
     projections: tuple[CompactModuleClassProjection, ...]
     class_index: CompactClassFamilyIndex
 
@@ -622,6 +627,15 @@ class ParallelMirroredLeafFamilyComponentBuilder:
                 if class_index is None
                 else class_index
             ),
+        )
+
+    @classmethod
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
+        return cls.from_projections(
+            tuple(
+                CompactModuleClassProjectionFamily.collect(module)[0]
+                for module in modules
+            )
         )
 
     @cached_property
@@ -674,6 +688,25 @@ class ParallelMirroredLeafFamilyComponentBuilder:
                 component.right_root.symbol,
             ),
         )
+
+    def required_proven_component(
+        self,
+        root_symbol: str,
+    ) -> ParallelMirroredLeafFamilyComponent:
+        components = tuple(
+            component
+            for component in self.proven_components(
+                min_shared_roles=self.minimum_product_role_count,
+            )
+            if root_symbol
+            in (component.left_root.symbol, component.right_root.symbol)
+        )
+        if len(components) != 1:
+            raise ValueError(
+                f"Root {root_symbol!r} has {len(components)} current exact "
+                "parallel leaf-family components"
+            )
+        return components[0]
 
     def _component_for_roots(
         self,
@@ -731,6 +764,8 @@ class ParallelMirroredLeafFamilyComponentBuilder:
         )
         if len(roles) < required_role_count:
             return None
+        if len(frozenset(role.authority_name for role in roles)) != len(roles):
+            return None
         return ParallelMirroredLeafFamilyComponent(
             left_root=left_root,
             right_root=right_root,
@@ -753,6 +788,9 @@ class ParallelMirroredLeafFamilyComponentBuilder:
             if descendant.base_resolution_is_complete
             if descendant.direct_base_count == 1
             if descendant.resolved_base_symbols == (root.symbol,)
+            if descendant.class_header_is_reconstructible
+            if descendant.class_decorators_are_promotion_safe
+            if not descendant.class_keyword_names
         )
         declarations = tuple(
             (" ".join(role_tokens), descendant)
