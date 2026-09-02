@@ -9536,20 +9536,18 @@ class RegistryKeyDeclarationRewriteMixin:
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
     RegistryKeyDeclarationRewriteMixin,
-    RefactorRecipeOperation,
+    SourceReprovedOperation,
 ):
     """Derive an instance-valued module view from an AutoRegisterMeta family."""
 
     instance_view_method_name: ClassVar[str] = "instances_by_registry_key"
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        context = self.operation_context(source_index, source_by_path, None)
         _target_id, authority_digest, authority_node = self.target_node_from_context(
-            context
+            snapshot
         )
         if not authority_digest.is_class or not isinstance(
             authority_node, ast.ClassDef
@@ -9559,11 +9557,11 @@ class DeriveAutoregisterInstanceViewOperation(
             raise ValueError("Instance-view derivation requires a top-level authority")
         source_path = authority_digest.file_path
         component = AutoRegisterInstanceViewComponent.from_module_authority(
-            context.module_nodes_by_file_path[source_path],
+            snapshot.module_nodes_by_file_path[source_path],
             authority_node.name,
         )
         concrete_targets = ClassMemberPromotionTargets.resolve(
-            context,
+            snapshot,
             source_path=source_path,
             class_names=component.class_names,
         )
@@ -9580,7 +9578,7 @@ class DeriveAutoregisterInstanceViewOperation(
             *self.authority_replacements(
                 authority_target,
                 component,
-                source_by_path,
+                snapshot.sources_by_file_path,
             ),
             self.assignment_replacement(source_path, component),
         )
@@ -9712,52 +9710,37 @@ class DeriveAutoregisterInstanceViewOperation(
 @dataclass(frozen=True, kw_only=True)
 class ConvertManualRegistryToAutoregisterOperation(
     RegistryKeyDeclarationRewriteMixin,
-    RefactorRecipeOperation,
+    SourceReprovedOperation,
 ):
     """Derive and convert one direct registry component from an anchor class."""
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        _target_id, anchor_target, anchor_node = self.target_node_from_context(context)
+        _target_id, anchor_target, anchor_node = self.target_node_from_context(snapshot)
         if not anchor_target.is_class or not isinstance(anchor_node, ast.ClassDef):
             raise ValueError("Manual registry conversion target must be a class")
         if "." in anchor_target.qualname:
             raise ValueError("Manual registry conversion requires a top-level class")
         source_path = anchor_target.file_path
-        module = context.module_nodes_by_file_path[source_path]
+        module = snapshot.module_nodes_by_file_path[source_path]
         component = DirectManualRegistryComponent.from_module_anchor(
             module,
             anchor_node.name,
         )
         targets = ClassMemberPromotionTargets.resolve(
-            context,
+            snapshot,
             source_path=source_path,
             class_names=component.class_names,
         )
         if not targets.supports_base_rewrites():
             raise ValueError("Registry classes require lossless header rewrites")
-        authority_target = self.authority_target(context, source_path, component)
+        authority_target = self.authority_target(snapshot, source_path, component)
         return (
             *self.required_import_mutations(
-                source_index,
-                source_by_path,
+                snapshot.source_index,
+                snapshot.sources_by_file_path,
                 source_path,
                 import_source=(
                     f"from metaclass_registry import {AUTOREGISTER_META_NAME}\n"
@@ -9766,7 +9749,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             ),
             *self.authority_replacements(
                 source_path,
-                source_by_path[source_path],
+                snapshot.sources_by_file_path[source_path],
                 component,
                 authority_target,
                 targets,

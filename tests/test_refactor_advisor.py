@@ -5304,7 +5304,10 @@ def test_manual_registry_operation_rederives_source_instead_of_replaying_payload
         "REGISTRY['alpha'] = BetaHandler",
     )
 
-    with pytest.raises(ValueError, match="exactly one direct registry component"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="exactly one direct registry component",
+    ):
         operation.source_edits(source_index, {module_path.as_posix(): changed_source})
 
 
@@ -5356,7 +5359,7 @@ def test_manual_registry_operation_fails_closed_on_unproved_mapping_semantics(
         target=SourceRewriteTarget(target_id=alpha_target.target_id)
     )
 
-    with pytest.raises(ValueError, match=expected_error):
+    with pytest.raises(CodemodOperationPreflightError, match=expected_error):
         operation.source_edits(source_index, {module_path.as_posix(): source})
 
 
@@ -5385,7 +5388,10 @@ def test_manual_registry_operation_rejects_generated_authority_import_collision(
         target=SourceRewriteTarget(target_id=alpha_target.target_id)
     )
 
-    with pytest.raises(ValueError, match="RegisteredHandler.*is bound"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="RegisteredHandler.*is bound",
+    ):
         operation.source_edits(source_index, {module_path.as_posix(): source})
 
 
@@ -5511,7 +5517,7 @@ def test_autoregister_instance_view_operation_fails_closed_on_unproved_semantics
         target=SourceRewriteTarget(target_id=step_target.target_id)
     )
 
-    with pytest.raises(ValueError, match=expected_error):
+    with pytest.raises(CodemodOperationPreflightError, match=expected_error):
         operation.source_edits(source_index, {module_path.as_posix(): source})
 
 
@@ -5549,7 +5555,7 @@ def test_autoregister_instance_view_operation_rejects_authority_collisions(
         target=SourceRewriteTarget(target_id=step_target.target_id)
     )
 
-    with pytest.raises(ValueError, match=expected_error):
+    with pytest.raises(CodemodOperationPreflightError, match=expected_error):
         operation.source_edits(source_index, {module_path.as_posix(): source})
 
 
