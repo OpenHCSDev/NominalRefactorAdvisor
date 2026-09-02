@@ -727,6 +727,56 @@ def test_repository_resolves_module_and_class_aliases_of_dataclass_field_roles()
 
 
 @pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "from dataclasses import dataclass\n"
+            "CV = external_role\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    cache: CV[object]\n"
+            "    left: object\n"
+            "    right: object\n"
+        ),
+        (
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    CV = external_role\n"
+            "    cache: CV[object]\n"
+            "    left: object\n"
+            "    right: object\n"
+        ),
+        (
+            "from dataclasses import dataclass\n"
+            "object = external_role\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    cache: object[int]\n"
+            "    left: int\n"
+            "    right: str\n"
+        ),
+        (
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    cache: Mystery[object]\n"
+            "    left: object\n"
+            "    right: object\n"
+        ),
+    ),
+)
+def test_repository_keeps_unresolved_dataclass_annotation_roles_open(
+    source: str,
+) -> None:
+    repository = _repository(_module("pkg.unresolved_role", source))
+
+    assert CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE in (
+        _open_product_violations(repository, "pkg.unresolved_role.Product")
+    )
+
+
+@pytest.mark.parametrize(
     "base_field",
     (
         "right: object = field(init=False)",
