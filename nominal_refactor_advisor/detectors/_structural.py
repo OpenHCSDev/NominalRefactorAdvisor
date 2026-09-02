@@ -14,8 +14,14 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from ..codemod import ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer
-from ..exact_method_authority import ExactLeafMethodAncestorPromotionComponent
+from ..codemod import (
+    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
+    ExactMethodRoleFindingRecipeSynthesizer,
+)
+from ..exact_method_authority import (
+    ExactLeafMethodAncestorPromotionComponent,
+    ExactMethodRoleComponent,
+)
 from ..ast_tools import SourceModule
 from ..native_syntax import NativePythonSyntaxIndex
 from ..source_identity import source_path_text
@@ -255,13 +261,14 @@ class _CompactSemanticOverlapMethodDetectorBase(
 
 
 class _CompactExactTinyMethodRoleDetectorBase(
-    _CompactMethodFamilyDetectorBase[ExactTinyMethodRoleCandidate]
+    ExactMethodRoleFindingRecipeSynthesizer,
+    _CompactMethodFamilyDetectorBase[ExactMethodRoleComponent]
 ):
     def _candidates_from_compact_context(
         self,
         context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[ExactTinyMethodRoleCandidate]:
+    ) -> Sequence[ExactMethodRoleComponent]:
         del config
         return context.exact_method_candidates
 
@@ -316,7 +323,7 @@ class _CompactSemanticOverlapResidueAxisDetectorBase(
 
 
 declare_candidate_rule_detector(
-    ExactTinyMethodRoleCandidate,
+    ExactMethodRoleComponent,
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Exact tiny methods expose one repeated nominal role",
@@ -335,16 +342,17 @@ declare_candidate_rule_detector(
         ),
     ),
     summary=lambda candidate: (
-        f"{candidate.method_names} are repeated exactly across {candidate.class_names} "
-        f"without one nominal ancestor and contain {candidate.statement_count} shared "
-        "statement(s); no ownership placement is selected from this snapshot."
+        f"{candidate.method_names} are repeated exactly across "
+        f"{candidate.participant_class_names} without one nominal ancestor and contain "
+        f"{candidate.statement_count} shared statement(s); no ownership placement is "
+        "selected from this snapshot."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
-        duplicate_site_count=len(candidate.class_names),
+        duplicate_site_count=len(candidate.participant_class_names),
         statement_count=candidate.statement_count,
-        class_count=len(candidate.class_names),
+        class_count=len(candidate.participant_class_names),
         method_symbols=candidate.method_symbols,
     ),
     detector_name="ExactTinyMethodRoleDetector",

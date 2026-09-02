@@ -80,7 +80,12 @@ detector declaration whose MRO supplied the recipe behaviour.  Inferred
 metric-driven synthesis names the strategy or builder declaration selected by
 the finding evidence.
 
-Exact repeated methods without a proved owner remain evidence-only findings.
+Exact repeated methods without a proved owner remain evidence-only findings for
+automatic synthesis because source structure cannot determine the new
+authority's semantic name.  An authored ``FactorExactMethodRoleOperation``
+persists one evidence-method target and that explicit name, then re-proves the
+complete class cohort and method set from the current source before factoring
+the role.  It does not persist a mirrored class or method roster.
 The ``exact_leaf_method_ancestor_promotion`` detector emits a codemod candidate
 only when one existing direct authority is unique, every direct child
 participates and is a leaf, the method source is exact and promotion-safe, all
@@ -116,7 +121,7 @@ Collection members, dataclass fields, assignment names, generated source, and
 finding metrics are not copied into the persisted plan.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

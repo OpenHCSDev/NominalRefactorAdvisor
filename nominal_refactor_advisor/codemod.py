@@ -105,6 +105,8 @@ from .descriptor_algebra import ConstantProperty
 from .exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
+    ExactMethodRoleComponent,
+    ExactMethodRoleComponentBuilder,
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,
 )
@@ -2250,6 +2252,24 @@ class PositionalCallNameIndex:
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
+
+    @cached_property
+    def exact_leaf_method_component_builder(
+        self,
+    ) -> ExactLeafMethodAncestorPromotionComponentBuilder:
+        """Own exact-method proof construction for this source state."""
+
+        return ExactLeafMethodAncestorPromotionComponentBuilder.from_modules(
+            self.parsed_modules
+        )
+
+    @cached_property
+    def exact_method_role_component_builder(self) -> ExactMethodRoleComponentBuilder:
+        """Derive ownerless exact roles from this source state's method proof."""
+
+        return ExactMethodRoleComponentBuilder(
+            self.exact_leaf_method_component_builder
+        )
 
     @cached_property
     def source_state_id(self) -> str:
@@ -6204,6 +6224,69 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
+class FactorExactMethodRoleOperation(SourceReprovedOperation):
+    """Re-prove one exact-method cohort and give it a named MI authority."""
+
+    base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        if not self.base_name.isidentifier() or keyword_module.iskeyword(
+            self.base_name
+        ):
+            raise ValueError("Exact-method role authority name must be an identifier")
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        try:
+            return self.derived_operation(snapshot).source_edits(snapshot)
+        except CodemodOperationPreflightError as error:
+            raise ValueError(error.report.message) from error
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        component = self.required_component(context.execution_snapshot())
+        return (
+            AuthorityClaim(
+                claimed_symbol=self.base_name,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=component.file_path,
+                qualname=self.base_name,
+            ),
+        )
+
+    def derived_operation(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> PromoteClassMethodsOperation:
+        component = self.required_component(snapshot)
+        return PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(file_path=component.file_path),
+            rationale=self.rationale,
+            base_name=self.base_name,
+            class_names=component.participant_class_names,
+            method_names=component.method_names,
+        )
+
+    def required_component(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> ExactMethodRoleComponent:
+        _target_id, target, _node = self.target_node_from_context(snapshot)
+        if target.node_kind is not AstTargetNodeKind.METHOD:
+            raise ValueError("Exact-method role factoring requires a method target")
+        return (
+            snapshot.exact_method_role_component_builder.required_component_for_method(
+                file_path=target.file_path,
+                method_qualname=target.qualname,
+            )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class PromoteExactLeafMethodsToAncestorOperation(SourceReprovedOperation):
     """Re-prove and promote one authority-wide exact leaf-method component."""
 
@@ -6223,9 +6306,11 @@ class PromoteExactLeafMethodsToAncestorOperation(SourceReprovedOperation):
         if not authority_target.is_class:
             raise ValueError("exact method authority target must be a class")
         authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
-        component = ExactLeafMethodAncestorPromotionComponentBuilder.from_modules(
-            snapshot.parsed_modules
-        ).required_proven_component(authority_symbol)
+        component = (
+            snapshot.exact_leaf_method_component_builder.required_proven_component(
+                authority_symbol
+            )
+        )
         targets = ExactLeafMethodAncestorPromotionTargets.resolve(
             snapshot,
             component,
@@ -14726,6 +14811,25 @@ class FindingEvidenceActionKeysMixin:
                     for evidence in finding.evidence
                 }
             ),
+        )
+
+
+class ExactMethodRoleFindingRecipeSynthesizer(
+    FindingEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """Expose the proved operation while leaving its semantic name explicit."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        del finding, context
+        return self.rejected_evaluation(
+            "Exact-method role factoring requires an explicit semantic authority "
+            "name; author factor_exact_method_role against any evidence method"
         )
 
 

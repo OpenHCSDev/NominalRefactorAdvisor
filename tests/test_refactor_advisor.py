@@ -169,6 +169,7 @@ from nominal_refactor_advisor.codemod import (
     ExposeGlobalCandidateCacheContextOperation,
     ExtractAuthorityOperation,
     ExtractMethodsToClassOperation,
+    FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
     InheritanceEdgeTargetSelector,
     InsertAfterImportsOperation,
@@ -3676,8 +3677,101 @@ def test_exact_tiny_method_role_does_not_invent_an_authority(
     record = plan.records[0]
 
     assert plan.expected_removed_finding_count == 0
-    assert record.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "explicit semantic authority name" in record.reason
+    assert "factor_exact_method_role" in record.reason
     assert plan.document.recipes == ()
+    assert module_path.read_text(encoding="utf-8") == source
+
+
+def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = _exact_tiny_method_role_findings(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "Alpha.render"
+    )
+    operation = FactorExactMethodRoleOperation(
+        target=SourceRewriteTarget(target_id=target.target_id),
+        base_name="NormalizedRenderMixin",
+    )
+    recipe = RefactorRecipe(recipe_id="factor-exact-method-role").with_operation(
+        operation
+    )
+
+    payload = operation.to_dict()
+    declared_claims = recipe.declared_authority_claims(snapshot)
+    authority_report = recipe.authority_claim_preflight_report(snapshot)
+    simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert payload["operation"] == "factor_exact_method_role"
+    assert payload["base_name"] == "NormalizedRenderMixin"
+    assert "class_names" not in payload
+    assert "method_names" not in payload
+    assert type(RefactorRecipeOperation.from_dict(payload)) is (
+        FactorExactMethodRoleOperation
+    )
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "NormalizedRenderMixin"
+    assert declared_claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
+    assert declared_claims[0].file_path == module_path.as_posix()
+    assert declared_claims[0].qualname == "NormalizedRenderMixin"
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert simulation.is_clean is True
+    assert rewritten.count("def render") == 1
+    assert "class NormalizedRenderMixin:" in rewritten
+    assert all(
+        f"class {class_name}(NormalizedRenderMixin):" in rewritten
+        for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+    )
+    assert _exact_tiny_method_runtime_observations(rewritten, ("render",)) == (
+        _exact_tiny_method_runtime_observations(source, ("render",))
+    )
+    simulation.apply()
+    assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
+
+
+def test_exact_method_role_operation_rejects_a_drifted_target_cohort(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()"
+    ).replace("return normalized.lower()", "return normalized.upper()", 1)
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    recipe = RefactorRecipe(recipe_id="stale-exact-method-role").with_operation(
+        FactorExactMethodRoleOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Alpha.render",
+            ),
+            base_name="NormalizedRenderMixin",
+        )
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="belongs to 0 current exact-method role components",
+    ):
+        recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
     assert module_path.read_text(encoding="utf-8") == source
 
 

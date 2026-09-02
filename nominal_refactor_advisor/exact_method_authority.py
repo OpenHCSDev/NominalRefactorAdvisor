@@ -31,6 +31,7 @@ from .name_algebra import CLASS_NAME_ALGEBRA
 from .semantic_algebra import UndirectedGraph, VertexIndexEdge
 from .semantic_description_length import (
     CompressionCertificate,
+    ExactMethodRoleCompressionProfile,
     ExistingAuthorityMethodPromotionCompressionProfile,
 )
 
@@ -77,6 +78,96 @@ class CompactExactMethodOrbit:
     @property
     def class_symbols(self) -> tuple[str, ...]:
         return tuple(indexed_class.symbol for indexed_class in self.indexed_classes)
+
+
+@dataclass(frozen=True)
+class ExactMethodOrbitComponent:
+    """Shared declaration-derived surface of one exact-method orbit cohort."""
+
+    orbits: tuple[CompactExactMethodOrbit, ...]
+
+    def __post_init__(self) -> None:
+        if not self.orbits:
+            raise ValueError("Exact-method component requires at least one method orbit")
+        cohort = (self.orbits[0].file_path, self.orbits[0].class_symbols)
+        if any(
+            (orbit.file_path, orbit.class_symbols) != cohort for orbit in self.orbits
+        ):
+            raise ValueError("Exact-method component orbits must share one class cohort")
+        method_names = tuple(orbit.method_name for orbit in self.orbits)
+        if method_names != tuple(sorted(set(method_names))):
+            raise ValueError("Exact-method component orbits must be uniquely ordered")
+
+    @property
+    def file_path(self) -> str:
+        return self.orbits[0].file_path
+
+    @property
+    def method_names(self) -> tuple[str, ...]:
+        return tuple(orbit.method_name for orbit in self.orbits)
+
+    @property
+    def participant_class_symbols(self) -> tuple[str, ...]:
+        return self.orbits[0].class_symbols
+
+    @property
+    def participant_class_names(self) -> tuple[str, ...]:
+        return tuple(
+            indexed_class.qualname for indexed_class in self.orbits[0].indexed_classes
+        )
+
+    @property
+    def method_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            f"{indexed_class.qualname}.{orbit.method_name}"
+            for orbit in self.orbits
+            for indexed_class in orbit.indexed_classes
+        )
+
+    @property
+    def line_numbers(self) -> tuple[int, ...]:
+        return tuple(method.line for orbit in self.orbits for method in orbit.methods)
+
+    @property
+    def line_count(self) -> int:
+        return sum(
+            method.line_count for orbit in self.orbits for method in orbit.methods
+        )
+
+    @property
+    def statement_count(self) -> int:
+        return sum(orbit.methods[0].statement_count for orbit in self.orbits)
+
+    @property
+    def method_line_count(self) -> int:
+        return sum(orbit.methods[0].line_count for orbit in self.orbits)
+
+
+@dataclass(frozen=True)
+class ExactMethodRoleComponent(ExactMethodOrbitComponent):
+    """One maximal exact-method role repeated without an existing authority."""
+
+    @property
+    def line(self) -> int:
+        return min(self.line_numbers)
+
+    @cached_property
+    def compression_certificate(self) -> CompressionCertificate:
+        return ExactMethodRoleCompressionProfile(
+            class_count=len(self.participant_class_names),
+            method_line_count=self.method_line_count,
+        ).compression_certificate
+
+    @cached_property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, method_symbol)
+            for line, method_symbol in zip(
+                self.line_numbers,
+                self.method_symbols,
+                strict=True,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -131,16 +222,11 @@ class ParallelMirroredLeafFamilyComponent:
 
 
 @dataclass(frozen=True)
-class ExactLeafMethodAncestorPromotionComponent:
+class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
     """One complete exact-method family and its existing nominal authority."""
 
     authority: CompactIndexedClass
-    orbits: tuple[CompactExactMethodOrbit, ...]
     proof: ClosedLeafMethodAuthorityProof
-
-    @property
-    def file_path(self) -> str:
-        return self.authority.file_path
 
     @property
     def line(self) -> int:
@@ -158,50 +244,6 @@ class ExactLeafMethodAncestorPromotionComponent:
     def authority_line(self) -> int:
         return self.authority.line
 
-    @property
-    def method_names(self) -> tuple[str, ...]:
-        return self.proof.promoted_method_names
-
-    @property
-    def participant_class_symbols(self) -> tuple[str, ...]:
-        return self.proof.participant_symbols
-
-    @property
-    def participant_class_names(self) -> tuple[str, ...]:
-        return tuple(
-            indexed_class.qualname for indexed_class in self.orbits[0].indexed_classes
-        )
-
-    @cached_property
-    def method_symbols(self) -> tuple[str, ...]:
-        return tuple(
-            f"{indexed_class.qualname}.{orbit.method_name}"
-            for orbit in self.orbits
-            for indexed_class in orbit.indexed_classes
-        )
-
-    @property
-    def file_paths(self) -> tuple[str, ...]:
-        return (self.file_path,) * len(self.method_symbols)
-
-    @property
-    def line_numbers(self) -> tuple[int, ...]:
-        return tuple(method.line for orbit in self.orbits for method in orbit.methods)
-
-    @property
-    def line_count(self) -> int:
-        return sum(
-            method.line_count for orbit in self.orbits for method in orbit.methods
-        )
-
-    @property
-    def statement_count(self) -> int:
-        return sum(orbit.methods[0].statement_count for orbit in self.orbits)
-
-    @property
-    def method_line_count(self) -> int:
-        return sum(orbit.methods[0].line_count for orbit in self.orbits)
-
     @cached_property
     def compression_certificate(self) -> CompressionCertificate:
         return ExistingAuthorityMethodPromotionCompressionProfile(
@@ -218,9 +260,8 @@ class ExactLeafMethodAncestorPromotionComponent:
                 self.authority_symbol,
             ),
             *(
-                SourceLocation(file_path, line, method_symbol)
-                for file_path, line, method_symbol in zip(
-                    self.file_paths,
+                SourceLocation(self.file_path, line, method_symbol)
+                for line, method_symbol in zip(
                     self.line_numbers,
                     self.method_symbols,
                     strict=True,
@@ -592,6 +633,119 @@ def receiver_closed_exact_method_orbits(
             invalid_names.add(dependent_name)
             pending.append(dependent_name)
     return tuple(orbit for orbit in orbits if orbit.method_name not in invalid_names)
+
+
+@dataclass(frozen=True)
+class ExactMethodRoleComponentBuilder:
+    """Prove maximal exact-method roles that still need a nominal authority."""
+
+    exact_method_builder: ExactLeafMethodAncestorPromotionComponentBuilder
+
+    @property
+    def class_index(self) -> CompactClassFamilyIndex:
+        return self.exact_method_builder.class_index
+
+    @cached_property
+    def proven_components(self) -> tuple[ExactMethodRoleComponent, ...]:
+        orbits_by_cohort: dict[
+            tuple[str, tuple[str, ...]],
+            list[CompactExactMethodOrbit],
+        ] = defaultdict(list)
+        for orbit in self.exact_method_builder.exact_method_orbits:
+            if self._has_existing_or_unsafe_authority(orbit):
+                continue
+            orbits_by_cohort[(orbit.file_path, orbit.class_symbols)].append(orbit)
+
+        components = tuple(
+            component
+            for cohort_orbits in orbits_by_cohort.values()
+            if (
+                closed_orbits := receiver_closed_exact_method_orbits(
+                    tuple(sorted(cohort_orbits, key=lambda orbit: orbit.method_name))
+                )
+            )
+            if (
+                component := ExactMethodRoleComponent(orbits=closed_orbits)
+            ).compression_certificate.pays_rent
+        )
+        return sorted_tuple(
+            components,
+            key=lambda component: (
+                component.file_path,
+                component.line,
+                component.method_names,
+                component.participant_class_names,
+            ),
+        )
+
+    def required_component_for_method(
+        self,
+        *,
+        file_path: str,
+        method_qualname: str,
+    ) -> ExactMethodRoleComponent:
+        components = tuple(
+            component
+            for component in self.proven_components
+            if component.file_path == file_path
+            and method_qualname in component.method_symbols
+        )
+        if len(components) != 1:
+            raise ValueError(
+                f"Method {method_qualname!r} belongs to {len(components)} current "
+                "exact-method role components"
+            )
+        return components[0]
+
+    def _has_existing_or_unsafe_authority(
+        self,
+        orbit: CompactExactMethodOrbit,
+    ) -> bool:
+        indexed_classes = orbit.indexed_classes
+        participant_symbols = frozenset(orbit.class_symbols)
+        ancestor_sets = tuple(
+            frozenset(self.class_index.ancestor_symbols(indexed_class.symbol))
+            for indexed_class in indexed_classes
+        )
+        if any(participant_symbols & ancestors for ancestors in ancestor_sets):
+            return True
+        if any(
+            indexed_class.class_keyword_names
+            or indexed_class.declares_autoregister_meta
+            or not indexed_class.class_decorators_are_promotion_safe
+            or not indexed_class.class_header_is_reconstructible
+            for indexed_class in indexed_classes
+        ):
+            return True
+        if any(
+            ancestor.class_keyword_names or ancestor.declares_autoregister_meta
+            for ancestors in ancestor_sets
+            for ancestor_symbol in ancestors
+            if (ancestor := self.class_index.class_for(ancestor_symbol)) is not None
+        ):
+            return True
+        if ancestor_sets and set.intersection(*(set(item) for item in ancestor_sets)):
+            return True
+        shared_declared_nominal_bases = set.intersection(
+            *(
+                {
+                    base_name
+                    for base_name in indexed_class.declared_base_names
+                    if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                        base_name
+                    )
+                }
+                for indexed_class in indexed_classes
+            )
+        )
+        if shared_declared_nominal_bases:
+            return True
+        return any(
+            orbit.method_name in ancestor.method_names
+            for ancestor_symbols in ancestor_sets
+            for ancestor_symbol in ancestor_symbols
+            if (ancestor := self.class_index.class_for(ancestor_symbol)) is not None
+        )
 
 
 @dataclass(frozen=True)

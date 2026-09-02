@@ -19,13 +19,12 @@ from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
-    ExactMethodRoleCompressionProfile,
 )
 from ..exact_method_authority import (
-    CompactExactMethodOrbit,
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
-    receiver_closed_exact_method_orbits,
+    ExactMethodRoleComponent,
+    ExactMethodRoleComponentBuilder,
 )
 from ..semantic_identity import SemanticRoleIdentityToken
 import re
@@ -3910,120 +3909,6 @@ def _compact_method_family_specific_method_plans(
     return _method_family_more_specific_method_plans(method_plans, class_index)
 
 
-def _compact_exact_tiny_method_role_candidates(
-    exact_method_orbits: tuple[CompactExactMethodOrbit, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[ExactTinyMethodRoleCandidate, ...]:
-    orbits_by_cohort: dict[
-        tuple[str, tuple[str, ...]],
-        list[CompactExactMethodOrbit],
-    ] = defaultdict(list)
-    for orbit in exact_method_orbits:
-        file_path = orbit.file_path
-        method_name = orbit.method_name
-        indexed_classes = orbit.indexed_classes
-        participant_symbols = frozenset(item.symbol for item in indexed_classes)
-        ancestor_sets = tuple(
-            frozenset(class_index.ancestor_symbols(item.symbol))
-            for item in indexed_classes
-        )
-        if any(participant_symbols & ancestors for ancestors in ancestor_sets):
-            continue
-        if any(
-            indexed_class.class_keyword_names
-            or indexed_class.declares_autoregister_meta
-            or not indexed_class.class_decorators_are_promotion_safe
-            or not indexed_class.class_header_is_reconstructible
-            for indexed_class in indexed_classes
-        ):
-            continue
-        if any(
-            ancestor.class_keyword_names or ancestor.declares_autoregister_meta
-            for ancestors in ancestor_sets
-            for ancestor_symbol in ancestors
-            if (ancestor := class_index.class_for(ancestor_symbol)) is not None
-        ):
-            continue
-        if ancestor_sets and set.intersection(*(set(item) for item in ancestor_sets)):
-            continue
-        shared_declared_nominal_bases = set.intersection(
-            *(
-                {
-                    base_name
-                    for base_name in item.declared_base_names
-                    if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                        base_name
-                    )
-                }
-                for item in indexed_classes
-            )
-        )
-        if shared_declared_nominal_bases:
-            continue
-        if any(
-            method_name in ancestor.method_names
-            for ancestor_symbols in ancestor_sets
-            for ancestor_symbol in ancestor_symbols
-            if (ancestor := class_index.class_for(ancestor_symbol)) is not None
-        ):
-            continue
-        orbits_by_cohort[(file_path, orbit.class_symbols)].append(orbit)
-
-    candidates: list[ExactTinyMethodRoleCandidate] = []
-    for (file_path, _class_symbols), cohort_orbits in orbits_by_cohort.items():
-        orbits = receiver_closed_exact_method_orbits(
-            tuple(sorted(cohort_orbits, key=lambda orbit: orbit.method_name))
-        )
-        if not orbits:
-            continue
-        indexed_classes = orbits[0].indexed_classes
-        method_line_count = sum(orbit.methods[0].line_count for orbit in orbits)
-        certificate = ExactMethodRoleCompressionProfile(
-            class_count=len(indexed_classes),
-            method_line_count=method_line_count,
-        ).compression_certificate
-        if not certificate.pays_rent:
-            continue
-        class_names = tuple(item.qualname for item in indexed_classes)
-        line_numbers = tuple(
-            method.line for orbit in orbits for method in orbit.methods
-        )
-        method_symbols = tuple(
-            f"{indexed_class.qualname}.{orbit.method_name}"
-            for orbit in orbits
-            for indexed_class in orbit.indexed_classes
-        )
-        candidates.append(
-            ExactTinyMethodRoleCandidate(
-                file_path=file_path,
-                line=min(line_numbers),
-                method_names=tuple(orbit.method_name for orbit in orbits),
-                class_symbols=tuple(item.symbol for item in indexed_classes),
-                class_names=class_names,
-                method_symbols=method_symbols,
-                file_paths=(file_path,) * len(method_symbols),
-                line_numbers=line_numbers,
-                line_count=sum(
-                    method.line_count for orbit in orbits for method in orbit.methods
-                ),
-                statement_count=sum(
-                    orbit.methods[0].statement_count for orbit in orbits
-                ),
-                method_line_count=method_line_count,
-                compression_certificate=certificate,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.method_names,
-            candidate.class_names,
-        ),
-    )
-
-
 def _compact_semantic_overlap_method_candidates(
     method_plans: tuple[_MethodFamilyMethodPlan, ...],
     family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
@@ -4109,7 +3994,7 @@ def _compact_global_inheritance_candidates(
 
 @dataclass(frozen=True)
 class CompactMethodFamilyContext:
-    exact_method_candidates: tuple[ExactTinyMethodRoleCandidate, ...]
+    exact_method_candidates: tuple[ExactMethodRoleComponent, ...]
     exact_ancestor_promotion_candidates: tuple[
         ExactLeafMethodAncestorPromotionComponent,
         ...,
@@ -4138,12 +4023,10 @@ class CompactMethodFamilyContext:
                 class_index=class_index,
             )
         )
-        exact_method_orbits = exact_promotion_builder.exact_method_orbits
         return cls(
-            exact_method_candidates=_compact_exact_tiny_method_role_candidates(
-                exact_method_orbits,
-                class_index,
-            ),
+            exact_method_candidates=ExactMethodRoleComponentBuilder(
+                exact_promotion_builder
+            ).proven_components,
             exact_ancestor_promotion_candidates=(
                 exact_promotion_builder.proven_components
             ),
