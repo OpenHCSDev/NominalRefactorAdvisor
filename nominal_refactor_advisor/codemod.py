@@ -4567,23 +4567,6 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
 
         return super().declared_authority_claims(context)
 
-    def preflight_reports(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.source_edits_with_context(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return ()
-
     def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
         return CodemodOperationPreflightError(
             CodemodOperationPreflightReport(
@@ -11612,6 +11595,7 @@ class CodemodPlanDocumentPreflight:
     base_snapshot: CodemodSourceSnapshot
     rewrite_snapshot: CodemodSourceSnapshot
     report: CodemodPlanPreflightReport
+    rewrites: tuple[PlannedSourceRewrite, ...]
 
     @classmethod
     def from_snapshot(
@@ -11620,11 +11604,23 @@ class CodemodPlanDocumentPreflight:
         snapshot: CodemodSourceSnapshot,
     ) -> "CodemodPlanDocumentPreflight":
         rewrite_snapshot = document.rewrite_snapshot(snapshot)
+        report = document.preflight_rewrite_snapshot(rewrite_snapshot)
+        rewrites: tuple[PlannedSourceRewrite, ...] = ()
+        if report.is_clean:
+            try:
+                rewrites = document.source_rewrite_batch(
+                    rewrite_snapshot.source_index,
+                    rewrite_snapshot.sources_by_file_path,
+                    selector_context=rewrite_snapshot,
+                )
+            except CodemodOperationPreflightError as error:
+                report = CodemodPlanPreflightReport((*report.reports, error.report))
         return cls(
             document=document,
             base_snapshot=snapshot,
             rewrite_snapshot=rewrite_snapshot,
-            report=document.preflight_rewrite_snapshot(rewrite_snapshot),
+            report=report,
+            rewrites=rewrites,
         )
 
     def simulate(
@@ -11634,11 +11630,7 @@ class CodemodPlanDocumentPreflight:
     ) -> "CodemodPlanDocumentSimulation":
         self.report.require_clean()
         simulation = self.rewrite_snapshot.simulate_rewrites(
-            self.document.source_rewrite_batch(
-                self.rewrite_snapshot.source_index,
-                self.rewrite_snapshot.sources_by_file_path,
-                selector_context=self.rewrite_snapshot,
-            ),
+            self.rewrites,
             backend=backend,
         ).with_base_snapshot(self.base_snapshot)
         after_snapshot_projection = CodemodAfterSnapshotProjection(
