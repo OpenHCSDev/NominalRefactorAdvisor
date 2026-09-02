@@ -7,7 +7,6 @@ import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from pathlib import Path
 from typing import Generic, Iterable, TypeAlias, TypeVar
 
 from .ast_tools import (
@@ -86,17 +85,34 @@ class SourceFileDigest:
     """Stable source id for one parsed file."""
 
     file_id: str
-    file_path: str
-    module_name: str
-    is_package_init: bool
+    module_path_identity: PythonModulePathIdentity
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> "SourceFileDigest":
+        return cls(
+            file_id=STABLE_ID_AUTHORITY.file_id(module.file_path),
+            module_path_identity=module.module_path_identity,
+        )
 
     @property
-    def module_path_identity(self) -> PythonModulePathIdentity:
-        return PythonModulePathIdentity(
-            path=Path(self.file_path),
-            import_name=self.module_name,
-            is_package_init=self.is_package_init,
-        )
+    def file_path(self) -> str:
+        return self.module_path_identity.file_path
+
+    @property
+    def module_name(self) -> str:
+        return self.module_path_identity.import_name
+
+    @property
+    def is_package_init(self) -> bool:
+        return self.module_path_identity.is_package_init
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "file_id": self.file_id,
+            "file_path": self.file_path,
+            "module_name": self.module_name,
+            "is_package_init": self.is_package_init,
+        }
 
 
 @dataclass(frozen=True)
@@ -510,7 +526,7 @@ class SourceIndex:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "files": tuple(item.__dict__ for item in self.files),
+            "files": tuple(item.to_dict() for item in self.files),
             "ast_targets": tuple(item.__dict__ for item in self.ast_targets),
             "evidence": tuple(item.__dict__ for item in self.evidence),
         }
@@ -677,20 +693,6 @@ def _base_names(bases: Iterable[ast.expr]) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class FileDigestAuthority:
-    """Project parsed modules into source-file digest rows."""
-
-    def digest(self, module: ParsedModule) -> SourceFileDigest:
-        file_path = module.file_path
-        return SourceFileDigest(
-            file_id=STABLE_ID_AUTHORITY.file_id(file_path),
-            file_path=file_path,
-            module_name=module.module_name,
-            is_package_init=module.is_package_init,
-        )
-
-
-@dataclass(frozen=True)
 class AstTargetDigestsAuthority:
     """Project parsed modules into module/class/function target digest rows."""
 
@@ -827,8 +829,7 @@ class SourceIndexBuildAuthority:
         )
 
     def _file_digests(self) -> tuple[SourceFileDigest, ...]:
-        authority = FileDigestAuthority()
-        return tuple(authority.digest(module) for module in self.modules)
+        return tuple(SourceFileDigest.from_module(module) for module in self.modules)
 
     def _target_artifacts(
         self,

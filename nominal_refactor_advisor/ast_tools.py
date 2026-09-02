@@ -428,7 +428,7 @@ class PythonModuleParseContext(ParseCacheDirectory):
 
 
 @dataclass(frozen=True)
-class PythonModulePathIdentity:
+class PythonModulePathIdentity(SourceFileIdentity):
     """Module import identity derived from one source path and analysis root."""
 
     path: Path

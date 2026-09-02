@@ -2594,7 +2594,7 @@ class CodemodSourceIndexReport:
                 "target_count": self.target_count,
                 "evidence_count": self.evidence_count,
                 "files": tuple(
-                    dict(source_file.__dict__)
+                    source_file.to_dict()
                     for source_file in self.source_index.files
                 ),
                 "targets": tuple(
