@@ -11,6 +11,25 @@ class DestinationInsertionSpacing:
     current_line: str
     has_import_block: bool
 
+    @classmethod
+    def from_source(
+        cls,
+        source: str,
+        insertion_line: int,
+        *,
+        has_import_block: bool,
+    ) -> "DestinationInsertionSpacing":
+        lines = source.splitlines(keepends=True)
+
+        def line_at(line_number: int) -> str:
+            return lines[line_number - 1] if 1 <= line_number <= len(lines) else ""
+
+        return cls(
+            previous_line=line_at(insertion_line - 1),
+            current_line=line_at(insertion_line),
+            has_import_block=has_import_block,
+        )
+
     @property
     def leading_separator(self) -> str:
         if self.previous_line.strip():

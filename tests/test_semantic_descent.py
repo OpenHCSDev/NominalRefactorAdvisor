@@ -13,7 +13,6 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
-    BranchSemanticMirrorRecipeStrategy,
     CodemodPlanDocument,
     CodemodSourceContext,
     CodemodSourceSnapshot,
@@ -35,7 +34,6 @@ from nominal_refactor_advisor.detectors import (
     SemanticMirrorWithoutDescentDetector,
 )
 from nominal_refactor_advisor.models import (
-    BranchCountMetrics,
     MappingMetrics,
     RefactorFinding,
     SourceLocation,
@@ -3882,54 +3880,6 @@ def test_enum_subset_operation_executes_source_derived_view(tmp_path: Path) -> N
     assert confidence_level.__doc__ == "Confidence semantics remain declaration owned."
     assert namespace["ACTIONABLE"] == frozenset(("high", "medium"))
     assert confidence_level.actionable() == namespace["ACTIONABLE"]
-
-
-def test_role_case_recipe_declares_its_new_authority_boundary(
-    tmp_path: Path,
-) -> None:
-    module_path = _write_module(
-        tmp_path,
-        "def choose(mode):\n"
-        "    if mode == 'fast':\n"
-        "        return 1\n"
-        "    if mode == 'safe':\n"
-        "        return 2\n"
-        "    return 0\n",
-    )
-    finding = RefactorFinding(
-        detector_id="role_case_recipe_fixture",
-        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
-        title="Role cases should have one nominal authority",
-        summary="choose repeats two local role cases",
-        why="the cases should be declaration owned",
-        capability_gap="one nominal role-case authority",
-        relation_context="local branches have no authority-derived dispatch",
-        evidence=(SourceLocation(module_path.as_posix(), 1, "choose"),),
-        metrics=BranchCountMetrics(branch_site_count=2),
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path),
-        (finding,),
-    )
-    strategy = BranchSemanticMirrorRecipeStrategy()
-    evaluation = strategy.evaluate_recipe_for_finding(finding, snapshot)
-    evaluation = evaluation.gated_by_authority_claim(snapshot, finding)
-
-    assert evaluation.candidate_recipes
-    recipe = evaluation.required_recipe
-    assert recipe.authority_claims == ()
-    assert len(recipe.declared_authority_claims) == 1
-    claim = recipe.declared_authority_claims[0]
-    assert claim.claimed_symbol == "ChooseRoleCaseAuthority"
-    assert claim.authority_kind is SemanticAuthorityKind.CLASS_FAMILY
-    assert claim.file_path == module_path.as_posix()
-    assert claim.qualname == "ChooseRoleCaseAuthority"
-    assert recipe.operations[0].operation_key() == "declare_authority"
-
-    simulation = snapshot.simulate_document(CodemodPlanDocument(recipes=(recipe,)))
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-    assert "class ChooseRoleCaseAuthority" in rewritten
-    assert "return ChooseRoleCaseAuthority.choose(mode=mode)" in rewritten
 
 
 def test_semantic_mirror_enum_rejection_reports_only_enum_builder(

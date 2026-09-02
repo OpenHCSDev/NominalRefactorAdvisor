@@ -123,6 +123,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodBackend,
     CodemodPlanDocument,
     CodemodPlanSequence,
+    CodemodPreflightStatus,
     CancelableCompositionKind,
     CallSiteSelector,
     CallSiteTargetSelector,
@@ -5545,6 +5546,7 @@ def test_autoregister_instance_view_operation_rejects_authority_collisions(
 
 def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
@@ -5565,6 +5567,12 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
             target=SourceRewriteTarget(target_id=render_target.target_id),
         )
     )
+    selector_context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+    )
+    declared_claims = recipe.declared_authority_claims(selector_context)
+    authority_report = recipe.authority_claim_preflight_report(selector_context)
     simulation = recipe.simulate(
         source_index,
         source_by_path,
@@ -5576,6 +5584,9 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+from abc import ABC, abstractmethod" in diff
     assert "+class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in diff
+    assert (
+        '+    __registry__: ClassVar[dict[object, type["RenderDispatchCase"]]] = {}'
+    ) in diff
     assert "+class CsvRenderDispatchCase(RenderDispatchCase):" in diff
     assert "+    case = 'csv'" in diff
     assert "render_csv(value)" in diff
@@ -5589,13 +5600,33 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert "dispatch_axis_expression" not in operation_payload
     assert "literal_cases" not in operation_payload
     assert "base_name" not in operation_payload
+    assert "authority_claim" not in operation_payload
     assert "case_key_attribute" not in operation_payload
     assert "method_name" not in operation_payload
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "RenderDispatchCase"
+    assert declared_claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
+    assert declared_claims[0].file_path == module_path.as_posix()
+    assert declared_claims[0].qualname == "RenderDispatchCase"
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert authority_report.details["resolutions"][0]["status"] == "declared"
     simulation.apply()
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
+    assert (
+        "from metaclass_registry import AutoRegisterMeta\n\n\ndef traced(function):"
+    ) in rewritten
     assert "class JsonRenderDispatchCase(RenderDispatchCase):" in rewritten
     assert "render_json(value)" in rewritten
+    assert (
+        "        raise NotImplementedError\n\n\n"
+        "class CsvRenderDispatchCase(RenderDispatchCase):"
+    ) in rewritten
+    assert (
+        "        return f'{kind}:{render_json(value)}'\n\n\n"
+        "@traced\ndef render(kind, value):"
+    ) in rewritten
     assert "@traced\ndef render(kind, value):" in rewritten
     assert '    """Render one declared format."""' in rewritten
 
@@ -5622,6 +5653,8 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     render = rewritten_namespace["render"]
     assert callable(render)
     assert render.__doc__ == "Render one declared format."
+    assert type(rewritten_namespace["RenderDispatchCase"].__registry__) is dict
+    assert "Discovery failed" not in caplog.text
     assert tuple(class_type.__name__ for class_type in csv_case.__mro__) == (
         "CsvRenderDispatchCase",
         "RenderDispatchCase",
@@ -17245,7 +17278,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         if target.qualname in {"AlphaHandler", "BetaHandler"}
     }
     assert RefactorRecipeOperation.from_dict(operation) == operation_declaration
-    assert operation_declaration.declared_authority_claims == ()
+    assert operation_declaration.declared_authority_claims(selector_context) == ()
     with pytest.raises(
         ValueError,
         match="Unsupported ConvertManualRegistryToAutoregisterOperation payload field",

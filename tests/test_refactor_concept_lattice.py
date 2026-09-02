@@ -28,7 +28,6 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.AutoRegisterClassRegistryConcept,
         codemod.AutoRegisterStrategyFamilyConcept,
         codemod.AutoRegisterMroOrderingConcept,
-        codemod.RoleCaseAuthorityConcept,
     }
 )
 
@@ -61,7 +60,6 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
-    codemod.LocalRoleCaseLogicMappingRecipeBuilder: (codemod.RoleCaseAuthorityConcept),
     codemod.NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
@@ -204,7 +202,6 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
                     codemod.AutoRegisterMroOrderingConcept,
-                    codemod.RoleCaseAuthorityConcept,
                 }
             ),
         ),
@@ -283,7 +280,7 @@ def test_unrelated_concepts_do_not_match() -> None:
     )
     assert not issubclass(
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
-        codemod.RoleCaseAuthorityConcept,
+        codemod.AutoRegisterStrategyFamilyConcept,
     )
 
 
@@ -333,7 +330,6 @@ def test_semantic_mirror_strategy_identity_is_metric_type_derived() -> None:
     assert codemod.SemanticMirrorFindingRecipeStrategy.__registry__ == {
         codemod.RegistrationMetrics: codemod.RegistrationSemanticMirrorRecipeStrategy,
         codemod.MappingMetrics: codemod.MappingSemanticMirrorRecipeStrategy,
-        codemod.BranchCountMetrics: codemod.BranchSemanticMirrorRecipeStrategy,
     }
     assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")
 
