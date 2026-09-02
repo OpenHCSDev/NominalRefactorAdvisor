@@ -101,8 +101,11 @@ rejected; field mappings are never copied into the recipe payload.
 
 Class-family, enum, and exhaustive dataclass projection recipes follow the same
 source-derived contract.  Dataclass return dictionaries, field-name
-collections, and returned key/value sequences each persist only the exact
-authority and containing-function targets.
+collections, returned key/value sequences, and constructor calls mediated by an
+existing authority method each persist only the exact authority and
+containing-function targets.  Constructor mediation additionally proves that
+both calls resolve to the same nominal class and that the direct authority
+method exhaustively preserves its field and parameter relation.
 ``DeriveClassFamilyCollectionOperation``, ``DeriveEnumSubsetOperation``, and
 the corresponding ``DeriveDataclass*ProjectionOperation`` declarations
 re-resolve those targets on every simulation or application, prove one
@@ -113,7 +116,7 @@ Collection members, dataclass fields, assignment names, generated source, and
 finding metrics are not copied into the persisted plan.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

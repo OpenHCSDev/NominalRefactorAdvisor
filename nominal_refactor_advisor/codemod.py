@@ -1930,6 +1930,15 @@ class CodemodSelectorContext:
     _direct_class_declaration_indexes_by_file_path: dict[
         str, "ClassDirectDeclarationIndex"
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _class_reference_resolvers_by_file_path: dict[
+        str, ModuleClassReferenceResolver
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _parsed_modules_by_file_path: dict[str, ParsedModule] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @cached_property
     def source_file_paths(self) -> tuple[str, ...]:
@@ -2013,6 +2022,43 @@ class CodemodSelectorContext:
         if resolved_path is None:
             return None
         return self.module_nodes_by_file_path.get(resolved_path)
+
+    def parsed_module_for_source_path(self, source_path: str) -> ParsedModule:
+        """Resolve one current module with its canonical source identity."""
+
+        source_file = self.module_import_graph.source_file_for_path(source_path)
+        if source_file is None:
+            raise ValueError(f"Source module {source_path!r} is unavailable")
+        cache = self._parsed_modules_by_file_path
+        if source_file.file_path in cache:
+            return cache[source_file.file_path]
+        module = self.module_nodes_by_file_path.get(source_file.file_path)
+        source = self.sources_by_file_path.get(source_file.file_path)
+        if module is None or source is None:
+            raise ValueError(f"Source module {source_path!r} is unavailable")
+        cache[source_file.file_path] = ParsedModule(
+            path=Path(source_file.file_path),
+            module_name=source_file.module_name,
+            is_package_init=source_file.is_package_init,
+            module=module,
+            source=source,
+        )
+        return cache[source_file.file_path]
+
+    def class_reference_resolver_for_source_path(
+        self,
+        source_path: str,
+    ) -> ModuleClassReferenceResolver:
+        """Resolve class expressions against the current nominal class index."""
+
+        parsed_module = self.parsed_module_for_source_path(source_path)
+        cache = self._class_reference_resolvers_by_file_path
+        if parsed_module.file_path not in cache:
+            cache[parsed_module.file_path] = ModuleClassReferenceResolver(
+                parsed_module,
+                self.required_class_family_index,
+            )
+        return cache[parsed_module.file_path]
 
     def module_assignment_statement(
         self,
@@ -8458,39 +8504,24 @@ class ClassAuthorityReferenceProof:
         authority: ResolvedClassTarget,
         projection_path: str,
     ) -> "ClassAuthorityReferenceProof":
-        source_file = context.module_import_graph.source_file_for_path(projection_path)
-        module = context.module_nodes_by_file_path.get(projection_path)
-        source = context.sources_by_file_path.get(projection_path)
+        projection_module = context.parsed_module_for_source_path(projection_path)
         authority_symbol = context.required_class_family_index.symbol_for(
             file_path=authority.file_path,
             qualname=authority.qualname,
         )
-        if (
-            source_file is None
-            or module is None
-            or source is None
-            or authority_symbol is None
-        ):
+        if authority_symbol is None:
             raise ValueError("Class authority reference source is unavailable")
-        projection_module = ParsedModule(
-            path=Path(projection_path),
-            module_name=source_file.module_name,
-            is_package_init=source_file.is_package_init,
-            module=module,
-            source=source,
-        )
         return cls(
             authority=authority,
             authority_symbol=authority_symbol,
             projection_module=projection_module,
-            resolver=ModuleClassReferenceResolver(
-                projection_module,
-                context.required_class_family_index,
+            resolver=context.class_reference_resolver_for_source_path(
+                projection_path
             ),
             symbol_table=ModuleSymbolTable(
-                file_path=projection_path,
-                source=source,
-                module=module,
+                file_path=projection_module.file_path,
+                source=projection_module.source,
+                module=projection_module.module,
             ),
         )
 
@@ -16986,6 +17017,79 @@ class DataclassPayloadAuthorityTarget:
                 "Dataclass projection authority must own its complete field schema"
             )
 
+    def require_transparent_direct_construction(self) -> None:
+        """Require construction whose only behavior assigns declared fields."""
+
+        if (
+            self.node.bases
+            or self.node.keywords
+            or len(self.node.decorator_list) != 1
+            or not self.has_generated_initializer()
+        ):
+            raise ValueError(
+                "Dataclass constructor projection requires a generated direct "
+                "initializer"
+            )
+        behavior_changing_methods = {
+            "__getattr__",
+            "__getattribute__",
+            "__init__",
+            "__post_init__",
+            "__setattr__",
+        }
+        if any(
+            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name in behavior_changing_methods
+            for statement in self.node.body
+        ):
+            raise ValueError(
+                "Dataclass constructor projection requires behavior-free field "
+                "construction"
+            )
+        if any(
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id in self.field_names
+            and isinstance(statement.value, ast.Call)
+            and _terminal_name(statement.value.func) == "field"
+            and self.call_keyword_bool(statement.value, "init", default=True) is not True
+            for statement in self.node.body
+        ):
+            raise ValueError(
+                "Dataclass constructor projection requires every authority field "
+                "in the generated initializer"
+            )
+
+    def has_generated_initializer(self) -> bool:
+        dataclass_decorators = tuple(
+            decorator
+            for decorator in self.node.decorator_list
+            if self.decorator_name(decorator) == "dataclass"
+        )
+        if len(dataclass_decorators) != 1:
+            return False
+        decorator = dataclass_decorators[0]
+        return not isinstance(decorator, ast.Call) or (
+            self.call_keyword_bool(decorator, "init", default=True) is True
+        )
+
+    @staticmethod
+    def call_keyword_bool(
+        call: ast.Call,
+        keyword_name: str,
+        *,
+        default: bool,
+    ) -> bool | None:
+        matches = tuple(
+            keyword for keyword in call.keywords if keyword.arg == keyword_name
+        )
+        if not matches:
+            return default
+        if len(matches) != 1 or not isinstance(matches[0].value, ast.Constant):
+            return None
+        value = matches[0].value.value
+        return value if isinstance(value, bool) else None
+
 
 @dataclass(frozen=True)
 class DataclassAuthorityReferenceProof:
@@ -17692,14 +17796,13 @@ class DataclassAuthorityMappingRecipeBuilder(
             authority_name,
         )
 
+    @abstractmethod
     def resolved_target_matches_fields(
         self,
         resolved_target: ResolvedClassTarget,
         field_names: frozenset[str],
     ) -> bool:
-        return self.is_dataclass_authority(resolved_target.node) and (
-            field_names <= frozenset(self.annotated_field_names(resolved_target.node))
-        )
+        raise NotImplementedError
 
     def resolved_target_is_exhaustive_dataclass(
         self,
@@ -17748,94 +17851,9 @@ class DataclassAuthorityMappingRecipeBuilder(
     ) -> RecipePartsT | None:
         raise NotImplementedError
 
-    def import_source(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: FunctionProjectionTarget,
-    ) -> str | None:
-        if projection.source_path == authority.source_path:
-            return None
-        return MappingSemanticMirrorRecipeStrategy.import_source_for_path(
-            self,
-            projection_path=projection.source_path,
-            authority_path=authority.source_path,
-            authority_name=authority.class_name,
-        )
-
     @staticmethod
     def is_dataclass_authority(node: ast.ClassDef) -> bool:
         return DataclassPayloadAuthorityTarget.node_is_dataclass(node)
-
-    @staticmethod
-    def annotated_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-        return tuple(
-            statement.target.id
-            for statement in node.body
-            if isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-        )
-
-
-@dataclass(frozen=True)
-class DataclassProjectionRecipeParts(FindingRecipeParts):
-    """Executable facts shared by dataclass-authority projection rewrites."""
-
-    projection: FunctionProjectionTarget
-    authority: DataclassPayloadAuthorityTarget
-    projection_old_source: str
-    projection_new_source: str
-    import_source: str | None
-    support_import_sources: tuple[str, ...] = ()
-    authority_replacement_source: str | None = None
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-dataclass-projection",
-            reason="Derive a mirrored projection from its dataclass authority.",
-        ).with_authority_claim(
-            AstTargetAuthorityClaim.from_target(
-                self.authority.target,
-                authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
-            )
-        )
-        for import_source in (
-            *((self.import_source,) if self.import_source is not None else ()),
-            *self.support_import_sources,
-        ):
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.projection.source_path),
-                    import_source=import_source,
-                    rationale=(
-                        "Import a declaration required by the dataclass-derived "
-                        "projection."
-                    ),
-                )
-            )
-        recipe = recipe.with_operation(
-            ReplaceTextOperation(
-                target=SourceRewriteTarget(
-                    qualname=self.projection.function_qualname,
-                    file_path=self.projection.source_path,
-                ),
-                old_source=self.projection_old_source,
-                new_source=self.projection_new_source,
-                rationale="Replace mirrored fields with an authority-owned projection.",
-            )
-        )
-        if self.authority_replacement_source is not None:
-            recipe = recipe.with_operation(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(
-                        target_id=self.authority.target.target_id,
-                        qualname=None,
-                        file_path=None,
-                    ),
-                    replacement_source=self.authority_replacement_source,
-                    rationale="Add the authority-owned projection method.",
-                )
-            )
-        return recipe
 
 
 @dataclass(frozen=True)
@@ -18739,97 +18757,471 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class DataclassConstructorProjectionMethod:
-    """Authority-owned method that projects dataclass fields into a constructor."""
-
-    method_name: str
-    constructor_name: str
-
-
-@dataclass(frozen=True)
-class DataclassCallProjectionTarget(FunctionReturnProjectionTarget):
-    """Common call-site projection fields shared by dataclass call rewrites."""
+class NominalConstructorCall:
+    """Class-resolved keyword-only constructor call in one lexical scope."""
 
     call_node: ast.Call
+    constructor_symbol: str
+    keyword_arguments: tuple[ast.keyword, ...]
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        source_path: str,
+        scope: ast.FunctionDef | ast.AsyncFunctionDef,
+        call_node: ast.Call,
+    ) -> "NominalConstructorCall | None":
+        if call_node.args or any(
+            keyword.arg is None for keyword in call_node.keywords
+        ):
+            return None
+        keyword_arguments = tuple(call_node.keywords)
+        keyword_names = tuple(cast(str, keyword.arg) for keyword in keyword_arguments)
+        if len(frozenset(keyword_names)) != len(keyword_names):
+            return None
+        bound_names = _LoadedAndBoundNameVisitor()
+        bound_names.visit(scope)
+        if not ROOT_NAME_PROJECTION.root_names(call_node.func).isdisjoint(
+            bound_names.bound_names
+        ):
+            return None
+        constructor_symbol = context.class_reference_resolver_for_source_path(
+            source_path
+        ).symbol_for_reference(call_node.func)
+        if constructor_symbol is None:
+            return None
+        return cls(
+            call_node=call_node,
+            constructor_symbol=constructor_symbol,
+            keyword_arguments=keyword_arguments,
+        )
+
+    @property
+    def keyword_names(self) -> tuple[str, ...]:
+        return tuple(cast(str, keyword.arg) for keyword in self.keyword_arguments)
+
+    def keyword_argument(self, name: str) -> ast.keyword | None:
+        return next(
+            (
+                keyword
+                for keyword in self.keyword_arguments
+                if keyword.arg == name
+            ),
+            None,
+        )
+
+    def required_keyword_argument(self, name: str) -> ast.keyword:
+        keyword = self.keyword_argument(name)
+        if keyword is None:
+            raise ValueError(f"Constructor call has no keyword {name!r}")
+        return keyword
+
+
+@dataclass(frozen=True)
+class DataclassConstructorFieldArgument:
+    """One authority field and its value at an external constructor call."""
+
+    field_name: str
+    value_node: ast.expr
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionTarget(ResolvedFunctionProjectionTarget):
+    """External nominal constructor call carrying all dataclass authority fields."""
+
+    constructor: NominalConstructorCall
+    field_arguments: tuple[DataclassConstructorFieldArgument, ...]
     remaining_keywords: tuple[ast.keyword, ...]
 
-
-@dataclass(frozen=True)
-class DataclassConstructorProjectionCallTarget(DataclassCallProjectionTarget):
-    """External constructor call that forwards dataclass-owned field values."""
-
-    field_values_by_name: Mapping[str, ast.expr]
+    @property
+    def call_node(self) -> ast.Call:
+        return self.constructor.call_node
 
 
 @dataclass(frozen=True)
-class DataclassConstructorAuthorityMethodSelection:
-    """Resolved authority method for one constructor projection."""
+class DataclassConstructorProjectionMethod:
+    """Direct authority method that forwards fields to one nominal constructor."""
 
-    constructor_name: str
+    node: ast.FunctionDef
+    constructor: NominalConstructorCall
+    receiver_name: str
+    parameter_names: tuple[str, ...]
+
+    @property
+    def method_name(self) -> str:
+        return self.node.name
+
+    @classmethod
+    def candidates_from_authority(
+        cls,
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        constructor_symbol: str,
+        remaining_keyword_names: tuple[str, ...],
+    ) -> tuple["DataclassConstructorProjectionMethod", ...]:
+        return tuple(
+            candidate
+            for statement in authority.node.body
+            if isinstance(statement, ast.FunctionDef)
+            if (
+                candidate := cls.from_method(
+                    context,
+                    authority,
+                    statement,
+                    constructor_symbol,
+                    remaining_keyword_names,
+                )
+            )
+            is not None
+        )
+
+    @classmethod
+    def from_method(
+        cls,
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        method_node: ast.FunctionDef,
+        constructor_symbol: str,
+        remaining_keyword_names: tuple[str, ...],
+    ) -> "DataclassConstructorProjectionMethod | None":
+        body = statements_without_docstring(method_node.body)
+        if (
+            method_node.decorator_list
+            or len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or not isinstance(body[0].value, ast.Call)
+            or method_node.args.vararg is not None
+            or method_node.args.kwarg is not None
+        ):
+            return None
+        positional_parameters = (
+            *method_node.args.posonlyargs,
+            *method_node.args.args,
+        )
+        if not positional_parameters or len(method_node.args.posonlyargs) > 1:
+            return None
+        receiver = positional_parameters[0]
+        if method_node.args.posonlyargs:
+            keyword_parameters = (
+                *method_node.args.args,
+                *method_node.args.kwonlyargs,
+            )
+        else:
+            keyword_parameters = (
+                *method_node.args.args[1:],
+                *method_node.args.kwonlyargs,
+            )
+        parameter_names = tuple(parameter.arg for parameter in keyword_parameters)
+        if (
+            len(frozenset(parameter_names)) != len(parameter_names)
+            or frozenset(parameter_names) != frozenset(remaining_keyword_names)
+        ):
+            return None
+        constructor = NominalConstructorCall.from_context(
+            context,
+            authority.source_path,
+            method_node,
+            body[0].value,
+        )
+        if (
+            constructor is None
+            or constructor.constructor_symbol != constructor_symbol
+            or frozenset(constructor.keyword_names)
+            != frozenset((*authority.field_names, *parameter_names))
+        ):
+            return None
+        if any(
+            not cls.keyword_forwards_receiver_field(
+                constructor,
+                field_name,
+                receiver.arg,
+            )
+            for field_name in authority.field_names
+        ):
+            return None
+        if any(
+            not cls.keyword_forwards_parameter(constructor, parameter_name)
+            for parameter_name in parameter_names
+        ):
+            return None
+        return cls(
+            node=method_node,
+            constructor=constructor,
+            receiver_name=receiver.arg,
+            parameter_names=parameter_names,
+        )
+
+    @staticmethod
+    def keyword_forwards_receiver_field(
+        constructor: NominalConstructorCall,
+        field_name: str,
+        receiver_name: str,
+    ) -> bool:
+        keyword = constructor.keyword_argument(field_name)
+        return bool(
+            keyword is not None
+            and isinstance(keyword.value, ast.Attribute)
+            and isinstance(keyword.value.value, ast.Name)
+            and keyword.value.value.id == receiver_name
+            and keyword.value.attr == field_name
+        )
+
+    @staticmethod
+    def keyword_forwards_parameter(
+        constructor: NominalConstructorCall,
+        parameter_name: str,
+    ) -> bool:
+        keyword = constructor.keyword_argument(parameter_name)
+        return bool(
+            keyword is not None
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == parameter_name
+        )
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionCandidate:
+    """One constructor projection and its exact authority-method relation."""
+
+    projection: DataclassConstructorProjectionTarget
+    authority_method: DataclassConstructorProjectionMethod
+    source_replacement: SourceTextReplacement
+
+
+@dataclass(frozen=True)
+class DataclassConstructorProjectionDerivation(
+    SourceDerivedDataclassProjection[DataclassConstructorProjectionTarget]
+):
+    """Current-source proof for one equivalent constructor projection."""
+
     authority_method: DataclassConstructorProjectionMethod
 
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> "DataclassConstructorProjectionDerivation":
+        boundary = DataclassProjectionBoundary.from_context(
+            context,
+            authority_reference,
+            projection_reference,
+        )
+        boundary.authority.require_transparent_direct_construction()
+        candidates = tuple(
+            candidate
+            for node in walk_function_body_nodes(boundary.function.node)
+            if isinstance(node, ast.Return) and node.value is not None
+            for call_node in ast.walk(node.value)
+            if isinstance(call_node, ast.Call)
+            if (
+                candidate := cls.candidate_from_call(
+                    context,
+                    boundary,
+                    call_node,
+                )
+            )
+            is not None
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Dataclass authority and projection function must expose exactly "
+                f"one equivalent constructor projection; found {len(candidates)}"
+            )
+        candidate = candidates[0]
+        return cls(
+            authority=boundary.authority,
+            projection=candidate.projection,
+            source_replacement=candidate.source_replacement,
+            import_sources=(
+                (boundary.authority_import_source,)
+                if boundary.authority_import_source is not None
+                else ()
+            ),
+            authority_method=candidate.authority_method,
+        )
 
-CallProjectionTargetT = TypeVar(
-    "CallProjectionTargetT",
-    bound=DataclassCallProjectionTarget,
-)
-CallProjectionPartsT = TypeVar("CallProjectionPartsT", bound=FindingRecipeParts)
-
-
-class DataclassCallProjectionMappingRecipeBuilder(
-    DataclassAuthorityMappingRecipeBuilder[
-        CallProjectionTargetT,
-        CallProjectionPartsT,
-    ],
-    Generic[CallProjectionTargetT, CallProjectionPartsT],
-    ABC,
-):
-    """Shared behavior for dataclass-backed call projection builders."""
-
-    metrics_rejection_reason: ClassVar[str]
-    executable_rejection_reason: ClassVar[str]
-    missing_rejection_reason: ClassVar[str]
-
-    def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return self.metrics_rejection_reason
-        if self.parts is not None:
-            return self.executable_rejection_reason
-        return self.missing_rejection_reason
-
-    def remaining_keywords(self, call_node: ast.Call) -> tuple[ast.keyword, ...]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        return tuple(
+    @classmethod
+    def candidate_from_call(
+        cls,
+        context: CodemodSelectorContext,
+        boundary: DataclassProjectionBoundary,
+        call_node: ast.Call,
+    ) -> DataclassConstructorProjectionCandidate | None:
+        constructor = NominalConstructorCall.from_context(
+            context,
+            boundary.function.source_path,
+            boundary.function.node,
+            call_node,
+        )
+        if constructor is None:
+            return None
+        field_name_set = frozenset(boundary.authority.field_names)
+        projected_field_names = tuple(
+            name for name in constructor.keyword_names if name in field_name_set
+        )
+        if projected_field_names != boundary.authority.field_names:
+            return None
+        field_arguments = tuple(
+            DataclassConstructorFieldArgument(
+                field_name=field_name,
+                value_node=constructor.required_keyword_argument(field_name).value,
+            )
+            for field_name in boundary.authority.field_names
+        )
+        remaining_keywords = tuple(
             keyword
-            for keyword in call_node.keywords
-            if keyword.arg is not None and keyword.arg not in field_names
+            for keyword in constructor.keyword_arguments
+            if keyword.arg not in field_name_set
+        )
+        if not cls.remaining_values_are_post_construction_safe(
+            boundary.function,
+            remaining_keywords,
+        ):
+            return None
+        authority_methods = DataclassConstructorProjectionMethod.candidates_from_authority(
+            context,
+            boundary.authority,
+            constructor.constructor_symbol,
+            tuple(cast(str, keyword.arg) for keyword in remaining_keywords),
+        )
+        if len(authority_methods) != 1:
+            return None
+        projection = DataclassConstructorProjectionTarget(
+            source_path=boundary.function.source_path,
+            function_qualname=boundary.function.function_qualname,
+            target=boundary.function.target,
+            node=boundary.function.node,
+            constructor=constructor,
+            field_arguments=field_arguments,
+            remaining_keywords=remaining_keywords,
+        )
+        source_replacement = cls.projection_replacement(
+            context,
+            boundary.authority,
+            projection,
+            authority_methods[0],
+        )
+        if source_replacement is None:
+            return None
+        return DataclassConstructorProjectionCandidate(
+            projection=projection,
+            authority_method=authority_methods[0],
+            source_replacement=source_replacement,
+        )
+
+    @staticmethod
+    def remaining_values_are_post_construction_safe(
+        function: ResolvedFunctionProjectionTarget,
+        keywords: tuple[ast.keyword, ...],
+    ) -> bool:
+        parameter_names = frozenset(function.target.parameters)
+        return all(
+            isinstance(keyword.value, ast.Constant)
+            or (
+                isinstance(keyword.value, ast.Name)
+                and keyword.value.id in parameter_names
+            )
+            for keyword in keywords
+        )
+
+    @staticmethod
+    def projection_replacement(
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: DataclassConstructorProjectionTarget,
+        authority_method: DataclassConstructorProjectionMethod,
+    ) -> SourceTextReplacement | None:
+        source = context.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        offsets = geometry.node_offsets(projection.call_node)
+        if offsets is None:
+            return None
+        replacement_span = SourceTextSpan.from_offsets(offsets)
+        if replacement_span.contains_comment(source):
+            return None
+        authority_instance = ast.Call(
+            func=ast.Name(id=authority.class_name, ctx=ast.Load()),
+            args=[],
+            keywords=[
+                ast.keyword(
+                    arg=field.field_name,
+                    value=copy.deepcopy(field.value_node),
+                )
+                for field in projection.field_arguments
+            ],
+        )
+        replacement_call = ast.Call(
+            func=ast.Attribute(
+                value=authority_instance,
+                attr=authority_method.method_name,
+                ctx=ast.Load(),
+            ),
+            args=[],
+            keywords=[
+                copy.deepcopy(keyword) for keyword in projection.remaining_keywords
+            ],
+        )
+        replacement_source = PythonExpressionSourceFormatter().replacement_source(
+            ast.fix_missing_locations(replacement_call),
+            line_prefix=geometry.line_indent(replacement_span.start_offset),
+        )
+        return replacement_span.replacement(source, replacement_source)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveDataclassConstructorProjectionOperation(
+    SourceDerivedDataclassProjectionOperation[DataclassConstructorProjectionTarget]
+):
+    """Derive one constructor call through an equivalent dataclass method."""
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> SourceDerivedDataclassProjection[DataclassConstructorProjectionTarget]:
+        return DataclassConstructorProjectionDerivation.from_context(
+            context,
+            self.target,
+            self.projection_target,
         )
 
 
 @dataclass(frozen=True, kw_only=True)
 class DataclassConstructorProjectionMappingRecipeBuilder(
-    DataclassCallProjectionMappingRecipeBuilder[
-        DataclassConstructorProjectionCallTarget,
-        DataclassProjectionRecipeParts,
+    DataclassAuthorityMappingRecipeBuilder[
+        ResolvedFunctionProjectionTarget,
+        SourceDerivedDataclassProjectionRecipeParts[
+            DataclassConstructorProjectionTarget
+        ],
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     ConstructorKwargCarrierProjectionConcept,
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
-    metrics_rejection_reason: ClassVar[str] = (
-        "dataclass constructor projection requires mapping metrics"
-    )
-    executable_rejection_reason: ClassVar[str] = (
-        "dataclass constructor projection has an executable authority recipe"
-    )
-    missing_rejection_reason: ClassVar[str] = (
-        "dataclass constructor projection requires a return constructor call whose "
-        "keyword fields match a dataclass authority and an existing authority method "
-        "that forwards those fields"
-    )
-
     finding: RefactorFinding
+
+    def rejection_reason(self) -> str:
+        if not isinstance(self.finding.metrics, MappingMetrics):
+            return "dataclass constructor projection requires mapping metrics"
+        if self.parts is not None:
+            return "dataclass constructor projection has an executable authority recipe"
+        return (
+            "dataclass constructor projection requires one nominal constructor call "
+            "that is equivalent to a direct authority method"
+        )
+
+    def resolved_target_matches_fields(
+        self,
+        resolved_target: ResolvedClassTarget,
+        field_names: frozenset[str],
+    ) -> bool:
+        return self.resolved_target_is_exhaustive_dataclass(
+            resolved_target,
+            field_names,
+        )
 
     def projection_shape_is_applicable(
         self,
@@ -18858,196 +19250,30 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
         source_path: str,
-    ) -> DataclassConstructorProjectionCallTarget | None:
-        function_return = FunctionReturnProjectionTarget.from_return_location(
+    ) -> ResolvedFunctionProjectionTarget | None:
+        return FunctionReturnProjectionTarget.from_return_location(
             self,
             source_path=source_path,
             function_qualname=seed.projection_subject(),
             line=seed.projection_line(),
         )
-        if function_return is None:
-            return None
-        matching_calls = tuple(
-            call
-            for call in ast.walk(function_return.return_node.value)
-            if isinstance(call, ast.Call) and self.call_projects_dataclass_fields(call)
-        )
-        if len(matching_calls) != 1:
-            return None
-        call_node = matching_calls[0]
-        return DataclassConstructorProjectionCallTarget(
-            source_path=function_return.source_path,
-            function_qualname=function_return.function_qualname,
-            target=function_return.target,
-            node=function_return.node,
-            return_node=function_return.return_node,
-            call_node=call_node,
-            field_values_by_name=self.field_values_by_name(call_node),
-            remaining_keywords=self.remaining_keywords(call_node),
-        )
-
-    def call_projects_dataclass_fields(self, call_node: ast.Call) -> bool:
-        if call_node.args:
-            return False
-        return frozenset(self.field_values_by_name(call_node)) == frozenset(
-            self.finding.metrics.plan_field_names
-        )
 
     def recipe_parts(
         self,
         authority: DataclassPayloadAuthorityTarget,
-        projection: DataclassConstructorProjectionCallTarget,
-    ) -> DataclassProjectionRecipeParts | None:
-        return (
-            Maybe.of(_call_name(projection.call_node.func))
-            .with_projection(
-                lambda constructor_name: self.authority_method(
-                    authority.node,
-                    constructor_name,
-                )
-            )
-            .map(
-                lambda row: DataclassConstructorAuthorityMethodSelection(
-                    constructor_name=row[0],
-                    authority_method=row[1],
-                )
-            )
-            .with_projection(
-                lambda selection: self.projection_rewrite_parts(
-                    authority,
-                    selection.authority_method,
-                    projection,
-                )
-            )
-            .map(
-                lambda row: DataclassProjectionRecipeParts(
-                    projection=projection,
-                    authority=authority,
-                    projection_old_source=row[1].old_source,
-                    projection_new_source=row[1].new_source,
-                    import_source=self.import_source(authority, projection),
-                )
-            )
-            .unwrap_or_none()
+        projection: ResolvedFunctionProjectionTarget,
+    ) -> SourceDerivedDataclassProjectionRecipeParts[
+        DataclassConstructorProjectionTarget
+    ] | None:
+        operation = DeriveDataclassConstructorProjectionOperation(
+            target=SourceRewriteTarget(target_id=authority.target.target_id),
+            projection_target_id=projection.target.target_id,
         )
-
-    def authority_method(
-        self,
-        authority_node: ast.ClassDef,
-        constructor_name: str,
-    ) -> DataclassConstructorProjectionMethod | None:
-        matches = tuple(
-            statement
-            for statement in authority_node.body
-            if isinstance(statement, ast.FunctionDef)
-            and self.method_projects_fields(statement, constructor_name)
+        return SourceDerivedDataclassProjectionRecipeParts.from_proven_operation(
+            self,
+            authority=authority,
+            operation=operation,
         )
-        if len(matches) != 1:
-            return None
-        return DataclassConstructorProjectionMethod(
-            method_name=matches[0].name,
-            constructor_name=constructor_name,
-        )
-
-    def method_projects_fields(
-        self,
-        method_node: ast.FunctionDef,
-        constructor_name: str,
-    ) -> bool:
-        return_nodes = tuple(
-            node
-            for node in ast.walk(method_node)
-            if isinstance(node, ast.Return) and isinstance(node.value, ast.Call)
-        )
-        return any(
-            _call_name(return_node.value.func) == constructor_name
-            and self.return_call_forwards_fields(return_node.value)
-            for return_node in return_nodes
-        )
-
-    def return_call_forwards_fields(self, call_node: ast.Call) -> bool:
-        forwarded_fields = {
-            keyword.arg
-            for keyword in call_node.keywords
-            if keyword.arg is not None
-            and self.self_field_name(keyword.value) == keyword.arg
-        }
-        return frozenset(self.finding.metrics.plan_field_names) <= forwarded_fields
-
-    def projection_rewrite_parts(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        authority_method: DataclassConstructorProjectionMethod,
-        projection: DataclassConstructorProjectionCallTarget,
-    ) -> SourceTextReplacement | None:
-        source = self.sources_by_file_path[projection.source_path]
-        geometry = SourceTextGeometry(source)
-        replacement_call = self.replacement_call(
-            authority, authority_method, projection
-        )
-        return (
-            Maybe.of(geometry.node_offsets(projection.call_node))
-            .map(SourceTextSpan.from_offsets)
-            .map(
-                lambda span: span.replacement(
-                    source,
-                    PythonExpressionSourceFormatter().replacement_source(
-                        replacement_call,
-                        line_prefix=geometry.line_prefix(span.start_offset),
-                    ),
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def replacement_call(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        authority_method: DataclassConstructorProjectionMethod,
-        projection: DataclassConstructorProjectionCallTarget,
-    ) -> ast.Call:
-        field_values_by_name = projection.field_values_by_name
-        authority_instance = ast.Call(
-            func=ast.Name(id=authority.class_name, ctx=ast.Load()),
-            args=[],
-            keywords=[
-                ast.keyword(
-                    arg=field_name,
-                    value=copy.deepcopy(field_values_by_name[field_name]),
-                )
-                for field_name in self.finding.metrics.plan_field_names
-            ],
-        )
-        replacement_call = ast.Call(
-            func=ast.Attribute(
-                value=authority_instance,
-                attr=authority_method.method_name,
-                ctx=ast.Load(),
-            ),
-            args=[],
-            keywords=[
-                copy.deepcopy(keyword) for keyword in projection.remaining_keywords
-            ],
-        )
-        return ast.fix_missing_locations(replacement_call)
-
-    def field_values_by_name(self, call_node: ast.Call) -> dict[str, ast.expr]:
-        field_names = frozenset(self.finding.metrics.plan_field_names)
-        return {
-            keyword.arg: keyword.value
-            for keyword in call_node.keywords
-            if keyword.arg in field_names
-        }
-
-    @staticmethod
-    def self_field_name(node: ast.expr) -> str | None:
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
-        ):
-            return node.attr
-        return None
 
 
 class LocalRoleCaseConstructibleItem(ABC, metaclass=AutoRegisterMeta):

@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
+    DeriveDataclassConstructorProjectionOperation,
     DeriveDataclassFieldNameCollectionProjectionOperation,
     DeriveDataclassKeyValueSequenceProjectionOperation,
     DeriveDataclassPayloadProjectionOperation,
@@ -3208,14 +3209,12 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
         "        )\n"
         "\n"
         "def build_replacement(source_path, insertion_line, import_lines, reason):\n"
-        "    return (\n"
-        "        SourceLineReplacement(\n"
-        "            file_path=source_path,\n"
-        "            start_line=insertion_line,\n"
-        "            end_line=insertion_line - 1,\n"
-        "            replacement_lines=import_lines,\n"
-        "            rationale=reason,\n"
-        "        ),\n"
+        "    return SourceLineReplacement(\n"
+        "        file_path=source_path,\n"
+        "        start_line=insertion_line,\n"
+        "        end_line=insertion_line - 1,\n"
+        "        replacement_lines=import_lines,\n"
+        "        rationale=reason,\n"
         "    )\n",
     )
     modules = parse_python_modules(tmp_path)
@@ -3254,13 +3253,60 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
-        "replace_text",
+        "derive_dataclass_constructor_projection",
     )
+    operation = recipe.operations[0]
+    assert isinstance(operation, DeriveDataclassConstructorProjectionOperation)
+    assert set(operation.to_dict()) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    assert replayed == operation
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "def line_replacement(",
+        "def as_replacement(",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+    replay_simulation = (
+        RefactorRecipe("derive-current-constructor-projection")
+        .with_operation(replayed)
+        .simulate(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+    )
+    replayed_source = replay_simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
+    assert ".as_replacement(" in replayed_source
+    assert ".line_replacement(" not in replayed_source
     assert "SourceLineSpan(" in rewritten_source
     assert ".line_replacement(" in rewritten_source
     assert "start_line=insertion_line" in rewritten_source
     assert "end_line=insertion_line - 1" in rewritten_source
     assert "replacement_lines=import_lines" in rewritten_source
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    result = namespace["build_replacement"](
+        "module.py",
+        7,
+        ("import x",),
+        "reason",
+    )
+    assert result == namespace["SourceLineReplacement"](
+        "module.py",
+        7,
+        6,
+        ("import x",),
+        "reason",
+    )
 
 
 def test_constructor_projection_rejection_reports_only_constructor_builder(
@@ -3307,6 +3353,82 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    record = codemod_plan_from_findings(
+        (finding,),
+        selector_context=snapshot,
+    ).records[0]
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert tuple(
+        obstacle.executable_declaration_name for obstacle in record.proof_obstacles
+    ) == ("DataclassConstructorProjectionMappingRecipeBuilder",)
+
+
+def test_constructor_projection_requires_same_nominal_constructor(
+    tmp_path: Path,
+) -> None:
+    package_path = tmp_path / "pkg"
+    package_path.mkdir()
+    (package_path / "__init__.py").write_text("", encoding="utf-8")
+    for module_name in ("left", "right"):
+        (package_path / f"{module_name}.py").write_text(
+            "from dataclasses import dataclass\n\n"
+            "@dataclass(frozen=True)\n"
+            "class Replacement:\n"
+            "    start_line: int\n"
+            "    end_line: int\n",
+            encoding="utf-8",
+        )
+    model_path = package_path / "model.py"
+    model_path.write_text(
+        "from dataclasses import dataclass\n"
+        "from .left import Replacement\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Span:\n"
+        "    start_line: int\n"
+        "    end_line: int\n\n"
+        "    def replacement(self):\n"
+        "        return Replacement(\n"
+        "            start_line=self.start_line,\n"
+        "            end_line=self.end_line,\n"
+        "        )\n",
+        encoding="utf-8",
+    )
+    report_path = package_path / "report.py"
+    report_path.write_text(
+        "from .model import Span\n"
+        "from .right import Replacement\n\n"
+        "def build(start_line, end_line):\n"
+        "    return Replacement(\n"
+        "        start_line=start_line,\n"
+        "        end_line=end_line,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    finding = RefactorFinding(
+        detector_id="semantic_mirror_without_descent",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Semantic mirror without descent",
+        summary="Constructor projection repeats Span fields.",
+        why="semantic fact is mirrored outside its nominal authority",
+        capability_gap="derive the projection from the authority instead",
+        relation_context="projection lacks a semantic-descent certificate",
+        evidence=(
+            SourceLocation(str(report_path), 5, "build:return"),
+            SourceLocation(str(model_path), 5, "Span"),
+        ),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            field_names=("start_line", "end_line"),
+            mapping_name="build:return",
+            source_name="Span",
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        (finding,),
+    )
 
     record = codemod_plan_from_findings(
         (finding,),
