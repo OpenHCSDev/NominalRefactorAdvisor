@@ -2457,48 +2457,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "ArchitectureGuardReport":
         return guard_suite.evaluate(self.source_index, self.sources_by_file_path)
 
-    def simulate_recipe(
-        self,
-        recipe: "RefactorRecipe",
-        *,
-        backend: "CodemodBackend" | None = None,
-        guard_suite: "ArchitectureGuardSuite" | None = None,
-    ) -> "RefactorRecipeSimulation":
-        document_simulation = self.simulate_document(
-            CodemodPlanDocument(
-                recipes=(recipe,),
-                guard_suite=guard_suite or ArchitectureGuardSuite(),
-            ),
-            backend=backend,
-        )
-        return RefactorRecipeSimulation(
-            recipe=recipe,
-            simulation=document_simulation.simulation,
-            architecture_guard_report=(document_simulation.architecture_guard_report),
-        )
-
-    def simulate_document(
-        self,
-        document: "CodemodPlanDocument",
-        *,
-        backend: "CodemodBackend" | None = None,
-    ) -> "CodemodPlanDocumentSimulation":
-        return document.preflight(self).simulate(backend=backend)
-
-    def simulate_finding_plan(
-        self,
-        plan: "FindingRecipePlan",
-        *,
-        backend: "CodemodBackend" | None = None,
-    ) -> "FindingRecipePlanSimulation":
-        return FindingRecipePlanSimulation(
-            plan=plan,
-            document_simulation=self.simulate_document(
-                plan.document,
-                backend=backend,
-            ),
-        )
-
     def plan_from_findings(
         self,
         findings: Iterable[RefactorFinding],
@@ -10982,13 +10940,7 @@ class RefactorRecipe(CodemodPayloadRecord):
             return bool(self.operations)
         if self.created_source_paths(selector_context.source_index):
             return True
-        return bool(
-            self.source_rewrite_batch(
-                selector_context.source_index,
-                selector_context.sources_by_file_path,
-                selector_context=selector_context,
-            )
-        )
+        return bool(self.source_rewrite_batch(selector_context.execution_snapshot()))
 
     def with_architecture_guard(
         self,
@@ -11024,15 +10976,10 @@ class RefactorRecipe(CodemodPayloadRecord):
 
     def source_rewrite_batch(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str] | None = None,
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PlannedSourceRewrite, ...]:
         return CodemodPlanDocument(recipes=(self,)).source_rewrite_batch(
-            source_index,
-            source_by_path,
-            selector_context=selector_context,
+            snapshot,
         )
 
     def created_source_paths(
@@ -11138,39 +11085,22 @@ class RefactorRecipe(CodemodPayloadRecord):
 
     def simulate(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        backend: CodemodBackend | None = None,
-        guard_suite: ArchitectureGuardSuite | None = None,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> "RefactorRecipeSimulation":
-        snapshot = CodemodSourceSnapshot.from_indexed_sources(
-            source_index,
-            source_by_path,
-            class_family_index=(
-                selector_context.class_family_index
-                if selector_context is not None
-                else None
-            ),
-        )
-        return self.simulate_snapshot(
-            snapshot,
-            backend=backend,
-            guard_suite=guard_suite,
-        )
-
-    def simulate_snapshot(
-        self,
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
         guard_suite: ArchitectureGuardSuite | None = None,
     ) -> "RefactorRecipeSimulation":
-        return snapshot.simulate_recipe(
-            self,
-            backend=backend,
+        document_simulation = CodemodPlanDocument(
+            recipes=(self,),
             guard_suite=self.active_guard_suite(guard_suite),
+        ).simulate(
+            snapshot,
+            backend=backend,
+        )
+        return RefactorRecipeSimulation(
+            recipe=self,
+            simulation=document_simulation.simulation,
+            architecture_guard_report=document_simulation.architecture_guard_report,
         )
 
 
@@ -11188,6 +11118,17 @@ class CodemodPlanRoot(CodemodJsonReport, ABC):
     @abstractmethod
     def as_sequence(self) -> "CodemodPlanSequence":
         """Return the execution-sequence projection of this exact root variant."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def simulate(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "CodemodPlanDocumentSimulation | CodemodPlanSequenceSimulation":
+        """Simulate this plan against one complete source-state authority."""
 
         raise NotImplementedError
 
@@ -11290,33 +11231,11 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
 
     def source_rewrite_batch(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str] | None = None,
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if not any(recipe.operations for recipe in self.recipes):
-            return ()
-        if source_by_path is None:
-            raise ValueError("Recipe operations require source text")
-        context = selector_context or CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
-        )
-        return RefactorRecipeOperationCompiler.from_context(
-            context
-        ).planned_rewrites_for_recipes(self.recipes)
-
-    def source_rewrite_batch_from_snapshot(
-        self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        rewrite_snapshot = self.rewrite_snapshot(snapshot)
-        return self.source_rewrite_batch(
-            rewrite_snapshot.source_index,
-            rewrite_snapshot.sources_by_file_path,
-            selector_context=rewrite_snapshot,
-        )
+        preflight = self.preflight(snapshot)
+        preflight.report.require_clean()
+        return preflight.rewrites
 
     def preflight_snapshot(
         self,
@@ -11354,33 +11273,11 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
 
     def simulate(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        backend: CodemodBackend | None = None,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> "CodemodPlanDocumentSimulation":
-        snapshot = CodemodSourceSnapshot.from_indexed_sources(
-            source_index,
-            source_by_path,
-            class_family_index=(
-                selector_context.class_family_index
-                if selector_context is not None
-                else None
-            ),
-        )
-        return self.simulate_snapshot(snapshot, backend=backend)
-
-    def simulate_snapshot(
-        self,
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
     ) -> "CodemodPlanDocumentSimulation":
-        return snapshot.simulate_document(
-            self,
-            backend=backend,
-        )
+        return self.preflight(snapshot).simulate(backend=backend)
 
 
 @dataclass(frozen=True)
@@ -11404,11 +11301,9 @@ class CodemodPlanDocumentPreflight:
         rewrites: tuple[PlannedSourceRewrite, ...] = ()
         if report.is_clean:
             try:
-                rewrites = document.source_rewrite_batch(
-                    rewrite_snapshot.source_index,
-                    rewrite_snapshot.sources_by_file_path,
-                    selector_context=rewrite_snapshot,
-                )
+                rewrites = RefactorRecipeOperationCompiler.from_context(
+                    rewrite_snapshot
+                ).planned_rewrites_for_recipes(document.recipes)
             except CodemodOperationPreflightError as error:
                 report = CodemodPlanPreflightReport((*report.reports, error.report))
         return cls(
@@ -11549,7 +11444,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
             or any(not claim.file_path for claim in self.referenced_authority_claims())
         )
 
-    def source_rewrite_batch_from_snapshot(
+    def source_rewrite_batch(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PlannedSourceRewrite, ...]:
@@ -11559,7 +11454,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
             )
         if not self.documents:
             return ()
-        return self.documents[0].source_rewrite_batch_from_snapshot(snapshot)
+        return self.documents[0].source_rewrite_batch(snapshot)
 
     def preflight_snapshot(
         self,
@@ -11578,7 +11473,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
             active_snapshot = preflight.simulate().required_after_snapshot
         return CodemodPlanPreflightReport(tuple(reports))
 
-    def simulate_snapshot(
+    def simulate(
         self,
         snapshot: CodemodSourceSnapshot,
         *,
@@ -11588,7 +11483,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
         stage_reports: list[CodemodPlanSequenceStageReport] = []
         for document in self.documents:
             before_snapshot = active_snapshot
-            stage = document.simulate_snapshot(
+            stage = document.simulate(
                 before_snapshot,
                 backend=backend,
             )
@@ -13026,29 +12921,17 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
 
     def simulate(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        backend: CodemodBackend | None = None,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> "FindingRecipePlanSimulation":
-        return FindingRecipePlanSimulation(
-            plan=self,
-            document_simulation=self.document.simulate(
-                source_index,
-                source_by_path,
-                backend=backend,
-                selector_context=selector_context,
-            ),
-        )
-
-    def simulate_snapshot(
-        self,
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
     ) -> "FindingRecipePlanSimulation":
-        return snapshot.simulate_finding_plan(self, backend=backend)
+        return FindingRecipePlanSimulation(
+            plan=self,
+            document_simulation=self.document.simulate(
+                snapshot,
+                backend=backend,
+            ),
+        )
 
     def preflight_snapshot(
         self,
@@ -20917,7 +20800,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
         try:
             document = CodemodPlanDocument(recipes=recipes)
-            simulation = document.simulate_snapshot(self.source_snapshot)
+            simulation = document.simulate(self.source_snapshot)
         except (
             PhysicalSourceEditConflictError,
             PlannedRewriteConflictError,

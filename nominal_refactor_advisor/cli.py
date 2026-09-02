@@ -2349,7 +2349,7 @@ class SimulateCodemodExecutionStrategy(CodemodExecutionStrategy):
         presenter: CodemodPlanExecutionPresenter,
     ) -> int:
         try:
-            simulation = sequence.simulate_snapshot(snapshot)
+            simulation = sequence.simulate(snapshot)
         except CodemodOperationPreflightError as error:
             presenter.present_operation_preflight_failure(error.report)
             return 1

@@ -95,7 +95,7 @@ def test_document_compiler_supplies_one_context_authority_to_every_operation(
         )
     )
 
-    document.source_rewrite_batch_from_snapshot(snapshot)
+    document.source_rewrite_batch(snapshot)
 
     assert len(observed_contexts) == 2
     assert observed_contexts[0] is observed_contexts[1]
@@ -306,7 +306,7 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
         )
         for edit in carrier_edits
     )
-    rewritten = recipe.simulate_snapshot(snapshot).simulation.rewritten_sources[
+    rewritten = recipe.simulate(snapshot).simulation.rewritten_sources[
         module_path.as_posix()
     ]
     assert rewritten.count("from pkg.types import") == 1

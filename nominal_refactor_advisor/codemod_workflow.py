@@ -1843,7 +1843,7 @@ class CodemodRefactorGoalRunner:
         )
         if self.dry_run:
             return projected_report
-        sequence_simulation = projected_report.replay_sequence.simulate_snapshot(
+        sequence_simulation = projected_report.replay_sequence.simulate(
             starting_snapshot
         )
         if not sequence_simulation.is_clean:

@@ -315,6 +315,16 @@ _REPOSITORY_SCAN_LABEL = "repository"
 _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID = "semantic_overlap_method"
 
 
+def _indexed_snapshot(
+    source_index: SourceIndex,
+    sources_by_file_path: Mapping[str, str],
+) -> CodemodSourceSnapshot:
+    return CodemodSourceSnapshot.from_indexed_sources(
+        source_index,
+        sources_by_file_path,
+    )
+
+
 def _finding_spec(
     pattern_id: PatternId,
     title: str,
@@ -756,7 +766,7 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
                 new_source="value = 2",
             )
         )
-        .simulate_snapshot(snapshot)
+        .simulate(snapshot)
     )
     intervening_source = "class Alpha:\n    value = 99\n"
     module_path.write_text(intervening_source)
@@ -782,7 +792,7 @@ def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
                 )
             ),
         )
-    ).simulate_snapshot(snapshot)
+    ).simulate(snapshot)
     intervening_source = "USER_FILE = 1\n"
     generated_path.write_text(intervening_source)
 
@@ -826,7 +836,7 @@ def test_codemod_multifile_commit_failure_rolls_back_prior_files(
                 )
             ),
         )
-    ).simulate_snapshot(snapshot)
+    ).simulate(snapshot)
     real_commit_source = CodemodSimulationWriter.commit_source
 
     def fail_second_commit(
@@ -900,8 +910,7 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
         guard_suite=ArchitectureGuardSuite(
             (
@@ -963,8 +972,8 @@ def test_codemod_source_snapshot_executes_recipe_document(
         ),
     )
 
-    simulation = snapshot.simulate_document(
-        document,
+    simulation = document.simulate(
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
     diff = snapshot.unified_diff(simulation.simulation)
@@ -1021,7 +1030,7 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
     )
 
     with pytest.raises(CodemodOperationPreflightError) as error:
-        document.simulate_snapshot(snapshot)
+        document.simulate(snapshot)
 
     assert error.value.report.operation == "create_file"
     assert error.value.report.details["existing_source_paths"] == (
@@ -1054,7 +1063,7 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
     )
 
     with pytest.raises(CodemodOperationPreflightError) as error:
-        document.simulate_snapshot(snapshot)
+        document.simulate(snapshot)
 
     assert error.value.report.details["duplicate_source_paths"] == (
         generated_path.as_posix(),
@@ -1163,8 +1172,8 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     )
 
     preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
-    simulation = snapshot.simulate_document(
-        CodemodPlanDocument(recipes=(recipe,)),
+    simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -1856,7 +1865,7 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
     records = batch_result.records
     recipes = batch_result.candidate_recipes
 
-    simulation = CodemodPlanDocument(recipes=recipes).simulate_snapshot(snapshot)
+    simulation = CodemodPlanDocument(recipes=recipes).simulate(snapshot)
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
@@ -2354,8 +2363,7 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -2405,8 +2413,10 @@ def test_delete_class_assignments_rejects_missing_name_without_applying(
 
     with pytest.raises(ValueError, match="missing_assignment"):
         recipe.simulate(
-            source_index,
-            {module_path.as_posix(): original_source},
+            _indexed_snapshot(
+                source_index,
+                {module_path.as_posix(): original_source},
+            ),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -2478,7 +2488,7 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
         counted_uncached,
     )
 
-    recipe.source_rewrite_batch(source_index, source_by_path)
+    recipe.source_rewrite_batch(_indexed_snapshot(source_index, source_by_path))
 
     assert uncached_call_count == 1
 
@@ -2517,7 +2527,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
                 body_source="return 3",
             )
         )
-        .simulate_snapshot(snapshot)
+        .simulate(snapshot)
         .simulation
     )
     per_module_detector_type = next(
@@ -2618,7 +2628,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
                 body_source="return 3",
             )
         )
-        .simulate_snapshot(snapshot)
+        .simulate(snapshot)
         .simulation
     )
     detector_id = SemanticMirrorWithoutDescentDetector.effective_detector_id()
@@ -2715,8 +2725,7 @@ def test_replace_text_operation_allows_empty_json_replacement(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
     simulation = load_codemod_plan_document(plan_path).simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -2767,8 +2776,7 @@ def test_replace_text_operation_can_target_module_source(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
     simulation = load_codemod_plan_document(plan_path).simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -2859,8 +2867,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -2934,8 +2941,7 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -2999,8 +3005,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     )
 
     simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -3621,8 +3626,7 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -3707,7 +3711,7 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
     operation = plan.document.recipes[0].operations[0].to_dict()
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
@@ -3810,7 +3814,7 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
         findings,
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[
         (tmp_path / "pkg/mod.py").as_posix()
     ]
@@ -4117,7 +4121,7 @@ def test_exact_leaf_method_promotion_preserves_authority_method_comments(
         findings,
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert simulation.is_clean is True
@@ -4269,7 +4273,7 @@ def test_method_promotion_rejects_lossy_commented_class_headers(
         CodemodOperationPreflightError,
         match="lossless class-header rewrites",
     ):
-        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+        recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert module_path.read_text(encoding="utf-8") == source
 
@@ -4351,7 +4355,7 @@ def test_promote_class_methods_rejects_generated_base_binding_collision(
     with pytest.raises(
         ValueError, match="base name 'SharedRenderMixin' is already bound"
     ):
-        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+        recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert module_path.read_text(encoding="utf-8") == source
 
@@ -4381,7 +4385,7 @@ def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> N
     )
 
     with pytest.raises(ValueError, match="top-level class targets"):
-        snapshot.simulate_recipe(recipe, backend=CodemodBackend.AST_SPAN)
+        recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert module_path.read_text(encoding="utf-8") == source
 
@@ -4509,8 +4513,7 @@ def test_refactor_recipe_inserts_after_module_imports(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -4574,8 +4577,7 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -4601,8 +4603,7 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
             )
         )
         .simulate(
-            reparsed_index,
-            second_source_by_path,
+            _indexed_snapshot(reparsed_index, second_source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -4636,8 +4637,7 @@ def test_refactor_recipe_ensure_import_merges_existing_from_import(
             )
         )
         .simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -4672,8 +4672,7 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
             )
         )
         .simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -4722,8 +4721,7 @@ def test_expose_global_candidate_cache_context_operation(
             )
         )
         .simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -5032,8 +5030,7 @@ def test_operation_compiler_coalesces_identical_line_replacements(
             )
         )
         .simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -5074,7 +5071,7 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
         )
     )
 
-    simulation = document.simulate_snapshot(
+    simulation = document.simulate(
         snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
@@ -5146,8 +5143,7 @@ def test_expose_global_candidate_cache_context_collapses_existing_candidate_meth
             )
         )
         .simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
     )
@@ -5189,8 +5185,7 @@ def test_refactor_recipe_replaces_module_assignment(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -5227,8 +5222,7 @@ def test_refactor_recipe_removes_import_names(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -5267,8 +5261,7 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
         )
     )
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -5332,7 +5325,7 @@ def test_manual_registry_operation_target_selects_one_source_component(
         )
     )
 
-    simulation = recipe.simulate(source_index, source_by_path)
+    simulation = recipe.simulate(_indexed_snapshot(source_index, source_by_path))
     simulation.apply()
     rewritten = module_path.read_text()
 
@@ -5524,7 +5517,9 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
     )
     recipe = RefactorRecipe("derive-instance-view").with_operation(operation)
 
-    simulation = recipe.simulate(source_index, {module_path.as_posix(): source})
+    simulation = recipe.simulate(
+        _indexed_snapshot(source_index, {module_path.as_posix(): source})
+    )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     payload = operation.to_dict()
 
@@ -5680,8 +5675,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     declared_claims = recipe.declared_authority_claims(selector_context)
     authority_report = recipe.authority_claim_preflight_report(selector_context)
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -5808,7 +5802,7 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
         )
     )
     authority_report = dispatch_recipe.authority_claim_preflight_report(snapshot)
-    simulation = document.simulate_snapshot(snapshot)
+    simulation = document.simulate(snapshot)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert tuple(recipe.recipe_id for recipe in document.recipes) == (
@@ -5853,8 +5847,7 @@ def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
 
     with pytest.raises(ValueError, match="not a supported literal dispatch"):
         recipe.simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -5923,8 +5916,10 @@ def test_dispatch_to_polymorphism_rejects_unproved_class_families(
 
     with pytest.raises(CodemodOperationPreflightError, match=error_fragment):
         recipe.simulate(
-            source_index,
-            {module_path.as_posix(): source},
+            _indexed_snapshot(
+                source_index,
+                {module_path.as_posix(): source},
+            ),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -5961,7 +5956,7 @@ def test_dispatch_to_polymorphism_derives_supported_function_shapes(
         )
     )
 
-    simulation = recipe.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     def known_results(source_text: str) -> tuple[object, object]:
@@ -6001,7 +5996,7 @@ def test_dispatch_to_polymorphism_derives_unbound_generated_names(
                 target=SourceRewriteTarget(target_id=render_target.target_id),
             )
         )
-        .simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+        .simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
@@ -6062,8 +6057,7 @@ def test_refactor_recipe_moves_decorated_symbol_between_modules(
     operation = recipe.operations[0].to_dict()
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -6138,8 +6132,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         CodemodSourceSnapshot.from_indexed_sources(source_index, source_by_path)
     )
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -6206,8 +6199,7 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
         CodemodOperationPreflightError, match="source-local dependencies"
     ):
         recipe.simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -6264,8 +6256,7 @@ def test_refactor_recipe_extracts_authority(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -6560,8 +6551,7 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
     )
 
     simulation = document.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -11803,11 +11793,11 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
     operation_payload = plan.document.recipes[0].operations[0].to_dict()
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
         plan.document.to_dict()
-    ).simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].executable_declaration_name == (
@@ -11887,7 +11877,7 @@ def test_repeated_builder_replay_reproves_changed_participant_mapping(
     current_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
     )
-    replay = CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
+    replay = CodemodPlanDocument.from_json_value(document_payload).simulate(
         current_snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
@@ -11932,7 +11922,7 @@ def build_{index}(source: PlanSource):
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert len(findings[0].evidence) == 6
@@ -12009,7 +11999,7 @@ def test_repeated_builder_resolves_existing_forward_reference_annotations(
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.records[0].status.value == "executable_candidate"
     assert (
@@ -13145,7 +13135,7 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    simulation = sequence.simulate_snapshot(snapshot)
+    simulation = sequence.simulate(snapshot)
     projected_snapshot = snapshot.with_simulation(simulation.simulation)
 
     assert simulation.simulation.applied_rewrite_count == 2
@@ -13215,10 +13205,10 @@ def test_codemod_sequential_report_projection_preserves_same_file_changes(
             new_source="value = 20",
         )
     )
-    alpha_report = alpha_recipe.simulate_snapshot(snapshot).simulation
-    same_base_beta_report = beta_recipe.simulate_snapshot(snapshot).simulation
+    alpha_report = alpha_recipe.simulate(snapshot).simulation
+    same_base_beta_report = beta_recipe.simulate(snapshot).simulation
     after_alpha = snapshot.with_simulation(alpha_report)
-    beta_report = beta_recipe.simulate_snapshot(after_alpha).simulation
+    beta_report = beta_recipe.simulate(after_alpha).simulation
 
     combined = CodemodSimulationReport.from_sequential_reports(
         (alpha_report, beta_report),
@@ -13275,7 +13265,7 @@ def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
         classmethod(counted_from_source_mapping),
     )
 
-    simulation = document.simulate_snapshot(snapshot)
+    simulation = document.simulate(snapshot)
 
     assert simulation.simulation.applied_rewrite_count == 1
     assert rebuild_count == 0
@@ -13305,7 +13295,7 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
         classmethod(counted_from_source_mapping),
     )
 
-    simulation = sequence.simulate_snapshot(snapshot)
+    simulation = sequence.simulate(snapshot)
 
     assert simulation.simulation.applied_rewrite_count == 3
     assert len(simulation.stage_reports) == 3
@@ -13485,7 +13475,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
-    simulation = sequence.simulate_snapshot(snapshot)
+    simulation = sequence.simulate(snapshot)
     findings = tuple(
         finding
         for finding in analyze_modules(simulation.final_snapshot.parsed_modules)
@@ -14629,8 +14619,7 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
     simulation = document.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -14670,8 +14659,7 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     )
 
     simulation = document.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
     recipe = document.recipes[0]
@@ -14708,8 +14696,7 @@ def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
     )
 
     simulation = document.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -14772,8 +14759,7 @@ def test_extract_methods_to_class_operation_lifts_methods_into_peer_class(
     assert operation_payload["operation"] == "extract_methods_to_class"
     assert operation_payload["destination_class_name"] == "ResolutionAuthority"
     simulation = document.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -14822,8 +14808,7 @@ def test_extract_methods_to_class_builder_simulates_method_owner_extraction(
     )
 
     simulation = recipe.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -14879,8 +14864,7 @@ def test_delete_selected_targets_rejects_selection_count_overflow(
 
     with pytest.raises(ValueError, match="expected at most 1 target"):
         document.simulate(
-            source_index,
-            source_by_path,
+            _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -15482,7 +15466,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     _FINDING_RECIPE_TEST_REGISTRY[detector_id] = GoalTestSynthesizer
     simulated_documents: list[CodemodPlanDocument] = []
     simulation_call_counts: dict[int, int] = {}
-    original_simulate_snapshot = CodemodPlanDocument.simulate_snapshot
+    original_simulate = CodemodPlanDocument.simulate
 
     def track_document_simulation(
         document: CodemodPlanDocument,
@@ -15496,11 +15480,11 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         simulation_call_counts[document_identity] = (
             simulation_call_counts.get(document_identity, 0) + 1
         )
-        return original_simulate_snapshot(document, snapshot, backend=backend)
+        return original_simulate(document, snapshot, backend=backend)
 
     monkeypatch.setattr(
         CodemodPlanDocument,
-        "simulate_snapshot",
+        "simulate",
         track_document_simulation,
     )
     try:
@@ -16164,7 +16148,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
 
     monkeypatch.setattr(
         CodemodPlanSequence,
-        "simulate_snapshot",
+        "simulate",
         unexpected_sequence_replay,
     )
 
@@ -17847,8 +17831,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         selector_context=selector_context,
     )
     simulation = plan.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -17937,8 +17920,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
         selector_context=selector_context,
     )
     simulation = plan.simulate(
-        source_index,
-        source_by_path,
+        _indexed_snapshot(source_index, source_by_path),
         backend=CodemodBackend.AST_SPAN,
     )
 
@@ -18931,12 +18913,12 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         FactorParallelMirroredLeafFamilyOperation,
     )
 
-    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert simulation.is_clean is True
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
         plan.document.to_dict()
-    ).simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert replay.simulation.rewritten_sources[module_path.as_posix()] == rewritten
     assert rewritten.count("def emit") == len(domains) + len(_PARALLEL_LEAF_ROLES)
     for role in _PARALLEL_LEAF_ROLES:

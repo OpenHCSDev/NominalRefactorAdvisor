@@ -1202,7 +1202,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     operation = plan.document.to_dict()["recipes"][0]["operations"][0]
     record = plan.records[0]
 
@@ -1311,7 +1311,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     operations = tuple(
         operation.to_dict() for operation in plan.document.recipes[0].operations
     )
@@ -1391,7 +1391,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         CodemodOperationPreflightError,
         match="no AutoRegister configuration repeated from an ancestor",
     ):
-        CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
+        CodemodPlanDocument.from_json_value(document_payload).simulate(
             current_snapshot
         )
 
@@ -1469,7 +1469,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
     operations = tuple(
         operation.to_dict() for operation in plan.document.recipes[0].operations
@@ -1534,7 +1534,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert simulation.is_clean is True
     replay = CodemodPlanDocument.from_json_value(
         plan.document.to_dict()
-    ).simulate_snapshot(snapshot)
+    ).simulate(snapshot)
     assert (
         replay.simulation.rewritten_sources == simulation.simulation.rewritten_sources
     )
@@ -1551,7 +1551,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     )
     reprioritized = CodemodPlanDocument.from_json_value(
         plan.document.to_dict()
-    ).simulate_snapshot(reprioritized_snapshot)
+    ).simulate(reprioritized_snapshot)
     reprioritized_source = next(
         iter(reprioritized.simulation.rewritten_sources.values())
     )
@@ -1750,7 +1750,7 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
     assert plan.records[0].status.value == "executable_candidate"
@@ -1901,7 +1901,7 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
         (absolute_finding,),
         selector_context=snapshot,
     )
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     operation = plan.document.recipes[0].operations[0].to_dict()
 
     assert plan.records[0].status.value == "executable_candidate"
@@ -1956,7 +1956,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
     operation = recipe.operations[0].to_dict()
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
@@ -2378,7 +2378,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
@@ -2496,11 +2496,7 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
     simulation = (
         RefactorRecipe("derive-current-dataclass-payload")
         .with_operation(replayed)
-        .simulate(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        .simulate(changed_snapshot)
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
@@ -2644,7 +2640,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
@@ -2681,11 +2677,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     replay_simulation = (
         RefactorRecipe("derive-current-field-name-collection")
         .with_operation(replayed)
-        .simulate(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        .simulate(changed_snapshot)
     )
     replayed_source = replay_simulation.simulation.rewritten_sources[
         module_path.as_posix()
@@ -2842,7 +2834,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
@@ -2877,11 +2869,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     replay_simulation = (
         RefactorRecipe("derive-current-key-value-sequence")
         .with_operation(replayed)
-        .simulate(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        .simulate(changed_snapshot)
     )
     replayed_source = replay_simulation.simulation.rewritten_sources[
         module_path.as_posix()
@@ -3039,7 +3027,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
     rewritten_report = simulation.simulation.rewritten_sources[
         (package_dir / "report.py").as_posix()
@@ -3090,7 +3078,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         operation.operation_key()
         for operation in imported_plan.document.recipes[0].operations
     ) == ("derive_dataclass_payload_projection",)
-    imported_simulation = imported_plan.simulate_snapshot(imported_snapshot)
+    imported_simulation = imported_plan.simulate(imported_snapshot)
     imported_rewritten_report = imported_simulation.simulation.rewritten_sources[
         report_path.as_posix()
     ]
@@ -3368,7 +3356,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
@@ -3400,11 +3388,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     replay_simulation = (
         RefactorRecipe("derive-current-constructor-projection")
         .with_operation(replayed)
-        .simulate(
-            changed_snapshot.source_index,
-            changed_snapshot.sources_by_file_path,
-            selector_context=changed_snapshot,
-        )
+        .simulate(changed_snapshot)
     )
     replayed_source = replay_simulation.simulation.rewritten_sources[
         module_path.as_posix()
@@ -3636,7 +3620,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
     recipe_payload = plan.document.to_dict()["recipes"][0]
     operations = recipe_payload["operations"]
@@ -3908,10 +3892,7 @@ def test_enum_subset_operation_executes_source_derived_view(tmp_path: Path) -> N
     simulation = (
         RefactorRecipe("derive-enum-subset")
         .with_operation(operation)
-        .simulate(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-        )
+        .simulate(snapshot)
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     namespace: dict[str, object] = {}
@@ -4010,7 +3991,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     recipe_payload = plan.document.to_dict()["recipes"][0]
     recipe = plan.document.recipes[0]
     operations = recipe_payload["operations"]
@@ -4107,7 +4088,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    simulation = plan.simulate_snapshot(snapshot)
+    simulation = plan.simulate(snapshot)
     operation = plan.document.to_dict()["recipes"][0]["operations"][0]
     rewritten = next(
         source
@@ -4246,10 +4227,7 @@ def test_class_family_collection_operation_executes_source_derived_view(
     simulation = (
         RefactorRecipe("derive-members")
         .with_operation(operation)
-        .simulate(
-            snapshot.source_index,
-            snapshot.sources_by_file_path,
-        )
+        .simulate(snapshot)
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     namespace: dict[str, object] = {}
