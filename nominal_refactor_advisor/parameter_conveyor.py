@@ -9,6 +9,11 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, Self, TypeAlias
 
+from .ast_tools import ParsedModule
+from .class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
 from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
@@ -16,7 +21,9 @@ from .product_flow import (
     CompactLexicalMutation,
     CompactMutationKind,
     CompactValueOriginResolution,
+    CompactProductFlowModuleProjection,
     LexicalValueReference,
+    compact_product_flow_projection,
 )
 from .product_flow_authority import (
     CompactFunctionCallResolution,
@@ -478,6 +485,33 @@ class ClosedParameterConveyorComponentBuilder:
     """Build maximal components before evaluating any executable candidate."""
 
     repository: CompactProductFlowRepository
+
+    @classmethod
+    def from_projections(
+        cls,
+        product_projections: tuple[CompactProductFlowModuleProjection, ...],
+        class_projections: tuple[CompactModuleClassProjection, ...],
+    ) -> Self:
+        """Join the two declaration-owned fact families into one proof builder."""
+
+        return cls(
+            CompactProductFlowRepository(
+                product_projections=product_projections,
+                class_projections=class_projections,
+            )
+        )
+
+    @classmethod
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
+        """Collect both proof families from one complete source snapshot."""
+
+        return cls.from_projections(
+            tuple(compact_product_flow_projection(module) for module in modules),
+            tuple(
+                CompactModuleClassProjectionFamily.collect(module)[0]
+                for module in modules
+            ),
+        )
 
     @cached_property
     def simple_bound_arguments_by_call(

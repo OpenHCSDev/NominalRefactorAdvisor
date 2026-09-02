@@ -6,15 +6,14 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
-from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
 from nominal_refactor_advisor.parameter_conveyor import (
     ClosedParameterConveyorAuthorityViolation,
     ClosedParameterConveyorComponentBuilder,
 )
-from nominal_refactor_advisor.product_flow import compact_product_flow_projection
-from nominal_refactor_advisor.product_flow_authority import (
-    CompactProductFlowRepository,
-)
+from nominal_refactor_advisor.patterns import PatternId
 
 
 def _module(module_name: str, source: str) -> ParsedModule:
@@ -29,15 +28,7 @@ def _module(module_name: str, source: str) -> ParsedModule:
 
 
 def _builder(*modules: ParsedModule) -> ClosedParameterConveyorComponentBuilder:
-    repository = CompactProductFlowRepository(
-        product_projections=tuple(
-            compact_product_flow_projection(module) for module in modules
-        ),
-        class_projections=tuple(
-            CompactModuleClassProjectionFamily.collect(module)[0] for module in modules
-        ),
-    )
-    return ClosedParameterConveyorComponentBuilder(repository)
+    return ClosedParameterConveyorComponentBuilder.from_modules(modules)
 
 
 def _base_source(*, callee_body: str = "    return left, right\n") -> str:
@@ -190,6 +181,48 @@ def test_complete_closed_parameter_conveyor_is_proven_as_one_component() -> None
     assert len(component.root_edges) == 1
     assert component.forwarding_edges == ()
     assert component.proof.batch_compression_delta > 0
+
+
+def test_detector_emits_one_authority_anchored_certified_finding() -> None:
+    module = _module("pkg.complete", _base_source())
+
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.detector_id == "closed_parameter_conveyor"
+    assert finding.pattern_id is PatternId.AUTHORITATIVE_CONTEXT
+    assert finding.certification == "certified"
+    assert finding.authority_evidence == SourceLocation(
+        "pkg/complete.py",
+        4,
+        "pkg.complete._CacheKey",
+    )
+    assert finding.metrics == ParameterThreadMetrics(
+        function_count=1,
+        shared_parameter_count=2,
+        shared_parameter_names=("left", "right"),
+    )
+
+
+def test_detector_does_not_emit_an_open_parameter_conveyor() -> None:
+    module = _module(
+        "pkg.open_tail",
+        _base_source()
+        + "\n"
+        + "def unconverted(left, right):\n"
+        + "    return _build(transform(left), right)\n",
+    )
+
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+
+    assert findings == []
 
 
 def test_multistep_forwarding_forms_one_maximal_component_not_per_edge() -> None:
