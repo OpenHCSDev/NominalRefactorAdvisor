@@ -3312,14 +3312,15 @@ class ParallelMirroredLeafFamilyDetector(
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
-        "Parallel mirrored leaf families should derive from one axis-declared family substrate",
-        "The docs treat mirrored registered leaf catalogs as framework duplication when the same contract is repeated across two family roots and only one nominal axis really varies. The axis and role table should be authoritative so registration and leaf generation are derived instead of hand-expanded twice.",
-        "single authoritative axis-declared family or role-spec table that derives mirrored registered leaves",
+        "Parallel mirrored leaf families should factor into a multiple-inheritance product",
+        "Mirrored registered leaf catalogs repeat the same role behavior across domain roots. The role behavior belongs on one reusable mixin axis, while each domain root retains its nominal identity; concrete products compose those independent authorities through multiple inheritance.",
+        "one authoritative role-behavior mixin axis composed with domain roots through multiple inheritance",
         "two registered abstract roots own mirrored concrete leaf catalogs over the same contract method family",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.MRO_ORDERING,
         ),
         (
             ObservationTag.CLASS_FAMILY,
@@ -3356,11 +3357,23 @@ class ParallelMirroredLeafFamilyDetector(
             ),
             mirrored_candidate.evidence[:6],
             scaffold=(
-                "@dataclass(frozen=True)\nclass FamilyRoleSpec:\n    role_name: str\n    axis_impls: tuple[callable, ...]\n\nclass GeneratedLeafFamily(ABC): ...\n# Declare the varying axis once, declare roles once, and derive leaf registration from the spec table."
+                "from abc import ABC, abstractmethod\n\n"
+                "class SharedRoleMixin(ABC):\n"
+                "    @abstractmethod\n"
+                "    def emit(self, artifact):\n"
+                "        raise NotImplementedError\n\n"
+                "class ConcreteRoleMixin(SharedRoleMixin):\n"
+                "    def emit(self, artifact):\n"
+                "        return artifact.role_value\n\n"
+                f"class {mirrored_candidate.left.root_name}ConcreteRole(ConcreteRoleMixin, {mirrored_candidate.left.root_name}):\n"
+                "    pass\n\n"
+                f"class {mirrored_candidate.right.root_name}ConcreteRole(ConcreteRoleMixin, {mirrored_candidate.right.root_name}):\n"
+                "    pass\n"
             ),
             codemod_patch=(
-                f"# Replace mirrored roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` with one axis-declared family substrate.\n"
-                "# Move shared role names into one spec table and derive concrete leaf registration from that authority."
+                f"# Preserve roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` as nominal domain authorities.\n"
+                "# Extract each repeated role implementation once into a mixin, then compose role mixins with domain roots through multiple inheritance.\n"
+                "# Empty concrete product leaves are valid when they carry the composed nominal identity; do not replace the product lattice with callable tables."
             ),
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=(
@@ -4701,20 +4714,26 @@ class AlgebraicVariantMethodFamilyDetector(
             ),
             candidate.evidence,
             scaffold=(
+                "from abc import ABC, abstractmethod\n\n"
+                "class OperationVariant(ABC):\n"
+                "    @abstractmethod\n"
+                "    def apply(self, authority, request):\n"
+                "        raise NotImplementedError\n\n"
+                "class ConcreteOperationVariant(OperationVariant):\n"
+                "    def apply(self, authority, request):\n"
+                "        return authority._construct_variant(request)\n\n"
                 f"class {exemplar.owner_class_name}(...):\n"
-                "    def with_variants(self, request):\n"
-                "        match request.operation:\n"
-                "            case ...:\n"
-                "                return self._construct_variants(request)\n\n"
-                "# Collapse the sibling public methods into one algebraic operation.\n"
-                "# Put the operation variant in a nominal request/context/product type, or make "
-                "the product variant itself carry the operation semantics."
+                "    def with_variant(self, variant: OperationVariant, request):\n"
+                "        return variant.apply(self, request)\n\n"
+                "# The nominal variant owns leaf execution; the authority only delegates."
             ),
             codemod_patch=(
                 f"# Replace variant method family {seed.method_names} on "
                 f"`{exemplar.owner_class_name}` with one nominal request/context operation.\n"
+                "# Put each leaf operation on its nominal variant declaration; do not replace the "
+                "method family with caller-side branching or a variant-to-callable table.\n"
                 "# Use source-index anchored rewrites to migrate callers after the request/product "
-                "type represents the operation variant explicitly."
+                "type owns the operation variant explicitly."
             ),
             metrics=RepeatedMethodMetrics.from_duplicate_family(
                 duplicate_site_count=max(

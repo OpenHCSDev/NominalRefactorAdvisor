@@ -1004,7 +1004,7 @@ declare_candidate_rule_detector(
         PatternId.NOMINAL_BOUNDARY,
         "Concrete class-object union should be a shared nominal contract",
         "A function accepts a union of concrete class objects, then treats the parameter as one constructor or class-level capability. That concrete roster is a local re-encoding of a nominal contract.",
-        "one shared ABC/protocol/base type used as type[SharedContract] or a TypeVar bound to it",
+        "one shared ABC used as type[SharedContract] or a TypeVar bound to it",
         "function parameter annotation unions concrete class objects while the body calls common class-level behavior on that parameter",
         (
             CapabilityTag.NOMINAL_IDENTITY,

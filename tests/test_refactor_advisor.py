@@ -8697,6 +8697,29 @@ def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None
     assert findings == []
 
 
+def test_variant_method_detector_places_execution_on_nominal_variant(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass PayloadBuilder:\n    def build_alpha_payload(self, request):\n        return PayloadResult(request.left, request.right)\n\n    def build_beta_payload(self, request):\n        return PayloadResult(request.left, request.right)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+
+    findings = runtime_detectors.AlgebraicVariantMethodFamilyDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+
+    assert len(findings) == 1
+    scaffold = findings[0].scaffold or ""
+    assert "class OperationVariant(ABC)" in scaffold
+    assert "return variant.apply(self, request)" in scaffold
+    assert "match request.operation" not in scaffold
+    assert "caller-side branching" in (findings[0].codemod_patch or "")
+
+
 def test_preserves_independent_nominal_and_generic_dispatch(
     tmp_path: Path,
 ) -> None:
@@ -17439,7 +17462,10 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "InvoiceFieldEmitter" in finding.summary
     assert "ReceiptFieldEmitter" in finding.summary
     assert "alpha emitter" in finding.summary
-    assert "GeneratedLeafFamily" in (finding.scaffold or "")
+    assert "ConcreteRoleMixin, InvoiceFieldEmitter" in (finding.scaffold or "")
+    assert "ConcreteRoleMixin, ReceiptFieldEmitter" in (finding.scaffold or "")
+    assert "FamilyRoleSpec" not in (finding.scaffold or "")
+    assert "callable tables" in (finding.codemod_patch or "")
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
@@ -20406,6 +20432,7 @@ def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None
     assert "from_error_context" in finding.summary
     assert "type[ViewerWindowResultFactory]" in finding.summary
     assert "class ViewerWindowResultFactory(ABC)" in (finding.scaffold or "")
+    assert "Protocol" not in finding.capability_gap
     assert "Do not hide this behind a TypeAlias" in (finding.codemod_patch or "")
 
 
