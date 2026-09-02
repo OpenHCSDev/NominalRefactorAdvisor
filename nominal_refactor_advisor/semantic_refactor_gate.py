@@ -282,7 +282,6 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
             (finding,),
             finding_descent_graph=build_finding_backed_semantic_descent_graph(
                 (finding,),
-                semantic_mirror_detector_ids=IssueDetector.semantic_mirror_detector_ids(),
                 authority_evidence_index_by_detector_id=(
                     IssueDetector.semantic_mirror_authority_evidence_indices()
                 ),
@@ -546,7 +545,6 @@ class SemanticRefactorGateReport(SemanticRecord):
         ssot_findings = ssot_authority_findings(findings)
         finding_descent_graph = build_finding_backed_semantic_descent_graph(
             ssot_findings,
-            semantic_mirror_detector_ids=IssueDetector.semantic_mirror_detector_ids(),
             authority_evidence_index_by_detector_id=(
                 IssueDetector.semantic_mirror_authority_evidence_indices()
             ),

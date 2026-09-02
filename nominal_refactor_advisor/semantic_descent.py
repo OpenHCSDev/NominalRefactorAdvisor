@@ -2680,7 +2680,6 @@ class FindingBackedSemanticDescentGraphRequest:
     """Graph request for findings projected into semantic-descent certificates."""
 
     findings: tuple[RefactorFinding, ...]
-    semantic_mirror_detector_ids: frozenset[str]
     authority_evidence_indices: tuple[tuple[str, int | None], ...] = ()
 
     @classmethod
@@ -2688,12 +2687,10 @@ class FindingBackedSemanticDescentGraphRequest:
         cls,
         findings: tuple[RefactorFinding, ...],
         *,
-        semantic_mirror_detector_ids: frozenset[str],
         authority_evidence_index_by_detector_id: Mapping[str, int | None],
     ) -> "FindingBackedSemanticDescentGraphRequest":
         return cls(
             findings=tuple(findings),
-            semantic_mirror_detector_ids=semantic_mirror_detector_ids,
             authority_evidence_indices=tuple(
                 sorted(authority_evidence_index_by_detector_id.items())
             ),
@@ -2981,14 +2978,12 @@ class FindingBackedMirrorEdgeProjection:
 def build_finding_backed_semantic_descent_graph(
     findings: tuple[RefactorFinding, ...],
     *,
-    semantic_mirror_detector_ids: frozenset[str],
     authority_evidence_index_by_detector_id: Mapping[str, int | None],
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
     request = FindingBackedSemanticDescentGraphRequest.from_inputs(
         findings,
-        semantic_mirror_detector_ids=semantic_mirror_detector_ids,
         authority_evidence_index_by_detector_id=authority_evidence_index_by_detector_id,
     )
     return _build_finding_backed_semantic_descent_graph_cached(request)

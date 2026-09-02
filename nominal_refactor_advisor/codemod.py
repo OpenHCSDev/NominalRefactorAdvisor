@@ -12933,7 +12933,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         )
         graph = build_finding_backed_semantic_descent_graph(
             semantic_findings,
-            semantic_mirror_detector_ids=semantic_detector_ids,
             authority_evidence_index_by_detector_id=(
                 IssueDetector.semantic_mirror_authority_evidence_indices()
             ),

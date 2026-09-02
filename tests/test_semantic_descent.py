@@ -831,7 +831,6 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
 
     graph = build_finding_backed_semantic_descent_graph(
         (finding,),
-        semantic_mirror_detector_ids=frozenset({finding.detector_id}),
         authority_evidence_index_by_detector_id={finding.detector_id: 1},
     )
 
@@ -874,7 +873,6 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
 
     graph = build_finding_backed_semantic_descent_graph(
         (finding,),
-        semantic_mirror_detector_ids=frozenset(),
         authority_evidence_index_by_detector_id={},
     )
     authority = graph.authorities[0]
@@ -912,7 +910,6 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
 
     graph = build_finding_backed_semantic_descent_graph(
         (finding,),
-        semantic_mirror_detector_ids=frozenset(),
         authority_evidence_index_by_detector_id={},
     )
 
@@ -969,7 +966,6 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
 
     graph = build_finding_backed_semantic_descent_graph(
         (first, second),
-        semantic_mirror_detector_ids=frozenset(),
         authority_evidence_index_by_detector_id={},
     )
 
@@ -999,7 +995,6 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     )
     graph = build_finding_backed_semantic_descent_graph(
         (finding,),
-        semantic_mirror_detector_ids=frozenset(),
         authority_evidence_index_by_detector_id={},
     )
 

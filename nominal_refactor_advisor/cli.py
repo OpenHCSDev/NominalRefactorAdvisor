@@ -1161,9 +1161,6 @@ class JsonPayloadBuilder:
                     semantic_descent_source.repository_graph(),
                     finding_backed_graph=build_finding_backed_semantic_descent_graph(
                         ssot_authority_findings(finding_tuple),
-                        semantic_mirror_detector_ids=(
-                            IssueDetector.semantic_mirror_detector_ids()
-                        ),
                         authority_evidence_index_by_detector_id=(
                             IssueDetector.semantic_mirror_authority_evidence_indices()
                         ),
