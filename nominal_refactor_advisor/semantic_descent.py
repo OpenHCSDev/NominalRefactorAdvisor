@@ -81,7 +81,11 @@ from .models import (
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
-from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
+from .registry_identity import (
+    AutoRegisterClassAuthority,
+    class_name_registry_key,
+    mro_registry_value,
+)
 from .semantic_identity import SemanticRoleIdentityToken
 from .source_identity import resolved_source_path_text
 
@@ -2952,10 +2956,8 @@ class FindingMetricsSemanticProjection(ABC, metaclass=AutoRegisterMeta):
         cls,
         metrics: FindingMetrics,
     ) -> "FindingMetricsSemanticProjection | None":
-        for projection_type in cls.__registry__.values():
-            if isinstance(metrics, projection_type.metrics_type):
-                return projection_type()
-        return None
+        projection_type = mro_registry_value(cls.__registry__, type(metrics))
+        return projection_type() if projection_type is not None else None
 
     @classmethod
     def authority_name_for(cls, metrics: FindingMetrics) -> str | None:

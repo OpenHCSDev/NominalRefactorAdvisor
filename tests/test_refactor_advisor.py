@@ -1850,7 +1850,6 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
     records = batch_evaluation.solve().records
     recipes = builder.merged_recipes(
         [record.evaluation.required_recipe for record in records],
-        snapshot,
     )
 
     simulation = CodemodPlanDocument(recipes=recipes).simulate_snapshot(snapshot)
@@ -1863,6 +1862,11 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
     }
     assert batch_evaluation.interacting_candidate_pairs == ()
     assert batch_evaluation.pair_assessments == ()
+    assert recipes[0].recipe_id == "finding-backed-codemod-plan"
+    assert tuple(type(operation) for operation in recipes[0].operations) == (
+        ReplaceTextOperation,
+        ReplaceTextOperation,
+    )
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         "a = 2\nb = 2\n"
     )
@@ -2206,7 +2210,6 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
                     for record in records
                     if record.candidate_recipes
                 ],
-                snapshot,
             )
         ),
         trajectory_frontier=batch_result.trajectory_frontier,
@@ -5662,6 +5665,59 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
         "object",
     )
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def render(pattern_id, value):\n"
+        '    """Render one declared numeric mode."""\n'
+        "    if pattern_id == 3:\n"
+        "        return value + 1\n"
+        "    elif pattern_id == 5:\n"
+        "        return value + 2\n"
+        "    raise ValueError(pattern_id)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    render_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "render"
+    )
+    dispatch_operation = DispatchToPolymorphismOperation(
+        target=SourceRewriteTarget(target_id=render_target.target_id),
+    )
+    docstring_operation = ReplaceTextOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        old_source="Render one declared numeric mode.",
+        new_source="Render one numeric mode.",
+    )
+
+    (recipe,) = FindingRecipePlanBuilder.merged_recipes(
+        [
+            RefactorRecipe("dispatch").with_operation(dispatch_operation),
+            RefactorRecipe("docstring").with_operation(docstring_operation),
+        ]
+    )
+    authority_report = recipe.authority_claim_preflight_report(snapshot)
+    simulation = recipe.simulate_snapshot(snapshot)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert recipe.operations == (dispatch_operation, docstring_operation)
+    assert recipe.authority_claims == ()
+    assert tuple(
+        claim.claimed_symbol for claim in recipe.declared_authority_claims(snapshot)
+    ) == ("RenderDispatchCase",)
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert simulation.is_clean
+    assert "class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in rewritten
+    assert '"""Render one numeric mode."""' in rewritten
 
 
 def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
@@ -13021,7 +13077,7 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
     )
 
 
-def test_finding_recipe_rewrite_cache_owns_recipe_declarations(
+def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -13033,31 +13089,34 @@ def test_finding_recipe_rewrite_cache_owns_recipe_declarations(
         "\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
-    targets = {
-        target.qualname: target.target_id
-        for target in snapshot.source_index.ast_targets
-    }
+    targets = {target.qualname: target for target in snapshot.source_index.ast_targets}
     alpha_recipe = RefactorRecipe("alpha").with_operation(
         ReplaceTargetOperation(
-            target=SourceRewriteTarget(target_id=targets["Alpha"]),
+            target=SourceRewriteTarget(target_id=targets["Alpha"].target_id),
             replacement_source="class Alpha:\n    value = 1\n",
         )
     )
     beta_recipe = RefactorRecipe("beta").with_operation(
         ReplaceTargetOperation(
-            target=SourceRewriteTarget(target_id=targets["Beta"]),
+            target=SourceRewriteTarget(target_id=targets["Beta"].target_id),
             replacement_source="class Beta:\n    value = 2\n",
         )
     )
     builder = codemod_module.FindingRecipePlanBuilder(())
     monkeypatch.setattr(codemod_module, "id", lambda _value: 1, raising=False)
 
-    alpha_rewrites = builder.planned_rewrites_for_recipe(alpha_recipe, snapshot)
-    beta_rewrites = builder.planned_rewrites_for_recipe(beta_recipe, snapshot)
+    alpha_edits = builder.physical_edits_for_recipe(alpha_recipe, snapshot)
+    beta_edits = builder.physical_edits_for_recipe(beta_recipe, snapshot)
 
-    assert alpha_rewrites[0].target_id == targets["Alpha"]
-    assert beta_rewrites[0].target_id == targets["Beta"]
-    assert tuple(builder.planned_rewrite_cache) == (alpha_recipe, beta_recipe)
+    assert (alpha_edits[0].start_line, alpha_edits[0].end_line) == (
+        targets["Alpha"].line,
+        targets["Alpha"].end_line,
+    )
+    assert (beta_edits[0].start_line, beta_edits[0].end_line) == (
+        targets["Beta"].line,
+        targets["Beta"].end_line,
+    )
+    assert tuple(builder.physical_edit_cache) == (alpha_recipe, beta_recipe)
 
 
 def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(

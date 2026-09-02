@@ -144,6 +144,7 @@ from .registry_identity import (
     SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
     class_name_registry_key,
+    mro_registry_value,
 )
 from .semantic_algebra import (
     ConfusabilityGraph,
@@ -3690,127 +3691,6 @@ class SourceFileCreation(NominalSourceEdit):
                 contributors=self.contributors,
                 origins=self.origins,
             ),
-        )
-
-
-class SourceLineDiffAuthority:
-    """Compute line replacements without diffing unchanged target boundaries."""
-
-    large_window_line_threshold: ClassVar[int] = 400
-
-    @classmethod
-    def replacements(
-        cls,
-        *,
-        target: AstTargetDigest,
-        original_lines: tuple[str, ...],
-        candidate_lines: tuple[str, ...],
-        rationale: str,
-        contributors: tuple[SourceRewriteContributor, ...] = (),
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        prefix_count = cls.common_prefix_count(original_lines, candidate_lines)
-        suffix_count = cls.common_suffix_count(
-            original_lines,
-            candidate_lines,
-            prefix_count,
-        )
-        if prefix_count == len(original_lines) and prefix_count == len(candidate_lines):
-            return ()
-
-        original_limit = len(original_lines) - suffix_count
-        candidate_limit = len(candidate_lines) - suffix_count
-        matcher = difflib.SequenceMatcher(
-            None,
-            original_lines[prefix_count:original_limit],
-            candidate_lines[prefix_count:candidate_limit],
-            autojunk=cls.use_popular_line_heuristic(
-                original_limit - prefix_count,
-                candidate_limit - prefix_count,
-            ),
-        )
-        replacements = []
-        for (
-            tag,
-            original_start,
-            original_end,
-            replacement_start,
-            replacement_end,
-        ) in matcher.get_opcodes():
-            if tag == "equal":
-                continue
-            source_start = prefix_count + original_start
-            source_end = prefix_count + original_end
-            replacements.append(
-                (
-                    SourceInsertion(
-                        file_path=target.file_path,
-                        insertion_line=target.line + source_start,
-                        inserted_lines=candidate_lines[
-                            prefix_count + replacement_start : prefix_count
-                            + replacement_end
-                        ],
-                        rationale=rationale,
-                        contributors=contributors,
-                    )
-                    if source_start == source_end
-                    else SourceSpanReplacement(
-                        file_path=target.file_path,
-                        start_line=target.line + source_start,
-                        end_line=target.line + source_end - 1,
-                        replacement_lines=candidate_lines[
-                            prefix_count + replacement_start : prefix_count
-                            + replacement_end
-                        ],
-                        rationale=rationale,
-                        contributors=contributors,
-                    )
-                )
-            )
-        return tuple(replacements)
-
-    @staticmethod
-    def common_prefix_count(
-        original_lines: tuple[str, ...],
-        candidate_lines: tuple[str, ...],
-    ) -> int:
-        count = 0
-        for original_line, candidate_line in zip(
-            original_lines,
-            candidate_lines,
-            strict=False,
-        ):
-            if original_line != candidate_line:
-                break
-            count += 1
-        return count
-
-    @staticmethod
-    def common_suffix_count(
-        original_lines: tuple[str, ...],
-        candidate_lines: tuple[str, ...],
-        prefix_count: int,
-    ) -> int:
-        count = 0
-        max_count = min(
-            len(original_lines) - prefix_count,
-            len(candidate_lines) - prefix_count,
-        )
-        while (
-            count < max_count
-            and original_lines[-count - 1] == candidate_lines[-count - 1]
-        ):
-            count += 1
-        return count
-
-    @classmethod
-    def use_popular_line_heuristic(
-        cls,
-        original_window_line_count: int,
-        candidate_window_line_count: int,
-    ) -> bool:
-        return (
-            max(original_window_line_count, candidate_window_line_count)
-            >= cls.large_window_line_threshold
         )
 
 
@@ -10973,6 +10853,17 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         recipe_id: str,
         operations: Iterable[RefactorRecipeOperation],
     ) -> tuple[PlannedSourceRewrite, ...]:
+        replacements = self.physical_edits(recipe_id, operations)
+        groups = self._merged_replacement_groups(replacements)
+        return tuple(self._planned_rewrite(group) for group in groups)
+
+    def physical_edits(
+        self,
+        recipe_id: str,
+        operations: Iterable[RefactorRecipeOperation],
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        """Resolve the operations directly to their owned physical edits."""
+
         edits = tuple(
             edit
             for plan_item_index, operation in enumerate(operations)
@@ -10982,9 +10873,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
                 operation,
             )
         )
-        replacements = self._resolved_physical_edits(edits)
-        groups = self._merged_replacement_groups(replacements)
-        return tuple(self._planned_rewrite(group) for group in groups)
+        return self._resolved_physical_edits(edits)
 
     def _originated_edits(
         self,
@@ -12634,9 +12523,11 @@ class FindingRecipePlanCandidate:
         return self.record.finding_id
 
     @property
-    def execution_order_key(
+    def stable_identity_key(
         self,
     ) -> tuple[tuple[tuple[str, str], ...], str, str]:
+        """Canonicalize traversal without assigning semantic precedence."""
+
         return (
             tuple(
                 sorted(
@@ -15973,9 +15864,9 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def strategy_for(
         cls,
-        finding: RefactorFinding,
+        metrics: FindingMetrics,
     ) -> "SemanticMirrorFindingRecipeStrategy | None":
-        strategy_type = cls.__registry__.get(type(finding.metrics))
+        strategy_type = mro_registry_value(cls.__registry__, type(metrics))
         return strategy_type() if strategy_type is not None else None
 
     @abstractmethod
@@ -20445,7 +20336,7 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
+        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding.metrics)
         if strategy is None:
             return ()
         return strategy.action_keys_for_finding(finding)
@@ -20455,7 +20346,7 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding)
+        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding.metrics)
         if strategy is None:
             return RejectedRecipeEvaluation(
                 reason="semantic mirror metrics have no registered recipe strategy",
@@ -20645,38 +20536,6 @@ class FindingPrimaryEvidence:
 
 
 @dataclass(frozen=True)
-class ProjectedBatchRewriteSet:
-    """Merged planned rewrites for an overlapping finding-backed batch."""
-
-    rewrites: tuple[PlannedSourceRewrite, ...]
-
-    def recipe(
-        self,
-        *,
-        guard_suite: ArchitectureGuardSuite | None = None,
-        authority_claims: Iterable[AuthorityClaim] = (),
-    ) -> RefactorRecipe:
-        return RefactorRecipe(
-            recipe_id="finding-backed-merged-codemod-plan",
-            operations=tuple(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(target_id=rewrite.target_id),
-                    replacement_source=rewrite.replacement_source,
-                    rationale=rewrite.rationale,
-                    contributors=rewrite.contributors,
-                )
-                for rewrite in self.rewrites
-            ),
-            reason=(
-                "Batch overlapping executable advisor findings into one "
-                "source-merge pass."
-            ),
-            guard_suite=guard_suite or ArchitectureGuardSuite(),
-            authority_claims=tuple(authority_claims),
-        )
-
-
-@dataclass(frozen=True)
 class FindingRecipePlanBuilder:
     """Build current-state synthesis evidence and its exact transition frontier."""
 
@@ -20685,13 +20544,9 @@ class FindingRecipePlanBuilder:
     frontier_budget: FindingRecipeFrontierBudget = field(
         default_factory=FindingRecipeFrontierBudget
     )
-    rewrite_line_replacement_cache: dict[
-        PlannedSourceRewrite,
-        tuple[PhysicalSourceEdit, ...],
-    ] = field(default_factory=dict, init=False, repr=False, compare=False)
-    planned_rewrite_cache: dict[
+    physical_edit_cache: dict[
         RefactorRecipe,
-        tuple[PlannedSourceRewrite, ...],
+        tuple[PhysicalSourceEdit, ...],
     ] = field(
         default_factory=dict,
         init=False,
@@ -20737,61 +20592,36 @@ class FindingRecipePlanBuilder:
             document=CodemodPlanDocument(
                 recipes=self.merged_recipes(
                     list(batch_result.candidate_recipes),
-                    selector_context,
                 ),
             ),
             trajectory_frontier=batch_result.trajectory_frontier,
             report=FindingRecipeSynthesisReport(synthesis_records),
         )
 
-    def planned_rewrites_for_recipe(
+    def physical_edits_for_recipe(
         self,
         recipe: RefactorRecipe,
         selector_context: CodemodSelectorContext | None,
-    ) -> tuple[PlannedSourceRewrite, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         if selector_context is None:
             return ()
-        cached_rewrites = self.planned_rewrite_cache.get(recipe)
-        if cached_rewrites is not None:
-            return cached_rewrites
-        planned_rewrites = recipe.source_rewrite_batch(
-            selector_context.source_index,
-            selector_context.sources_by_file_path,
-            selector_context=selector_context,
-        )
-        self.planned_rewrite_cache[recipe] = planned_rewrites
-        return planned_rewrites
-
-    def planned_rewrites_for_recipes(
-        self,
-        recipes: Iterable[RefactorRecipe],
-        selector_context: CodemodSelectorContext | None,
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        return tuple(
-            rewrite
-            for recipe in recipes
-            for rewrite in self.planned_rewrites_for_recipe(recipe, selector_context)
-        )
+        cached_edits = self.physical_edit_cache.get(recipe)
+        if cached_edits is not None:
+            return cached_edits
+        physical_edits = RefactorRecipeOperationCompiler(
+            source_index=selector_context.source_index,
+            sources_by_file_path=selector_context.sources_by_file_path,
+            class_family_index=selector_context.class_family_index,
+        ).physical_edits(recipe.recipe_id, recipe.operations)
+        self.physical_edit_cache[recipe] = physical_edits
+        return physical_edits
 
     @staticmethod
-    def rewrite_target(
-        rewrite: PlannedSourceRewrite,
-        selector_context: CodemodSelectorContext,
-    ) -> AstTargetDigest:
-        return PlannedRewriteSelectionAuthority(
-            selector_context.source_index
-        ).required_target(rewrite)
-
     def merged_recipes(
-        self,
         recipes: list[RefactorRecipe],
-        selector_context: CodemodSelectorContext | None,
     ) -> tuple[RefactorRecipe, ...]:
         if not recipes:
             return ()
-        projected_recipe = self.projected_batch_recipe(recipes, selector_context)
-        if projected_recipe is not None:
-            return (projected_recipe,)
         return (
             RefactorRecipe.compose(
                 recipes,
@@ -20799,263 +20629,6 @@ class FindingRecipePlanBuilder:
                 reason="Batch executable advisor findings into one source-merge pass.",
             ),
         )
-
-    def projected_batch_recipe(
-        self,
-        recipes: Iterable[RefactorRecipe],
-        selector_context: CodemodSelectorContext | None,
-    ) -> RefactorRecipe | None:
-        recipe_tuple = tuple(recipes)
-        return (
-            Maybe.of(self.projected_batch_rewrite_set(recipe_tuple, selector_context))
-            .project(
-                lambda rewrite_set: rewrite_set.recipe(
-                    guard_suite=ArchitectureGuardSuite().merge(
-                        *(recipe.guard_suite for recipe in recipe_tuple)
-                    ),
-                    authority_claims=RefactorRecipe.shared_authority_claims(
-                        recipe_tuple
-                    ),
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def projected_batch_rewrite_set(
-        self,
-        recipes: Iterable[RefactorRecipe],
-        selector_context: CodemodSelectorContext | None,
-    ) -> ProjectedBatchRewriteSet | None:
-        return (
-            Maybe.of(selector_context)
-            .combine(
-                lambda context: self.planned_rewrites_for_recipes(recipes, context),
-                lambda context, rewrites: (context, rewrites),
-            )
-            .filter(lambda row: bool(row[1]))
-            .filter(lambda row: self.rewrite_targets_overlap(row[1], row[0]))
-            .combine(
-                lambda row: self.projected_batch_rewrites(row[1], row[0]),
-                lambda _row, rewrites: ProjectedBatchRewriteSet(rewrites),
-            )
-            .unwrap_or_none()
-        )
-
-    def projected_batch_rewrites(
-        self,
-        rewrites: tuple[PlannedSourceRewrite, ...],
-        selector_context: CodemodSelectorContext,
-    ) -> tuple[PlannedSourceRewrite, ...] | None:
-        rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = defaultdict(list)
-        for rewrite in rewrites:
-            target = self.rewrite_target(rewrite, selector_context)
-            rewrites_by_file[target.file_path].append(rewrite)
-
-        merged_rewrites: list[PlannedSourceRewrite] = []
-        for file_rewrites in rewrites_by_file.values():
-            merged_rewrite = self.merged_file_rewrite(
-                tuple(file_rewrites),
-                selector_context,
-            )
-            if merged_rewrite is None:
-                return None
-            merged_rewrites.append(merged_rewrite)
-        return tuple(merged_rewrites)
-
-    def merged_file_rewrite(
-        self,
-        rewrites: tuple[PlannedSourceRewrite, ...],
-        selector_context: CodemodSelectorContext,
-    ) -> PlannedSourceRewrite | None:
-        replacements = tuple(
-            replacement
-            for rewrite in rewrites
-            for replacement in self.rewrite_source_edits(
-                rewrite,
-                selector_context,
-            )
-        )
-        if self.source_edits_conflict(replacements):
-            return None
-        if not replacements:
-            return None
-        target = self.smallest_enclosing_target_for_replacements(
-            replacements,
-            selector_context,
-        )
-        if target is None:
-            return None
-        if not self.source_edits_fit_target(target, replacements):
-            return None
-        replacement_source = SourceTargetEditor(
-            selector_context.sources_by_file_path,
-            target,
-        ).replacement_source(replacements)
-        return PlannedSourceRewrite(
-            target_id=target.target_id,
-            replacement_source=replacement_source,
-            rationale=_joined_rationales(rewrite.rationale for rewrite in rewrites),
-            contributors=SourceRewriteContributor.merge(
-                *(
-                    tuple(
-                        contributor.for_target(
-                            target,
-                            selector_context.sources_by_file_path,
-                        )
-                        for contributor in replacement.contributors
-                    )
-                    for replacement in replacements
-                )
-            ),
-        )
-
-    @staticmethod
-    def source_edits_from_rewrite(
-        target: AstTargetDigest,
-        original_source: str,
-        rewrite: PlannedSourceRewrite,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        original_lines = SourceTargetEditor.source_lines(original_source)
-        replacement_lines = SourceTargetEditor.source_lines(rewrite.replacement_source)
-        return SourceLineDiffAuthority.replacements(
-            target=target,
-            original_lines=original_lines,
-            candidate_lines=replacement_lines,
-            rationale=rewrite.rationale,
-            contributors=rewrite.contributors,
-        )
-
-    @classmethod
-    def uncached_rewrite_source_edits(
-        cls,
-        rewrite: PlannedSourceRewrite,
-        selector_context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        target = cls.rewrite_target(rewrite, selector_context)
-        target_editor = SourceTargetEditor(
-            selector_context.sources_by_file_path,
-            target,
-        )
-        return cls.source_edits_from_rewrite(
-            target,
-            "".join(target_editor.target_lines),
-            rewrite,
-        )
-
-    def rewrite_source_edits(
-        self,
-        rewrite: PlannedSourceRewrite,
-        selector_context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        cached_replacements = self.rewrite_line_replacement_cache.get(rewrite)
-        if cached_replacements is not None:
-            return cached_replacements
-        replacements = self.uncached_rewrite_source_edits(
-            rewrite,
-            selector_context,
-        )
-        self.rewrite_line_replacement_cache[rewrite] = replacements
-        return replacements
-
-    def rewrites_have_line_conflict(
-        self,
-        first: PlannedSourceRewrite,
-        second: PlannedSourceRewrite,
-        selector_context: CodemodSelectorContext | None,
-    ) -> bool:
-        if selector_context is None:
-            return True
-        return self.source_edits_conflict(
-            (
-                *self.rewrite_source_edits(first, selector_context),
-                *self.rewrite_source_edits(second, selector_context),
-            )
-        )
-
-    @staticmethod
-    def source_edits_conflict(
-        replacements: tuple[PhysicalSourceEdit, ...],
-    ) -> bool:
-        previous_by_file: dict[str, tuple[int, int] | None] = {}
-        for replacement in sorted(
-            replacements,
-            key=lambda item: (
-                item.file_path,
-                item.start_line,
-                item.end_line,
-            ),
-        ):
-            previous = previous_by_file.get(replacement.file_path)
-            if previous is not None:
-                _previous_start, previous_end = previous
-                if replacement.start_line <= previous_end:
-                    return True
-            previous_by_file[replacement.file_path] = (
-                replacement.start_line,
-                replacement.end_line,
-            )
-        return False
-
-    @staticmethod
-    def smallest_enclosing_target_for_replacements(
-        replacements: tuple[PhysicalSourceEdit, ...],
-        selector_context: CodemodSelectorContext,
-    ) -> AstTargetDigest | None:
-        file_paths = frozenset(replacement.file_path for replacement in replacements)
-        if len(file_paths) != 1:
-            return None
-        source_path = next(iter(file_paths))
-        start_line = min(replacement.start_line for replacement in replacements)
-        end_line = max(replacement.end_line for replacement in replacements)
-        return selector_context.source_index.targets_by_file.smallest_enclosing_target(
-            source_path,
-            start_line,
-            end_line,
-        )
-
-    @classmethod
-    def source_edits_fit_target(
-        cls,
-        target: AstTargetDigest,
-        replacements: tuple[PhysicalSourceEdit, ...],
-    ) -> bool:
-        previous_end = target.line - 1
-        for replacement in sorted(
-            replacements,
-            key=lambda item: (item.start_line, item.end_line),
-        ):
-            if not cls.line_replacement_fits_target(target, replacement):
-                return False
-            if replacement.start_line <= previous_end:
-                return False
-            previous_end = replacement.end_line
-        return True
-
-    @staticmethod
-    def line_replacement_fits_target(
-        target: AstTargetDigest,
-        replacement: SourceSpanReplacement,
-    ) -> bool:
-        return (
-            replacement.file_path == target.file_path
-            and replacement.start_line >= target.line
-            and replacement.end_line <= target.end_line
-        )
-
-    @classmethod
-    def rewrite_targets_overlap(
-        cls,
-        rewrites: tuple[PlannedSourceRewrite, ...],
-        selector_context: CodemodSelectorContext,
-    ) -> bool:
-        targets = tuple(
-            cls.rewrite_target(rewrite, selector_context) for rewrite in rewrites
-        )
-        for index, first in enumerate(targets):
-            for second in targets[index + 1 :]:
-                if PlannedRewriteSelectionAuthority.overlaps(first, second):
-                    return True
-        return False
 
     def scoped_findings(self) -> tuple[RefactorFinding, ...]:
         return tuple(
@@ -21095,7 +20668,7 @@ class CurrentSnapshotRecipeBatchResult:
             evaluation.required_recipe
             for candidate, evaluation in sorted(
                 zip(self.candidates, self.evaluations, strict=True),
-                key=lambda row: row[0].execution_order_key,
+                key=lambda row: row[0].stable_identity_key,
             )
             if evaluation.candidate_recipes
         )
@@ -21161,11 +20734,11 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
 
     @cached_property
-    def ordered_participating_candidate_indices(self) -> tuple[int, ...]:
+    def stable_participating_candidate_indices(self) -> tuple[int, ...]:
         return tuple(
             sorted(
                 self.participating_candidate_indices,
-                key=lambda index: self.candidates[index].execution_order_key,
+                key=lambda index: self.candidates[index].stable_identity_key,
             )
         )
 
@@ -21176,16 +20749,9 @@ class CurrentSnapshotRecipeBatchEvaluation:
         if self.source_snapshot is None:
             return {}
         return {
-            index: tuple(
-                source_edit
-                for rewrite in self.batch_projection.planned_rewrites_for_recipe(
-                    self.candidates[index].record.evaluation.required_recipe,
-                    self.source_snapshot,
-                )
-                for source_edit in self.batch_projection.rewrite_source_edits(
-                    rewrite,
-                    self.source_snapshot,
-                )
+            index: self.batch_projection.physical_edits_for_recipe(
+                self.candidates[index].record.evaluation.required_recipe,
+                self.source_snapshot,
             )
             for index in self.participating_candidate_indices
         }
@@ -21327,7 +20893,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         ordered_indices = tuple(
             sorted(
                 candidate_indices,
-                key=lambda index: self.candidates[index].execution_order_key,
+                key=lambda index: self.candidates[index].stable_identity_key,
             )
         )
         vertex_position_by_candidate_index = {
@@ -21352,7 +20918,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
     def trajectory_batch_enumeration(self) -> FindingRecipeCandidateBatchEnumeration:
         """Enumerate every pairwise-compatible batch up to the explicit budget."""
 
-        ordered_indices = self.ordered_participating_candidate_indices
+        ordered_indices = self.stable_participating_candidate_indices
         pair_dispositions = {
             assessment.edge: assessment.disposition
             for assessment in self.pair_assessments
@@ -21455,7 +21021,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     kind=FindingRecipeTrajectoryObstacleKind.ENUMERATION_BUDGET,
                     finding_ids=tuple(
                         self.candidates[index].finding_id
-                        for index in self.ordered_participating_candidate_indices
+                        for index in self.stable_participating_candidate_indices
                     ),
                     reason=(
                         "compatible candidate batches exceed the declared "
@@ -21503,7 +21069,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         batched_indices = tuple(
             sorted(
                 singleton_indices,
-                key=lambda index: self.candidates[index].execution_order_key,
+                key=lambda index: self.candidates[index].stable_identity_key,
             )
         )
         if not batched_indices:
@@ -21582,7 +21148,6 @@ class CurrentSnapshotRecipeBatchEvaluation:
             document = CodemodPlanDocument(
                 recipes=self.batch_projection.merged_recipes(
                     recipes,
-                    self.source_snapshot,
                 )
             )
             simulation = document.simulate_snapshot(self.source_snapshot)

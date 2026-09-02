@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
+from typing import TypeVar
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+
+RegisteredDeclarationT = TypeVar("RegisteredDeclarationT")
+RegisteredValueT = TypeVar("RegisteredValueT")
 
 DEFAULT_REGISTRY_KEY_ATTRIBUTE = "registry_key"
 AUTOREGISTER_META_NAME = "AutoRegisterMeta"
@@ -23,6 +28,18 @@ AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES = frozenset(
         SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     }
 )
+
+
+def mro_registry_value(
+    registry: Mapping[type[RegisteredDeclarationT], RegisteredValueT],
+    declaration_type: type[RegisteredDeclarationT],
+) -> RegisteredValueT | None:
+    """Resolve the nearest registered declaration from nominal MRO priority."""
+
+    return next(
+        (registry[owner] for owner in declaration_type.__mro__ if owner in registry),
+        None,
+    )
 
 
 def class_name_registry_key(name: str, cls: type[object]) -> str:
