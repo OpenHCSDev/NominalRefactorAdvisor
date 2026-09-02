@@ -79,14 +79,10 @@ from .codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
-    JsonArray,
     JsonObject,
-    JsonScalar,
     JsonValue,
-    ObjectPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
-    PayloadBindingSet,
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     PayloadValueCodec,
@@ -590,19 +586,6 @@ class AuthorityClaimPayload:
     field_name: ClassVar[str] = "authority_claims"
 
 
-class AuthorityLanguageSurfacePolicy:
-    """Detect recipe text that requires proof-carrying authority claims."""
-
-    pattern: ClassVar[re.Pattern[str]] = re.compile(
-        r"\b(authorit(?:y|ies)|registry|registries|declaration|boundary)\b",
-        re.IGNORECASE,
-    )
-
-    @classmethod
-    def matches(cls, surface: str) -> bool:
-        return bool(cls.pattern.search(surface))
-
-
 class CodemodPlanEvidenceLocation:
     """Synthetic source location owner for codemod-plan findings."""
 
@@ -622,28 +605,6 @@ class AuthorityClaimPreflightFinding:
     """Advisor finding projection for failed authority-claim preflight."""
 
     detector_id: ClassVar[str] = "unresolved_authority_claim"
-
-    @classmethod
-    def unclaimed_authority_text(
-        cls,
-        recipe_id: str,
-        surfaces: tuple[str, ...],
-    ) -> RefactorFinding:
-        surfaces_summary = "; ".join(surfaces[:3])
-        return cls._finding(
-            recipe_id=recipe_id,
-            claimed_symbol="unknown",
-            summary=(
-                f"Recipe `{recipe_id}` uses authority-routing language but emits no "
-                "AuthorityClaim and no declare_authority operation."
-            ),
-            evidence_symbol="authority_text_without_claim",
-            codemod_patch=(
-                "# Add an authority_claim backed by an existing source-index target, or "
-                "add a declare_authority operation with authority_source.\n"
-                f"# Authority text surfaces: {surfaces_summary}"
-            ),
-        )
 
     @classmethod
     def unresolved_resolution(
@@ -10870,26 +10831,7 @@ class RefactorRecipe(CodemodPayloadRecord):
     ) -> CodemodOperationPreflightReport | None:
         claims = self.effective_authority_claims
         if not claims:
-            if not self.uses_authority_language:
-                return None
-            return CodemodOperationPreflightReport(
-                operation=AuthorityClaimPayload.field_name,
-                status=CodemodPreflightStatus.FAILED,
-                message=(
-                    "authority-routing text requires a resolved authority claim "
-                    "(AuthorityClaim) or an explicit authority declaration operation"
-                ),
-                details={
-                    "recipe_id": self.recipe_id,
-                    "authority_text_surfaces": self.authority_text_surfaces,
-                    "findings": (
-                        AuthorityClaimPreflightFinding.unclaimed_authority_text(
-                            self.recipe_id,
-                            self.authority_text_surfaces,
-                        ).to_dict(),
-                    ),
-                },
-            )
+            return None
         if source_index is None:
             return CodemodOperationPreflightReport(
                 operation=AuthorityClaimPayload.field_name,
@@ -10947,22 +10889,6 @@ class RefactorRecipe(CodemodPayloadRecord):
     def effective_authority_claims(self) -> tuple[AuthorityClaim, ...]:
         return tuple(
             dict.fromkeys((*self.authority_claims, *self.declared_authority_claims))
-        )
-
-    @property
-    def uses_authority_language(self) -> bool:
-        return bool(self.authority_text_surfaces)
-
-    @cached_property
-    def authority_text_surfaces(self) -> tuple[str, ...]:
-        surfaces = (
-            self.reason,
-            *(operation.rationale for operation in self.operations),
-        )
-        return tuple(
-            surface
-            for surface in dict.fromkeys(surfaces)
-            if surface and AuthorityLanguageSurfacePolicy.matches(surface)
         )
 
     def simulate(
@@ -12510,23 +12436,22 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         context: CodemodSelectorContext | None,
         finding: RefactorFinding,
     ) -> FindingRecipeEvaluation:
-        evaluation = self
-        if context is not None:
-            inferred_recipe = FindingAuthorityClaimInference(
-                finding=finding,
-                context=context,
-            ).recipe_with_inferred_claims(evaluation.executable_recipe)
-            if inferred_recipe is not evaluation.executable_recipe:
-                evaluation = evaluation.with_recipe(inferred_recipe)
+        del finding
+        return self.gated_by_existing_authority_claim(context)
+
+    def gated_by_existing_authority_claim(
+        self,
+        context: CodemodSelectorContext | None,
+    ) -> FindingRecipeEvaluation:
         authority_report = FindingRecipeAuthorityClaimGate.authority_report_for_recipe(
-            evaluation.executable_recipe,
+            self.executable_recipe,
             context,
         )
         if (
             authority_report is None
             or authority_report.status is CodemodPreflightStatus.PASSED
         ):
-            return evaluation
+            return self
         return RejectedRecipeEvaluation(
             reason=FindingRecipeAuthorityClaimGate.rejection_reason(authority_report),
             executable_declaration_type=self.executable_declaration_type,
@@ -12648,6 +12573,28 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
 
     strategy_type: type["SemanticMirrorFindingRecipeStrategy"]
 
+    def gated_by_authority_claim(
+        self,
+        context: CodemodSelectorContext | None,
+        finding: RefactorFinding,
+    ) -> FindingRecipeEvaluation:
+        evaluation = self
+        if context is not None:
+            inferred_recipe = FindingAuthorityClaimInference(
+                finding=finding,
+                context=context,
+            ).recipe_with_inferred_claims(evaluation.executable_recipe)
+            if inferred_recipe is not evaluation.executable_recipe:
+                evaluation = evaluation.with_recipe(inferred_recipe)
+        if not evaluation.executable_recipe.effective_authority_claims:
+            return RejectedRecipeEvaluation(
+                reason=(
+                    "semantic-descent recipe requires a source-resolved AuthorityClaim"
+                ),
+                executable_declaration_type=self.executable_declaration_type,
+            )
+        return evaluation.gated_by_existing_authority_claim(context)
+
 
 @dataclass(frozen=True)
 class FindingAuthorityClaimInference:
@@ -12657,7 +12604,7 @@ class FindingAuthorityClaimInference:
     context: CodemodSelectorContext
 
     def recipe_with_inferred_claims(self, recipe: RefactorRecipe) -> RefactorRecipe:
-        if recipe.effective_authority_claims or not recipe.uses_authority_language:
+        if recipe.effective_authority_claims:
             return recipe
         claims = self.resolved_claims()
         if not claims:
@@ -12731,7 +12678,7 @@ class FindingAuthorityClaimInference:
 
 
 class FindingRecipeAuthorityClaimGate:
-    """Fail generated recipes that mention authorities without proof claims."""
+    """Validate the proof carried by a generated recipe's authority claims."""
 
     @staticmethod
     def authority_report_for_recipe(

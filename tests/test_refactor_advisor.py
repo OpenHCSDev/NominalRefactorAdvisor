@@ -969,7 +969,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     assert "return AlphaAuthority.run(value)" in module_path.read_text()
 
 
-def test_codemod_preflight_rejects_unclaimed_authority_rationale(
+def test_codemod_preflight_does_not_derive_proof_requirements_from_rationale(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -986,18 +986,8 @@ def test_codemod_preflight_rejects_unclaimed_authority_rationale(
 
     preflight = CodemodPlanDocument(recipes=(recipe,)).preflight_snapshot(snapshot)
 
-    assert preflight.preflight_failed is True
-    assert preflight.reports[0].operation == "authority_claims"
-    assert "resolved authority claim" in preflight.reports[0].message
-    finding = preflight.reports[0].details["findings"][0]
-    assert finding["detector_id"] == "unresolved_authority_claim"
-    assert "emits no AuthorityClaim" in finding["summary"]
-    assert finding["evidence"][0]["file_path"] == "<codemod-plan>"
-    with pytest.raises(
-        CodemodOperationPreflightError,
-        match="resolved authority claim",
-    ):
-        CodemodPlanDocument(recipes=(recipe,)).simulate_snapshot(snapshot)
+    assert preflight.preflight_failed is False
+    assert preflight.reports == ()
 
 
 def test_codemod_create_file_rejects_existing_source_without_mutation(
@@ -1176,16 +1166,17 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     )
 
 
-def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() -> None:
+def test_generic_recipe_evaluation_does_not_infer_proof_from_rationale() -> None:
     recipe = RefactorRecipe(
         recipe_id="unsafe-authority-plan",
         reason="route through authority",
     )
 
-    evaluation = ExecutableRecipeEvaluation(
+    candidate = ExecutableRecipeEvaluation(
         executable_recipe=recipe,
         executable_declaration_type=FindingRecipeAuthorityClaimGate,
-    ).gated_by_authority_claim(
+    )
+    evaluation = candidate.gated_by_authority_claim(
         None,
         RefactorFinding(
             detector_id="authority_gate_fixture",
@@ -1198,9 +1189,7 @@ def test_finding_recipe_authority_gate_rejects_unclaimed_authority_language() ->
         ),
     )
 
-    assert evaluation.candidate_recipes == ()
-    assert "Authority Claim Gate" in evaluation.rejection_reason
-    assert "AuthorityClaim" in evaluation.rejection_reason
+    assert evaluation is candidate
 
 
 def test_missing_recipe_synthesizer_is_a_nominal_terminal_outcome() -> None:
@@ -1260,7 +1249,6 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
 
     weak_detector_id = "weak_competing_recipe_test"
     strong_detector_id = "strong_competing_recipe_test"
@@ -2147,7 +2135,7 @@ def test_authority_inference_updates_the_terminal_evaluation_recipe(
     )
     original_recipe = RefactorRecipe(
         recipe_id="inferred-semantic-plan",
-        reason="derive the projection from its authority",
+        reason="derive the projection from the source type",
     )
     evaluation = SemanticDescentRecipeEvaluation(
         executable_recipe=original_recipe,
@@ -2156,6 +2144,29 @@ def test_authority_inference_updates_the_terminal_evaluation_recipe(
     ).gated_by_authority_claim(snapshot, finding)
     assert original_recipe.authority_claims == ()
     assert evaluation.required_recipe.authority_claims
+
+
+def test_semantic_descent_recipe_requires_a_formal_authority_claim() -> None:
+    finding = RefactorFinding(
+        detector_id="semantic_descent_fixture",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Semantic descent fixture",
+        summary="projection should derive from its source type",
+        why="the projection duplicates source semantics",
+        capability_gap="source-derived projection",
+        relation_context="projection lacks a derivation path",
+    )
+    evaluation = SemanticDescentRecipeEvaluation(
+        executable_recipe=RefactorRecipe(
+            recipe_id="unproved-semantic-plan",
+            reason="derive the projection from the source type",
+        ),
+        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        strategy_type=MappingSemanticMirrorRecipeStrategy,
+    ).gated_by_authority_claim(None, finding)
+
+    assert evaluation.candidate_recipes == ()
+    assert "source-resolved AuthorityClaim" in evaluation.rejection_reason
 
 
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
@@ -3022,7 +3033,6 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
 
     detector_id = "empty_recipe_test_detector"
     module_path = tmp_path / "pkg/mod.py"
@@ -3085,8 +3095,6 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
 def test_rejected_synthesis_does_not_require_executable_action_keys(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-
     detector_id = "rejected_recipe_without_action_keys_test"
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
@@ -3136,8 +3144,6 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
 def test_executable_synthesis_requires_action_keys_before_planning(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
-
     detector_id = "executable_recipe_without_action_keys_test"
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
@@ -11616,8 +11622,15 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
     plan_payload = {
         "recipes": [
             {
-                "recipe_id": "unclaimed-authority-route",
+                "recipe_id": "unresolved-authority-route",
                 "reason": "route through authority",
+                "authority_claims": [
+                    {
+                        "claimed_symbol": "MissingAuthority",
+                        "file_path": module_path.as_posix(),
+                        "qualname": "MissingAuthority",
+                    }
+                ],
                 "operations": [
                     {
                         "operation": "replace_text",

@@ -51,6 +51,11 @@ maintained.
 and sequence declarations reject each other's fields; each variant provides
 its own execution-sequence projection without making the sequence parser a
 compatibility fallback.
+Authority proof is structural rather than textual.  Recipe preflight validates
+declared ``AuthorityClaim`` values but never infers obligations from rationale
+prose.  ``SemanticDescentRecipeEvaluation`` owns the stronger semantic-descent
+contract: it must carry or source-resolve a claim before its recipe can remain
+an executable candidate.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
    :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
