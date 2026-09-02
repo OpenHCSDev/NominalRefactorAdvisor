@@ -43,6 +43,10 @@ from ..class_index import (
     LatentRosterObservation,
     build_compact_class_family_index,
 )
+from ..exact_method_authority import (
+    ParallelMirroredLeafFamilyComponent,
+    ParallelMirroredLeafFamilyComponentBuilder,
+)
 from ..codemod import (
     AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
     CancelableCompositionSignal,
@@ -2153,6 +2157,7 @@ class _CompactConcreteFamilyContext:
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...]
     manual_family_rosters: tuple[CompactManualFamilyRosterObservation, ...]
     latent_rosters: tuple[LatentRosterObservation, ...]
+    parallel_mirrored_leaf_family_builder: ParallelMirroredLeafFamilyComponentBuilder
 
 
 def _compact_concrete_family_context(
@@ -2185,6 +2190,12 @@ def _compact_concrete_family_context(
         ),
         latent_rosters=tuple(
             roster for projection in projections for roster in projection.latent_rosters
+        ),
+        parallel_mirrored_leaf_family_builder=(
+            ParallelMirroredLeafFamilyComponentBuilder.from_projections(
+                projections,
+                class_index=class_index,
+            )
         ),
     )
 
@@ -2579,118 +2590,13 @@ def _compact_predicate_selected_concrete_family_candidates(
     return tuple(candidates)
 
 
-def _compact_mirrored_leaf_family_map(
-    descendants: tuple[CompactIndexedClass, ...],
-    *,
-    axis_prefix_tokens: tuple[str, ...],
-) -> dict[str, CompactIndexedClass]:
-    leaf_map: dict[str, CompactIndexedClass] = {}
-    for descendant in descendants:
-        tokens = CLASS_NAME_ALGEBRA.ordered_tokens(descendant.simple_name)
-        if (
-            len(tokens) <= len(axis_prefix_tokens)
-            or tokens[: len(axis_prefix_tokens)] != axis_prefix_tokens
-        ):
-            continue
-        family_tokens = tokens[len(axis_prefix_tokens) :]
-        if family_tokens:
-            leaf_map.setdefault(" ".join(family_tokens), descendant)
-    return leaf_map
-
-
 def _compact_parallel_mirrored_leaf_family_candidates(
     context: _CompactConcreteFamilyContext,
     config: DetectorConfig,
-) -> tuple[ParallelMirroredLeafFamilyCandidate, ...]:
-    class_index = context.class_index
-    min_shared_families = max(3, config.min_registration_sites)
-    roots: list[
-        tuple[
-            CompactIndexedClass,
-            tuple[str, ...],
-            tuple[CompactIndexedClass, ...],
-        ]
-    ] = []
-    for indexed_class in sorted(
-        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-    ):
-        if "_registered_types" not in indexed_class.assignments_by_name:
-            continue
-        if not indexed_class.abstract_method_names:
-            continue
-        descendants = _compact_concrete_descendants(class_index, indexed_class)
-        if len(descendants) >= min_shared_families:
-            roots.append(
-                (indexed_class, indexed_class.abstract_method_names, descendants)
-            )
-
-    candidates: list[ParallelMirroredLeafFamilyCandidate] = []
-    for (left_root, left_methods, left_descendants), (
-        right_root,
-        right_methods,
-        right_descendants,
-    ) in combinations(roots, 2):
-        shared_methods = sorted_tuple(set(left_methods) & set(right_methods))
-        if not shared_methods:
-            continue
-        left_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(left_root.simple_name)
-        right_tokens = CLASS_NAME_ALGEBRA.ordered_tokens(right_root.simple_name)
-        shared_root_suffix = _shared_ordered_suffix(left_tokens, right_tokens)
-        if not shared_root_suffix:
-            continue
-        left_axis_prefix = left_tokens[: len(left_tokens) - len(shared_root_suffix)]
-        right_axis_prefix = right_tokens[: len(right_tokens) - len(shared_root_suffix)]
-        if (
-            not left_axis_prefix
-            or not right_axis_prefix
-            or left_axis_prefix == right_axis_prefix
-        ):
-            continue
-        left_leaf_map = _compact_mirrored_leaf_family_map(
-            left_descendants, axis_prefix_tokens=left_axis_prefix
-        )
-        right_leaf_map = _compact_mirrored_leaf_family_map(
-            right_descendants, axis_prefix_tokens=right_axis_prefix
-        )
-        if not left_leaf_map or not right_leaf_map:
-            continue
-        shared_leaf_families = sorted_tuple(set(left_leaf_map) & set(right_leaf_map))
-        if len(shared_leaf_families) < max(
-            min_shared_families, min(len(left_leaf_map), len(right_leaf_map)) // 2
-        ):
-            continue
-
-        def leaf_evidence(
-            leaf_map: dict[str, CompactIndexedClass],
-        ) -> tuple[SourceLocation, ...]:
-            return tuple(
-                SourceLocation(
-                    leaf_map[family_name].file_path,
-                    leaf_map[family_name].line,
-                    _compact_class_display_name(leaf_map[family_name], class_index),
-                )
-                for family_name in shared_leaf_families
-            )
-
-        candidates.append(
-            ParallelMirroredLeafFamilyCandidate(
-                left=MirroredLeafFamilySide(
-                    file_path=left_root.file_path,
-                    line=left_root.line,
-                    root_name=_compact_class_display_name(left_root, class_index),
-                    leaf_evidence=leaf_evidence(left_leaf_map),
-                ),
-                right=MirroredLeafFamilySide(
-                    file_path=right_root.file_path,
-                    line=right_root.line,
-                    root_name=_compact_class_display_name(right_root, class_index),
-                    leaf_evidence=leaf_evidence(right_leaf_map),
-                ),
-                contract_method_names=shared_methods,
-                shared_leaf_family_names=shared_leaf_families,
-            )
-        )
-    return tuple(candidates)
+) -> tuple[ParallelMirroredLeafFamilyComponent, ...]:
+    return context.parallel_mirrored_leaf_family_builder.proven_components(
+        min_shared_roles=max(3, config.min_registration_sites),
+    )
 
 
 def _compact_family_has_registration_authority(
@@ -3106,7 +3012,7 @@ class PredicateSelectedConcreteFamilyDetector(
 
 
 class ParallelMirroredLeafFamilyDetector(
-    _CompactConcreteFamilyDetectorBase[ParallelMirroredLeafFamilyCandidate],
+    _CompactConcreteFamilyDetectorBase[ParallelMirroredLeafFamilyComponent],
 ):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -3131,37 +3037,42 @@ class ParallelMirroredLeafFamilyDetector(
         self,
         context: _CompactConcreteFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[ParallelMirroredLeafFamilyCandidate]:
+    ) -> Sequence[ParallelMirroredLeafFamilyComponent]:
         return _compact_parallel_mirrored_leaf_family_candidates(
             context,
             config,
         )
 
     def _finding_for_candidate(
-        self, mirrored_candidate: ParallelMirroredLeafFamilyCandidate
+        self, mirrored_candidate: ParallelMirroredLeafFamilyComponent
     ) -> RefactorFinding:
         shared_preview = ", ".join(mirrored_candidate.shared_leaf_family_names[:4])
         contract_preview = ", ".join(mirrored_candidate.contract_method_names)
+        left_root_name = mirrored_candidate.left_root.simple_name
+        right_root_name = mirrored_candidate.right_root.simple_name
         class_names = (
-            mirrored_candidate.left.root_name,
-            mirrored_candidate.right.root_name,
-            *(item.symbol for item in mirrored_candidate.left.leaf_evidence),
-            *(item.symbol for item in mirrored_candidate.right.leaf_evidence),
+            left_root_name,
+            right_root_name,
+            *(
+                indexed_class.simple_name
+                for indexed_class in (
+                    *mirrored_candidate.left_leaf_classes,
+                    *mirrored_candidate.right_leaf_classes,
+                )
+            ),
         )
         return self.build_finding(
             (
-                f"`{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` expose mirrored `{contract_preview}` leaf catalogs "
+                f"`{left_root_name}` and `{right_root_name}` expose mirrored `{contract_preview}` leaf catalogs "
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
-            mirrored_candidate.evidence[:6],
+            mirrored_candidate.evidence_locations[:6],
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=(
-                    len(mirrored_candidate.left.leaf_evidence)
-                    + len(mirrored_candidate.right.leaf_evidence)
+                    len(mirrored_candidate.left_leaf_classes)
+                    + len(mirrored_candidate.right_leaf_classes)
                 ),
-                registry_name=(
-                    f"{mirrored_candidate.left.root_name}/{mirrored_candidate.right.root_name}"
-                ),
+                registry_name=f"{left_root_name}/{right_root_name}",
                 class_names=class_names,
             ),
         )

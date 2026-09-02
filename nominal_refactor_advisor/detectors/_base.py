@@ -7417,30 +7417,6 @@ class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class MirroredLeafFamilySide(LineWitnessCandidate):
-    root_name: str
-    leaf_evidence: tuple[SourceLocation, ...]
-    witness_name = AliasProperty[str]("root_name")
-
-
-@dataclass(frozen=True)
-class ParallelMirroredLeafFamilyCandidate:
-    left: MirroredLeafFamilySide
-    right: MirroredLeafFamilySide
-    contract_method_names: tuple[str, ...]
-    shared_leaf_family_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            self.left.evidence,
-            self.right.evidence,
-            *self.left.leaf_evidence[:2],
-            *self.right.leaf_evidence[:2],
-        )
-
-
-@dataclass(frozen=True)
 class FragmentedFamilyAuthorityCandidate:
     file_path: str
     mapping_names: tuple[str, ...]

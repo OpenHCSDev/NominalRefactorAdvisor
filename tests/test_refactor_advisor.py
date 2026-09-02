@@ -18369,6 +18369,36 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "alpha emitter" in finding.summary
 
 
+def test_parallel_leaf_names_without_shared_implementations_are_not_mirrored(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_alpha\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_beta\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.invoice_gamma\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_alpha\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_beta\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.receipt_gamma\n",
+    )
+
+    assert not any(
+        finding.detector_id == "parallel_mirrored_leaf_family"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_parallel_leaf_family_fails_closed_on_duplicate_method_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact): ...\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.alpha\n    def emit(self, artifact): return artifact.alpha\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.beta\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact): return artifact.gamma\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.alpha\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.beta\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact): return artifact.gamma\n",
+    )
+
+    assert not any(
+        finding.detector_id == "parallel_mirrored_leaf_family"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

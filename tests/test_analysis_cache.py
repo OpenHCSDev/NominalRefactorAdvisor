@@ -4989,12 +4989,18 @@ def test_compact_concrete_family_candidates_preserve_semantics(
         "\n"
         "class AlphaRenderRule(RenderRule): pass\n"
         "class BetaRenderRule(RenderRule): pass\n"
-        "class InvoiceAlphaEmitter(InvoiceFieldEmitter): pass\n"
-        "class InvoiceBetaEmitter(InvoiceFieldEmitter): pass\n"
-        "class InvoiceGammaEmitter(InvoiceFieldEmitter): pass\n"
-        "class ReceiptAlphaEmitter(ReceiptFieldEmitter): pass\n"
-        "class ReceiptBetaEmitter(ReceiptFieldEmitter): pass\n"
-        "class ReceiptGammaEmitter(ReceiptFieldEmitter): pass\n",
+        "class InvoiceAlphaEmitter(InvoiceFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.alpha\n"
+        "class InvoiceBetaEmitter(InvoiceFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.beta\n"
+        "class InvoiceGammaEmitter(InvoiceFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.gamma\n"
+        "class ReceiptAlphaEmitter(ReceiptFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.alpha\n"
+        "class ReceiptBetaEmitter(ReceiptFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.beta\n"
+        "class ReceiptGammaEmitter(ReceiptFieldEmitter):\n"
+        "    def emit(self, artifact): return artifact.gamma\n",
         encoding="utf-8",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
@@ -5027,8 +5033,8 @@ def test_compact_concrete_family_candidates_preserve_semantics(
     )
     assert len(mirrored_candidates) == 1
     mirrored_candidate = mirrored_candidates[0]
-    assert mirrored_candidate.left.root_name == "InvoiceFieldEmitter"
-    assert mirrored_candidate.right.root_name == "ReceiptFieldEmitter"
+    assert mirrored_candidate.left_root.simple_name == "InvoiceFieldEmitter"
+    assert mirrored_candidate.right_root.simple_name == "ReceiptFieldEmitter"
     assert mirrored_candidate.contract_method_names == ("emit",)
     assert mirrored_candidate.shared_leaf_family_names == (
         "alpha emitter",

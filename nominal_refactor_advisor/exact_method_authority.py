@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from functools import cached_property
+from itertools import combinations
 from typing import Self
 
 from .ast_tools import ParsedModule
@@ -19,8 +20,14 @@ from .class_index import (
     ClassSymbolResolutionAuthority,
     build_compact_class_family_index,
 )
-from .collection_algebra import sorted_tuple
+from .collection_algebra import (
+    IdentityHandleMultiplicityProjection,
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
+from .descriptor_algebra import CollectionAttributeProjection
 from .models import SourceLocation
+from .name_algebra import CLASS_NAME_ALGEBRA
 from .semantic_description_length import (
     CompressionCertificate,
     ExistingAuthorityMethodPromotionCompressionProfile,
@@ -36,9 +43,95 @@ class CompactExactMethodOrbit:
     indexed_classes: tuple[CompactIndexedClass, ...]
     methods: tuple[CompactClassMethod, ...]
 
+    @classmethod
+    def from_declarations(
+        cls,
+        indexed_classes: tuple[CompactIndexedClass, ...],
+        methods: tuple[CompactClassMethod, ...],
+    ) -> Self | None:
+        """Build one orbit only when every declaration proves one exact source."""
+
+        if len(indexed_classes) < 2 or len(indexed_classes) != len(methods):
+            return None
+        file_paths = frozenset(item.file_path for item in indexed_classes)
+        method_names = frozenset(method.method_name for method in methods)
+        source_digests = frozenset(
+            method.exact_promotion_source_digest for method in methods
+        )
+        if (
+            len(file_paths) != 1
+            or len(method_names) != 1
+            or len(source_digests) != 1
+            or None in source_digests
+            or len(frozenset(method.line_count for method in methods)) != 1
+        ):
+            return None
+        return cls(
+            file_path=next(iter(file_paths)),
+            method_name=next(iter(method_names)),
+            indexed_classes=indexed_classes,
+            methods=methods,
+        )
+
     @property
     def class_symbols(self) -> tuple[str, ...]:
         return tuple(indexed_class.symbol for indexed_class in self.indexed_classes)
+
+
+@dataclass(frozen=True)
+class ExactMirroredLeafRoleComponent:
+    """One role whose domain leaves carry the same movable implementations."""
+
+    role_name: str
+    left_class: CompactIndexedClass
+    right_class: CompactIndexedClass
+    method_orbits: tuple[CompactExactMethodOrbit, ...]
+
+
+@dataclass(frozen=True)
+class ParallelMirroredLeafFamilyComponent:
+    """Exact role implementations repeated across two nominal domain axes."""
+
+    left_root: CompactIndexedClass
+    right_root: CompactIndexedClass
+    contract_method_names: tuple[str, ...]
+    roles: tuple[ExactMirroredLeafRoleComponent, ...]
+
+    shared_leaf_family_names = CollectionAttributeProjection[str](
+        "roles", "role_name"
+    )
+    left_leaf_classes = CollectionAttributeProjection[CompactIndexedClass](
+        "roles", "left_class"
+    )
+    right_leaf_classes = CollectionAttributeProjection[CompactIndexedClass](
+        "roles", "right_class"
+    )
+
+    @cached_property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(
+                self.left_root.file_path,
+                self.left_root.line,
+                self.left_root.symbol,
+            ),
+            SourceLocation(
+                self.right_root.file_path,
+                self.right_root.line,
+                self.right_root.symbol,
+            ),
+            *(
+                SourceLocation(
+                    indexed_class.file_path,
+                    indexed_class.line,
+                    indexed_class.symbol,
+                )
+                for indexed_class in (
+                    *self.left_leaf_classes[:2],
+                    *self.right_leaf_classes[:2],
+                )
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -173,30 +266,48 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
         )
 
     @cached_property
+    def class_method_multiplicity(
+        self,
+    ) -> IdentityHandleMultiplicityProjection[tuple[str, str], CompactClassMethod]:
+        """Derive unambiguous method declarations for every exact-method consumer."""
+
+        return UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+            (
+                method
+                for projection in self.projections
+                for method in projection.class_methods
+            ),
+            lambda method: (method.class_symbol, method.method_name),
+        )
+
+    @cached_property
     def exact_method_orbits(self) -> tuple[CompactExactMethodOrbit, ...]:
         methods_by_role: dict[
             tuple[str, str, str],
             list[tuple[CompactIndexedClass, CompactClassMethod]],
         ] = defaultdict(list)
-        for projection in self.projections:
-            for method in projection.class_methods:
-                if method.exact_source_digest is None or method.promotion_hazards:
-                    continue
-                indexed_class = self.class_index.class_for(method.class_symbol)
-                if indexed_class is None or "." in indexed_class.qualname:
-                    continue
-                methods_by_role[
-                    (
-                        projection.file_path,
-                        method.method_name,
-                        method.exact_source_digest,
-                    )
-                ].append((indexed_class, method))
+        methods = (
+            self.class_method_multiplicity.unambiguous_declarations_by_handle.values()
+        )
+        for method in methods:
+            source_digest = method.exact_promotion_source_digest
+            if source_digest is None:
+                continue
+            indexed_class = self.class_index.class_for(method.class_symbol)
+            if indexed_class is None or "." in indexed_class.qualname:
+                continue
+            methods_by_role[
+                (
+                    indexed_class.file_path,
+                    method.method_name,
+                    source_digest,
+                )
+            ].append((indexed_class, method))
 
         orbits = []
         for (
-            file_path,
-            method_name,
+            _file_path,
+            _method_name,
             _source_digest,
         ), class_methods in methods_by_role.items():
             if len(class_methods) < 2:
@@ -206,16 +317,12 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
             )
             indexed_classes = tuple(item[0] for item in ordered)
             methods = tuple(item[1] for item in ordered)
-            if len(frozenset(method.line_count for method in methods)) != 1:
-                continue
-            orbits.append(
-                CompactExactMethodOrbit(
-                    file_path=file_path,
-                    method_name=method_name,
-                    indexed_classes=indexed_classes,
-                    methods=methods,
-                )
+            orbit = CompactExactMethodOrbit.from_declarations(
+                indexed_classes,
+                methods,
             )
+            if orbit is not None:
+                orbits.append(orbit)
         return sorted_tuple(
             orbits,
             key=lambda orbit: (
@@ -492,3 +599,226 @@ def receiver_closed_exact_method_orbits(
             invalid_names.add(dependent_name)
             pending.append(dependent_name)
     return tuple(orbit for orbit in orbits if orbit.method_name not in invalid_names)
+
+
+@dataclass(frozen=True)
+class ParallelMirroredLeafFamilyComponentBuilder:
+    """Prove exact reusable role behavior across nominal domain families."""
+
+    projections: tuple[CompactModuleClassProjection, ...]
+    class_index: CompactClassFamilyIndex
+
+    @classmethod
+    def from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> Self:
+        return cls(
+            projections=projections,
+            class_index=(
+                build_compact_class_family_index(projections)
+                if class_index is None
+                else class_index
+            ),
+        )
+
+    @cached_property
+    def exact_method_builder(
+        self,
+    ) -> ExactLeafMethodAncestorPromotionComponentBuilder:
+        return ExactLeafMethodAncestorPromotionComponentBuilder.from_projections(
+            self.projections,
+            class_index=self.class_index,
+        )
+
+    @cached_property
+    def methods_by_identity(self) -> dict[tuple[str, str], CompactClassMethod]:
+        multiplicity = self.exact_method_builder.class_method_multiplicity
+        return multiplicity.unambiguous_declarations_by_handle
+
+    @cached_property
+    def roots(self) -> tuple[CompactIndexedClass, ...]:
+        return sorted_tuple(
+            (
+                indexed_class
+                for indexed_class in self.class_index.classes_by_symbol.values()
+                if "_registered_types" in indexed_class.assignments_by_name
+                and indexed_class.abstract_method_names
+            ),
+            key=lambda indexed_class: indexed_class.symbol,
+        )
+
+    def proven_components(
+        self,
+        *,
+        min_shared_roles: int,
+    ) -> tuple[ParallelMirroredLeafFamilyComponent, ...]:
+        components = tuple(
+            component
+            for left_root, right_root in combinations(self.roots, 2)
+            if (
+                component := self._component_for_roots(
+                    left_root,
+                    right_root,
+                    min_shared_roles=min_shared_roles,
+                )
+            )
+            is not None
+        )
+        return sorted_tuple(
+            components,
+            key=lambda component: (
+                component.left_root.symbol,
+                component.right_root.symbol,
+            ),
+        )
+
+    def _component_for_roots(
+        self,
+        left_root: CompactIndexedClass,
+        right_root: CompactIndexedClass,
+        *,
+        min_shared_roles: int,
+    ) -> ParallelMirroredLeafFamilyComponent | None:
+        if (
+            left_root.file_path != right_root.file_path
+            or "." in left_root.qualname
+            or "." in right_root.qualname
+        ):
+            return None
+        shared_contract = sorted_tuple(
+            set(left_root.abstract_method_names) & set(right_root.abstract_method_names)
+        )
+        if not shared_contract:
+            return None
+        root_tokens = (
+            CLASS_NAME_ALGEBRA.ordered_tokens(left_root.simple_name),
+            CLASS_NAME_ALGEBRA.ordered_tokens(right_root.simple_name),
+        )
+        shared_suffix = CLASS_NAME_ALGEBRA.longest_common_token_suffix(
+            (left_root.simple_name, right_root.simple_name)
+        )
+        if not shared_suffix:
+            return None
+        axis_prefixes = tuple(
+            tokens[: len(tokens) - len(shared_suffix)] for tokens in root_tokens
+        )
+        if not all(axis_prefixes) or axis_prefixes[0] == axis_prefixes[1]:
+            return None
+        left_roles = self._leaf_roles(left_root, axis_prefixes[0])
+        right_roles = self._leaf_roles(right_root, axis_prefixes[1])
+        if left_roles is None or right_roles is None:
+            return None
+        shared_role_names = sorted_tuple(set(left_roles) & set(right_roles))
+        required_role_count = max(
+            min_shared_roles,
+            min(len(left_roles), len(right_roles)) // 2,
+        )
+        roles = tuple(
+            role
+            for role_name in shared_role_names
+            if (
+                role := self._role_component(
+                    role_name,
+                    left_roles[role_name],
+                    right_roles[role_name],
+                    shared_contract,
+                )
+            )
+            is not None
+        )
+        if len(roles) < required_role_count:
+            return None
+        return ParallelMirroredLeafFamilyComponent(
+            left_root=left_root,
+            right_root=right_root,
+            contract_method_names=shared_contract,
+            roles=roles,
+        )
+
+    def _leaf_roles(
+        self,
+        root: CompactIndexedClass,
+        axis_prefix_tokens: tuple[str, ...],
+    ) -> dict[str, CompactIndexedClass] | None:
+        descendants = tuple(
+            descendant
+            for symbol in self.class_index.descendant_symbols(root.symbol)
+            if (descendant := self.class_index.class_for(symbol)) is not None
+            if not descendant.is_abstract
+            if descendant.file_path == root.file_path
+            if "." not in descendant.qualname
+            if descendant.base_resolution_is_complete
+            if descendant.direct_base_count == 1
+            if descendant.resolved_base_symbols == (root.symbol,)
+        )
+        declarations = tuple(
+            (" ".join(role_tokens), descendant)
+            for descendant in descendants
+            if (tokens := CLASS_NAME_ALGEBRA.ordered_tokens(descendant.simple_name))
+            if len(tokens) > len(axis_prefix_tokens)
+            if tokens[: len(axis_prefix_tokens)] == axis_prefix_tokens
+            if (role_tokens := tokens[len(axis_prefix_tokens) :])
+        )
+        multiplicity = UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+            declarations,
+            lambda declaration: declaration[0],
+        )
+        if multiplicity.ambiguous_handles:
+            return None
+        return {
+            role_name: descendant
+            for role_name, descendant in (
+                multiplicity.unambiguous_declarations_by_handle.values()
+            )
+        }
+
+    def _role_component(
+        self,
+        role_name: str,
+        left_class: CompactIndexedClass,
+        right_class: CompactIndexedClass,
+        contract_method_names: tuple[str, ...],
+    ) -> ExactMirroredLeafRoleComponent | None:
+        method_orbits = tuple(
+            orbit
+            for method_name in contract_method_names
+            if (
+                orbit := self._method_orbit(
+                    left_class,
+                    right_class,
+                    method_name,
+                )
+            )
+            is not None
+        )
+        if len(method_orbits) != len(contract_method_names):
+            return None
+        if receiver_closed_exact_method_orbits(method_orbits) != method_orbits:
+            return None
+        return ExactMirroredLeafRoleComponent(
+            role_name=role_name,
+            left_class=left_class,
+            right_class=right_class,
+            method_orbits=method_orbits,
+        )
+
+    def _method_orbit(
+        self,
+        left_class: CompactIndexedClass,
+        right_class: CompactIndexedClass,
+        method_name: str,
+    ) -> CompactExactMethodOrbit | None:
+        methods = tuple(
+            self.methods_by_identity.get((indexed_class.symbol, method_name))
+            for indexed_class in (left_class, right_class)
+        )
+        if any(method is None for method in methods):
+            return None
+        exact_methods = tuple(method for method in methods if method is not None)
+        return CompactExactMethodOrbit.from_declarations(
+            (left_class, right_class),
+            exact_methods,
+        )

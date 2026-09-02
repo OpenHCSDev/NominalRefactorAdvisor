@@ -1231,6 +1231,12 @@ class CompactClassMethod:
     def statement_count(self) -> int:
         return self.body_statement_count
 
+    @property
+    def exact_promotion_source_digest(self) -> str | None:
+        """Return the source identity only when exact promotion is safe."""
+
+        return None if self.promotion_hazards else self.exact_source_digest
+
     @cached_property
     def semantic_profile(self) -> CompactClassMethodSemanticProfile:
         statements = _compact_class_method_statements_from_sources(

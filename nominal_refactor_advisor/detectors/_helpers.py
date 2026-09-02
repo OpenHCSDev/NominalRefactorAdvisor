@@ -382,18 +382,6 @@ def _function_parameter_annotation_map(
     return annotations
 
 
-def _shared_ordered_suffix(
-    left_tokens: tuple[str, ...],
-    right_tokens: tuple[str, ...],
-) -> tuple[str, ...]:
-    shared_reversed: list[str] = []
-    for left_token, right_token in zip(reversed(left_tokens), reversed(right_tokens)):
-        if left_token != right_token:
-            break
-        shared_reversed.append(left_token)
-    return tuple(reversed(shared_reversed))
-
-
 def _nominal_authority_shapes_without_ancestors(
     modules: Sequence[ParsedModule],
 ) -> tuple[NominalAuthorityShape, ...]:
