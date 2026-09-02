@@ -9,7 +9,6 @@ from __future__ import annotations
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    CompactNominalWrapperAuthority,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import *
@@ -23,47 +22,6 @@ from ._runtime import (
     _CompactConcreteFamilyContext,
 )
 from ._substrate_support import _IGNORED_ANCESTOR_NAMES
-
-
-def _compact_pass_through_nominal_wrapper_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-) -> tuple[PassThroughNominalWrapperCandidate, ...]:
-    authorities_by_name: dict[str, list[CompactNominalWrapperAuthority]] = defaultdict(
-        list
-    )
-    for projection in projections:
-        for authority in projection.nominal_wrapper_authorities:
-            authorities_by_name[authority.class_name].append(authority)
-    candidates: list[PassThroughNominalWrapperCandidate] = []
-    for projection in projections:
-        for wrapper in projection.pass_through_nominal_wrappers:
-            authorities = authorities_by_name.get(wrapper.delegate_authority_name, ())
-            if not authorities:
-                continue
-            authority = authorities[0]
-            if not set(wrapper.forwarded_member_names) <= set(authority.method_names):
-                continue
-            candidates.append(
-                PassThroughNominalWrapperCandidate(
-                    file_path=wrapper.file_path,
-                    line=wrapper.line,
-                    subject_name=wrapper.class_name,
-                    name_family=wrapper.forwarded_member_names,
-                    delegate_field_name=wrapper.delegate_field_name,
-                    delegate_authority_file_path=authority.file_path,
-                    delegate_authority_name=authority.class_name,
-                    delegate_authority_line=authority.line,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.line,
-            item.class_name,
-            item.delegate_authority_name,
-        ),
-    )
 
 
 def _compact_manual_family_roster_candidates(
@@ -435,69 +393,6 @@ declare_candidate_rule_detector(
     detector_name="KeywordBagAdapterShellDetector",
     candidate_collector=_keyword_bag_adapter_candidates,
 )
-
-
-class PassThroughNominalWrapperDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
-    IssueDetector,
-):
-    finding_spec = high_confidence_spec(
-        PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Pass-through wrapper should reuse the existing nominal authority directly",
-        "A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers should use the existing authority directly.",
-        "direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
-        "a concrete class forwards an existing nominal contract member-for-member without adding new semantics",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
-    )
-
-    module_projection_family = CompactModuleClassProjectionFamily
-
-    def _findings_from_compact_projections(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _compact_pass_through_nominal_wrapper_candidates(
-                projections
-            )
-        ]
-
-    def _finding_for_candidate(
-        self, candidate: PassThroughNominalWrapperCandidate
-    ) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{candidate.class_name}` forwards members {candidate.forwarded_member_names} to "
-                f"`{candidate.delegate_authority_name}` through `{candidate.delegate_field_name}` without "
-                "adding any new invariant."
-            ),
-            (
-                SourceLocation(
-                    candidate.file_path, candidate.line, candidate.class_name
-                ),
-                SourceLocation(
-                    candidate.delegate_authority_file_path,
-                    candidate.delegate_authority_line,
-                    candidate.delegate_authority_name,
-                ),
-            ),
-            scaffold=(
-                f"# Delete `{candidate.class_name}` and type consumers against `{candidate.delegate_authority_name}` directly.\n"
-                f"{candidate.delegate_field_name}: {candidate.delegate_authority_name}"
-            ),
-            codemod_patch=(
-                f"# Remove `{candidate.class_name}` as a pass-through wrapper.\n"
-                f"# Accept `{candidate.delegate_authority_name}` directly anywhere the wrapper is only forwarding "
-                f"{candidate.forwarded_member_names}."
-            ),
-        )
 
 
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):

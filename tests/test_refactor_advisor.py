@@ -19603,23 +19603,14 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     assert "class PatternIdSpec" in (finding.scaffold or "")
 
 
-def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
+def test_preserves_nominal_identity_of_forwarding_wrapper(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\nclass ProbeRoute(ABC):\n    @abstractmethod\n    def generate(self, request):\n        raise NotImplementedError\n\n    @abstractmethod\n    def score(self, request, batch):\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ProbeRouteWitness:\n    route: ProbeRoute\n\n    def generate(self, request):\n        return self.route.generate(request)\n\n    def score(self, request, batch):\n        return self.route.score(request, batch)\n",
+        "\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\nclass ProbeRoute(ABC):\n    @abstractmethod\n    def generate(self, request):\n        raise NotImplementedError\n\n    @abstractmethod\n    def score(self, request, batch):\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ProbeRouteWitness:\n    route: ProbeRoute\n\n    def generate(self, request):\n        return self.route.generate(request)\n\n    def score(self, request, batch):\n        return self.route.score(request, batch)\n\n\ndef execute_witness(witness: ProbeRouteWitness, request, batch):\n    generated = witness.generate(request)\n    return generated, witness.score(request, batch)\n",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "pass_through_nominal_wrapper"
-        )
-    )
-    assert "ProbeRouteWitness" in finding.summary
-    assert "ProbeRoute" in finding.summary
-    assert "type consumers against `ProbeRoute` directly" in (finding.scaffold or "")
+    assert findings == []
 
 
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:

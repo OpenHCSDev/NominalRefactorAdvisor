@@ -7915,15 +7915,6 @@ class SubjectNameFunctionNameMixin(ABC):
 
 
 @dataclass(frozen=True)
-class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
-    delegate_field_name: str
-    delegate_authority_file_path: str
-    delegate_authority_name: str
-    delegate_authority_line: int
-    forwarded_member_names = AliasProperty[tuple[str, ...]]("name_family")
-
-
-@dataclass(frozen=True)
 class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
     method_name: str
     candidate_source_name: str

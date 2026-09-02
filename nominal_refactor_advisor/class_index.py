@@ -864,8 +864,6 @@ class CompactModuleClassProjection(
     latent_rosters: tuple["LatentRosterObservation", ...] = ()
     named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
     manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
-    nominal_wrapper_authorities: tuple["CompactNominalWrapperAuthority", ...] = ()
-    pass_through_nominal_wrappers: tuple["CompactPassThroughNominalWrapper", ...] = ()
     class_methods: tuple["CompactClassMethod", ...] = ()
 
     def header_core(self) -> "CompactModuleClassProjection":
@@ -910,28 +908,6 @@ class CompactModuleClassProjection(
                     f"{declaration_type.__name__}.{dataclass_field.name} has no default"
                 )
         return values
-
-
-@dataclass(frozen=True)
-class CompactNominalWrapperAuthority:
-    """Reusable authority member names in repository AST walk order."""
-
-    file_path: str
-    class_name: str
-    line: int
-    method_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class CompactPassThroughNominalWrapper:
-    """A locally proven forwarding shell awaiting its global authority join."""
-
-    file_path: str
-    class_name: str
-    line: int
-    delegate_field_name: str
-    delegate_authority_name: str
-    forwarded_member_names: tuple[str, ...]
 
 
 CompactMethodSemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
@@ -3117,22 +3093,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             ),
         )
         indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
-        all_class_nodes = tuple(
-            node
-            for node in _walk_nodes(parsed_module.module)
-            if isinstance(node, ast.ClassDef)
-        )
         class_methods = _compact_class_methods(
             parsed_module,
             indexed_class_nodes,
             method_names=(None if demand is None else demand.class_method_names),
-        )
-        (
-            nominal_wrapper_authorities,
-            pass_through_nominal_wrappers,
-        ) = _compact_nominal_wrapper_scope_facts(
-            parsed_module,
-            all_class_nodes,
         )
         classes = _compact_indexed_classes(
             parsed_module,
@@ -3180,8 +3144,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 manual_family_rosters=_compact_manual_family_rosters(parsed_module),
-                nominal_wrapper_authorities=nominal_wrapper_authorities,
-                pass_through_nominal_wrappers=pass_through_nominal_wrappers,
                 class_methods=class_methods,
             )
         ]
@@ -3898,187 +3860,6 @@ def _compact_manual_family_rosters(
             )
         )
     return tuple(observations)
-
-
-def _compact_nominal_wrapper_scope_facts(
-    parsed_module: ParsedModule,
-    class_nodes: tuple[ast.ClassDef, ...],
-) -> tuple[
-    tuple[CompactNominalWrapperAuthority, ...],
-    tuple[CompactPassThroughNominalWrapper, ...],
-]:
-    nominal_wrapper_authorities: list[CompactNominalWrapperAuthority] = []
-    pass_through_nominal_wrappers: list[CompactPassThroughNominalWrapper] = []
-    for node in class_nodes:
-        field_type_map = _compact_class_field_type_map(node)
-        if _compact_is_reusable_nominal_wrapper_authority(node):
-            nominal_wrapper_authorities.append(
-                CompactNominalWrapperAuthority(
-                    file_path=parsed_module.file_path,
-                    class_name=node.name,
-                    line=node.lineno,
-                    method_names=sorted_tuple(
-                        statement.name
-                        for statement in node.body
-                        if isinstance(
-                            statement, (ast.FunctionDef, ast.AsyncFunctionDef)
-                        )
-                    ),
-                )
-            )
-        wrapper = _compact_pass_through_nominal_wrapper(
-            parsed_module,
-            node,
-            field_type_map,
-        )
-        if wrapper is not None:
-            pass_through_nominal_wrappers.append(wrapper)
-    return (
-        tuple(nominal_wrapper_authorities),
-        tuple(pass_through_nominal_wrappers),
-    )
-
-
-def _compact_is_reusable_nominal_wrapper_authority(node: ast.ClassDef) -> bool:
-    if node.name.endswith("Detector"):
-        return False
-    return _is_abstract_class(node) or node.name.endswith(("Base", "Mixin", "Carrier"))
-
-
-def _compact_normalized_nominal_authority_name(annotation_text: str) -> str:
-    text = annotation_text.strip("\"'")
-    text = re.split("\\s*\\|\\s*", text, maxsplit=1)[0]
-    text = re.split("[\\[,]", text, maxsplit=1)[0]
-    return text.rsplit(".", 1)[-1].strip()
-
-
-def _compact_forwarded_parameter_names(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ...]:
-    return tuple(
-        argument.arg
-        for argument in (
-            *method.args.posonlyargs,
-            *method.args.args[1:],
-            *method.args.kwonlyargs,
-        )
-    )
-
-
-def _compact_call_forwards_parameters(
-    call: ast.Call,
-    parameter_names: tuple[str, ...],
-) -> bool:
-    parameter_set = frozenset(parameter_names)
-
-    def forwards_argument(node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return node.id in parameter_set
-        return bool(
-            isinstance(node, ast.Starred)
-            and isinstance(node.value, ast.Name)
-            and node.value.id in parameter_set
-        )
-
-    return all(forwards_argument(argument) for argument in call.args) and all(
-        keyword.arg is None
-        or (
-            keyword.arg in parameter_set
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == keyword.arg
-        )
-        for keyword in call.keywords
-    )
-
-
-def _compact_forwarded_nominal_member_name(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-    delegate_field_name: str,
-) -> str | None:
-    body = _trim_leading_docstring(list(method.body))
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-        return None
-    returned = body[0].value
-    is_property = any(
-        _terminal_reference_name(decorator) == "property"
-        for decorator in method.decorator_list
-    )
-    if is_property:
-        if not (
-            isinstance(returned, ast.Attribute)
-            and returned.attr == method.name
-            and isinstance(returned.value, ast.Attribute)
-            and returned.value.attr == delegate_field_name
-            and isinstance(returned.value.value, ast.Name)
-            and returned.value.value.id == "self"
-        ):
-            return None
-        return method.name
-    if not (
-        isinstance(returned, ast.Call)
-        and isinstance(returned.func, ast.Attribute)
-        and returned.func.attr == method.name
-        and isinstance(returned.func.value, ast.Attribute)
-        and returned.func.value.attr == delegate_field_name
-        and isinstance(returned.func.value.value, ast.Name)
-        and returned.func.value.value.id == "self"
-        and _compact_call_forwards_parameters(
-            returned,
-            _compact_forwarded_parameter_names(method),
-        )
-    ):
-        return None
-    return method.name
-
-
-def _compact_pass_through_nominal_wrapper(
-    parsed_module: ParsedModule,
-    node: ast.ClassDef,
-    field_type_map: tuple[tuple[str, str], ...],
-) -> CompactPassThroughNominalWrapper | None:
-    if _is_abstract_class(node) or len(field_type_map) != 1:
-        return None
-    delegate_field_name, annotation_text = field_type_map[0]
-    delegate_authority_name = _compact_normalized_nominal_authority_name(
-        annotation_text
-    )
-    if not delegate_authority_name:
-        return None
-    declared_base_names = {
-        terminal_name
-        for base in node.bases
-        if (terminal_name := _terminal_reference_name(base)) is not None
-    }
-    if delegate_authority_name in declared_base_names:
-        return None
-    forwarded_member_names: list[str] = []
-    for statement in _trim_leading_docstring(list(node.body)):
-        if isinstance(statement, (ast.AnnAssign, ast.Assign)):
-            continue
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if statement.name == "__init__":
-                continue
-            if statement.name.startswith("__") and statement.name.endswith("__"):
-                return None
-            forwarded_member_name = _compact_forwarded_nominal_member_name(
-                statement,
-                delegate_field_name,
-            )
-            if forwarded_member_name is None:
-                return None
-            forwarded_member_names.append(forwarded_member_name)
-            continue
-        return None
-    if len(forwarded_member_names) < 2:
-        return None
-    return CompactPassThroughNominalWrapper(
-        file_path=parsed_module.file_path,
-        class_name=node.name,
-        line=node.lineno,
-        delegate_field_name=delegate_field_name,
-        delegate_authority_name=delegate_authority_name,
-        forwarded_member_names=sorted_tuple(set(forwarded_member_names)),
-    )
 
 
 def _compact_manual_family_roster_member(

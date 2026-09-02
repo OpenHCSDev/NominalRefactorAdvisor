@@ -5231,70 +5231,6 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     assert concrete_context_calls == 1
 
 
-def test_compact_pass_through_nominal_wrapper_preserves_semantics(
-    tmp_path: Path,
-) -> None:
-    for deleted_shadow in (
-        "_normalized_authority_name",
-        "_is_self_delegate_attribute",
-        "_forwarded_delegate_property_name",
-        "_forwarded_delegate_call",
-        "_call_forwards_parameters",
-        "_forwarded_delegate_member_name",
-        "_pass_through_nominal_wrapper_candidates_for_class",
-        "_pass_through_nominal_wrapper_candidates",
-    ):
-        assert not hasattr(helper_detectors, deleted_shadow)
-
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "authority.py").write_text(
-        "from abc import ABC\n"
-        "from dataclasses import dataclass\n"
-        "@dataclass\n"
-        "class JobSpecBase(ABC):\n"
-        "    name: str\n"
-        "    priority: int\n"
-        "    def start(self, value): return value\n"
-        "    def stop(self, value): return value\n",
-        encoding="utf-8",
-    )
-    (package_root / "duplicate.py").write_text(
-        "from dataclasses import dataclass\n"
-        "from .authority import JobSpecBase\n"
-        "@dataclass\n"
-        "class JobSpecCopy:\n"
-        "    name: str\n"
-        "    priority: int\n"
-        "class JobSpecWrapper:\n"
-        "    delegate: JobSpecBase\n"
-        "    def start(self, value): return self.delegate.start(value)\n"
-        "    def stop(self, value): return self.delegate.stop(value)\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    projections = (
-        surface_detectors.PassThroughNominalWrapperDetector.compact_module_projections(
-            modules
-        )
-    )
-    compact_wrapper_candidates = (
-        surface_detectors._compact_pass_through_nominal_wrapper_candidates(projections)
-    )
-    assert len(compact_wrapper_candidates) == 1
-    wrapper_candidate = compact_wrapper_candidates[0]
-    assert wrapper_candidate.class_name == "JobSpecWrapper"
-    assert wrapper_candidate.delegate_field_name == "delegate"
-    assert wrapper_candidate.delegate_authority_name == "JobSpecBase"
-    assert wrapper_candidate.forwarded_member_names == ("start", "stop")
-    wrapper_detector = surface_detectors.PassThroughNominalWrapperDetector()
-    assert wrapper_detector._findings_from_compact_projections(projections, config) == [
-        wrapper_detector._finding_for_candidate(candidate)
-        for candidate in compact_wrapper_candidates
-    ]
-
-
 def _write_compact_method_family_fixture(package_root: Path) -> None:
     package_root.mkdir()
     (package_root / "workers.py").write_text(
@@ -6146,9 +6082,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert surface_detectors.ManualFamilyRosterDetector in (
-        partition.compact_global_detector_types
-    )
-    assert surface_detectors.PassThroughNominalWrapperDetector in (
         partition.compact_global_detector_types
     )
     assert structural_detectors.SemanticOverlapMethodDetector in (
