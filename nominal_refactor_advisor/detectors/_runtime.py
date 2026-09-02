@@ -398,14 +398,6 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
                         f"{field_names} as untyped `object`."
                     ),
                     evidence,
-                    scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        "class BoundaryRuntime:\n"
-                        "    def execute(self, request: BoundaryRequest) -> BoundaryResult: ...\n\n"
-                        "@dataclass(frozen=True)\n"
-                        "class Request:\n"
-                        "    boundary_runtime: BoundaryRuntime"
-                    ),
                     codemod_patch=(
                         f"# Replace private object boundary fields on `{class_name}` "
                         "with a named typed authority/ABC field. Do not pass "

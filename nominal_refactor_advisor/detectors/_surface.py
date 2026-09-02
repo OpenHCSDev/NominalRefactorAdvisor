@@ -205,9 +205,6 @@ class FragmentedFamilyAuthorityDetector(
                 f"Tables {', '.join(authority_candidate.mapping_names)} split one `{authority_candidate.key_family_name}` metadata family across {len(authority_candidate.mapping_names)} authorities."
             ),
             evidence[:6],
-            scaffold=(
-                f"@dataclass(frozen=True)\nclass {authority_candidate.key_family_name}Spec:\n    key: {authority_candidate.key_family_name}\n    priority: int\n    dependencies: tuple[object, ...] = ()\n    synergy_with: tuple[object, ...] = ()\n    builder: object | None = None"
-            ),
             codemod_patch=(
                 f"# Collapse {authority_candidate.mapping_names} into one `{authority_candidate.key_family_name}`-keyed spec table.\n"
                 f"# Move shared keys {authority_candidate.shared_keys} into one authoritative record instead of parallel dicts."

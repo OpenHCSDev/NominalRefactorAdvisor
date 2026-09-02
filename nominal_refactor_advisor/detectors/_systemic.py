@@ -1409,9 +1409,6 @@ class DerivedWrapperSpecShadowDetector(
                 f"then feeds generated wrappers via {builder_preview}."
             ),
             shadow_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass ExecutionSpec:\n    key: object\n    runner: object\n    wrapper_name: str | None = None\n    wrapper_defaults: dict[str, object] = field(default_factory=dict)\n\ndef build_wrapper(spec: ExecutionSpec): ...\n"
-            ),
             codemod_patch=(
                 f"# Remove parallel family `{shadow_candidate.derived_family_name}`.\n# Move `{', '.join(shadow_candidate.extra_field_names) or 'wrapper metadata'}` onto the authoritative `{shadow_candidate.primary_constructor_name}` records and derive wrappers directly from that family."
             ),

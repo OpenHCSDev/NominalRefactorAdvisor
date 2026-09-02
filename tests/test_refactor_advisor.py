@@ -8835,7 +8835,10 @@ def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
     assert "EXECUTION_SPECS" in finding.summary
     assert "execution" in finding.summary
     assert "build_wrapper" in finding.summary
-    assert "wrapper_name" in (finding.scaffold or "")
+    assert finding.scaffold is None
+    assert "wrapper metadata" not in (finding.codemod_patch or "")
+    assert "WRAPPER_RULES" in (finding.codemod_patch or "")
+    assert "ExecutionSpec" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
@@ -10039,7 +10042,7 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "UnsafeRequest" in finding.summary
     assert "_handler_impl" in finding.summary
     assert "SafeRequest" not in finding.summary
-    assert "Protocol" not in (finding.scaffold or "")
+    assert finding.scaffold is None
     assert "protocol" not in (finding.codemod_patch or "").lower()
 
 
@@ -19594,7 +19597,9 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     )
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
-    assert "class PatternIdSpec" in (finding.scaffold or "")
+    assert finding.scaffold is None
+    assert "PatternId" in (finding.codemod_patch or "")
+    assert "authoritative record" in (finding.codemod_patch or "")
 
 
 def test_preserves_nominal_identity_of_forwarding_wrapper(tmp_path: Path) -> None:
