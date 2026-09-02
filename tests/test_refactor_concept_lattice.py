@@ -403,7 +403,12 @@ def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
 
     assert synthesizer_type.recipe_id_suffix == "delete-inherited-autoregister-config"
     assert "already inherited" in synthesizer_type.recipe_reason
-    assert "action_keys" not in codemod.ClassAssignmentDeletionPlan.__dataclass_fields__
+    assert issubclass(
+        codemod.DeleteInheritedAutoRegisterConfigurationOperation,
+        codemod.SourceReprovedOperation,
+    )
+    assert not hasattr(codemod, "ClassAssignmentDeletionPlan")
+    assert not hasattr(codemod, "ClassAssignmentDeletionFindingRecipeSynthesizer")
     assert not hasattr(codemod, "RecipeMetadataAuthority")
     assert not hasattr(codemod, "SharedRecipeIdSuffixRecipeReasonBase")
 

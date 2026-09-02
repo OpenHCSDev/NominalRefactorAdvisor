@@ -65,6 +65,7 @@ from .class_index import (
     ClassHeaderSourceSpan,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
+    CompactClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
@@ -142,6 +143,7 @@ from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     AUTOREGISTER_META_NAME,
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     REGISTRY_ATTRIBUTE_NAME,
     REGISTRY_KEY_ATTRIBUTE_NAME,
     SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
@@ -5375,6 +5377,48 @@ class DeleteClassAssignmentsOperation(
                 or f"Delete class assignments {self.assignment_names!r}.",
             )
             for assignment in self.selected_assignments(target_digest, node)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteInheritedAutoRegisterConfigurationOperation(SourceReprovedOperation):
+    """Delete only configuration currently proved identical to an inherited value."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _target_id, target, node = self.target_node_from_context(snapshot)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError("Inherited AutoRegister configuration requires a class")
+        class_index = CompactClassFamilyIndex.from_modules(snapshot.parsed_modules)
+        class_symbol = class_index.symbol_for(
+            file_path=target.file_path,
+            qualname=target.qualname,
+        )
+        indexed_class = (
+            None if class_symbol is None else class_index.class_for(class_symbol)
+        )
+        if indexed_class is None or not indexed_class.declares_autoregister_meta:
+            raise ValueError(
+                "Target no longer declares an AutoRegisterMeta family authority"
+            )
+        repeated_names = class_index.assignments_repeated_from_ancestors(
+            indexed_class.symbol,
+            INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
+        )
+        if not repeated_names:
+            raise ValueError(
+                "Target has no AutoRegister configuration repeated from an ancestor"
+            )
+        return DeleteClassAssignmentsOperation(
+            target=SourceRewriteTarget(target_id=target.target_id),
+            assignment_names=repeated_names,
+            rationale=self.rationale,
+        ).source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
         )
 
 
@@ -15022,7 +15066,6 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
         return self.executable_evaluation(recipe)
 
 
-
 class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
@@ -15074,141 +15117,9 @@ class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
         return self.executable_evaluation(recipe)
 
 
-@dataclass(frozen=True)
-class ClassAssignmentDeletionPlan:
-    """Executable deletion facts for one class-assignment finding."""
-
-    assignment_names: tuple[str, ...]
-    class_subject: str
-    source_path: str
-
-    @classmethod
-    def from_parts(
-        cls,
-        action_keys: tuple[FindingRecipeActionKey, ...],
-        assignment_names: tuple[str, ...],
-        class_subject: str | None,
-    ) -> "ClassAssignmentDeletionPlan | None":
-        if not action_keys or class_subject is None or not assignment_names:
-            return None
-        source_paths = tuple(
-            dict.fromkeys(action_key.file_path for action_key in action_keys)
-        )
-        if len(source_paths) != 1:
-            return None
-        return cls(
-            assignment_names=assignment_names,
-            class_subject=class_subject,
-            source_path=source_paths[0],
-        )
-
-    def is_applicable_to(self, context: CodemodSelectorContext) -> bool:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(self.source_path,),
-            qualnames=(self.class_subject,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return False
-        target_id = target_ids[0]
-        operation = self.deletion_operation()
-        try:
-            operation.selected_assignments(
-                context.source_index.target_by_id[target_id],
-                context.ast_target_nodes_by_id[target_id],
-            )
-        except ValueError:
-            return False
-        return True
-
-    def deletion_operation(self) -> DeleteClassAssignmentsOperation:
-        return DeleteClassAssignmentsOperation(
-            target=SourceRewriteTarget(
-                qualname=self.class_subject, file_path=self.source_path
-            ),
-            assignment_names=self.assignment_names,
-            rationale="",
-        )
-
-
-class ClassAssignmentDeletionFindingRecipeSynthesizer(
-    FindingRecipeSynthesizer,
-    ABC,
-):
-    """Build class-assignment deletion recipes from finding evidence."""
-
-    recipe_id_suffix: ClassVar[str]
-    recipe_reason: ClassVar[str]
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        plan = self.deletion_plan_for_finding(finding)
-        if plan is None:
-            return self.rejected_evaluation(
-                "class-assignment deletion requires one class target and declared assignments"
-            )
-        if context is not None and not plan.is_applicable_to(context):
-            return self.rejected_evaluation(
-                "class-assignment deletion target does not declare every selected assignment"
-            )
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-            reason=self.recipe_reason,
-        ).with_operation(plan.deletion_operation())
-        return self.executable_evaluation(recipe)
-
-    def deletion_plan_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> ClassAssignmentDeletionPlan | None:
-        return ClassAssignmentDeletionPlan.from_parts(
-            self.action_keys_for_finding(finding),
-            self.assignment_names_for_finding(finding),
-            self.class_subject_for_finding(finding),
-        )
-
-    @abstractmethod
-    def assignment_names_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[str, ...]:
-        raise NotImplementedError
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        assignment_names = self.assignment_names_for_finding(finding)
-        if not assignment_names:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (
-                    evidence.file_path,
-                    FindingRecipeActionKey.child_subject(
-                        evidence.symbol,
-                        assignment_name,
-                    ),
-                )
-                for assignment_name in assignment_names
-            ),
-        )
-
-    @staticmethod
-    def class_subject_for_finding(finding: RefactorFinding) -> str | None:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        return None if evidence is None else evidence.symbol
-
-
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
-    ClassAssignmentDeletionFindingRecipeSynthesizer,
+    FindingEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
     AutoRegisterConcept,
 ):
     """Delete AutoRegister protocol fields repeated from inherited bases."""
@@ -15219,11 +15130,48 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
         "from a nominal base."
     )
 
-    def assignment_names_for_finding(
+    def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
-    ) -> tuple[str, ...]:
-        return finding.metrics.plan_field_names
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "inherited AutoRegister cleanup requires source context"
+            )
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return self.rejected_evaluation(
+                "inherited AutoRegister cleanup lacks class evidence"
+            )
+        try:
+            snapshot = context.execution_snapshot()
+            target_ids = SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.CLASS,),
+                file_paths=(evidence.file_path,),
+                qualnames=(evidence.symbol,),
+            ).target_ids(snapshot)
+            if len(target_ids) != 1:
+                raise ValueError(
+                    "Inherited AutoRegister evidence must resolve one exact class"
+                )
+            target = snapshot.source_index.target_by_id[target_ids[0]]
+            operation = DeleteInheritedAutoRegisterConfigurationOperation(
+                target=SourceRewriteTarget(target_id=target.target_id),
+                rationale="",
+            )
+            operation.source_edits_from_snapshot(snapshot)
+        except ValueError as error:
+            return self.rejected_evaluation(str(error))
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+                reason=self.recipe_reason,
+            )
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(target))
+            .with_operation(operation)
+        )
+        return self.executable_evaluation(recipe)
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import Callable, ClassVar, NamedTuple, Self, TypeAlias
+from typing import Callable, ClassVar, Iterable, NamedTuple, Self, TypeAlias
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from .ast_tools import (
@@ -32,6 +32,7 @@ from .ast_tools import (
     PythonSourcePathPolicy,
     SourceModule,
     _walk_nodes,
+    collect_family_items,
     module_syntax_index,
     named_function_nodes,
 )
@@ -1816,6 +1817,17 @@ class CompactClassFamilyIndex:
     ancestors_by_symbol: dict[str, tuple[str, ...]]
     descendants_by_symbol: dict[str, tuple[str, ...]]
 
+    @classmethod
+    def from_modules(
+        cls,
+        modules: tuple[ParsedModule, ...],
+    ) -> Self:
+        """Collect and join the complete compact class projection once."""
+
+        return CompactClassFamilyIndexBuilder(
+            CompactModuleClassProjectionFamily.collect_modules(modules)
+        ).build()
+
     def class_for(self, symbol: str) -> CompactIndexedClass | None:
         return self.classes_by_symbol.get(symbol)
 
@@ -1827,6 +1839,32 @@ class CompactClassFamilyIndex:
 
     def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
         return self.ancestors_by_symbol.get(class_symbol, ())
+
+    def assignments_repeated_from_ancestors(
+        self,
+        class_symbol: str,
+        assignment_names: Iterable[str],
+    ) -> tuple[str, ...]:
+        """Project direct assignments whose exact values already come from a base."""
+
+        indexed_class = self.class_for(class_symbol)
+        if indexed_class is None:
+            return ()
+        ancestors = tuple(
+            ancestor
+            for ancestor_symbol in self.ancestor_symbols(class_symbol)
+            if (ancestor := self.class_for(ancestor_symbol)) is not None
+        )
+        return tuple(
+            assignment_name
+            for assignment_name in assignment_names
+            if (expression := indexed_class.assignments_by_name.get(assignment_name))
+            is not None
+            if any(
+                ancestor.assignments_by_name.get(assignment_name) == expression
+                for ancestor in ancestors
+            )
+        )
 
     @cached_property
     def product_authority_resolutions_by_symbol(
@@ -3100,6 +3138,23 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         parsed_module: ParsedModule,
     ) -> list[CompactModuleClassProjection]:
         return cls._collect(parsed_module, None)
+
+    @classmethod
+    def collect_modules(
+        cls,
+        parsed_modules: Iterable[ParsedModule],
+    ) -> tuple[CompactModuleClassProjection, ...]:
+        """Collect the single module projection declared by this family."""
+
+        projections: list[CompactModuleClassProjection] = []
+        for parsed_module in parsed_modules:
+            module_projections = collect_family_items(parsed_module, cls)
+            if len(module_projections) != 1:
+                raise ValueError(
+                    "Compact class projection family must emit one item per module"
+                )
+            projections.append(module_projections[0])
+        return tuple(projections)
 
     @classmethod
     def collect_demanded(

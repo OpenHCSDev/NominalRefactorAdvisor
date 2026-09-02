@@ -28,6 +28,9 @@ from ..codemod import (
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
 from ..native_syntax import NativePythonSyntaxIndex
+from ..registry_identity import (
+    INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
+)
 from ..taxonomy import CapabilityTag, ObservationTag
 
 from ._base import *
@@ -1858,10 +1861,11 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            if not self._declares_autoregister_meta(indexed_class):
+            if not indexed_class.declares_autoregister_meta:
                 continue
-            repeated_fields = self._repeated_inherited_fields(
-                class_index, indexed_class
+            repeated_fields = class_index.assignments_repeated_from_ancestors(
+                indexed_class.symbol,
+                INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
             )
             if not repeated_fields:
                 continue
@@ -1887,46 +1891,6 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
                 )
             )
         return findings
-
-    @staticmethod
-    def _repeated_inherited_fields(
-        class_index: CompactClassFamilyIndex,
-        indexed_class: CompactIndexedClass,
-    ) -> tuple[str, ...]:
-        protocol_fields = (
-            "__key_extractor__",
-            "__registry_key__",
-            "__skip_if_no_key__",
-        )
-        direct_assignments = indexed_class.assignments_by_name
-        repeated: list[str] = []
-        for field_name in protocol_fields:
-            current_text = direct_assignments.get(field_name)
-            if current_text is None:
-                continue
-            for ancestor_symbol in class_index.ancestor_symbols(indexed_class.symbol):
-                ancestor = class_index.class_for(ancestor_symbol)
-                if ancestor is None:
-                    continue
-                ancestor_text = ancestor.assignments_by_name.get(field_name)
-                if ancestor_text is None:
-                    continue
-                if ancestor_text == current_text:
-                    repeated.append(field_name)
-                    break
-        return tuple(repeated)
-
-    @staticmethod
-    def _declares_autoregister_meta(indexed_class: CompactIndexedClass) -> bool:
-        return any(
-            metaclass_name == "AutoRegisterMeta"
-            or metaclass_name.endswith("AutoRegisterMeta")
-            or HELPER_SUPPORT_PROJECTION_AUTHORITY.registration_authority_base_name(
-                metaclass_name
-            )
-            or ("Registered" in metaclass_name and metaclass_name.endswith("Meta"))
-            for metaclass_name in indexed_class.metaclass_names
-        )
 
 
 _EXPLICIT_CLASS_ORDER_AXIS_NAMES = ("priority", "precedence", "rank", "order")
@@ -1989,9 +1953,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            if not InheritedAutoRegisterConfigBoilerplateDetector._declares_autoregister_meta(
-                indexed_class
-            ):
+            if not indexed_class.declares_autoregister_meta:
                 continue
             order_axis_sites = self._order_axis_sites(class_index, indexed_class)
             order_axis_names = tuple(

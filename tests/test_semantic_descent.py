@@ -1324,16 +1324,76 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     )
     assert plan.records[0].refactor_concept == "auto_register"
     assert len(operations) == 1
-    assert operations[0]["assignment_names"] == (
-        "__key_extractor__",
-        "__registry_key__",
-        "__skip_if_no_key__",
+    assert set(operations[0]) == {"operation", "target_id", "rationale"}
+    assert operations[0]["operation"] == (
+        "delete_inherited_auto_register_configuration"
     )
-    assert operations[0]["operation"] == "delete_class_assignments"
+    assert operations[0]["target_id"]
     assert rewritten.count("    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE") == 1
     assert rewritten.count("    __key_extractor__ = class_name_registry_key") == 1
     assert rewritten.count("    __skip_if_no_key__ = True") == 1
     assert simulation.is_clean is True
+
+
+def test_inherited_autoregister_config_replay_reproves_ancestor_values(
+    tmp_path: Path,
+) -> None:
+    package_path = tmp_path / "pkg"
+    package_path.mkdir()
+    base_path = package_path / "base.py"
+    base_path.write_text(
+        "class RegisteredStrategy:\n"
+        "    __registry_key__ = 'kind'\n"
+        "    __skip_if_no_key__ = True\n",
+        encoding="utf-8",
+    )
+    strategy_path = package_path / "strategy.py"
+    strategy_path.write_text(
+        "from metaclass_registry import AutoRegisterMeta\n"
+        "from .base import RegisteredStrategy\n"
+        "\n"
+        "class Strategy(RegisteredStrategy, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = 'kind'\n"
+        "    __skip_if_no_key__ = True\n"
+        "\n"
+        "    def run(self):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    initial_modules = parse_python_modules(tmp_path)
+    finding = next(
+        finding
+        for finding in InheritedAutoRegisterConfigBoilerplateDetector().detect(
+            initial_modules,
+            DetectorConfig(),
+        )
+        if finding.detector_id == "inherited_autoregister_config_boilerplate"
+    )
+    initial_snapshot = CodemodSourceSnapshot.from_modules(
+        initial_modules,
+        (finding,),
+    )
+    document_payload = initial_snapshot.plan_from_findings(
+        (finding,)
+    ).document.to_dict()
+
+    base_path.write_text(
+        "class RegisteredStrategy:\n"
+        "    __registry_key__ = 'strategy_kind'\n"
+        "    __skip_if_no_key__ = False\n",
+        encoding="utf-8",
+    )
+    current_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="no AutoRegister configuration repeated from an ancestor",
+    ):
+        CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
+            current_snapshot
+        )
 
 
 def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(

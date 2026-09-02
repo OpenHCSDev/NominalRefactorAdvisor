@@ -573,10 +573,7 @@ class ClosedParameterConveyorComponentBuilder:
 
         return cls.from_projections(
             tuple(compact_product_flow_projection(module) for module in modules),
-            tuple(
-                CompactModuleClassProjectionFamily.collect(module)[0]
-                for module in modules
-            ),
+            CompactModuleClassProjectionFamily.collect_modules(modules),
         )
 
     @cached_property

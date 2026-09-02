@@ -255,10 +255,7 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
     @classmethod
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
         return cls.from_projections(
-            tuple(
-                CompactModuleClassProjectionFamily.collect(module)[0]
-                for module in modules
-            )
+            CompactModuleClassProjectionFamily.collect_modules(modules)
         )
 
     @cached_property
@@ -624,10 +621,7 @@ class ParallelMirroredLeafFamilyComponentBuilder:
     @classmethod
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
         return cls.from_projections(
-            tuple(
-                CompactModuleClassProjectionFamily.collect(module)[0]
-                for module in modules
-            )
+            CompactModuleClassProjectionFamily.collect_modules(modules)
         )
 
     @cached_property
