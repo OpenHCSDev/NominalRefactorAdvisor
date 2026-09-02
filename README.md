@@ -3,9 +3,8 @@
 AST-driven refactoring advisor for nominal architecture, SSOT recovery, and
 anti-duck-typing cleanup.
 
-The tool emits refactoring findings backed by canonical patterns, architectural
-prescriptions, first moves, and stronger scaffolds where the pattern supports
-them.
+The tool emits evidence-backed refactoring findings, architectural direction,
+and proof-gated executable recipes where the source establishes a safe target.
 
 Run locally with:
 

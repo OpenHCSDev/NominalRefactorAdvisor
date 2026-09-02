@@ -6504,11 +6504,11 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
     assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
     assert finding.confidence == "high"
     assert finding.certification == "strong_heuristic"
+    assert "scaffold" not in {field_item.name for field_item in fields(RefactorFinding)}
     assert finding.evidence == (
         SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
         SourceLocation("<lean-env>", 0, "Leverage.Beta"),
     )
-    assert finding.scaffold == "Introduce one theorem schema."
 
 
 def test_planner_uses_stable_identity_order_not_local_savings(
@@ -6891,7 +6891,6 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
         "semantic",
         "semantic family pays rent",
         (SourceLocation("pkg/mod.py", 10, "Alpha"),),
-        scaffold="class Schema: ...",
         compression_certificate=certificate,
     )
     loc_finding = spec.build(
@@ -6905,7 +6904,6 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
         "unproven",
         "manual helper should move",
         (SourceLocation("pkg/mod.py", 30, "helper"),),
-        scaffold="def helper(): ...",
     )
 
     economics = RefactorEvidenceEconomics.from_findings_and_plans(
@@ -7062,7 +7060,6 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
         "unproven_detector",
         "production helper move has no payoff proof",
         (SourceLocation("pkg/mod.py", 12, "helper"),),
-        scaffold="def helper(): ...",
     )
     package_scan = _test_scan_economics_proof(
         _PACKAGE_SCAN_LABEL,
@@ -8618,7 +8615,6 @@ def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
     assert "context / session" in finding.summary
     assert "declare" in finding.summary
     assert "validate" in finding.summary
-    assert "OperationContext" in (finding.scaffold or "")
 
 
 def test_single_enum_subset_does_not_claim_factoring_authority(tmp_path: Path) -> None:
@@ -8653,10 +8649,6 @@ def test_detects_residual_closed_axis_indirection(tmp_path: Path) -> None:
     assert "DIRECTION_READERS" in finding.summary
     assert "Direction" in finding.summary
     assert "INPUT" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "class AxisPolicy(ABC, metaclass=AutoRegisterMeta)" in (
-        finding.scaffold or ""
-    )
 
 
 def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
@@ -8677,8 +8669,6 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
     assert "state" in case_finding.summary
     assert "ReadyState" in case_finding.summary
     assert "State" in case_finding.summary
-    assert case_finding.scaffold is not None
-    assert "class StateFamily(ABC)" in case_finding.scaffold
 
 
 def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None:
@@ -8713,10 +8703,6 @@ def test_variant_method_detector_places_execution_on_nominal_variant(
     )
 
     assert len(findings) == 1
-    scaffold = findings[0].scaffold or ""
-    assert "class OperationVariant(ABC)" in scaffold
-    assert "return variant.apply(self, request)" in scaffold
-    assert "match request.operation" not in scaffold
     assert "caller-side branching" in (findings[0].codemod_patch or "")
 
 
@@ -8812,9 +8798,6 @@ def test_detects_closed_constant_selector(tmp_path: Path) -> None:
     assert any(("build_runner" in finding.summary for finding in selector_findings))
     assert any(("Runner(...)" in finding.summary for finding in selector_findings))
     assert any(("active_contract" in finding.summary for finding in selector_findings))
-    assert any(
-        ("SelectorRule" in (finding.scaffold or "") for finding in selector_findings)
-    )
 
 
 def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
@@ -8835,7 +8818,6 @@ def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
     assert "EXECUTION_SPECS" in finding.summary
     assert "execution" in finding.summary
     assert "build_wrapper" in finding.summary
-    assert finding.scaffold is None
     assert "wrapper metadata" not in (finding.codemod_patch or "")
     assert "WRAPPER_RULES" in (finding.codemod_patch or "")
     assert "ExecutionSpec" in (finding.codemod_patch or "")
@@ -8858,7 +8840,6 @@ def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
     assert "LazyPipelineConfig" in finding.summary
     assert "PipelineConfig" in finding.summary
     assert "batch_size" in finding.summary
-    assert "make_lazy_dataclass" in (finding.scaffold or "")
     assert "dataclasses.fields(PipelineConfig)" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
@@ -9016,7 +8997,6 @@ def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
     assert "choose" in finding.summary
     assert "VALUE_RULES" in finding.summary
     assert "HANDLER_RULES" in finding.summary
-    assert "KeyedRecordTable" in (finding.scaffold or "")
 
 
 def test_detects_cross_module_axis_shadow_family(tmp_path: Path) -> None:
@@ -9041,9 +9021,6 @@ def test_detects_cross_module_axis_shadow_family(tmp_path: Path) -> None:
     assert "Mode" in finding.summary
     assert "ModePolicy" in finding.summary
     assert "ModeRunner.for_mode" in finding.summary
-    assert "AxisPolicy" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "return cls.__registry__[key]()" in (finding.scaffold or "")
 
 
 def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
@@ -9068,9 +9045,6 @@ def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
     assert "Mode" in finding.summary
     assert "ModeSpecPolicy" in finding.summary
     assert "ModeAssemblyPolicy" in finding.summary
-    assert "AxisPolicy" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "return cls.__registry__[key]()" in (finding.scaffold or "")
 
 
 def test_detects_premature_registry_infrastructure(tmp_path: Path) -> None:
@@ -9128,7 +9102,6 @@ def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
     assert "ModeRunner" in finding.summary
     assert "mature injective registry" in finding.summary
     assert "AutoRegisterMeta" in finding.summary
-    assert "InjectiveRegistryFamily" in (finding.scaffold or "")
 
 
 def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
@@ -9335,8 +9308,6 @@ def test_detects_repeated_registry_projection_policy_hint_authority(
     assert "PUBLIC_MODE_TYPES" in finding.summary
     assert "config_choices:key_roster" in finding.summary
     assert "config_choices:key_to_type_index" in finding.summary
-    assert "ProjectionPolicy" in (finding.scaffold or "")
-    assert "REGISTRY_PROJECTION_SPECS" in (finding.scaffold or "")
 
 
 def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
@@ -9356,8 +9327,6 @@ def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
     assert "Mode" in finding.summary
     assert "MODE_CONFIGS" in finding.summary
     assert "ModeRunner" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "build_axis_rows" in (finding.scaffold or "")
 
 
 def test_detects_callable_method_axis_registry_as_strategy_family(
@@ -9377,8 +9346,6 @@ def test_detects_callable_method_axis_registry_as_strategy_family(
     assert "SPATIAL_BIN_OPERATIONS" in finding.summary
     assert "SpatialBinMethod" in finding.summary
     assert "hardcoded strategy family" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__registry__[method].run" in (finding.scaffold or "")
 
 
 def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
@@ -9398,7 +9365,6 @@ def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
     assert "item_for_type" in finding.summary
     assert "item_for_kind" in finding.summary
     assert "_registered_items()" in finding.summary
-    assert "ITEM_BY_KEY" in (finding.scaffold or "")
 
 
 def test_derived_query_index_keeps_cls_relative_authorities_distinct(
@@ -9454,8 +9420,6 @@ def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
     assert "ROUTE_REGISTRY" in finding.summary
     assert "RouteKind" in finding.summary
     assert "route_kind" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "AXIS_BY_KEY" in (finding.scaffold or "")
 
 
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
@@ -9474,7 +9438,6 @@ def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
     )
     assert "AlphaSpec" in finding.summary
     assert "BetaSpec" in finding.summary
-    assert "StructuralRecordBase" in (finding.scaffold or "")
 
 
 def test_inherited_dataclass_field_forwarding_is_semantic_descent(
@@ -9543,7 +9506,6 @@ def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
     )
     assert "has_alpha_chain" in finding.summary
     assert "has_beta_chain" in finding.summary
-    assert "ValidationCasePolicy" in (finding.scaffold or "")
 
 
 def test_detects_repeated_validate_shape_guard_family(tmp_path: Path) -> None:
@@ -9562,7 +9524,6 @@ def test_detects_repeated_validate_shape_guard_family(tmp_path: Path) -> None:
     )
     assert "AnchoredArray.validate" in finding.summary
     assert "IndexedArray.validate" in finding.summary
-    assert "ShapeValidatedRecord" in (finding.scaffold or "")
 
 
 def test_detects_cross_module_repeated_validate_shape_guard_family(
@@ -9589,7 +9550,6 @@ def test_detects_cross_module_repeated_validate_shape_guard_family(
         )
     )
     assert "repeat 4 shared shape/ndim guard forms" in finding.summary
-    assert "ShapeValidatedRecord" in (finding.scaffold or "")
 
 
 def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
@@ -9622,7 +9582,6 @@ def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
         )
     )
     assert "repeat 4 shared shape/ndim guard forms" in finding.summary
-    assert "ShapeValidatedRecord" in (finding.scaffold or "")
 
 
 def test_preserves_template_method_implementation_inheritance(tmp_path: Path) -> None:
@@ -9677,9 +9636,6 @@ def test_detects_repeated_keyed_family(tmp_path: Path) -> None:
     assert "SamplingStrategyPolicy" in finding.summary
     assert "CertificationDecisionSummaryPolicy" in finding.summary
     assert "ScoringBackendFactory" in finding.summary
-    assert "KeyedNominalFamily" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "cls.__registry__[key]" in (finding.scaffold or "")
 
 
 @pytest.mark.parametrize(
@@ -9774,7 +9730,6 @@ def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
     assert "MetalChargeCompatibility" in finding.summary
     assert "ScoringFamilyCompatibility" in finding.summary
     assert "ComponentCompatibilityRule" in finding.summary
-    assert "KeyedRecordTable" in (finding.scaffold or "")
 
 
 def test_detects_exact_type_guard_that_rejects_nominal_descendants(
@@ -9820,7 +9775,6 @@ def require_secondary_executor(value):
     assert "require_shard_executor" in finding.summary
     assert "ShardExecutor" in finding.summary
     assert "ExactScoreShardExecutor" in finding.summary
-    assert finding.scaffold == "not isinstance(value, ShardExecutor)"
     assert isinstance(finding.metrics, HierarchyCandidateMetrics)
     assert finding.metrics.class_count == 2
     assert finding.capability_tags == (
@@ -9878,7 +9832,6 @@ def require_executor(value):
     )
 
     assert "ExecutorBoundary is not type(value)" in finding.summary
-    assert finding.scaffold == "not isinstance(value, ExecutorBoundary)"
     assert any(
         evidence.symbol == "ExactScoreShardExecutor" for evidence in finding.evidence
     )
@@ -9919,9 +9872,6 @@ def require_boundary(value):
     )
 
     assert len(findings) == 2
-    assert {finding.scaffold for finding in findings} == {
-        "isinstance(value, RuntimeBoundary)"
-    }
     assert {finding.evidence[0].symbol for finding in findings} == {
         "assert_boundary",
         "require_boundary",
@@ -10042,7 +9992,6 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "UnsafeRequest" in finding.summary
     assert "_handler_impl" in finding.summary
     assert "SafeRequest" not in finding.summary
-    assert finding.scaffold is None
     assert "protocol" not in (finding.codemod_patch or "").lower()
 
 
@@ -10128,7 +10077,6 @@ def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None
     assert len(findings) == 1
     assert "LocalObservationDetector" in findings[0].summary
     assert "LocalObservationFamily" in findings[0].summary
-    assert "declare_typed_observation_detector" in findings[0].scaffold
 
 
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
@@ -10177,7 +10125,6 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     ]
     assert len(findings) == 1
     assert "LocalDetector._finding_for_candidate" in findings[0].summary
-    assert "CandidateFindingRenderer" in findings[0].scaffold
 
 
 def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
@@ -10278,7 +10225,6 @@ def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
     ]
     assert len(findings) == 1
     assert "collect.Visitor" in findings[0].summary
-    assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
 
 
 def test_optional_parameter_default_is_not_nominal_variant_evidence(
@@ -10306,8 +10252,6 @@ def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
         (item for item in findings if item.detector_id == "manual_fiber_tag")
     )
     assert "self.kind" in finding.summary
-    assert finding.scaffold is not None
-    assert "class Notification(ABC)" in finding.scaffold
 
 
 def test_detects_deferred_class_registration(tmp_path: Path) -> None:
@@ -10321,10 +10265,6 @@ def test_detects_deferred_class_registration(tmp_path: Path) -> None:
         (item for item in findings if item.detector_id == "deferred_class_registration")
     )
     assert "HANDLERS" in finding.summary
-    assert finding.scaffold is not None
-    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
-    assert "type_for_event_type" in finding.scaffold
-    assert "cls.__registry__[event_type]" in finding.scaffold
 
 
 def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) -> None:
@@ -10338,8 +10278,6 @@ def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) ->
         (item for item in findings if item.detector_id == "structural_confusability")
     )
     assert "process_batch" in finding.summary
-    assert finding.scaffold is not None
-    assert "class BackendInterface(ABC)" in finding.scaffold
 
 
 def test_ignores_structural_confusability_when_abstract_witness_exists(
@@ -10382,8 +10320,6 @@ def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
         (item for item in findings if item.detector_id == "semantic_witness_family")
     )
     assert "FunctionTrace" in finding.summary
-    assert finding.scaffold is not None
-    assert "class SemanticCarrier(ABC)" in finding.scaffold
 
 
 def test_detects_mixin_enforcement_for_renamed_semantic_roles(tmp_path: Path) -> None:
@@ -10402,9 +10338,6 @@ def test_detects_mixin_enforcement_for_renamed_semantic_roles(tmp_path: Path) ->
             and ("class_names" in item.summary)
         )
     )
-    assert finding.scaffold is not None
-    assert "class PrimaryNameMixin(ABC)" in finding.scaffold
-    assert "(SemanticCarrier, PrimaryNameMixin" in finding.scaffold
     assert finding.codemod_patch is not None
     assert "multiple inheritance" in finding.codemod_patch
 
@@ -10880,7 +10813,6 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     assert any((finding.pattern_id == 14 for finding in findings))
-    assert any((finding.pattern_id == 14 and finding.scaffold for finding in findings))
     assert any(
         (finding.pattern_id == 14 and finding.codemod_patch for finding in findings)
     )
@@ -14636,9 +14568,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
         for detector_id in (weak_detector_id, strong_detector_id)
     }
     _FINDING_RECIPE_TEST_REGISTRY[weak_detector_id] = WeakGoalRunnerSynthesizer
-    _FINDING_RECIPE_TEST_REGISTRY[strong_detector_id] = (
-        StrongGoalRunnerSynthesizer
-    )
+    _FINDING_RECIPE_TEST_REGISTRY[strong_detector_id] = StrongGoalRunnerSynthesizer
     monkeypatch.setattr(codemod_module, "apply_codemod_simulation", unexpected_apply)
     try:
         report = CodemodRefactorGoalRunner(
@@ -15800,11 +15730,14 @@ def test_finding_class_status_members_own_transition_classification(
     assert status((first, second), (first,)) is (
         CodemodFindingClassStatus.PARTIALLY_ELIMINATED
     )
-    assert status(
-        (first,),
-        (first,),
-        (first.stable_id,),
-    ) is CodemodFindingClassStatus.PERSISTED
+    assert (
+        status(
+            (first,),
+            (first,),
+            (first.stable_id,),
+        )
+        is CodemodFindingClassStatus.PERSISTED
+    )
     assert status((first,), (first,)) is CodemodFindingClassStatus.UNCHANGED
 
 
@@ -16487,20 +16420,6 @@ def test_detects_manual_class_registration(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 6 for finding in findings))
     assert any(
         (
-            finding.pattern_id == 6
-            and "from metaclass_registry import AutoRegisterMeta"
-            in (finding.scaffold or "")
-            for finding in findings
-        )
-    )
-    assert any(
-        (
-            finding.pattern_id == 6 and "__key_extractor__" in (finding.scaffold or "")
-            for finding in findings
-        )
-    )
-    assert any(
-        (
             finding.pattern_id == 6 and "__registry__" in (finding.codemod_patch or "")
             for finding in findings
         )
@@ -16659,9 +16578,6 @@ def test_detects_manual_concrete_subclass_roster_with_abstract_filter(
     assert "Extractor" in finding.summary
     assert "_registered_types" in finding.summary
     assert "registered_types" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__key_extractor__" in (finding.scaffold or "")
-    assert "AutoRegisteredFamily.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_selector_guard(
@@ -16727,10 +16643,6 @@ def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
     assert "matches_context(artifact)" in finding.summary
     assert "AlphaRenderRule" in finding.summary
     assert "BetaRenderRule" in finding.summary
-    assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__key_extractor__" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 @pytest.mark.parametrize(
@@ -16788,7 +16700,6 @@ def test_detects_inherited_autoregister_config_boilerplate(
     assert "SpatialBinStrategy" in finding.summary
     assert "__registry_key__" in finding.summary
     assert "__skip_if_no_key__" in finding.summary
-    assert "inherit registry config" in (finding.scaffold or "")
     assert "fix AutoRegisterMeta inheritance semantics" in (finding.codemod_patch or "")
 
 
@@ -16884,10 +16795,6 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "SourcePathExclusion" in finding.summary
     assert "priority" in finding.summary
     assert "MRO" in finding.title
-    assert "RegisteredPolicyResolutionMro" in (finding.scaffold or "")
-    assert "cls.__mro__" in (finding.scaffold or "")
-    assert "RegisteredPolicy.__registry__.values()" in (finding.scaffold or "")
-    assert "__subclasses__" not in (finding.scaffold or "")
     assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
 
 
@@ -16909,7 +16816,6 @@ def test_detects_nominal_instance_catalog_ordering_outside_autoregister(
     assert "GalleryScenarioABC" in finding.summary
     assert "`order`" in finding.summary
     assert "MRO" in finding.title
-    assert "FirstDeclarationCatalog" in (finding.scaffold or "")
     assert "derive the sequence solely from the catalog MRO" in (
         finding.codemod_patch or ""
     )
@@ -17200,8 +17106,6 @@ def test_detects_manual_concrete_subclass_roster_across_modules(tmp_path: Path) 
     assert "DirectRequest" in finding.summary
     assert "GuidedRequest" in finding.summary
     assert "route_name" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert '__registry_key__ = "route_name"' in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_module_level_consumer(
@@ -17243,8 +17147,6 @@ def test_detects_latent_implementation_string_roster(tmp_path: Path) -> None:
     assert "EXPORT_FORMATS" in finding.summary
     assert "Exporter" in finding.summary
     assert "format" in finding.summary
-    assert "AutoRegisterMeta" in (finding.scaffold or "")
-    assert "Exporter.__registry__.keys()" in (finding.scaffold or "")
 
 
 def test_detects_class_level_latent_implementation_roster(tmp_path: Path) -> None:
@@ -17262,7 +17164,6 @@ def test_detects_class_level_latent_implementation_roster(tmp_path: Path) -> Non
     )
     assert "Exporter.SUPPORTED_FORMATS" in finding.summary
     assert "format" in finding.summary
-    assert "Exporter.__registry__.keys()" in (finding.scaffold or "")
 
 
 def test_analyze_paths_detects_latent_roster_across_explicit_files(
@@ -17394,7 +17295,6 @@ def test_detects_inline_update_dict_implementation_roster(
     assert "PayloadHandler" in finding.summary
     assert "ImagePayloadHandler" in finding.summary
     assert "RoiPayloadHandler" in finding.summary
-    assert "PayloadHandler.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_ignores_unnamed_latent_implementation_subset_roster(
@@ -17442,10 +17342,6 @@ def test_detects_predicate_selected_concrete_family_across_modules(
     assert "RenderRule.resolve" in finding.summary
     assert "AlphaRenderRule" in finding.summary
     assert "BetaRenderRule" in finding.summary
-    assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__key_extractor__" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
@@ -17465,9 +17361,6 @@ def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
     assert "InvoiceFieldEmitter" in finding.summary
     assert "ReceiptFieldEmitter" in finding.summary
     assert "alpha emitter" in finding.summary
-    assert "ConcreteRoleMixin, InvoiceFieldEmitter" in (finding.scaffold or "")
-    assert "ConcreteRoleMixin, ReceiptFieldEmitter" in (finding.scaffold or "")
-    assert "FamilyRoleSpec" not in (finding.scaffold or "")
     assert "callable tables" in (finding.codemod_patch or "")
 
 
@@ -17585,7 +17478,6 @@ def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
         )
     )
     assert "polymorphic family" in finding.title
-    assert "NodeFamilySpec" in (finding.scaffold or "")
 
 
 def test_detects_manual_indexed_family_expansion(tmp_path: Path) -> None:
@@ -19094,9 +18986,6 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     )
     assert "`pattern_id`" in finding.summary
     assert "3" in finding.summary
-    assert finding.scaffold is not None
-    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
-    assert "DispatchCase.for_case" in finding.scaffold
     assert finding.codemod_patch is not None
     assert "instead of if/elif or match/case" in finding.codemod_patch
     assert finding.certification == "certified"
@@ -19183,7 +19072,6 @@ def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
     assert "constants" in finding.summary
     assert "models" in finding.summary
-    assert "canonical relative imports" in (finding.scaffold or "")
 
 
 def test_ignores_nonmirrored_import_fallback(tmp_path: Path) -> None:
@@ -19373,7 +19261,6 @@ def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:
     assert "parse_one" in finding.summary
     assert "parse_two" in finding.summary
     assert "typed syntax authority" in finding.title
-    assert "SyntaxAuthority" in (finding.scaffold or "")
 
 
 def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
@@ -19438,7 +19325,6 @@ def test_detects_projection_property_family(tmp_path: Path) -> None:
     )
     assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
     assert "ExportContext" in finding.summary
-    assert "PathProjection" in (finding.scaffold or "")
 
 
 def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
@@ -19457,7 +19343,6 @@ def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
     assert "ModuleFamilyCatalog" in finding.summary
     assert "self.members" in finding.summary
-    assert "CollectionAttributeProjection" in (finding.scaffold or "")
 
 
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
@@ -19474,7 +19359,8 @@ def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
             if finding.detector_id == "repeated_projection_helpers"
         )
     )
-    assert "_render_projection" in (finding.scaffold or "")
+    assert finding.metrics.mapping_site_count == 3
+    assert finding.metrics.field_count == 2
 
 
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
@@ -19576,9 +19462,6 @@ def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> N
     )
     assert "default_detectors" in finding.summary
     assert "IssueDetector" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__key_extractor__" in (finding.scaffold or "")
-    assert "RegisteredIssueDetector.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
@@ -19597,7 +19480,6 @@ def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
     )
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
-    assert finding.scaffold is None
     assert "PatternId" in (finding.codemod_patch or "")
     assert "authoritative record" in (finding.codemod_patch or "")
 
@@ -19627,7 +19509,6 @@ def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
         )
     )
     assert "AlphaDetector" in finding.summary
-    assert "CandidateFindingDetector" in (finding.scaffold or "")
 
 
 def test_detects_guarded_delegator_spec_family(tmp_path: Path) -> None:
@@ -19645,7 +19526,6 @@ def test_detects_guarded_delegator_spec_family(tmp_path: Path) -> None:
         )
     )
     assert "Observation specs" in finding.summary
-    assert "ScopeFilteredSpec" in (finding.scaffold or "")
 
 
 def test_detects_projection_style_builder_authority(tmp_path: Path) -> None:
@@ -19664,8 +19544,6 @@ def test_detects_projection_style_builder_authority(tmp_path: Path) -> None:
     )
     assert "SearchContext" in finding.summary
     assert "projection sites" in finding.summary
-    assert "class SearchContext:" in (finding.scaffold or "")
-    assert "return cls(...)" in (finding.scaffold or "")
 
 
 def test_projection_builder_preserves_nominal_owner_update_methods(
@@ -19716,7 +19594,6 @@ def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> N
     )
     assert "ProjectionRecord" in finding.summary
     assert "projection_record" in finding.summary
-    assert "ProjectionTemplate" in (finding.scaffold or "")
 
 
 def test_detects_repeated_property_alias_hooks_across_subclasses(
@@ -19766,7 +19643,6 @@ def test_detects_semantic_overlap_method(tmp_path: Path) -> None:
     assert "strict-subset families" in finding.summary
     assert "0 lattice edge(s)" in finding.summary
     assert "no hierarchy placement is selected" in finding.summary
-    assert finding.scaffold is None
     assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
@@ -19859,7 +19735,6 @@ def test_method_family_derives_partial_overlap_axes(tmp_path: Path) -> None:
     assert "audit" in global_finding.summary
     assert "cache" in global_finding.summary
     assert "partial-overlap families" in global_finding.summary
-    assert global_finding.scaffold is None
     assert global_finding.codemod_patch is None
     assert global_finding.compression_certificate is not None
     assert global_finding.compression_certificate.pays_rent
@@ -19980,7 +19855,6 @@ def test_method_family_detects_whole_family_template(tmp_path: Path) -> None:
     assert "validate" in finding.summary
     assert "observed leaf residue basis" in finding.summary
     assert "no hierarchy placement is selected" in finding.summary
-    assert finding.scaffold is None
     assert finding.codemod_patch is None
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
@@ -20053,7 +19927,6 @@ def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
         )
     )
     assert "getattr(self, 'file_path')" in finding.summary
-    assert "file_path" in (finding.scaffold or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 
@@ -20113,7 +19986,6 @@ def test_detects_dynamic_self_field_selection(tmp_path: Path) -> None:
         )
     )
     assert "getattr(self, self.count_field_name)" in finding.summary
-    assert "count_value" in (finding.scaffold or "")
 
 
 def test_detects_string_backed_reflective_nominal_lookup_via_globals(
@@ -20232,7 +20104,6 @@ def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
     )
     assert "COMMAND_BY_NAME" in finding.summary
     assert "CommandRoot" in finding.summary
-    assert "derived_index" in (finding.scaffold or "")
 
 
 def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) -> None:
@@ -20268,7 +20139,6 @@ def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
     )
     assert "_is_public_alpha_export" in finding.summary
     assert "_is_public_beta_export" in finding.summary
-    assert "DerivedSurfacePolicy" in (finding.scaffold or "")
 
 
 def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
@@ -20344,7 +20214,6 @@ def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifac
     )
     assert "lean_runtime_policy_bundle.json" in finding.summary
     assert "3 formal-boundary string ids" in finding.summary
-    assert "GeneratedFormalBoundaryIdAuthority" in (finding.scaffold or "")
 
 
 def test_detects_generated_boundary_semantic_constant_mirror(
@@ -20390,10 +20259,6 @@ def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
     )
     assert "collect_everything" in finding.summary
     assert "registered_plugins" in finding.summary
-    assert "UnifiedRegistryRoot" in (finding.scaffold or "")
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "__key_extractor__" in (finding.scaffold or "")
-    assert "UnifiedRegistryRoot.__registry__.values()" in (finding.scaffold or "")
     removed_step_names = (
         "_RegisteredUnionSurfaceSourceStep",
         "_RegisteredUnionFunctionSourceStep",
@@ -20436,7 +20301,6 @@ def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None
     assert "ViewerWindowSnapshotResult" in finding.summary
     assert "from_error_context" in finding.summary
     assert "type[ViewerWindowResultFactory]" in finding.summary
-    assert "class ViewerWindowResultFactory(ABC)" in (finding.scaffold or "")
     assert "Protocol" not in finding.capability_gap
     assert "Do not hide this behind a TypeAlias" in (finding.codemod_patch or "")
 
@@ -20457,9 +20321,6 @@ def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
     )
     assert "all_registered_plugins" in finding.summary
     assert "all_registered_handlers" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "materialize_family" in (finding.scaffold or "")
-    assert "root.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> None:
@@ -20483,8 +20344,7 @@ def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> No
             and ("all_metrics" in finding.summary)
         )
     )
-    assert "materialize_family" in (finding.scaffold or "")
-    assert "root.__registry__.values()" in (finding.scaffold or "")
+    assert "declarative include/materialize residue" in (finding.codemod_patch or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
@@ -20503,7 +20363,6 @@ def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     )
     assert "RegistrationShape" in finding.summary
     assert "from_assignment" in finding.summary
-    assert "@singledispatchmethod" in (finding.scaffold or "")
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
@@ -20522,7 +20381,6 @@ def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
     )
     assert "StatsAccumulator" in finding.summary
     assert "add_file" in finding.summary
-    assert "AccumulatorFoldMixin" in (finding.scaffold or "")
 
 
 def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
@@ -20633,8 +20491,6 @@ def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
     assert "resolve_backend" in finding.summary
     assert "ScoringFamily" in finding.summary
     assert "ScoringPolicy" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "return cls.__registry__[key]()" in (finding.scaffold or "")
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
@@ -20652,7 +20508,6 @@ def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
     )
     assert "AlphaMixin" in finding.summary
     assert "__beta_catalog__" in finding.summary
-    assert "CatalogInstallingMixin" in (finding.scaffold or "")
     removed_step_types = (
         "_CatalogInstallingMixinStep",
         "_ExpressionCallPair",
@@ -20703,7 +20558,6 @@ def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
     )
     assert "declaration_name" in finding.summary
     assert "namespace" in finding.summary
-    assert "RegexGroupExtractor" in (finding.scaffold or "")
     removed_shape_types = (
         "_RegexExtractorBody",
         "_RegexExtractorMethodContext",
@@ -20770,7 +20624,6 @@ def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) 
 
     assert "3 one-class modules" in finding.summary
     assert "support" in finding.summary
-    assert "ModuleFamilyCatalog" in (finding.scaffold or "")
 
 
 def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
@@ -20809,7 +20662,6 @@ def test_detects_repeated_array_protocol_probe_bridge(tmp_path: Path) -> None:
     assert "normalize" in finding.summary
     assert "transfer" in finding.summary
     assert "dtype" in finding.summary
-    assert "ArrayBridge" in (finding.scaffold or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 
@@ -20830,7 +20682,6 @@ def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
         )
     )
     assert "pair[0][1]" in finding.summary
-    assert "@dataclass(frozen=True)" in (finding.scaffold or "")
 
 
 def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(

@@ -71,16 +71,16 @@ def _witness_mixin_enforcement_candidate(
     for candidate in classes:
         line_by_class[candidate.class_name] = candidate.line
         for role_name, field_names in candidate.normalized_role_fields:
-            if role_name not in _WITNESS_MIXIN_ROLE_NAMES:
+            if not WitnessMixinRole.recognizes(role_name):
                 continue
             role_to_classes[role_name][candidate.class_name] = candidate
             role_to_fields[role_name].update(field_names)
     role_field_names = tuple(
         (
-            (role_name, sorted_tuple(role_to_fields[role_name]))
-            for role_name in _WITNESS_MIXIN_ROLE_NAMES
-            if len(role_to_classes[role_name]) >= 2
-            and len(role_to_fields[role_name]) >= 2
+            (role.value, sorted_tuple(role_to_fields[role.value]))
+            for role in WitnessMixinRole
+            if len(role_to_classes[role.value]) >= 2
+            and len(role_to_fields[role.value]) >= 2
         )
     )
     if not role_field_names:
@@ -140,7 +140,6 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
                 f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance.",
                 evidence,
                 FindingBuildContext(
-                    scaffold=_witness_mixin_enforcement_scaffold(candidate),
                     codemod_patch=_witness_mixin_enforcement_patch(candidate),
                     metrics=WitnessCarrierMetrics(
                         class_count=len(candidate.class_names),
@@ -192,18 +191,11 @@ class RepeatedPropertyAliasHookDetector(
                 )
             )
         )
-        mixin_name = f"{_camel_case(hook_group.returned_attribute)}{_camel_case(hook_group.property_name)}Mixin"
         return self.build_finding(
             (
                 f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as `return self.{hook_group.returned_attribute}`."
             ),
             evidence,
-            scaffold=(
-                f"class {mixin_name}(ABC):\n"
-                "    @property\n"
-                f"    def {hook_group.property_name}(self):\n"
-                f"        return self.{hook_group.returned_attribute}"
-            ),
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
@@ -588,9 +580,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}."
     ),
-    scaffold=lambda candidate: (
-        "from descriptor_algebra import ConstantProperty\n\nclass Base:\n    property_name = ConstantProperty(default_value)"
-    ),
     codemod_patch=lambda candidate: (
         f"# Replace constant-return property methods on `{candidate.class_name}` with `ConstantProperty[...]` descriptors.\n# Keep method syntax only for defaults that allocate or compute."
     ),
@@ -628,7 +617,6 @@ class ReflectiveSelfAttributeEscapeDetector(
     def _finding_for_candidate(
         self, reflective_candidate: ReflectiveSelfAttributeCandidate
     ) -> RefactorFinding:
-        carrier_name = f"{reflective_candidate.class_name}Carrier"
         return self.build_finding(
             (
                 f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` uses `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')` instead of declaring `{reflective_candidate.attribute_name}` on the nominal carrier."
@@ -639,11 +627,6 @@ class ReflectiveSelfAttributeEscapeDetector(
                     reflective_candidate.line,
                     f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
                 ),
-            ),
-            scaffold=(
-                "@dataclass(frozen=True)\n"
-                f"class {carrier_name}(ABC):\n"
-                f"    {reflective_candidate.attribute_name}: str"
             ),
             codemod_patch=(
                 f"# Delete `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')`.\n"
@@ -678,9 +661,6 @@ declare_candidate_rule_detector(
         f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations."
     ),
     evidence=lambda candidate: candidate.evidence,
-    scaffold=lambda candidate: (
-        f"class SharedSemanticMixin({', '.join(candidate.base_names)}, ABC):\n    pass"
-    ),
     codemod_patch=lambda candidate: (
         "# Extract the repeated contiguous base bundle into one named ABC/mixin.\n# Replace the repeated base sequence in each class with that nominal bundle and keep only class-specific orthogonal bases explicit."
     ),
@@ -727,9 +707,6 @@ class TypeIndexedDefinitionBoilerplateDetector(
                 f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
             ),
             evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass FamilyDeclaration(Generic[TItem]):\n    export_name: str\n    item_type: type[TItem]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n    literal_kind: object | None = None\n\ndef materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n    return type(...)"
-            ),
             codemod_patch=(
                 f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
                 "# Derive runtime family classes, registry indexes, exported aliases, and `__all__` from the same declarations instead of restating them in classes plus assignments."
@@ -854,9 +831,6 @@ class ExportPolicyPredicateDetector(
                 ),
                 evidence,
                 FindingBuildContext(
-                    scaffold=(
-                        "@dataclass(frozen=True)\nclass DerivedSurfacePolicy:\n    include_callables: bool = False\n    include_types: bool = True\n    exclude_abstract: bool = False\n    include_enums: bool = False\n    root_types: tuple[type[object], ...] = ()\n\ndef derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))"
-                    ),
                     codemod_patch=(
                         "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
                     ),
@@ -904,9 +878,6 @@ class DerivedIndexedSurfaceDetector(
                     index_candidate.surface_name,
                 ),
             ),
-            scaffold=(
-                "def derived_index() -> dict[object, type[object]]:\n    return {project_key(item): item for item in authoritative_family()}"
-            ),
             codemod_patch=(
                 f"# Delete `{index_candidate.surface_name}` as a handwritten index.\n"
                 "# Derive the key-to-type map from the authoritative local family instead of maintaining a second module-level registry."
@@ -943,9 +914,6 @@ declare_candidate_rule_detector(
             union_candidate.owner_name,
         ),
     ),
-    scaffold=lambda union_candidate: (
-        f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())"
-    ),
     codemod_patch=lambda union_candidate: (
         f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
     ),
@@ -956,30 +924,6 @@ declare_candidate_rule_detector(
     ),
     candidate_collector=_registered_union_surface_candidates,
 )
-
-
-def _concrete_type_union_contract_scaffold(
-    candidate: ConcreteTypeUnionContractCandidate,
-) -> str:
-    method_block = "\n".join(
-        (
-            f"    @classmethod\n    @abstractmethod\n    def {attribute_name}(cls, context): ..."
-            for attribute_name in candidate.observed_attribute_names
-        )
-    )
-    member_block = "\n".join(
-        (
-            f"class {member_type_name}({candidate.suggested_contract_name}, ...): ..."
-            for member_type_name in candidate.member_type_names
-        )
-    )
-    return (
-        "from abc import ABC, abstractmethod\n\n"
-        f"class {candidate.suggested_contract_name}(ABC):\n"
-        f"{method_block}\n\n"
-        f"{member_block}\n\n"
-        f"def {candidate.function_name}({candidate.parameter_name}: type[{candidate.suggested_contract_name}], ...): ..."
-    )
 
 
 def _concrete_type_union_contract_patch(
@@ -1024,7 +968,6 @@ declare_candidate_rule_detector(
             f"{candidate.function_name}.{candidate.parameter_name}",
         ),
     ),
-    scaffold=_concrete_type_union_contract_scaffold,
     codemod_patch=_concrete_type_union_contract_patch,
     candidate_collector=_concrete_type_union_contract_candidates,
 )
@@ -1077,13 +1020,6 @@ class RegistryTraversalSubstrateDetector(
         materialization_modes = tuple(
             kind.value for kind in group.materialization_kinds
         )
-        scaffold = (
-            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
-            if group.registry_attribute_names
-            else (
-                "from metaclass_registry import AutoRegisterMeta\n\ndef walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    seen = set()\n    ordered = []\n    queue = list(root.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not include(current) or current in seen:\n            continue\n        seen.add(current)\n        ordered.append(materialize(current))\n    return tuple(ordered)\n\n# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
-            )
-        )
         return [
             self.build_finding(
                 (
@@ -1091,7 +1027,6 @@ class RegistryTraversalSubstrateDetector(
                     f"{registry_clause}{filter_clause} with materialization modes {materialization_modes}."
                 ),
                 evidence,
-                scaffold=scaffold,
                 codemod_patch=(
                     "# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm."
                 ),
@@ -1426,9 +1361,6 @@ class AlternateConstructorFamilyDetector(
                 f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
             ),
             evidence,
-            scaffold=(
-                f"@singledispatchmethod\n@classmethod\ndef from_source(cls, source, **context) -> {group.class_name}:\n    raise TypeError\n\n@from_source.register\n@classmethod\ndef _(cls, source: SomeSource, **context):\n    return cls(...)"
-            ),
             codemod_patch=(
                 f"# Collapse {group.method_names} into one provenance-dispatched constructor for `{group.class_name}`.\n"
                 "# Keep source-kind differences in dispatch handlers and keep the shared record schema in one authoritative builder."
@@ -1459,9 +1391,6 @@ declare_candidate_rule_detector(
         f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
     ),
     evidence=lambda fold_candidate: fold_candidate.evidence,
-    scaffold=lambda fold_candidate: (
-        "@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)"
-    ),
     codemod_patch=lambda fold_candidate: (
         f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook."
     ),
@@ -1502,9 +1431,6 @@ declare_candidate_rule_detector(
         f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
     ),
     evidence=lambda catalog_candidate: catalog_candidate.evidence,
-    scaffold=lambda catalog_candidate: (
-        "class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)"
-    ),
     codemod_patch=lambda catalog_candidate: (
         "# Delete the repeated `__init_subclass__` bodies after moving the lifecycle code into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin."
     ),
@@ -1545,9 +1471,6 @@ declare_candidate_rule_detector(
         f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
     ),
     evidence=lambda regex_candidate: regex_candidate.evidence,
-    scaffold=lambda regex_candidate: (
-        "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ..."
-    ),
     codemod_patch=lambda regex_candidate: (
         "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
     ),
@@ -1597,9 +1520,6 @@ class SupportPreludeModuleFamilyDetector(
                         f"{len(candidate.class_names)} one-class modules share support prelude `{candidate.support_module_name}` without a manifest authority."
                     ),
                     candidate.evidence[:8],
-                    scaffold=(
-                        "@dataclass(frozen=True)\nclass ModuleFamilyCatalog:\n    members: tuple[ModuleFamilyMember, ...]\n    @classmethod\n    def from_package(cls, package_dir, support_module): ..."
-                    ),
                     codemod_patch=(
                         "# Add one module-family catalog beside the shared support prelude.\n# Derive member rows from package structure instead of relying only on repeated star-import shape."
                     ),
@@ -1630,9 +1550,6 @@ declare_candidate_rule_detector(
     summary=lambda dynamic_candidate: (
         f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value."
     ),
-    scaffold=lambda dynamic_candidate: (
-        "class DeclaredCountValue(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ..."
-    ),
     codemod_patch=lambda dynamic_candidate: (
         f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier."
     ),
@@ -1660,9 +1577,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda reflective_candidate: (
         f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes."
-    ),
-    scaffold=lambda reflective_candidate: (
-        "class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ..."
     ),
     codemod_patch=lambda reflective_candidate: (
         f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method."

@@ -1518,13 +1518,6 @@ class EnvironmentBooleanAuthorityDriftDetector(
             self.build_finding(
                 f"`{candidate.symbol}` {candidate.summary_detail} for `{candidate.environment_key}`.",
                 candidate.evidence,
-                scaffold=(
-                    "@dataclass(frozen=True)\n"
-                    "class RuntimeFlagConfig:\n"
-                    "    feature_enabled: bool\n\n"
-                    "# Resolve each environment flag once through the declared "
-                    "authority at the process boundary, then pass RuntimeFlagConfig."
-                ),
                 codemod_patch=(
                     f"# Delete local environment-boolean semantics in `{candidate.symbol}`.\n"
                     "# Route the flag through the existing declared authority once, "

@@ -312,7 +312,6 @@ class SemanticMirrorWithoutDescentDetector(
                 f"{edge.match.tokens} with {authority.kind.value} "
                 f"`{authority.name}`; {certificate.missing_derivation_path}"
             ),
-            scaffold=self._scaffold(authority),
             codemod_patch=self._codemod_patch(authority, matched_facts),
             metrics=self._metrics(
                 authority, projection, matched_facts, edge.match.tokens
@@ -350,12 +349,6 @@ class SemanticMirrorWithoutDescentDetector(
     @staticmethod
     def _capability_gap(authority: SemanticAuthority) -> str:
         return authority.kind.reporting_capability_gap
-
-    @staticmethod
-    def _scaffold(authority: SemanticAuthority) -> str:
-        return authority.kind.reporting_scaffold_template.format(
-            authority_name=authority.name,
-        )
 
     @staticmethod
     def _codemod_patch(

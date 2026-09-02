@@ -672,10 +672,6 @@ class AuthorityClaimPreflightFinding:
                     evidence_symbol,
                 ),
             ),
-            scaffold=(
-                "AuthorityClaim(claimed_symbol='ExistingAuthority', file_path='pkg/mod.py', "
-                "qualname='ExistingAuthority')"
-            ),
             codemod_patch=codemod_patch,
         )
 

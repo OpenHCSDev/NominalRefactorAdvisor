@@ -886,18 +886,6 @@ declare_candidate_rule_detector(
         f"{candidate.predicate_count} inline AST predicates over {candidate.ast_type_names} "
         f"inside {candidate.traversal_count} traversal block(s); move this into a matcher grammar."
     ),
-    scaffold=lambda candidate: (
-        "class AstPredicateRule(ABC):\n"
-        "    node_type: ClassVar[type[ast.AST]]\n"
-        "    def matches(self, node: ast.AST) -> bool: ...\n\n"
-        "    @classmethod\n"
-        "    def concrete_rule_types(cls): ...\n\n"
-        "    @classmethod\n"
-        "    def matches_anywhere(cls, root: ast.AST):\n"
-        "        rule_types = cls.concrete_rule_types()\n"
-        "        # Collect all declaration-derived matches and fail on overlap.\n"
-        "        ..."
-    ),
     codemod_patch=lambda candidate: (
         f"# Replace inline predicate ladder in `{candidate.class_name}.{candidate.method_name}` "
         "with declaration-derived `AstPredicateRule` subclasses and one traversal runner.\n"
@@ -1047,9 +1035,6 @@ declare_candidate_rule_detector(
         f"`{projection_candidate.class_name}` repeats Path projection properties {', '.join(projection_candidate.property_names)} over bases {', '.join(projection_candidate.base_names)}."
     ),
     evidence=lambda projection_candidate: projection_candidate.evidence_locations,
-    scaffold=lambda projection_candidate: (
-        "@dataclass(frozen=True)\nclass PathProjection:\n    base_attr: str\n    parts: tuple[str, ...]\n    def __get__(self, instance, owner=None) -> Path: ..."
-    ),
     codemod_patch=lambda projection_candidate: (
         "# Replace repeated @property path projections with PathProjection descriptors.\n# Keep only base attribute and path parts as declarative data."
     ),
@@ -1189,13 +1174,6 @@ declare_candidate_rule_detector(
         f"for member attributes {candidate.projected_attribute_names}."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=lambda candidate: (
-        "@dataclass(frozen=True)\n"
-        "class CollectionAttributeProjection:\n"
-        "    collection_attr: str\n"
-        "    member_attr: str\n"
-        "    def __get__(self, instance, owner=None): ..."
-    ),
     codemod_patch=lambda candidate: (
         "# Replace repeated collection projection @property methods with one "
         "CollectionAttributeProjection descriptor; keep only collection and "
@@ -1244,9 +1222,6 @@ class SuffixAxisCompatibilitySurfaceDetector(
                 f"across operations {operation_summary}."
             ),
             surface_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass OperationContext:\n    ...\n\n# Route operations through one authoritative context/session/request record.\n# Keep at most one boundary adapter that constructs the authority, not one adapter per operation."
-            ),
             codemod_patch=(
                 f"# Collapse suffix-axis method family {method_names[:8]} onto one authoritative record.\n"
                 "# Prefer one conversion point from the secondary axis into the primary axis, then delete per-operation mirrored wrappers."
@@ -1293,9 +1268,6 @@ class ResidualClosedAxisIndirectionDetector(
                 f"but still branches on residual cases {residual_cases}."
             ),
             axis_candidate.evidence,
-            scaffold=(
-                f'from abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\nclass AxisPolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "axis_key"\n    __skip_if_no_key__ = True\n    axis_key: ClassVar[{axis_candidate.enum_name}]\n\n    @classmethod\n    def for_key(cls, key: {axis_candidate.enum_name}):\n        return cls.__registry__[key]()\n\n    @abstractmethod\n    def project(self, source): ...\n\n    @abstractmethod\n    def run(self, ctx): ...\n\n# Move the table projection and residual branch behavior into enum-keyed policy subclasses.\n# Derive table-like views from AxisPolicy.__registry__ only if callers still need them.'
-            ),
             codemod_patch=(
                 f"# Replace `{axis_candidate.table_name}[{axis_candidate.dispatch_axis_expression}]` plus residual "
                 f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.dispatch_axis_expression})`.\n"
@@ -1355,9 +1327,6 @@ class ClosedConstantSelectorDetector(
                 f"sibling constants {constants_preview} from `{family_label}`."
             ),
             selector_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass SelectorRule:\n    key: object\n    selected: object\n\nSELECTOR_RULES = (\n    SelectorRule(key=..., selected=...),\n)\n_SELECTED_BY_KEY = {rule.key: rule.selected for rule in SELECTOR_RULES}\n"
-            ),
             codemod_patch=(
                 f"# Replace manual branches in `{selector_candidate.qualname}` with one authoritative selector table.\n"
                 "# Select the sibling constant once, then apply any shared wrapper outside the selector."
@@ -1446,9 +1415,6 @@ declare_candidate_rule_detector(
         f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and `{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for {', '.join(helper_candidate.rule_table_names[:4])} and indexes {', '.join(helper_candidate.index_table_names[:4])}."
     ),
     evidence=lambda helper_candidate: helper_candidate.evidence,
-    scaffold=lambda helper_candidate: (
-        'KeyT = TypeVar("KeyT")\nRecordT = TypeVar("RecordT")\n\n@dataclass(frozen=True)\nclass KeyedRecordTable(Generic[KeyT, RecordT]):\n    records: tuple[RecordT, ...]\n    key_of: Callable[[RecordT], KeyT]\n    def require(self, key: KeyT, *, missing_error=None) -> RecordT: ...\n'
-    ),
     codemod_patch=lambda helper_candidate: (
         f"# Remove local keyed-selection helper `{helper_candidate.rule_class_name}` / `{helper_candidate.helper_function_name}` / `{helper_candidate.lookup_function_name}`.\n# Re-express these rule tables through the shared KeyedRecordTable substrate."
     ),
@@ -1594,10 +1560,6 @@ declare_candidate_rule_detector(
         f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
     ),
     evidence=lambda shadow_candidate: shadow_candidate.evidence,
-    scaffold=lambda shadow_candidate: (
-        _axis_policy_registry_scaffold("invariant(self)")
-        + f"\n\ndef run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n    # derive local execution from authoritative policy facts\n"
-    ),
     codemod_patch=lambda shadow_candidate: (
         f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`."
     ),
@@ -1659,10 +1621,6 @@ class ResidualClosedAxisBranchingDetector(
                 f"even though authoritative family `{authoritative_family_names}` already owns that axis."
             ),
             residual_candidate.evidence,
-            scaffold=(
-                _axis_policy_registry_scaffold("apply(self, context)")
-                + f"\n\ndef run(context):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(context.axis)\n    return policy.apply(context)\n"
-            ),
             codemod_patch=(
                 f"# Remove residual `{residual_candidate.key_type_name}` branch ladder in `{residual_candidate.qualname}`.\n"
                 "# Delegate through the existing keyed family authority and keep only case-local residue on the policy leaves."
@@ -1730,13 +1688,6 @@ class ParallelKeyedAxisFamilyDetector(
                 f"across cases {shared_cases}.{label_clause}"
             ),
             family_candidate.evidence,
-            scaffold=(
-                _axis_policy_registry_scaffold(
-                    "invariant(self)",
-                    "runtime_adapter(self, context)",
-                )
-                + "\n\n# Keep one authoritative keyed family and let secondary modules derive local adapters/specs from it."
-            ),
             codemod_patch=(
                 f"# Collapse `{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` onto one authoritative keyed family.\n"
                 "# Move the irreducible case-specific hooks to that family or to a single derived adapter table, not two parallel nominal roots."
@@ -1799,10 +1750,6 @@ class ParallelKeyedTableAndFamilyDetector(
                 f"{', '.join(table_candidate.shared_case_names[:4])}."
             ),
             table_candidate.evidence,
-            scaffold=(
-                _axis_policy_registry_scaffold("build(self)")
-                + f"\n\n@dataclass(frozen=True)\nclass DerivedAxisRow:\n    key: {_AXIS_POLICY_KEY_TYPE_NAME}\n    policy_type: type[{_AXIS_POLICY_ROOT_NAME}]\n    config: object\n\ndef build_axis_rows() -> tuple[DerivedAxisRow, ...]:\n    return tuple(\n        DerivedAxisRow(key=key, policy_type=policy_type, config=...)\n        for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n    )"
-            ),
             codemod_patch=(
                 f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
                 "# Keep the runtime boundary on the auto-registered family and derive any keyed rows/views from `AxisPolicy.__registry__`."
@@ -1862,19 +1809,6 @@ class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
                         f"{operations}; this is a hardcoded strategy family."
                     ),
                     (SourceLocation(module.file_path, statement.lineno, assignment),),
-                    scaffold=(
-                        "from abc import ABC, abstractmethod\n"
-                        "from typing import ClassVar\n"
-                        "from metaclass_registry import AutoRegisterMeta\n\n"
-                        "class MethodStrategy(ABC, metaclass=AutoRegisterMeta):\n"
-                        '    __registry_key__ = "method"\n'
-                        "    __skip_if_no_key__ = True\n"
-                        "    method: ClassVar[object | None] = None\n\n"
-                        "    @abstractmethod\n"
-                        "    def run(self, request): ...\n\n"
-                        "def run_method(method, request):\n"
-                        "    return MethodStrategy.__registry__[method].run(request)\n"
-                    ),
                     codemod_patch=(
                         f"# Replace callable registry `{assignment}` with an AutoRegisterMeta-backed strategy family.\n"
                         "# Move each callable into a registered subclass and dispatch with `Family.__registry__[method].run(...)`."
@@ -1996,14 +1930,6 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
                             indexed_class.line,
                             indexed_class.simple_name,
                         ),
-                    ),
-                    scaffold=(
-                        "class RegisteredFamilyBase(ABC):\n"
-                        '    __registry_key__ = "method"\n'
-                        "    __skip_if_no_key__ = True\n\n"
-                        "class ConcreteFamilyRoot(RegisteredFamilyBase, metaclass=AutoRegisterMeta):\n"
-                        "    # declare behavior contract only; inherit registry config\n"
-                        "    ..."
                     ),
                     codemod_patch=(
                         f"# Delete repeated registry protocol fields {field_list} from `{indexed_class.simple_name}`.\n"
@@ -2156,20 +2082,6 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                             indexed_class.simple_name,
                         ),
                         *evidence_sites[:5],
-                    ),
-                    scaffold=(
-                        "class RegisteredPolicyResolutionMro(\n"
-                        "    SpecificRegisteredPolicy,\n"
-                        "    FallbackRegisteredPolicy,\n"
-                        "):\n"
-                        "    policy_key = None\n\n"
-                        "    @classmethod\n"
-                        "    def registered_types(cls):\n"
-                        "        return tuple(\n"
-                        "            candidate\n"
-                        "            for candidate in cls.__mro__[1:]\n"
-                        "            if candidate in RegisteredPolicy.__registry__.values()\n"
-                        "        )\n"
                     ),
                     codemod_patch=(
                         f"# Delete the {axis_label} class axis from `{indexed_class.simple_name}` and its leaves.\n"
@@ -2355,17 +2267,6 @@ class NominalInstanceExplicitOrderingDetector(
                         ),
                         *evidence_sites[:6],
                     ),
-                    scaffold=(
-                        "class FirstDeclarationCatalog(CatalogBase):\n"
-                        "    declaration = FirstDeclaration(...)\n\n"
-                        "class SecondDeclarationCatalog(CatalogBase):\n"
-                        "    declaration = SecondDeclaration(...)\n\n"
-                        "class CompleteCatalog(\n"
-                        "    FirstDeclarationCatalog, SecondDeclarationCatalog\n"
-                        "):\n"
-                        "    pass\n\n"
-                        "# Traverse CompleteCatalog.__mro__ directly."
-                    ),
                     codemod_patch=(
                         f"# Delete the {axis_label} field and its constructor arguments from `{family_root.simple_name}` declarations.\n"
                         "# Give each declaration one catalog node and derive the sequence solely from the catalog MRO."
@@ -2456,10 +2357,6 @@ class EnumKeyedTableClassAxisShadowDetector(
                 f"`{axis_candidate.key_attr_name}`."
             ),
             axis_candidate.evidence,
-            scaffold=(
-                _axis_policy_registry_scaffold("route_type(self)")
-                + f"\n\nAXIS_BY_KEY = {{\n    key: policy_type\n    for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n}}\n"
-            ),
             codemod_patch=(
                 f"# Remove `{axis_candidate.table_name}` as a second writable authority.\n"
                 f"# Derive `{axis_candidate.key_type_name}` lookup views from the auto-registered family keyed by `{axis_candidate.key_attr_name}` instead of hardcoding a parallel table."
@@ -2521,9 +2418,6 @@ class ParallelRegistryProjectionFamilyDetector(
                 f"over parallel extractor bases {extractor_bases}."
             ),
             evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass RegistryProjectionSpec:\n    registry_authority: type\n    target_type: type\n# One helper should own the registry-authority to target mapping."
-            ),
             codemod_patch=(
                 "# Extract one registry-projection family spec and one authoritative projection builder.\n# Make per-axis public helpers delegate to that authority instead of reconstructing collector(...registry_accessor())."
             ),
@@ -2609,9 +2503,6 @@ class RepeatedKeyedFamilyDetector(
                 f"`{lookup_names}` over `{family_candidate.family_base_name}`."
             ),
             evidence,
-            scaffold=(
-                'from metaclass_registry import AutoRegisterMeta\n\nKeyT = TypeVar("KeyT")\n\nclass KeyedNominalFamily(ABC, Generic[KeyT], metaclass=AutoRegisterMeta):\n    __registry_key__ = "registry_key"\n    __skip_if_no_key__ = True\n    registry_key: ClassVar[KeyT | None] = None\n    family_label: ClassVar[str] = "family"\n    @classmethod\n    def for_key(cls, key: KeyT):\n        try:\n            return cls.__registry__[key]\n        except KeyError as error:\n            raise ValueError(f"Unknown {cls.family_label}: {key}") from error'
-            ),
             codemod_patch=(
                 "# Extract one typed metaclass-registry base that owns registration lookup, duplicate handling, and error shaping.\n# Leave only declarative key attributes and irreducible hook methods on each family root, and read the registered classes from `cls.__registry__`."
             ),
@@ -3249,10 +3140,6 @@ declare_candidate_rule_detector(
         f"{candidate.injectivity_proof.duplicate_type_names}, missing keyed types {candidate.injectivity_proof.missing_type_names}."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    scaffold=lambda candidate: (
-        "@dataclass(frozen=True)\nclass InjectiveRegistryRow:\n    key: object\n    implementation_type: type[object]\n\n"
-        "# Build the registry from rows only after proving keys and implementation types are one-to-one."
-    ),
     codemod_patch=lambda candidate: (
         f"# Repair `{candidate.class_name}` before adding or keeping registry metaprogramming.\n"
         "# Give every concrete implementation exactly one canonical key and delete aliases or duplicate key writes.\n"
@@ -3290,12 +3177,6 @@ declare_candidate_rule_detector(
         f"consumers {candidate.consumer_symbols}; replace handwritten registry mechanics with AutoRegisterMeta."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    scaffold=lambda candidate: _metaclass_registry_keyed_family_scaffold(
-        root_name="InjectiveRegistryFamily",
-        key_attr_name=candidate.registry_key_attr_name,
-        key_type_name=candidate.key_type_name,
-        method_defs=("run(self)",),
-    ),
     codemod_patch=lambda candidate: (
         f"# Replace `{candidate.class_name}` handwritten `_registry` population with `AutoRegisterMeta`.\n"
         f"# Keep `{candidate.registry_key_attr_name}` as the canonical class-level key and let the metaclass prove class-time population."
@@ -3349,22 +3230,6 @@ declare_candidate_rule_detector(
     evidence=lambda candidate: (
         SourceLocation(candidate.file_path, candidate.line, candidate.surface_name),
     ),
-    scaffold=lambda candidate: (
-        "@dataclass(frozen=True)\n"
-        "class RegistryProjectionSpec:\n"
-        "    registry_authority: type[object]\n"
-        "    projection_policy: str\n"
-        "    projection_target: str\n"
-        "    materialization_rule: str\n"
-        "    decompression_key: str\n\n"
-        "def derive_registry_projection(spec: RegistryProjectionSpec):\n"
-        "    return project_from_injective_registry(\n"
-        "        spec.registry_authority,\n"
-        "        policy=spec.projection_policy,\n"
-        "        target=spec.projection_target,\n"
-        "        materialization=spec.materialization_rule,\n"
-        "    )"
-    ),
     codemod_patch=lambda candidate: (
         f"# Delete `{candidate.surface_name}` as a handwritten `{candidate.projection_role}` `{candidate.surface_kind}`.\n"
         f"# Replace it with RegistryProjectionSpec({candidate.registry_class_name}, policy={candidate.projection_policy_name!r}, target={candidate.projection_target_name!r}, materialization={candidate.materialization_rule.value!r}).\n"
@@ -3417,14 +3282,6 @@ declare_candidate_rule_detector(
         f"and materialize targets {candidate.projection_target_names} from specs."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    scaffold=lambda candidate: (
-        "class RegistryProjectionPolicy(ABC):\n"
-        "    @abstractmethod\n"
-        "    def includes_key(self, key): ...\n\n"
-        f"class {candidate.policy_hint.title()}ProjectionPolicy(RegistryProjectionPolicy):\n"
-        "    def includes_key(self, key): ...\n\n"
-        "REGISTRY_PROJECTION_SPECS = (...,)"
-    ),
     codemod_patch=lambda candidate: (
         f"# Replace repeated `{candidate.policy_hint}` subset surfaces {candidate.surface_names} with one nominal projection policy.\n"
         f"# Generate specs for targets {candidate.projection_target_names} using decompression keys {candidate.decompression_keys}."
@@ -3468,10 +3325,6 @@ declare_candidate_rule_detector(
         f"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}."
     ),
     evidence=lambda candidate: (candidate.evidence,),
-    scaffold=lambda candidate: (
-        "@dataclass(frozen=True)\nclass AxisRow:\n    key: object\n    value: object\n\n"
-        "# Keep rows in a small typed table until key cases, lifecycle, and consumer fanout are stable enough for a registry."
-    ),
     codemod_patch=lambda candidate: (
         f"# Do not promote `{candidate.class_name}` to registry infrastructure until it proves all three signals:\n"
         "# stable key cases, explicit lookup/class-time lifecycle, and at least two independent consumers.\n"
@@ -3523,9 +3376,6 @@ class ManualKeyedRecordTableDetector(
                 f"and `{lookup_names}` around key fields {key_fields}."
             ),
             evidence,
-            scaffold=(
-                'KeyT = TypeVar("KeyT")\nRecordT = TypeVar("RecordT")\n\n@dataclass(frozen=True)\nclass KeyedRecordTable(Generic[KeyT, RecordT]):\n    records: tuple[RecordT, ...]\n    key_of: Callable[[RecordT], KeyT]\n\n    def by_key(self) -> dict[KeyT, RecordT]:\n        return {self.key_of(record): record for record in self.records}'
-            ),
             codemod_patch=(
                 "# Replace per-class mutable `_registry` + `register` shells with one authoritative tuple of record specs.\n# Derive the keyed lookup dict once, or factor the pattern into a generic keyed-record table helper."
             ),
@@ -3573,9 +3423,6 @@ class ManualStructuralRecordMechanicsDetector(
                 f"{transform_methods} on top of base family `{base_names}`."
             ),
             evidence,
-            scaffold=(
-                "@dataclass_transform(field_specifiers=(field, record_field))\nclass StructuralRecordBase:\n    def validate(self): ...\n    def project_fields(self): ...\n    @classmethod\n    def from_projected(cls, projected, metadata): ...\n    def transformed(self, **changes): ...\n"
-            ),
             codemod_patch=(
                 "# Move validation constraints, projected-field partitions, and transform semantics into typed field metadata.\n# Derive projection, round-trip reconstruction, and fieldwise transforms from one structural-record base instead of re-encoding them per class."
             ),
@@ -3691,9 +3538,6 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                 f"Functions {function_names} repeatedly recover `{case_candidate.subject_role}` across concrete classes {class_names}.{alias_summary}{existing_base_summary}"
             ),
             case_candidate.evidence,
-            scaffold=(
-                f"class {suggested_family_name}(ABC):\n    @property\n    @abstractmethod\n    def case_label(self) -> str: ...\n\n    def explain_case(self, context):\n        return None\n"
-            ),
             codemod_patch=(
                 f"# Type `{case_candidate.subject_role}` against one nominal ABC family instead of a concrete union surface.\n# Move repeated concrete `isinstance` recovery into abstract properties or case hooks on that family.\n# Keep only irreducible case-local residue in the concrete subclasses."
             ),
@@ -3784,9 +3628,6 @@ class ImplicitSelfContractMixinDetector(
                 f"`{mixin_candidate.mixin_name}` uses `cast(..., self)` ({cast_types}) in `{methods}` to reach consumer-owned attributes ({accessed_attributes}) across subclasses {consumers}."
             ),
             mixin_candidate.evidence,
-            scaffold=(
-                "class FamilyBase(ABC):\n    def run_shared_step(self): ...\n\nclass CasePolicy(ABC):\n    def run(self, request): ...\n"
-            ),
             codemod_patch=(
                 f"# `{mixin_candidate.mixin_name}` is not an orthogonal mixin; it hides a consumer contract behind `cast(..., self)`.\n"
                 "# Move the shared behavior to a declared nominal base or a keyed policy/spec family, and leave only true orthogonal residue in mixins."
@@ -3841,9 +3682,6 @@ class RepeatedGuardValidatorFamilyDetector(
                 f"with the same fail-fast attribute checks over {shared_attrs}.{helper_summary}"
             ),
             family_candidate.evidence,
-            scaffold=(
-                "class ValidationCasePolicy(ABC):\n    def validation_error(self, subject):\n        child = self._subject_child(subject)\n        if not self._shared_preconditions(subject, child):\n            return self._shared_failure_message()\n        return self._case_specific_error(subject, child)\n\n    @abstractmethod\n    def _case_specific_error(self, subject, child): ..."
-            ),
             codemod_patch=(
                 "# Collapse these sibling boolean helpers into one authoritative case-policy family or one declarative rule table.\n# Keep shared fail-fast guards in one concrete validator method, and leave only case-specific predicates or handle sets per case."
             ),
@@ -3876,11 +3714,6 @@ class AllMissingAxisPredicateDetector(
                 f"{axis_names} inline before appending `{predicate_candidate.signal_name}`."
             ),
             (predicate_candidate.evidence,),
-            scaffold=(
-                "rent_axes = (behavior_axis, abstract_axis, projection_axis, consumer_axis)\n"
-                "if not any(rent_axes):\n"
-                '    missing.append("derived_signal")'
-            ),
             codemod_patch=(
                 f"# Name the axis bundle in `{predicate_candidate.function_name}` before testing it.\n"
                 f"# Replace the raw conjunction over {predicate_candidate.predicate_names} with `not any(axis_bundle)` "
@@ -3934,22 +3767,11 @@ class RepeatedValidateShapeGuardFamilyDetector(
         method_symbols = tuple(method.symbol for method in family_candidate.methods)
         method_summary = ", ".join(method_symbols[:6])
         shared_guard_count = len(family_candidate.shared_shape_guard_signatures)
-        shared_guard_preview = ", ".join(
-            family_candidate.shared_shape_guard_signatures[:3]
-        )
-        preview_suffix = (
-            f" Shared normalized guards include {shared_guard_preview}."
-            if shared_guard_preview
-            else ""
-        )
         return self.build_finding(
             (
                 f"Validate methods {method_summary} repeat {shared_guard_count} shared shape/ndim guard forms."
             ),
             family_candidate.evidence,
-            scaffold=(
-                f"class ShapeValidatedRecord(ABC):\n    def validate(self):\n        for predicate, message in self._shape_guard_rules():\n            if predicate(self):\n                raise ValueError(message)\n        self._validate_residue()\n\n    @classmethod\n    @abstractmethod\n    def _shape_guard_rules(cls): ...\n\n    def _validate_residue(self):\n        return None{preview_suffix}"
-            ),
             codemod_patch=(
                 "# Collapse repeated `validate()` shape guards into one authoritative validated-record base or field-spec table.\n# Keep only the truly variable residue checks, messages, or field roster on each concrete record."
             ),
@@ -3990,9 +3812,6 @@ class RepeatedResultAssemblyPipelineDetector(
                 f"{stage_names} and differ only in their leading source stages."
             ),
             evidence,
-            scaffold=(
-                "class ResultAssembler(ABC):\n    @abstractmethod\n    def supply_inputs(self, request): ...\n\n    def assemble(self, request):\n        supplied = self.supply_inputs(request)\n        # run the shared downstream assembly stages here\n        return result"
-            ),
             codemod_patch=(
                 "# Extract the shared assignment/return tail into one authoritative helper.\n# Leave only the source-supplier stage variant-specific."
             ),
@@ -4038,9 +3857,6 @@ declare_candidate_rule_detector(
     summary=lambda collector: (
         f"`{collector.class_name}.{collector.method_name}` only forwards to `{collector.collector_name}`; inherit `{collector.recommended_base_name}` and declare `candidate_collector` instead."
     ),
-    scaffold=lambda collector: (
-        f"class {collector.class_name}({collector.recommended_base_name}):\n    candidate_collector = {collector.collector_name}\n"
-    ),
     codemod_patch=lambda collector: (
         f"# Delete the forwarding `_candidate_items()` method.\n# Change the detector base to `{collector.recommended_base_name}` and assign `candidate_collector = {collector.collector_name}`."
     ),
@@ -4076,9 +3892,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` to `{candidate.candidate_type_name}` before doing real work; parameterize `{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type."
     ),
-    scaffold=lambda candidate: (
-        f"class {candidate.class_name}({candidate.detector_base_name}[{candidate.candidate_type_name}]):\n    def {candidate.method_name}(self, {candidate.local_name}: {candidate.candidate_type_name}) -> RefactorFinding:\n        ..."
-    ),
     codemod_patch=lambda candidate: (
         f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude."
     ),
@@ -4108,9 +3921,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` is a {candidate.line_count}-line metadata-only detector over `{candidate.candidate_type_name}` with assignments {candidate.assignment_names}."
-    ),
-    scaffold=lambda candidate: (
-        f"declare_module_detector({candidate.candidate_type_name}, finding_spec, finding_renderer, detector_base={candidate.base_name})"
     ),
     codemod_patch=lambda candidate: (
         f"# Replace `{candidate.class_name}` with `declare_module_detector(...)`.\n# Keep only true detector-specific values: spec, renderer, optional collector, and base."
@@ -4145,9 +3955,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` repeats a {candidate.line_count}-line static observation shell over `{candidate.observation_family_name}` / `{candidate.observation_type_name}`."
-    ),
-    scaffold=lambda candidate: (
-        f'declare_typed_observation_detector(\n    "{candidate.class_name}",\n    finding_spec,\n    {candidate.observation_family_name},\n    {candidate.observation_type_name},\n    summary_template,\n)'
     ),
     codemod_patch=lambda candidate: (
         f"# Replace `{candidate.class_name}` with `declare_typed_observation_detector(...)`.\n# Keep detector-specific semantics as declarations: finding spec, observation family/type, minimum evidence, and summary template."
@@ -4193,16 +4000,6 @@ declare_candidate_rule_detector(
         f"{family.requirement_modes} and coercions {family.coercion_kinds} are schema rows."
     ),
     evidence=lambda family: family.evidence_locations,
-    scaffold=lambda family: (
-        "@dataclass(frozen=True)\n"
-        "class ProjectionFieldSpec:\n"
-        "    key: Enum\n"
-        "    required: bool\n"
-        "    coerce: Callable[[object], object]\n\n"
-        "class PayloadProjectionSchema:\n"
-        "    fields: ClassVar[tuple[ProjectionFieldSpec, ...]]\n"
-        "    def project(self, key): ..."
-    ),
     codemod_patch=lambda family: (
         f"# Replace accessor methods {family.method_names} on `{family.class_name}` "
         f"with one authoritative projection schema keyed by `{family.enum_name}`.\n"
@@ -4242,14 +4039,6 @@ declare_candidate_rule_detector(
         f"`{candidate.function_name}` uses positional tuple paths "
         f"{candidate.index_expressions} inside carrier pipeline calls "
         f"{candidate.carrier_call_names}."
-    ),
-    scaffold=lambda candidate: (
-        "from dataclasses import dataclass\n\n"
-        "@dataclass(frozen=True)\n"
-        "class PipelineContext:\n"
-        "    source: Source\n"
-        "    projection: Projection\n"
-        "# Replace `pair[0]`/`pair[1]` with named fields derived once by the carrier stage."
     ),
     codemod_patch=lambda candidate: (
         "# Introduce a named product record or authority-owned context for the carrier stage.\n"
@@ -4324,9 +4113,6 @@ class FindingSpecDefaultFieldBoilerplateDetector(
                 f"{keyword_summary}{constructor_note}."
             ),
             (field_candidate.evidence,),
-            scaffold=(
-                f"{field_candidate.recommended_constructor_name}(\n    pattern_id=...,\n    title=...,\n    ...\n)"
-            ),
             codemod_patch=(
                 f"# Replace `{field_candidate.constructor_name}` with "
                 f"`{field_candidate.recommended_constructor_name}` where needed.\n"
@@ -4360,9 +4146,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.symbol}` calls `self.finding_spec.build(self.detector_id, ...)`; `build_finding(...)` can derive the detector id from the instance."
-    ),
-    scaffold=lambda candidate: (
-        "return self.build_finding(\n    summary,\n    evidence,\n    ...\n)"
     ),
     codemod_patch=lambda candidate: (
         "# Replace `self.finding_spec.build(` with `self.build_finding(`.\n# Delete the leading `self.detector_id,` argument."
@@ -4405,9 +4188,6 @@ class DirectBuildFindingRendererDetector(
                 f"positional payloads and {keyword_summary}."
             ),
             (renderer.evidence,),
-            scaffold=(
-                "finding_renderer = CandidateFindingRenderer[Candidate](\n    summary=lambda candidate: ...,\n    evidence=lambda candidate: ...,\n)"
-            ),
             codemod_patch=(
                 f"# Move the `{renderer.method_name}` payload in `{renderer.class_name}` to a `CandidateFindingRenderer` classvar.\n# Let `CandidateFindingDetector._finding_for_candidate` run the renderer."
             ),
@@ -4439,9 +4219,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` builds `{candidate.constructor_name}` by spelling {len(candidate.keyword_names)} FindingSpec coordinate keywords; use `{candidate.builder_name}`."
-    ),
-    scaffold=lambda candidate: (
-        f"finding_spec = {candidate.builder_name}(\n    PatternId.EXAMPLE,\n    title,\n    why,\n    capability_gap,\n    relation_context,\n)"
     ),
     codemod_patch=lambda candidate: (
         f"# Replace `{candidate.constructor_name}(pattern_id=..., title=..., ...)` with `{candidate.builder_name}(...)` and let the builder own coordinate names."
@@ -4475,9 +4252,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"{candidate.file_path} declares conversion matrix {candidate.function_names} over sources {candidate.source_axis_values} and targets {candidate.target_axis_values}; factor it into closed axes."
-    ),
-    scaffold=lambda candidate: (
-        "class SourceMemory(Enum): ...\nclass TargetMemory(Enum): ...\n\nCONVERTERS = {\n    (SourceMemory.CPU, TargetMemory.GPU): convert_cpu_gpu,\n}\n\ndef convert(value, source, target):\n    return CONVERTERS[(source, target)](value)"
     ),
     codemod_patch=lambda candidate: (
         "# Replace pairwise conversion function selection with one source/target axis table.\n# Keep specialized conversion bodies only as private table entries when they carry real backend semantics."
@@ -4514,16 +4288,6 @@ declare_candidate_rule_detector(
         f"Operations {candidate.function_names} repeat array capability probes "
         f"{candidate.attribute_names}; move capability discovery into an array bridge."
     ),
-    scaffold=lambda candidate: (
-        "class ArrayBridge(ABC):\n"
-        + "\n".join(
-            (
-                f"    @property\n    @abstractmethod\n    def {attribute_name.strip('_')}(self): ..."
-                for attribute_name in candidate.attribute_names
-            )
-        )
-        + "\n\n    @abstractmethod\n    def normalize(self, value): ..."
-    ),
     codemod_patch=lambda candidate: (
         f"# Replace repeated probes {candidate.attribute_names} in {candidate.function_names} "
         "with one array bridge selected at the boundary.\n"
@@ -4556,9 +4320,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.qualname}` hand-declares visitor stacks {candidate.stack_names} across {candidate.transition_method_names}."
-    ),
-    scaffold=lambda candidate: (
-        "class Visitor(ClassFunctionStackNodeVisitor):\n    def before_visit_function(self, node):\n        ..."
     ),
     codemod_patch=lambda candidate: (
         "# Delete repeated stack lifecycle methods after moving initialization and `visit_ClassDef`/`visit_FunctionDef` push/pop transitions into a nominal ABC such as `ClassFunctionStackNodeVisitor`; keep only visitor-specific hooks and node handlers in the concrete class."
@@ -4598,9 +4359,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` reads {candidate.property_names} from `{candidate.table_name}` across {candidate.case_count} enum cases."
-    ),
-    scaffold=lambda candidate: (
-        "class MetadataEnum(StrEnum):\n    def __new__(cls, value: str, label: str):\n        obj = str.__new__(cls, value)\n        obj._value_ = value\n        obj.label = label\n        return obj"
     ),
     codemod_patch=lambda candidate: (
         f"# Move `{candidate.table_name}` values into `{candidate.class_name}` member tuples and delete the table-backed property lookups."
@@ -4668,9 +4426,6 @@ declare_candidate_rule_detector(
             candidate.argument_spec_name,
         ),
     ),
-    scaffold=lambda candidate: (
-        "for field in fields(ConfigRecord):\n    value = namespace_values.get(field.name, field.default)\n    ...\n\nCLI_SPECS = tuple(spec_from_field(field) for field in fields(ConfigRecord) if field.name in HELP)"
-    ),
     codemod_patch=lambda candidate: (
         f"# Derive `{candidate.class_name}.from_namespace()` and `{candidate.argument_spec_name}` from dataclass fields/defaults.\n# Keep per-option help text as the only CLI-specific residue."
     ),
@@ -4713,7 +4468,6 @@ declare_candidate_rule_detector(
             f"{fiber_candidate.class_name}.{fiber_candidate.method_name}",
         ),
     ),
-    scaffold=lambda fiber_candidate: _manual_fiber_tag_scaffold(fiber_candidate),
     codemod_patch=lambda fiber_candidate: _manual_fiber_tag_patch(fiber_candidate),
     metrics=lambda fiber_candidate: DispatchCountMetrics.from_literal_family(
         dispatch_axis=f"self.{fiber_candidate.tag_name}",
@@ -4761,7 +4515,6 @@ class DeferredClassRegistrationDetector(
         return self.build_finding(
             f"Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation.",
             tuple(evidence),
-            scaffold=_manual_registry_scaffold(registry_candidate),
             codemod_patch=_manual_registry_patch(registry_candidate),
             metrics=RegistrationMetrics(
                 registration_site_count=len(registry_candidate.class_names),
@@ -4799,7 +4552,6 @@ class StructuralConfusabilityDetector(
         return self.build_finding(
             f"`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view.",
             evidence,
-            scaffold=_structural_confusability_scaffold(confusability_candidate),
             codemod_patch=_structural_confusability_patch(confusability_candidate),
         )
 
@@ -4837,7 +4589,6 @@ class SemanticWitnessFamilyDetector(
         return self.build_finding(
             f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier.",
             evidence,
-            scaffold=_witness_carrier_family_scaffold(witness_candidate),
             codemod_patch=_witness_carrier_family_patch(witness_candidate),
             metrics=WitnessCarrierMetrics(
                 class_count=len(witness_candidate.class_names),

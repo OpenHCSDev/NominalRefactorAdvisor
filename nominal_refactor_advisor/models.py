@@ -765,7 +765,6 @@ class RefactorFinding(FindingSemantics):
     summary: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
     authority_evidence: SourceLocation | None = None
-    scaffold: str | None = None
     codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
@@ -848,7 +847,6 @@ class RefactorFinding(FindingSemantics):
 
     def to_dict(self) -> dict[str, object]:
         payload = super().to_dict()
-        payload.pop("scaffold", None)
         payload.pop("codemod_patch", None)
         payload["stable_id"] = self.stable_id
         payload["evidence_ids"] = tuple(
@@ -871,7 +869,6 @@ class RefactorFinding(FindingSemantics):
         confidence: ConfidenceLevel | None = None,
         relation_context: str | None = None,
         authority_evidence: SourceLocation | None = None,
-        scaffold: str | None = None,
         codemod_patch: str | None = None,
         compression_certificate: CompressionCertificate | None = None,
         certification: CertificationLevel | None = None,
@@ -890,7 +887,6 @@ class RefactorFinding(FindingSemantics):
             relation_context=relation_context or spec.relation_context,
             evidence=evidence,
             authority_evidence=authority_evidence,
-            scaffold=scaffold,
             codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,
             certification=certification or spec.certification,
@@ -904,15 +900,12 @@ class RefactorFinding(FindingSemantics):
 class FindingSpec(FindingSemantics):
     """Reusable finding template shared by detector implementations."""
 
-    scaffold_template: str | None = None
-
     def build(
         self,
         detector_id: str,
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        scaffold: str | None = None,
         codemod_patch: str | None = None,
         compression_certificate: CompressionCertificate | None = None,
         metrics: FindingMetrics | None = None,
@@ -937,7 +930,6 @@ class FindingSpec(FindingSemantics):
             confidence=confidence,
             relation_context=relation_context,
             authority_evidence=authority_evidence,
-            scaffold=scaffold,
             codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,
             certification=certification,

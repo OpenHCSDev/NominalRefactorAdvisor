@@ -119,10 +119,6 @@ class SemanticAuthorityKind(StrEnum):
         True,
         "derived class-family registry or polymorphic dispatch",
         True,
-        "# Derive presentation views from `{authority_name}` instead of "
-        "maintaining a parallel list/dict.\n"
-        "for key, member_type in {authority_name}.__registry__.items():\n"
-        "    ...",
         "Replace the mirrored projection with a registry-derived view or "
         "polymorphic method on `{authority_name}`. Matched members: "
         "{matched_names}.",
@@ -135,10 +131,6 @@ class SemanticAuthorityKind(StrEnum):
         True,
         "derived class-family registry or polymorphic dispatch",
         True,
-        "# Derive presentation views from `{authority_name}` instead of "
-        "maintaining a parallel list/dict.\n"
-        "for key, member_type in {authority_name}.__registry__.items():\n"
-        "    ...",
         "Replace the mirrored projection with a registry-derived view or "
         "polymorphic method on `{authority_name}`. Matched members: "
         "{matched_names}.",
@@ -151,8 +143,6 @@ class SemanticAuthorityKind(StrEnum):
         False,
         "dataclass-schema-derived projection",
         False,
-        "# Derive the projection from `{authority_name}` dataclass fields or "
-        "move the schema-owned behavior onto the record.",
         "Move the repeated field projection behind `{authority_name}` or derive "
         "it from dataclass fields. Matched fields: {matched_names}.",
         "fields",
@@ -163,8 +153,6 @@ class SemanticAuthorityKind(StrEnum):
         False,
         "enum-derived case table or enum-owned behavior",
         False,
-        "# Use `{authority_name}` members as the authority and derive secondary "
-        "views from the enum.",
         "Move the case table behind `{authority_name}` or derive it by iterating "
         "enum members. Matched members: {matched_names}.",
         "members",
@@ -175,8 +163,6 @@ class SemanticAuthorityKind(StrEnum):
         False,
         "detector-declared semantic mirror authority",
         False,
-        "# Replace the detector-observed mirror `{authority_name}` with a "
-        "projection derived from its nominal authority.",
         "Derive `{authority_name}` from the nominal authority instead of "
         "maintaining the detector-observed mirror. Matched facts: {matched_names}.",
         "facts",
@@ -189,7 +175,6 @@ class SemanticAuthorityKind(StrEnum):
         is_class_family_like: bool,
         reporting_capability_gap: str,
         uses_registration_metrics: bool,
-        reporting_scaffold_template: str,
         reporting_codemod_patch_template: str,
         mirrored_fact_label: str,
         missing_derivation_instruction: str,
@@ -199,7 +184,6 @@ class SemanticAuthorityKind(StrEnum):
         member._is_class_family_like = is_class_family_like
         member._reporting_capability_gap = reporting_capability_gap
         member._uses_registration_metrics = uses_registration_metrics
-        member._reporting_scaffold_template = reporting_scaffold_template
         member._reporting_codemod_patch_template = reporting_codemod_patch_template
         member._mirrored_fact_label = mirrored_fact_label
         member._missing_derivation_instruction = missing_derivation_instruction
@@ -216,10 +200,6 @@ class SemanticAuthorityKind(StrEnum):
     @property
     def uses_registration_metrics(self) -> bool:
         return self._uses_registration_metrics
-
-    @property
-    def reporting_scaffold_template(self) -> str:
-        return self._reporting_scaffold_template
 
     @property
     def reporting_codemod_patch_template(self) -> str:

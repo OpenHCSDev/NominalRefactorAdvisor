@@ -404,7 +404,6 @@ class AuthorityDiscoveryRequiredFindingProjection:
                 f"searching {discovery.searched_symbols}: {discovery.reason}."
             ),
             evidence=cls.evidence_for_resolution(item, resolution),
-            scaffold=cls.scaffold_for_claim(claim),
             codemod_patch=(
                 f"# Do not invent `{claim.claimed_symbol}`.\n"
                 "# Reference the real authority with file_path, qualname, "

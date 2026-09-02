@@ -156,9 +156,6 @@ class ManualFamilyRosterDetector(
                 ),
                 *candidate.member_locations,
             )[:6],
-            scaffold=(
-                f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n\nregistered_types = tuple(Registered{candidate.family_base_name}.__registry__.values())"
-            ),
             codemod_patch=(
                 f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
                 f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
@@ -235,9 +232,6 @@ declare_candidate_rule_detector(
         f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
     ),
     evidence=lambda query_candidate: query_candidate.evidence,
-    scaffold=lambda query_candidate: (
-        "ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]"
-    ),
     codemod_patch=lambda query_candidate: (
         f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes."
     ),
@@ -279,12 +273,6 @@ declare_candidate_rule_detector(
         "derive the companion surface from the schema authority instead of redeclaring it."
     ),
     evidence=lambda candidate: candidate.evidence_locations,
-    scaffold=lambda candidate: (
-        f"def make_{candidate.surface_role_name}_dataclass(schema_type: type[{candidate.authority_class_name}]):\n"
-        "    fields = dataclasses.fields(schema_type)\n"
-        "    return derive_companion_dataclass(schema_type, fields)\n\n"
-        f"{candidate.companion_class_name} = make_{candidate.surface_role_name}_dataclass({candidate.authority_class_name})"
-    ),
     codemod_patch=lambda candidate: (
         f"# Delete the manually mirrored `{candidate.companion_class_name}` field declarations.\n"
         f"# Generate the `{candidate.surface_role_name}` companion from `dataclasses.fields({candidate.authority_class_name})`, "
@@ -344,11 +332,8 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 FindingBuildContext(
-                    scaffold=(
-                        "class CandidateFindingDetector(PerModuleIssueDetector, ABC):\n    @abstractmethod\n    def iter_candidates(self, module, config): ...\n\n    @abstractmethod\n    def build_finding(self, candidate): ...\n\n    def _findings_for_module(self, module, config):\n        return [self.build_finding(candidate) for candidate in self.iter_candidates(module, config)]"
-                    ),
                     codemod_patch=(
-                        "# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves."
+                        "# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and codemod direction on the leaves."
                     ),
                     metrics=RepeatedMethodMetrics.from_duplicate_family(
                         duplicate_site_count=len(candidates),
@@ -403,9 +388,6 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                         "with guards/defaults varying per site."
                     ),
                     evidence,
-                    scaffold=(
-                        f"class {callee_name}:\n    @classmethod\n    def from_sources(cls, ...):\n        return cls(...)"
-                    ),
                     codemod_patch=(
                         f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
                         "# Leave call sites responsible only for naming the source authorities, not reassigning every field."
@@ -459,9 +441,6 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 FindingBuildContext(
-                    scaffold=(
-                        "class ScopeFilteredSpec(ObservationShapeSpec, ABC):\n    @abstractmethod\n    def accepts_scope(self, observation): ...\n\n    @abstractmethod\n    def delegate(self, parsed_module, node, observation): ...\n\n    def build_shape(self, parsed_module, observation):\n        if not self.accepts_scope(observation):\n            return None\n        return self.delegate(parsed_module, observation.node, observation)"
-                    ),
                     codemod_patch=(
                         "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
                     ),
@@ -549,9 +528,6 @@ class StructuralObservationProjectionDetector(
                 f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{candidate.property_name}` with the same `{candidate.constructor_name}` schema over roles {candidate.keyword_names}."
             ),
             evidence,
-            scaffold=(
-                f"class ProjectionTemplate(ABC):\n    @property\n    def {candidate.property_name}(self) -> {candidate.constructor_name}:\n        return {candidate.constructor_name}(...)"
-            ),
             codemod_patch=(
                 f"# Introduce one projection template for `{candidate.property_name}` over roles {candidate.keyword_names}.\n"
                 "# Leave only the role-specific hooks on the concrete carriers."

@@ -644,13 +644,11 @@ def _finding_assembly_pipeline_candidates_for_class(
     if candidate_source_name is None:
         return
     metrics_type_name = _build_call_keyword_helper_name(build_call, "metrics")
-    scaffold_helper_name = _build_call_keyword_helper_name(build_call, "scaffold")
     patch_helper_name = _build_call_keyword_helper_name(build_call, "codemod_patch")
     if not any(
         helper_name is not None
         for helper_name in (
             metrics_type_name,
-            scaffold_helper_name,
             patch_helper_name,
         )
     ):
@@ -664,7 +662,6 @@ def _finding_assembly_pipeline_candidates_for_class(
             for item in (
                 candidate_source_name,
                 metrics_type_name,
-                scaffold_helper_name,
                 patch_helper_name,
             )
             if item is not None
@@ -672,7 +669,6 @@ def _finding_assembly_pipeline_candidates_for_class(
         method_name=method.name,
         candidate_source_name=candidate_source_name,
         metrics_type_name=metrics_type_name,
-        scaffold_helper_name=scaffold_helper_name,
         patch_helper_name=patch_helper_name,
     )
 
@@ -4034,7 +4030,6 @@ def _compact_exact_tiny_method_role_candidates(
         file_path = orbit.file_path
         method_name = orbit.method_name
         indexed_classes = orbit.indexed_classes
-        methods = orbit.methods
         participant_symbols = frozenset(item.symbol for item in indexed_classes)
         ancestor_sets = tuple(
             frozenset(class_index.ancestor_symbols(item.symbol))
@@ -4588,29 +4583,6 @@ def _autoregister_patch(
     )
 
 
-def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
-    callee_name = builders[0].callee_name
-    field_names = builders[0].field_names
-    row_name = callee_name if callee_name[:1].isupper() else "ProjectedRow"
-    args_block = "\n".join(
-        (f"            {name}=source.{name}," for name in field_names[:4])
-    )
-    return f"@dataclass(frozen=True)\nclass {row_name}:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(\n{args_block}\n        )"
-
-
-def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
-    base_name = (
-        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(sorted(class_names))
-        or "RegisteredBase"
-    )
-    sample = sorted(class_names)[:2]
-    config_block = DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(sample)
-    subclass_block = "\n".join(
-        (f"class {name}({base_name}):\n    ..." for name in sample)
-    )
-    return f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass {base_name}(ABC, metaclass=AutoRegisterMeta):\n{config_block}\n\n{subclass_block}"
-
-
 @lru_cache(maxsize=None)
 def _attribute_branch_evidence(
     module: ParsedModule, attr_name: str
@@ -4664,12 +4636,6 @@ def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunct
         for node in _walk_nodes(module)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
-
-
-def _projection_helper_scaffold(shapes: Sequence[ProjectionHelperShape]) -> str:
-    function_names = ", ".join(shape.function_name for shape in shapes)
-    attributes = ", ".join(sorted({shape.projected_attribute for shape in shapes}))
-    return f"def _render_projection(items, projector):\n    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n# Projected fields: {attributes}"
 
 
 @dataclass(frozen=True)

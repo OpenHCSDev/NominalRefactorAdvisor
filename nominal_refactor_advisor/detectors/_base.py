@@ -1,7 +1,7 @@
 """Detector substrate and shared helper machinery.
 
 This module contains the shared detector registry, common base classes, candidate
-records, helper functions, and patch/scaffold utilities used by the concrete
+records, helper functions, and patch utilities used by the concrete
 detector implementations.
 """
 
@@ -302,8 +302,6 @@ class FindingSpecFactory(Generic[FindingSpecT]):
         relation_context: str,
         capability_tags: tuple[CapabilityTag, ...] = (),
         observation_tags: tuple[ObservationTag, ...] = (),
-        *,
-        scaffold_template: str | None = None,
     ) -> FindingSpecT:
         return self.spec_type(
             pattern_id=pattern_id,
@@ -313,7 +311,6 @@ class FindingSpecFactory(Generic[FindingSpecT]):
             relation_context=relation_context,
             capability_tags=capability_tags,
             observation_tags=observation_tags,
-            scaffold_template=scaffold_template,
         )
 
     @property
@@ -346,8 +343,6 @@ class CertifiedLevelFindingSpecFactory:
         relation_context: str,
         capability_tags: tuple[CapabilityTag, ...] = (),
         observation_tags: tuple[ObservationTag, ...] = (),
-        *,
-        scaffold_template: str | None = None,
     ) -> FindingSpec:
         return FindingSpec(
             pattern_id=pattern_id,
@@ -357,7 +352,6 @@ class CertifiedLevelFindingSpecFactory:
             relation_context=relation_context,
             capability_tags=capability_tags,
             observation_tags=observation_tags,
-            scaffold_template=scaffold_template,
             certification=self.certification,
         )
 
@@ -573,7 +567,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             detector_id,
             summary,
             evidence,
-            scaffold=context.scaffold,
             codemod_patch=context.codemod_patch,
             compression_certificate=context.compression_certificate,
             metrics=context.metrics,
@@ -1131,7 +1124,6 @@ SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 
 
 class FindingBuildContextKwargs(TypedDict, total=False):
-    scaffold: str | None
     codemod_patch: str | None
     compression_certificate: CompressionCertificate | None
     metrics: FindingMetrics | None
@@ -1150,7 +1142,6 @@ class FindingBuildContextKwargs(TypedDict, total=False):
 class FindingBuildContext:
     """Nominal bundle for finding rendering, payoff, and override authority."""
 
-    scaffold: str | None = None
     codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics | None = None
@@ -1179,7 +1170,6 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     target_finding_type: ClassVar[type[RefactorFinding]] = RefactorFinding
     summary: CandidateSummaryRenderer[CandidateItemT]
     evidence: CandidateEvidenceRenderer[CandidateItemT]
-    scaffold: OptionalCandidateTextRenderer[CandidateItemT] = None
     codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None
     compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
@@ -1199,7 +1189,6 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
 
     def build_context(self, candidate: CandidateItemT) -> FindingBuildContext:
         return FindingBuildContext(
-            scaffold=self._optional_value(candidate, self.scaffold),
             codemod_patch=self._optional_value(candidate, self.codemod_patch),
             compression_certificate=self._optional_value(
                 candidate, self.compression_certificate
@@ -2154,7 +2143,6 @@ def declare_candidate_rule_detector(
     *,
     summary: CandidateSummaryRenderer[CandidateItemT],
     evidence: CandidateEvidenceRenderer[CandidateItemT] = single_candidate_evidence,
-    scaffold: OptionalCandidateTextRenderer[CandidateItemT] = None,
     codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None,
     compression_certificate: OptionalCandidateCompressionRenderer[
         CandidateItemT
@@ -2169,7 +2157,6 @@ def declare_candidate_rule_detector(
     renderer = CandidateFindingRenderer(
         summary=summary,
         evidence=evidence,
-        scaffold=scaffold,
         codemod_patch=codemod_patch,
         compression_certificate=compression_certificate,
         metrics=metrics,
@@ -6909,13 +6896,6 @@ def _witness_carrier_family_candidates(
     return tuple(findings)
 
 
-def _manual_fiber_tag_scaffold(candidate: ManualFiberTagCandidate) -> str:
-    root_name = candidate.class_name
-    first_case = _camel_case(candidate.case_names[0].strip("'\""))
-    second_case = _camel_case(candidate.case_names[1].strip("'\""))
-    return f"class {root_name}(ABC):\n    @abstractmethod\n    def {candidate.method_name}(self): ...\n\nclass {first_case}{root_name}({root_name}): ...\nclass {second_case}{root_name}({root_name}): ..."
-
-
 def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
     return (
         f"# Remove the manual fiber tag `{candidate.tag_name}` from `{candidate.class_name}`\n"
@@ -6924,17 +6904,10 @@ def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
     )
 
 
-def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
-    return 'from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass EventHandler(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "event_type"\n    __skip_if_no_key__ = True\n    event_type = None\n\n    @classmethod\n    def type_for_event_type(cls, event_type):\n        return cls.__registry__[event_type]'
-
-
 def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
     return f"# Replace decorator `{candidate.decorator_name}` and registry `{candidate.registry_name}`\n# with `from metaclass_registry import AutoRegisterMeta`, a declarative class key, and\n# `cls.__registry__` so class creation and registration are one event."
 
 
-_AXIS_POLICY_ROOT_NAME = "AxisPolicy"
-_AXIS_POLICY_KEY_TYPE_NAME = "AxisEnum"
-_AXIS_POLICY_KEY_ATTR_NAME = "axis_key"
 _CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
 
 
@@ -6987,77 +6960,11 @@ def _shared_registry_key_suffix(class_names: Sequence[str]) -> str | None:
     return "".join(raw_token_lists[0][-shared_count:])
 
 
-def _metaclass_registry_keyed_family_scaffold(
-    *,
-    root_name: str,
-    key_type_name: str,
-    key_attr_name: str,
-    method_defs: tuple[str, ...],
-    returns_instance: bool = True,
-) -> str:
-    registry_lookup = "cls.__registry__[key]()"
-    if not returns_instance:
-        registry_lookup = "cls.__registry__[key]"
-    lines = [
-        "from abc import ABC, abstractmethod",
-        "from metaclass_registry import AutoRegisterMeta",
-        "from typing import ClassVar",
-        "",
-        f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
-        DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
-            key_attr_name, key_type_name=key_type_name
-        ),
-        "",
-        "    @classmethod",
-        f"    def for_key(cls, key: {key_type_name}):",
-        f"        return {registry_lookup}",
-    ]
-    for method_def in method_defs:
-        lines.extend(("", "    @abstractmethod", f"    def {method_def}: ..."))
-    return "\n".join(lines)
-
-
-def _axis_policy_registry_scaffold(*method_defs: str) -> str:
-    return _metaclass_registry_keyed_family_scaffold(
-        root_name=_AXIS_POLICY_ROOT_NAME,
-        key_type_name=_AXIS_POLICY_KEY_TYPE_NAME,
-        key_attr_name=_AXIS_POLICY_KEY_ATTR_NAME,
-        method_defs=method_defs,
-    )
-
-
-def _structural_confusability_scaffold(
-    candidate: StructuralConfusabilityCandidate,
-) -> str:
-    root_name = f"{_camel_case(candidate.parameter_name)}Interface"
-    method_block = "\n".join(
-        (
-            f"    @abstractmethod\n    def {name}(self, *args, **kwargs): ..."
-            for name in candidate.observed_method_names
-        )
-    )
-    return f"class {root_name}(ABC):\n{method_block}"
-
-
 def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate) -> str:
     return (
         f"# The consumer `{candidate.function_name}` only observes `{candidate.parameter_name}` through methods {candidate.observed_method_names}.\n"
         f"# Introduce an ABC witness for that view and type the consumer against it instead of duck-typed coincidence."
     )
-
-
-def _witness_carrier_family_scaffold(candidate: WitnessCarrierFamilyCandidate) -> str:
-    lines = [
-        "@dataclass(frozen=True)",
-        "class SemanticCarrier(ABC):",
-        "    source_path: str",
-        "    source_line: int",
-        "    primary_name: str | None",
-        "",
-        "@dataclass(frozen=True)",
-        f"class {candidate.class_names[0]}(SemanticCarrier): ...",
-    ]
-    return "\n".join(lines)
 
 
 def _witness_carrier_family_patch(
@@ -7069,76 +6976,29 @@ def _witness_carrier_family_patch(
     )
 
 
-_WITNESS_NAME_PAYLOAD_ROLE = "name_payload"
-_WITNESS_NAME_FAMILY_ROLE = _NAME_FAMILY_FIELD
-_WITNESS_LINE_ROLE = "source_line"
-_WITNESS_PATH_ROLE = "source_path"
-_WITNESS_MIXIN_ROLE_NAMES = (
-    _WITNESS_NAME_PAYLOAD_ROLE,
-    _WITNESS_NAME_FAMILY_ROLE,
-    _WITNESS_LINE_ROLE,
-    _WITNESS_PATH_ROLE,
-)
+class WitnessMixinRole(StrEnum):
+    """Declared semantic witness role and its nominal mixin owner."""
 
-
-@dataclass(frozen=True)
-class WitnessMixinRoleSpec:
     mixin_name: str
-    scaffold: str
 
+    def __new__(cls, value: str, mixin_name: str) -> "WitnessMixinRole":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.mixin_name = mixin_name
+        return member
 
-_WITNESS_MIXIN_ROLE_SPECS = {
-    _WITNESS_NAME_PAYLOAD_ROLE: WitnessMixinRoleSpec(
-        mixin_name="PrimaryNameMixin",
-        scaffold="class PrimaryNameMixin(ABC):\n    @property\n    @abstractmethod\n    def primary_name(self) -> str | None: ...",
-    ),
-    _WITNESS_NAME_FAMILY_ROLE: WitnessMixinRoleSpec(
-        mixin_name="NameFamilyMixin",
-        scaffold=f"class NameFamilyMixin(ABC):\n    @property\n    @abstractmethod\n    def {_WITNESS_NAME_FAMILY_ROLE}(self) -> tuple[str, ...]: ...\n\n    @property\n    def primary_name(self) -> str | None:\n        return self.{_WITNESS_NAME_FAMILY_ROLE}[0] if self.{_WITNESS_NAME_FAMILY_ROLE} else None",
-    ),
-    _WITNESS_LINE_ROLE: WitnessMixinRoleSpec(
-        mixin_name="SourceLineMixin",
-        scaffold="class SourceLineMixin(ABC):\n    @property\n    @abstractmethod\n    def source_line(self) -> int: ...",
-    ),
-    _WITNESS_PATH_ROLE: WitnessMixinRoleSpec(
-        mixin_name="SourcePathMixin",
-        scaffold="class SourcePathMixin(ABC):\n    @property\n    @abstractmethod\n    def source_path(self) -> str: ...",
-    ),
-}
+    NAME_PAYLOAD = ("name_payload", "PrimaryNameMixin")
+    NAME_FAMILY = (_NAME_FAMILY_FIELD, "NameFamilyMixin")
+    SOURCE_LINE = ("source_line", "SourceLineMixin")
+    SOURCE_PATH = ("source_path", "SourcePathMixin")
 
-
-def _witness_mixin_role_spec(role_name: str) -> WitnessMixinRoleSpec:
-    try:
-        return _WITNESS_MIXIN_ROLE_SPECS[role_name]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported semantic mixin role: {role_name}") from exc
+    @classmethod
+    def recognizes(cls, role_name: str) -> bool:
+        return any(role.value == role_name for role in cls)
 
 
 def _witness_role_mixin_name(role_name: str) -> str:
-    return _witness_mixin_role_spec(role_name).mixin_name
-
-
-def _witness_role_mixin_scaffold(role_name: str) -> str:
-    return _witness_mixin_role_spec(role_name).scaffold
-
-
-def _witness_mixin_enforcement_scaffold(
-    candidate: WitnessMixinEnforcementCandidate,
-) -> str:
-    role_names = tuple((role_name for role_name, _ in candidate.role_field_names))
-    blocks = [_witness_role_mixin_scaffold(role_name) for role_name in role_names]
-    mixin_names = ", ".join(
-        (_witness_role_mixin_name(role_name) for role_name in role_names)
-    )
-    blocks.append(
-        "\n".join(
-            (
-                "@dataclass(frozen=True)",
-                f"class {candidate.class_names[0]}(SemanticCarrier, {mixin_names}): ...",
-            )
-        )
-    )
-    return "\n\n".join(blocks)
+    return WitnessMixinRole(role_name).mixin_name
 
 
 def _witness_mixin_enforcement_patch(
@@ -7608,7 +7468,6 @@ class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
     method_name: str
     candidate_source_name: str
     metrics_type_name: str | None
-    scaffold_helper_name: str | None
     patch_helper_name: str | None
 
 

@@ -166,26 +166,6 @@ def collect_nested_branch_chains_from_body(
     return tuple(chains)
 
 
-def _literal_dispatch_authority_name(dispatch_axis_expression: str) -> str:
-    words = "".join(
-        (
-            character if character.isalnum() else "_"
-            for character in dispatch_axis_expression
-        )
-    ).strip("_")
-    return f"dispatch_{words or 'case'}"
-
-
-def _literal_dispatch_case_class_name(literal_case: str, index: int) -> str:
-    words = "".join(
-        (
-            character if character.isalnum() else "_"
-            for character in literal_case.strip("'\"")
-        )
-    )
-    return f"{_camel_case(words) or f'Case{index}'}DispatchCase"
-
-
 def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
@@ -193,40 +173,6 @@ def _literal_dispatch_authority_patch(
 
 
 class LiteralDispatchFindingFactory:
-    def authority_scaffold(self, observation: LiteralDispatchObservation) -> str:
-        dispatch_name = _literal_dispatch_authority_name(
-            observation.dispatch_axis_expression
-        )
-        case_classes = tuple(
-            (
-                _literal_dispatch_case_class_name(case, index)
-                for index, case in enumerate(observation.literal_cases, start=1)
-            )
-        )
-        case_class_blocks = "\n\n".join(
-            (
-                f"class {class_name}(DispatchCase):\n    case = {case}\n\n    def apply(self, *args, **kwargs):\n        ..."
-                for class_name, case in zip(case_classes, observation.literal_cases)
-            )
-        )
-        return (
-            "from abc import ABC, abstractmethod\n"
-            "from typing import ClassVar\n"
-            "from metaclass_registry import AutoRegisterMeta\n\n"
-            "class DispatchCase(ABC, metaclass=AutoRegisterMeta):\n"
-            '    __registry_key__ = "case"\n'
-            "    __skip_if_no_key__ = True\n"
-            "    case: ClassVar[object] = None\n\n"
-            "    @classmethod\n"
-            "    def for_case(cls, key):\n"
-            "        return cls.__registry__[key]()\n\n"
-            "    @abstractmethod\n"
-            "    def apply(self, *args, **kwargs): ...\n\n"
-            f"{case_class_blocks}\n\n"
-            f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
-            "    return DispatchCase.for_case(axis_value).apply(*args, **kwargs)"
-        )
-
     def finding(
         self,
         detector: PerModuleIssueDetector,
@@ -246,7 +192,6 @@ class LiteralDispatchFindingFactory:
             relation_context=(
                 f"same observed axis `{observation.dispatch_axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
             ),
-            scaffold=self.authority_scaffold(observation),
             codemod_patch=_literal_dispatch_authority_patch(observation),
             metrics=DispatchCountMetrics.from_literal_family(
                 observation.dispatch_axis_expression,
@@ -962,12 +907,6 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
                 mapping_name="formal_boundary_external_string_registry",
                 source_name=str(path),
             ),
-            scaffold=(
-                "class GeneratedFormalBoundaryIdAuthority:\n"
-                "    @classmethod\n"
-                "    def id_for(cls, symbolic_name):\n"
-                "        return FormalArtifactCatalog.current().id_for(symbolic_name)"
-            ),
             codemod_patch=(
                 "# Replace the Python-side string-id catalog with a generated "
                 "authority loaded from the formal artifact/export. Keep symbolic "
@@ -1189,12 +1128,6 @@ class GeneratedBoundarySemanticConstantAuthority:
                 field_names=(target_name, value),
                 mapping_name="generated_boundary_semantic_constant",
                 source_name=target_name,
-            ),
-            scaffold=(
-                "class GeneratedSemanticConstantAuthority:\n"
-                "    @classmethod\n"
-                "    def value_for(cls, symbolic_name):\n"
-                "        return GeneratedConstantCatalog.current().value_for(symbolic_name)"
             ),
             codemod_patch=(
                 "# Delete the handwritten runtime copy of this generated semantic "
@@ -1491,11 +1424,6 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                     f"site(s): {', '.join(bridge_kinds)}."
                 ),
                 evidence,
-                scaffold=(
-                    "# Replace namespace bridge imports with explicit imports from the true owner module.\n"
-                    "# Delete `globals().update(...)` compatibility transport and publish one public authority/export surface.\n"
-                    "# Replace `if name not in globals()` guards with unconditional definitions or fail-loud imports."
-                ),
                 codemod_patch=(
                     "# Remove runtime namespace copying in this module.\n"
                     "# Add explicit imports for every required dependency, then let missing names raise at import time."
@@ -1752,16 +1680,6 @@ class LoadBearingRelationBranchDetector(PerModuleIssueDetector):
                             f"{result_summary}."
                         ),
                         evidence,
-                        scaffold=(
-                            "class RelationCase(ABC, metaclass=AutoRegisterMeta):\n"
-                            "    __registry_key__ = 'case_name'\n"
-                            "    @abstractmethod\n"
-                            "    def matches(self, request): ...\n"
-                            "    @abstractmethod\n"
-                            "    def certificate(self, request): ...\n\n"
-                            "# One authority should require exactly one matching relation case;\n"
-                            "# branch order must not carry proof-relevant semantics."
-                        ),
                         codemod_patch=(
                             f"# Replace the ordered relation branches in `{qualname}` "
                             "with an AutoRegisterMeta-backed relation-case family.\n"
@@ -2102,7 +2020,6 @@ class RepeatedBuilderCallDetector(
                         if same_source
                         else self.finding_spec.capability_gap
                     ),
-                    scaffold=_builder_scaffold(ordered),
                     codemod_patch=_builder_patch(ordered),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
@@ -2176,7 +2093,6 @@ class ManualClassRegistrationDetector(
         return self.build_finding(
             f"Registry `{registry_name}` is populated manually for {len(class_names)} classes across {len(registrations)} sites.",
             evidence,
-            scaffold=_autoregister_scaffold(registry_name, class_names),
             codemod_patch=_autoregister_patch(
                 registry_name, class_names, registrations
             ),
@@ -2412,31 +2328,11 @@ class ManualConcreteSubclassRosterDetector(
             else ""
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])
-        config_block = (
-            DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
-                roster_candidate.registration_site.selector_attr_name
-            )
-            if roster_candidate.registration_site.selector_attr_name is not None
-            else DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(
-                roster_candidate.concrete_class_names
-            )
-        )
-        scaffold_imports = (
-            "from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\n"
-            if roster_candidate.registration_site.selector_attr_name is None
-            else "from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n"
-        )
         return self.build_finding(
             (
                 f"`{roster_candidate.class_name}` maintains roster `{roster_candidate.registry_name}` for {len(roster_candidate.concrete_class_names)} concrete subclasses ({concrete_preview}){guard_summary} and consumes it via {roster_candidate.consumer_names}."
             ),
             tuple(evidence[:6]),
-            scaffold=(
-                scaffold_imports
-                + "class AutoRegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
-                + f"{config_block}\n\n"
-                + "registered_types = tuple(AutoRegisteredFamily.__registry__.values())"
-            ),
             codemod_patch=(
                 f"# Remove manual roster `{roster_candidate.registry_name}` from `{roster_candidate.class_name}`.\n"
                 "# Reuse one metaclass-registry base so descendant discovery and abstract filtering are not rewritten per family."
@@ -2492,20 +2388,6 @@ class LatentImplementationRosterDetector(
             if match.projection_policy_hint is not None
             else ""
         )
-        projection_expression = (
-            f"tuple({roster_candidate.class_name}.__registry__.keys())"
-            if roster_candidate.key_attr_name is not None
-            else f"tuple({roster_candidate.class_name}.__registry__.values())"
-        )
-        registry_block = (
-            DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
-                roster_candidate.key_attr_name
-            )
-            if roster_candidate.key_attr_name is not None
-            else DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(
-                roster_candidate.concrete_class_names
-            )
-        )
         return self.build_finding(
             (
                 f"`{roster.roster_name}` is a `{roster.roster_kind}` roster "
@@ -2515,13 +2397,6 @@ class LatentImplementationRosterDetector(
                 f"{projection_suffix}."
             ),
             (roster_candidate.evidence,),
-            scaffold=(
-                "from abc import ABC\n"
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                f"class {roster_candidate.class_name}(ABC, metaclass=AutoRegisterMeta):\n"
-                f"{registry_block}\n\n"
-                f"{roster.roster_name} = {projection_expression}"
-            ),
             codemod_patch=(
                 f"# Delete manual roster `{roster.roster_name}`.\n"
                 f"# Promote `{roster_candidate.class_name}` to `ABC, metaclass=AutoRegisterMeta` and derive this projection from `__registry__`"
@@ -3210,17 +3085,6 @@ class AutoRegisterMetaUnderRentedDetector(
                 f"Rent margin {rent_candidate.rent_margin}."
             ),
             (rent_candidate.evidence,),
-            scaffold=(
-                "from abc import ABC, abstractmethod\n"
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                "class RentedFamily(ABC, metaclass=AutoRegisterMeta):\n"
-                '    __registry_key__ = "semantic_key"\n\n'
-                "    @classmethod\n"
-                "    def for_key(cls, key):\n"
-                "        return cls.__registry__[key]\n\n"
-                "    @abstractmethod\n"
-                "    def run(self, value): ..."
-            ),
             codemod_patch=(
                 f"# Prove or remove AutoRegisterMeta on `{rent_candidate.class_name}`.\n"
                 "# Rent proof must expose a stable key axis, multiple registered leaves, and a behavioral contract.\n"
@@ -3289,9 +3153,6 @@ class PredicateSelectedConcreteFamilyDetector(
                 f"{len(family_candidate.concrete_class_names)} concrete leaves ({concrete_preview}) before manually choosing one match."
             ),
             tuple(evidence[:6]),
-            scaffold=(
-                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
-            ),
             codemod_patch=(
                 f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
                 "# Leave only `matches_context(...)` and family-specific error shaping on the root, and stop reimplementing `cls.__registry__.values()` scans."
@@ -3348,20 +3209,6 @@ class ParallelMirroredLeafFamilyDetector(
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
             mirrored_candidate.evidence[:6],
-            scaffold=(
-                "from abc import ABC, abstractmethod\n\n"
-                "class SharedRoleMixin(ABC):\n"
-                "    @abstractmethod\n"
-                "    def emit(self, artifact):\n"
-                "        raise NotImplementedError\n\n"
-                "class ConcreteRoleMixin(SharedRoleMixin):\n"
-                "    def emit(self, artifact):\n"
-                "        return artifact.role_value\n\n"
-                f"class {mirrored_candidate.left.root_name}ConcreteRole(ConcreteRoleMixin, {mirrored_candidate.left.root_name}):\n"
-                "    pass\n\n"
-                f"class {mirrored_candidate.right.root_name}ConcreteRole(ConcreteRoleMixin, {mirrored_candidate.right.root_name}):\n"
-                "    pass\n"
-            ),
             codemod_patch=(
                 f"# Preserve roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` as nominal domain authorities.\n"
                 "# Extract each repeated role implementation once into a mixin, then compose role mixins with domain roots through multiple inheritance.\n"
@@ -3562,9 +3409,6 @@ class ConcreteConfigFieldProbeDetector(
                 f"fields {missing_fields} through `{reflective_builtins}` on `{probe_candidate.config_attr_name}`."
             ),
             (probe_candidate.evidence,),
-            scaffold=(
-                "class BackendConfig(ABC):\n    @property\n    @abstractmethod\n    def declared_parameter(self) -> object: ..."
-            ),
             codemod_patch=(
                 f"# Delete reflective field probes against `{probe_candidate.config_type_name}`.\n"
                 "# Either move this backend onto its own declared config contract or use fields that the concrete config type actually owns."
@@ -3714,7 +3558,6 @@ class ExactTypeGuardInheritanceRetreatDetector(
                 f"inheritance graph contains descendant(s) {descendants}."
             ),
             candidate.evidence,
-            scaffold=guard.structural_membership_expression,
             codemod_patch=(
                 f"# Replace `{guard.expression}` with "
                 f"`{guard.structural_membership_expression}` at this "
@@ -4705,20 +4548,6 @@ class AlgebraicVariantMethodFamilyDetector(
                 f"algebra, not method names.{context_suffix}"
             ),
             candidate.evidence,
-            scaffold=(
-                "from abc import ABC, abstractmethod\n\n"
-                "class OperationVariant(ABC):\n"
-                "    @abstractmethod\n"
-                "    def apply(self, authority, request):\n"
-                "        raise NotImplementedError\n\n"
-                "class ConcreteOperationVariant(OperationVariant):\n"
-                "    def apply(self, authority, request):\n"
-                "        return authority._construct_variant(request)\n\n"
-                f"class {exemplar.owner_class_name}(...):\n"
-                "    def with_variant(self, variant: OperationVariant, request):\n"
-                "        return variant.apply(self, request)\n\n"
-                "# The nominal variant owns leaf execution; the authority only delegates."
-            ),
             codemod_patch=(
                 f"# Replace variant method family {seed.method_names} on "
                 f"`{exemplar.owner_class_name}` with one nominal request/context operation.\n"
@@ -4859,9 +4688,6 @@ class MirroredImportFallbackDetector(
                 f"from {module_summary} across relative and absolute ImportError branches."
             ),
             (import_candidate.evidence,),
-            scaffold=(
-                "# Establish one package/direct-script import authority before local imports.\n# Then use canonical relative imports once instead of mirroring every import list."
-            ),
             codemod_patch=(
                 "# Replace mirrored relative/absolute import branches with a package bootstrap or shared import adapter."
             ),
@@ -5013,9 +4839,6 @@ class RepeatedLocalRegexBundleDetector(
                 f"local regex grammar literals across {functions}."
             ),
             regex_candidate.evidence_locations,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass SyntaxAuthority:\n    recognizers: tuple[Pattern[str], ...]\n    def parse(self, text: str): ..."
-            ),
             codemod_patch=(
                 "# Move repeated local regex grammar into one typed syntax authority.\n# Derive parser operations from named recognizers instead of redeclaring patterns in each helper."
             ),
@@ -5063,7 +4886,6 @@ class RepeatedProjectionHelperDetector(
         return self.build_finding(
             f"Projection helper wrappers {', '.join((shape.function_name for shape in ordered[:4]))} repeat the same wrapper shape while only projecting different attributes.",
             evidence,
-            scaffold=_projection_helper_scaffold(list(ordered)),
             metrics=MappingMetrics(
                 mapping_site_count=len(ordered), field_count=len(attributes)
             ),
@@ -5116,7 +4938,6 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
             self.build_finding(
                 f"{module.path} encodes guarded wrapper functions {function_names} and specs {spec_names} as parallel wrapper/spec pairs over node families {node_families}.",
                 evidence,
-                scaffold="class NodeFamilySpec(ABC):\n    node_types: ClassVar[tuple[type[ast.AST], ...]]\n\n    @classmethod\n    def build(cls, parsed_module, observation):\n        node = observation.node\n        if not isinstance(node, cls.node_types):\n            return None\n        return cls.build_for_node(parsed_module, node, observation)",
             )
         ]
 
@@ -5160,7 +4981,6 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
                 self.build_finding(
                     f"{module.path} hand-expands indexed family members {', '.join((item.function_name for item in ordered[:4]))} over `{ordered[0].collector_name}`.",
                     evidence,
-                    scaffold="Introduce one nominal family abstraction that owns the shared collection scaffold and encode only the varying family index metadata in subclasses or descriptors.",
                 )
             )
         return findings
