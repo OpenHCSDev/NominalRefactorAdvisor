@@ -2113,7 +2113,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     assert module_path.read_text(encoding="utf-8") == original_source
 
 
-def test_authority_inference_updates_the_terminal_evaluation_recipe(
+def test_semantic_descent_context_does_not_guess_an_authority_claim(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "class HandlerAuthority:\n    pass\n")
@@ -2143,7 +2143,8 @@ def test_authority_inference_updates_the_terminal_evaluation_recipe(
         strategy_type=MappingSemanticMirrorRecipeStrategy,
     ).gated_by_authority_claim(snapshot, finding)
     assert original_recipe.authority_claims == ()
-    assert evaluation.required_recipe.authority_claims
+    assert evaluation.candidate_recipes == ()
+    assert "source-resolved AuthorityClaim" in evaluation.rejection_reason
 
 
 def test_semantic_descent_recipe_requires_a_formal_authority_claim() -> None:

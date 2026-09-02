@@ -54,8 +54,10 @@ compatibility fallback.
 Authority proof is structural rather than textual.  Recipe preflight validates
 declared ``AuthorityClaim`` values but never infers obligations from rationale
 prose.  ``SemanticDescentRecipeEvaluation`` owns the stronger semantic-descent
-contract: it must carry or source-resolve a claim before its recipe can remain
-an executable candidate.
+contract: each recipe builder must carry a claim derived from its exact resolved
+source target, or use an authority-declaration operation for a newly introduced
+boundary, before its recipe can remain an executable candidate.  The evaluation
+gate validates that proof without guessing authority names from finding text.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
    :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet

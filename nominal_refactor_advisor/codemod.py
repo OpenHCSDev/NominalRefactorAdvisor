@@ -12578,103 +12578,15 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
         context: CodemodSelectorContext | None,
         finding: RefactorFinding,
     ) -> FindingRecipeEvaluation:
-        evaluation = self
-        if context is not None:
-            inferred_recipe = FindingAuthorityClaimInference(
-                finding=finding,
-                context=context,
-            ).recipe_with_inferred_claims(evaluation.executable_recipe)
-            if inferred_recipe is not evaluation.executable_recipe:
-                evaluation = evaluation.with_recipe(inferred_recipe)
-        if not evaluation.executable_recipe.effective_authority_claims:
+        del finding
+        if not self.executable_recipe.effective_authority_claims:
             return RejectedRecipeEvaluation(
                 reason=(
                     "semantic-descent recipe requires a source-resolved AuthorityClaim"
                 ),
                 executable_declaration_type=self.executable_declaration_type,
             )
-        return evaluation.gated_by_existing_authority_claim(context)
-
-
-@dataclass(frozen=True)
-class FindingAuthorityClaimInference:
-    """Infer source-proved authority claims for generated finding recipes."""
-
-    finding: RefactorFinding
-    context: CodemodSelectorContext
-
-    def recipe_with_inferred_claims(self, recipe: RefactorRecipe) -> RefactorRecipe:
-        if recipe.effective_authority_claims:
-            return recipe
-        claims = self.resolved_claims()
-        if not claims:
-            return recipe
-        return replace(recipe, authority_claims=(*recipe.authority_claims, *claims))
-
-    def resolved_claims(self) -> tuple[AuthorityClaim, ...]:
-        resolver = AuthorityClaimSourceIndexResolver(self.context.source_index)
-        claims: list[AuthorityClaim] = []
-        for candidate in self.candidate_symbols():
-            claim = AuthorityClaim(claimed_symbol=candidate)
-            resolution = resolver.resolve(claim)
-            if not resolution.is_resolved:
-                continue
-            proof_edge = resolution.proof_edges[0]
-            claims.append(
-                replace(
-                    claim,
-                    file_path=proof_edge.file_path,
-                    qualname=proof_edge.symbol,
-                    authority_id=proof_edge.authority_id,
-                )
-            )
-            break
-        return tuple(dict.fromkeys(claims))
-
-    def candidate_symbols(self) -> tuple[str, ...]:
-        raw_symbols = (
-            *self.metric_candidate_symbols(),
-            *(
-                EvidenceSymbol(evidence.symbol).subject
-                for evidence in self.finding.evidence
-            ),
-        )
-        return tuple(
-            dict.fromkeys(
-                candidate
-                for symbol in raw_symbols
-                for candidate in self.symbol_variants(symbol)
-            )
-        )
-
-    def metric_candidate_symbols(self) -> tuple[str, ...]:
-        metrics = self.finding.metrics
-        candidates: list[str] = []
-        for candidate in (
-            metrics.plan_source_name,
-            metrics.plan_registry_name,
-            metrics.plan_mapping_name,
-        ):
-            if candidate:
-                candidates.append(candidate)
-        candidates.extend(metrics.plan_class_names)
-        return tuple(candidates)
-
-    @staticmethod
-    def symbol_variants(symbol: str) -> tuple[str, ...]:
-        if not symbol:
-            return ()
-        variants = [symbol]
-        subject = EvidenceSymbol(symbol).subject
-        if subject and subject != symbol:
-            variants.append(subject)
-        terminal = subject.rsplit(".", maxsplit=1)[-1]
-        if terminal and terminal != subject:
-            variants.append(terminal)
-        pascal = _pascal_case_identifier(terminal.lower())
-        if pascal and pascal != terminal:
-            variants.append(pascal)
-        return tuple(variants)
+        return self.gated_by_existing_authority_claim(context)
 
 
 class FindingRecipeAuthorityClaimGate:
@@ -15798,10 +15710,20 @@ class EnumSubsetProjectionTarget:
 class EnumSubsetAuthorityTarget:
     """Enum authority receiving the subset policy method."""
 
-    source_path: str
+    target: AstTargetDigest
     import_source: str
-    class_name: str
-    qualname: str
+
+    @property
+    def source_path(self) -> str:
+        return self.target.file_path
+
+    @property
+    def class_name(self) -> str:
+        return self.target.name
+
+    @property
+    def qualname(self) -> str:
+        return self.target.qualname
 
 
 @dataclass(frozen=True)
@@ -15914,18 +15836,27 @@ class EnumSubsetSemanticMirrorRecipeParts(FindingRecipeParts):
             selection=self.selection,
             class_source=self.class_source,
         ).bundle()
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-enum-subset-mapping",
-            reason="Move enum subset projection behind the enum authority.",
-        ).with_operation(
-            ReplaceTargetOperation(
-                target=SourceRewriteTarget(
-                    target_id=None,
-                    qualname=self.authority.qualname,
-                    file_path=self.authority.source_path,
-                ),
-                replacement_source=source_bundle.authority_replacement_source,
-                rationale="",
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-derive-enum-subset-mapping",
+                reason="Move enum subset projection behind the enum authority.",
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    self.authority.target,
+                    authority_kind=SemanticAuthorityKind.ENUM.value,
+                )
+            )
+            .with_operation(
+                ReplaceTargetOperation(
+                    target=SourceRewriteTarget(
+                        target_id=None,
+                        qualname=self.authority.qualname,
+                        file_path=self.authority.source_path,
+                    ),
+                    replacement_source=source_bundle.authority_replacement_source,
+                    rationale="",
+                )
             )
         )
         if self.projection.projection_path != self.authority.source_path:
@@ -16070,10 +16001,8 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
                 mapping_name=seed.mapping_name,
             ),
             authority=EnumSubsetAuthorityTarget(
-                source_path=seed.authority_file_path(),
+                target=projection.authority.target,
                 import_source=authority_import_source,
-                class_name=seed.authority_name,
-                qualname=projection.authority.target.qualname,
             ),
             selection=EnumSubsetMemberSelection(
                 accessor_name=method_name,
@@ -16426,10 +16355,16 @@ class ReturnKeyValueSequenceProjectionTargetAuthority:
 class DataclassPayloadAuthorityTarget:
     """Dataclass authority that owns projected payload field names."""
 
-    source_path: str
-    class_name: str
     target: AstTargetDigest
     node: ast.ClassDef
+
+    @property
+    def source_path(self) -> str:
+        return self.target.file_path
+
+    @property
+    def class_name(self) -> str:
+        return self.target.name
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -17108,7 +17043,7 @@ class DataclassAuthorityMappingRecipeBuilder(
             return None
         if import_boundary.import_would_create_cycle(self):
             return None
-        authority = self.authority_target(seed, import_boundary.authority_path)
+        authority = self.authority_target(seed)
         projection = self.projection_target(seed, import_boundary.projection_path)
         return (
             Maybe.of((authority, projection))
@@ -17120,7 +17055,6 @@ class DataclassAuthorityMappingRecipeBuilder(
     def authority_target(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
-        source_path: str,
     ) -> DataclassPayloadAuthorityTarget | None:
         field_names = frozenset(self.finding.metrics.plan_field_names)
         return (
@@ -17133,8 +17067,6 @@ class DataclassAuthorityMappingRecipeBuilder(
             )
             .map(
                 lambda resolved_target: DataclassPayloadAuthorityTarget(
-                    source_path=source_path,
-                    class_name=resolved_target.node.name,
                     target=resolved_target.target,
                     node=resolved_target.node,
                 )
@@ -17321,6 +17253,11 @@ class DataclassProjectionRecipeParts(FindingRecipeParts):
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-dataclass-projection",
             reason="Derive a mirrored projection from its dataclass authority.",
+        ).with_authority_claim(
+            AstTargetAuthorityClaim.from_target(
+                self.authority.target,
+                authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA.value,
+            )
         )
         for import_source in (
             *((self.import_source,) if self.import_source is not None else ()),
@@ -18639,7 +18576,6 @@ class LocalRoleCaseLogicRecipeParts:
 
     source_path: str
     function_qualname: str
-    insertion_qualname: str
     authority_name: str
     item_class_name: str
     extraction: LocalRoleCaseAuthorityExtractionBase
@@ -18655,11 +18591,15 @@ class LocalRoleCaseLogicRecipeParts:
                 reason="Move local role-case literals behind a nominal authority.",
             )
             .with_operation(
-                InsertBeforeTargetOperation(
-                    target=SourceRewriteTarget(
-                        qualname=self.insertion_qualname, file_path=self.source_path
+                DeclareAuthorityOperation(
+                    target=SourceRewriteTarget(file_path=self.source_path),
+                    authority_claim=AuthorityClaim(
+                        claimed_symbol=self.authority_name,
+                        authority_kind=SemanticAuthorityKind.CLASS_FAMILY.value,
+                        file_path=self.source_path,
+                        qualname=self.authority_name,
                     ),
-                    source=authority_source,
+                    authority_source=authority_source,
                     rationale="",
                 )
             )
@@ -18838,7 +18778,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
                 lambda row: LocalRoleCaseLogicRecipeParts(
                     source_path=resolved_source_path,
                     function_qualname=target_digest.qualname,
-                    insertion_qualname=self.insertion_qualname(target_digest.qualname),
                     authority_name=f"{row[2]}RoleCaseAuthority",
                     item_class_name=f"{row[2]}RoleCase",
                     extraction=row[1],
@@ -19562,13 +19501,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(
         function_name = EvidenceSymbol(evidence.symbol).subject.rsplit(".", 1)[-1]
         return _pascal_case_identifier(function_name) or "RoleCase"
 
-    @staticmethod
-    def insertion_qualname(function_qualname: str) -> str:
-        owner_qualname, separator, _ = function_qualname.rpartition(".")
-        if separator:
-            return owner_qualname
-        return function_qualname
-
     def class_name_conflicts(self, *class_names: str) -> bool:
         requested = frozenset(class_names)
         return any(
@@ -19747,48 +19679,6 @@ class ClassFamilyCollectionProjection:
         )
 
 
-@dataclass(frozen=True)
-class SemanticMirrorAuthorityLocation:
-    """Shared file and symbol identity for semantic-mirror authority imports."""
-
-    projection_path: str
-    authority_path: str
-    authority_name: str
-
-    def authority_claim(self) -> AuthorityClaim:
-        return AuthorityClaim(
-            claimed_symbol=self.authority_name,
-            file_path=self.authority_path,
-            qualname=self.authority_name,
-        )
-
-    @classmethod
-    def at_authority_file(
-        cls,
-        *,
-        authority_path: str,
-        authority_name: str,
-    ) -> "SemanticMirrorAuthorityLocation":
-        return cls(
-            projection_path=authority_path,
-            authority_path=authority_path,
-            authority_name=authority_name,
-        )
-
-    def with_projection_path(
-        self,
-        projection_path: str,
-    ) -> "SemanticMirrorAuthorityLocation":
-        return replace(self, projection_path=projection_path)
-
-    def import_source(self, graph: SourceModuleImportGraph) -> str | None:
-        return graph.import_source(
-            importing_file_path=self.projection_path,
-            imported_file_path=self.authority_path,
-            imported_name=self.authority_name,
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class ContextualSemanticMirrorRecipeBuilder(
     CodemodSelectorContext,
@@ -19862,11 +19752,43 @@ class ContextualSemanticMirrorRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLocation):
+class ClassFamilyCollectionAuthorityResolution:
+    """Exact class-family target and its complete runtime member projection."""
+
+    target: AstTargetDigest
+    membership_projection: ClassFamilyCollectionMembershipProjection
+
+
+@dataclass(frozen=True)
+class ClassFamilyCollectionSemanticMirrorRecipeParts:
     """Executable recipe facts for a subclass-collection semantic mirror."""
 
+    projection_path: str
+    authority_target: AstTargetDigest
     assignment_name: str
     assignment_source: str
+
+    @property
+    def authority_path(self) -> str:
+        return self.authority_target.file_path
+
+    @property
+    def authority_name(self) -> str:
+        return self.authority_target.name
+
+    @property
+    def authority_claim(self) -> AuthorityClaim:
+        return AstTargetAuthorityClaim.from_target(
+            self.authority_target,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY.value,
+        )
+
+    def import_source(self, graph: SourceModuleImportGraph) -> str | None:
+        return graph.import_source(
+            importing_file_path=self.projection_path,
+            imported_file_path=self.authority_path,
+            imported_name=self.authority_name,
+        )
 
     def recipe_for(
         self,
@@ -19876,7 +19798,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-class-family-collection",
             reason="Derive subclass collection from the class-family authority.",
-        ).with_authority_claim(self.authority_claim())
+        ).with_authority_claim(self.authority_claim)
         if self.projection_path != self.authority_path:
             import_source = self.import_source(import_graph)
             if import_source is None:
@@ -19933,27 +19855,26 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 lambda row, projection: (row[0], row[1], row[2], projection),
             )
             .combine(
-                lambda row: self.membership_projection_for(row[0]),
-                lambda row, membership_projection: (
+                lambda row: self.authority_resolution_for(row[0]),
+                lambda row, authority_resolution: (
                     row[0],
                     row[1],
                     row[2],
                     row[3],
-                    membership_projection,
+                    authority_resolution,
                 ),
             )
             .map(
                 lambda row: ClassFamilyCollectionSemanticMirrorRecipeParts(
                     projection_path=row[0].projection_file_path(),
-                    authority_path=row[0].authority_file_path(),
-                    authority_name=row[0].authority_symbol(),
+                    authority_target=row[4].target,
                     assignment_name=row[1],
                     assignment_source=self.replacement_assignment_source(
                         row[2],
                         row[1],
-                        row[0].authority_symbol(),
+                        row[4].target.name,
                         row[3],
-                        row[4],
+                        row[4].membership_projection,
                     ),
                 )
             )
@@ -19978,32 +19899,40 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
                 "projection assignment is not a literal class or class-name "
                 "collection matching all mirrored class names"
             )
-        if self.membership_projection_for(seed) is None:
+        authority_resolution = self.authority_resolution_for(seed)
+        if authority_resolution is None:
             return (
                 "nominal class-family authority exposes no complete runtime member "
                 "query for this projection"
             )
         if (
             seed.projection_file_path() != seed.authority_file_path()
-            and SemanticMirrorAuthorityLocation(
-                projection_path=seed.projection_file_path(),
-                authority_path=seed.authority_file_path(),
-                authority_name=seed.authority_symbol(),
-            ).import_source(self.module_import_graph)
+            and self.module_import_graph.import_source(
+                importing_file_path=seed.projection_file_path(),
+                imported_file_path=authority_resolution.target.file_path,
+                imported_name=authority_resolution.target.name,
+            )
             is None
         ):
             return "semantic authority has no canonical importable module identity"
         return "class-family collection derivation is available"
 
-    def membership_projection_for(
+    def authority_resolution_for(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
-    ) -> ClassFamilyCollectionMembershipProjection | None:
+    ) -> ClassFamilyCollectionAuthorityResolution | None:
         if self.class_family_index is None:
             return None
+        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
+            self,
+            seed.authority_source_location(),
+            seed.authority_symbol(),
+        )
+        if resolved_target is None:
+            return None
         authority_symbol = self.class_family_index.symbol_for(
-            file_path=seed.authority_file_path(),
-            qualname=seed.authority_symbol(),
+            file_path=resolved_target.file_path,
+            qualname=resolved_target.qualname,
         )
         if authority_symbol is None:
             return None
@@ -20027,10 +19956,18 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
             )
             if (child := self.class_family_index.class_for(child_symbol)) is not None
         )
-        return ClassFamilyCollectionMembershipProjection.for_authority_declaration(
-            authority_declaration.declares_autoregister_meta,
-            projected_member_names == descendant_names,
-            projected_member_names == direct_member_names,
+        membership_projection = (
+            ClassFamilyCollectionMembershipProjection.for_authority_declaration(
+                authority_declaration.declares_autoregister_meta,
+                projected_member_names == descendant_names,
+                projected_member_names == direct_member_names,
+            )
+        )
+        if membership_projection is None:
+            return None
+        return ClassFamilyCollectionAuthorityResolution(
+            target=resolved_target.target,
+            membership_projection=membership_projection,
         )
 
     def assignment_matches_class_collection(
@@ -20154,11 +20091,15 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 class AutoregisterInstanceViewRecipeParts:
     """Executable recipe facts for an AutoRegister-derived instance view."""
 
-    source_path: str
-    base_name: str
+    projection_path: str
+    authority_target: AstTargetDigest
     assignment_name: str
     class_key_pairs: tuple[str, ...]
     method_name: str = "instances_by_registry_key"
+
+    @property
+    def base_name(self) -> str:
+        return self.authority_target.name
 
 
 @dataclass(frozen=True)
@@ -20174,14 +20115,6 @@ class AutoregisterInstanceViewRecipeSeed(AutoregisterInstanceViewRecipeSeedDraft
 
     class_key_pairs: tuple[str, ...]
 
-    def parts(self) -> AutoregisterInstanceViewRecipeParts:
-        return AutoregisterInstanceViewRecipeParts(
-            source_path=self.projection_file_path(),
-            base_name=self.authority_symbol(),
-            assignment_name=self.assignment_name,
-            class_key_pairs=self.class_key_pairs,
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
 class AutoregisterInstanceViewRecipeBuilder(
@@ -20194,17 +20127,26 @@ class AutoregisterInstanceViewRecipeBuilder(
         parts = self.parts()
         if parts is None:
             return None
-        return RefactorRecipe(
-            recipe_id=f"{self.finding.stable_id}-derive-autoregister-instance-view",
-            reason="Derive instance view from existing AutoRegisterMeta registry.",
-        ).with_operation(
-            DeriveAutoregisterInstanceViewOperation(
-                target=SourceRewriteTarget(file_path=parts.source_path),
-                base_name=parts.base_name,
-                assignment_name=parts.assignment_name,
-                class_key_pairs=tuple(parts.class_key_pairs),
-                method_name=parts.method_name,
-                rationale="",
+        return (
+            RefactorRecipe(
+                recipe_id=f"{self.finding.stable_id}-derive-autoregister-instance-view",
+                reason="Derive instance view from existing AutoRegisterMeta registry.",
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    parts.authority_target,
+                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+                )
+            )
+            .with_operation(
+                DeriveAutoregisterInstanceViewOperation(
+                    target=SourceRewriteTarget(file_path=parts.projection_path),
+                    base_name=parts.base_name,
+                    assignment_name=parts.assignment_name,
+                    class_key_pairs=tuple(parts.class_key_pairs),
+                    method_name=parts.method_name,
+                    rationale="",
+                )
             )
         )
 
@@ -20212,8 +20154,33 @@ class AutoregisterInstanceViewRecipeBuilder(
         seed = self.seed()
         if seed is None:
             return None
-        parts = seed.parts()
-        if not self.parts_are_safe(parts):
+        class_names = tuple(
+            ClassRegistryKeyPair.parse(source).class_name
+            for source in seed.class_key_pairs
+        )
+        concrete_targets = ClassMemberPromotionTargets.resolve_or_none(
+            self,
+            source_path=seed.projection_file_path(),
+            class_names=class_names,
+        )
+        authority_targets = ClassMemberPromotionTargets.resolve_or_none(
+            self,
+            source_path=seed.projection_file_path(),
+            class_names=(seed.authority_symbol(),),
+        )
+        if concrete_targets is None or authority_targets is None:
+            return None
+        authority_target = authority_targets.targets[0]
+        authority = AutoRegisterClassAuthority(authority_target.node)
+        if not authority.runtime_autoregister_family:
+            return None
+        parts = AutoregisterInstanceViewRecipeParts(
+            projection_path=seed.projection_file_path(),
+            authority_target=authority_target.target,
+            assignment_name=seed.assignment_name,
+            class_key_pairs=seed.class_key_pairs,
+        )
+        if not self.assignment_is_constructor_view(parts):
             return None
         return parts
 
@@ -20233,7 +20200,7 @@ class AutoregisterInstanceViewRecipeBuilder(
             )
             .filter(lambda draft: draft.assignment_name is not None)
             .combine(
-                lambda draft: self.nonempty_class_key_pairs(),
+                lambda draft: self.complete_class_key_pairs(),
                 lambda draft, class_key_pairs: AutoregisterInstanceViewRecipeSeed(
                     endpoints=draft.endpoints,
                     assignment_name=draft.assignment_name,
@@ -20243,9 +20210,14 @@ class AutoregisterInstanceViewRecipeBuilder(
             .unwrap_or_none()
         )
 
-    def nonempty_class_key_pairs(self) -> tuple[str, ...] | None:
+    def complete_class_key_pairs(self) -> tuple[str, ...] | None:
         class_key_pairs = self.finding.metrics.plan_class_key_pairs
-        if not class_key_pairs:
+        paired_class_names = frozenset(
+            ClassRegistryKeyPair.parse(source).class_name for source in class_key_pairs
+        )
+        if not class_key_pairs or paired_class_names != frozenset(
+            self.finding.metrics.plan_class_names
+        ):
             return None
         return class_key_pairs
 
@@ -20272,36 +20244,12 @@ class AutoregisterInstanceViewRecipeBuilder(
             "a constructor-valued dict view"
         )
 
-    def parts_are_safe(self, parts: AutoregisterInstanceViewRecipeParts) -> bool:
-        class_names = tuple(
-            ClassRegistryKeyPair.parse(source).class_name
-            for source in parts.class_key_pairs
-        )
-        concrete_targets = ClassMemberPromotionTargets.resolve_or_none(
-            self,
-            source_path=parts.source_path,
-            class_names=class_names,
-        )
-        if concrete_targets is None:
-            return False
-        authority_targets = ClassMemberPromotionTargets.resolve_or_none(
-            self,
-            source_path=parts.source_path,
-            class_names=(parts.base_name,),
-        )
-        if authority_targets is None:
-            return False
-        authority = AutoRegisterClassAuthority(authority_targets.targets[0].node)
-        if not authority.runtime_autoregister_family:
-            return False
-        return self.assignment_is_constructor_view(parts)
-
     def assignment_is_constructor_view(
         self,
         parts: AutoregisterInstanceViewRecipeParts,
     ) -> bool:
         statement = self.module_assignment_statement(
-            parts.source_path,
+            parts.projection_path,
             parts.assignment_name,
         )
         if not isinstance(statement, ast.Assign | ast.AnnAssign):
@@ -20310,7 +20258,7 @@ class AutoregisterInstanceViewRecipeBuilder(
         if not isinstance(value, ast.Dict):
             return False
         operation = DeriveAutoregisterInstanceViewOperation(
-            target=SourceRewriteTarget(file_path=parts.source_path),
+            target=SourceRewriteTarget(file_path=parts.projection_path),
             base_name=parts.base_name,
             assignment_name=parts.assignment_name,
             class_key_pairs=parts.class_key_pairs,

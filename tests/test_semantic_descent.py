@@ -10,6 +10,8 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    BranchSemanticMirrorRecipeStrategy,
+    CodemodPlanDocument,
     CodemodSourceContext,
     CodemodSourceSnapshot,
     codemod_plan_from_findings,
@@ -21,6 +23,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticMirrorWithoutDescentDetector,
 )
 from nominal_refactor_advisor.models import (
+    BranchCountMetrics,
     MappingMetrics,
     RefactorFinding,
     SourceLocation,
@@ -1739,11 +1742,19 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate_snapshot(snapshot)
-    operation = plan.document.recipes[0].operations[0].to_dict()
+    recipe = plan.document.recipes[0]
+    operation = recipe.operations[0].to_dict()
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].refactor_concept == "auto_register_class_registry"
+    assert len(recipe.authority_claims) == 1
+    claim = recipe.authority_claims[0]
+    assert claim.claimed_symbol == "Step"
+    assert claim.authority_kind == "autoregister_family"
+    assert claim.file_path.endswith("pkg/mod.py")
+    assert claim.qualname == "Step"
+    assert claim.authority_id
     assert operation["operation"] == "derive_autoregister_instance_view"
     assert operation["assignment_name"] == "STEP_TABLE"
     assert "__registry__ = {}" in rewritten
@@ -2149,6 +2160,13 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "executable_candidate"
+    assert len(recipe.authority_claims) == 1
+    claim = recipe.authority_claims[0]
+    assert claim.claimed_symbol == "RefactorAction"
+    assert claim.authority_kind == "dataclass_schema"
+    assert claim.file_path == module_path.as_posix()
+    assert claim.qualname == "RefactorAction"
+    assert claim.authority_id
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
@@ -2990,11 +3008,19 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate_snapshot(snapshot)
+    recipe = plan.document.recipes[0]
     recipe_payload = plan.document.to_dict()["recipes"][0]
     operations = recipe_payload["operations"]
 
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].refactor_concept == "derived_projection"
+    assert len(recipe.authority_claims) == 1
+    claim = recipe.authority_claims[0]
+    assert claim.claimed_symbol == "ConfidenceLevel"
+    assert claim.authority_kind == "enum"
+    assert claim.file_path == (package_dir / "taxonomy.py").as_posix()
+    assert claim.qualname == "ConfidenceLevel"
+    assert claim.authority_id
     assert simulation.is_clean is True
     assert (
         "def actionable_confidence_levels(cls) -> frozenset[str]"
@@ -3011,6 +3037,54 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     assert operations[2]["source"] == (
         "_ACTIONABLE_CONFIDENCE_LEVELS = ConfidenceLevel.actionable_confidence_levels()"
     )
+
+
+def test_role_case_recipe_declares_its_new_authority_boundary(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "def choose(mode):\n"
+        "    if mode == 'fast':\n"
+        "        return 1\n"
+        "    if mode == 'safe':\n"
+        "        return 2\n"
+        "    return 0\n",
+    )
+    finding = RefactorFinding(
+        detector_id="role_case_recipe_fixture",
+        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
+        title="Role cases should have one nominal authority",
+        summary="choose repeats two local role cases",
+        why="the cases should be declaration owned",
+        capability_gap="one nominal role-case authority",
+        relation_context="local branches have no authority-derived dispatch",
+        evidence=(SourceLocation(module_path.as_posix(), 1, "choose"),),
+        metrics=BranchCountMetrics(branch_site_count=2),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        (finding,),
+    )
+    strategy = BranchSemanticMirrorRecipeStrategy()
+    evaluation = strategy.evaluate_recipe_for_finding(finding, snapshot)
+    evaluation = evaluation.gated_by_authority_claim(snapshot, finding)
+
+    assert evaluation.candidate_recipes
+    recipe = evaluation.required_recipe
+    assert recipe.authority_claims == ()
+    assert len(recipe.declared_authority_claims) == 1
+    claim = recipe.declared_authority_claims[0]
+    assert claim.claimed_symbol == "ChooseRoleCaseAuthority"
+    assert claim.authority_kind == "class_family"
+    assert claim.file_path == module_path.as_posix()
+    assert claim.qualname == "ChooseRoleCaseAuthority"
+    assert recipe.operations[0].operation_key() == "declare_authority"
+
+    simulation = snapshot.simulate_document(CodemodPlanDocument(recipes=(recipe,)))
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    assert "class ChooseRoleCaseAuthority" in rewritten
+    assert "return ChooseRoleCaseAuthority.choose(mode=mode)" in rewritten
 
 
 def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
@@ -3116,7 +3190,8 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     assert claim.claimed_symbol == "LabeledMode"
     assert claim.file_path == (package_dir / "taxonomy.py").as_posix()
     assert claim.qualname == "LabeledMode"
-    assert claim.authority_kind == ""
+    assert claim.authority_kind == "class_family"
+    assert claim.authority_id
     assert claim.claimed_symbol not in {"CapabilityMode", "ObservationMode"}
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
