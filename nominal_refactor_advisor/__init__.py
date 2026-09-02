@@ -25,6 +25,7 @@ from .codemod import (
     CancelableCompositionSignal,
     CodemodBackend,
     CodemodPlanDocument,
+    CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
     CodemodPlanSequenceStageReport,

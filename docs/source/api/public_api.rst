@@ -47,6 +47,10 @@ projection while each polymorphic family resolves its own nominal registry.
 declarations for nested records, including proof-carrying ``AuthorityClaim``
 values.  No parallel schema, payload carrier, or boundary-role catalogue is
 maintained.
+``CodemodPlanRoot`` owns the document-or-sequence input sum.  Exact document
+and sequence declarations reject each other's fields; each variant provides
+its own execution-sequence projection without making the sequence parser a
+compatibility fallback.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
    :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
@@ -71,7 +75,7 @@ ownership move, and the complete method batch pays compression rent.  The
 codemod preflight reconstructs the same proof from the current full AST.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

@@ -11003,8 +11003,26 @@ class RefactorRecipe(CodemodPayloadRecord):
         )
 
 
+class CodemodPlanRoot(CodemodJsonReport, ABC):
+    """Declared sum boundary for one plan document or staged plan sequence."""
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "CodemodPlanRoot":
+        if isinstance(value, Mapping) and (
+            CodemodPlanSequence.payload_bindings().has_field_in(value)
+        ):
+            return CodemodPlanSequence.from_json_value(value)
+        return CodemodPlanDocument.from_json_value(value)
+
+    @abstractmethod
+    def as_sequence(self) -> "CodemodPlanSequence":
+        """Return the execution-sequence projection of this exact root variant."""
+
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CodemodPlanDocument(CodemodPayloadRecord):
+class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
     """Caller-supplied codemod plan plus post-refactor guard invariants."""
 
     recipes: tuple[RefactorRecipe, ...] = codemod_payload_field(
@@ -11084,6 +11102,9 @@ class CodemodPlanDocument(CodemodPayloadRecord):
     @property
     def has_architecture_guards(self) -> bool:
         return not self.combined_guard_suite.is_empty
+
+    def as_sequence(self) -> "CodemodPlanSequence":
+        return CodemodPlanSequence.from_document(self)
 
     @property
     def combined_guard_suite(self) -> ArchitectureGuardSuite:
@@ -11243,7 +11264,7 @@ class CodemodPlanDocumentPreflight:
 
 
 @dataclass(frozen=True)
-class CodemodPlanSequence(CodemodPayloadRecord):
+class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = codemod_payload_field(
@@ -11251,16 +11272,6 @@ class CodemodPlanSequence(CodemodPayloadRecord):
         field_name="stages",
         default=(),
     )
-
-    @classmethod
-    def is_sequence_payload(cls, value: JsonValue) -> bool:
-        return isinstance(value, Mapping) and cls.payload_bindings().has_field_in(value)
-
-    @classmethod
-    def from_json_value(cls, value: JsonValue) -> "CodemodPlanSequence":
-        if not cls.is_sequence_payload(value):
-            return cls.from_document(CodemodPlanDocument.from_json_value(value))
-        return super().from_json_value(value)
 
     @classmethod
     def compose(
@@ -11281,6 +11292,9 @@ class CodemodPlanSequence(CodemodPayloadRecord):
     @classmethod
     def from_document(cls, document: CodemodPlanDocument) -> "CodemodPlanSequence":
         return cls(documents=(document,))
+
+    def as_sequence(self) -> "CodemodPlanSequence":
+        return self
 
     @property
     def guard_suite(self) -> ArchitectureGuardSuite:

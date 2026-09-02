@@ -7,6 +7,8 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
+    CodemodPlanRoot,
+    CodemodPlanSequence,
     CodemodSourceSnapshot,
     EnsureImportOperation,
     ImportNameRemoval,
@@ -337,3 +339,24 @@ def test_plan_declarations_reject_obsolete_or_unknown_fields() -> None:
                 ]
             }
         )
+
+
+def test_plan_root_owns_document_sequence_input_algebra() -> None:
+    document = CodemodPlanDocument(
+        recipes=(RefactorRecipe(recipe_id="one-stage"),),
+    )
+    sequence = CodemodPlanSequence.from_document(document)
+
+    assert CodemodPlanRoot.from_json_value(document.to_dict()) == document
+    assert CodemodPlanRoot.from_json_value(sequence.to_dict()) == sequence
+    assert document.as_sequence() == sequence
+    assert sequence.as_sequence() is sequence
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Unsupported CodemodPlanSequence payload field\(s\): "
+            r"'architecture_guards', 'recipes'"
+        ),
+    ):
+        CodemodPlanSequence.from_json_value(document.to_dict())

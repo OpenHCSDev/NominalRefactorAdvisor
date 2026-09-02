@@ -69,6 +69,7 @@ from .codemod import (
     CodemodOperationPreflightReport,
     CodemodPlanDocument,
     CodemodPlanPreflightReport,
+    CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodPlanSequenceSimulation,
     CodemodTargetSelector,
@@ -1329,17 +1330,15 @@ def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
 def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
     """Load one codemod document or staged codemod sequence from JSON."""
 
-    payload = cast(JsonObject, JsonDocumentSource(path).load())
-    return CodemodPlanSequence.from_json_value(payload)
+    return CodemodPlanRoot.from_json_value(
+        JsonDocumentSource(path).load()
+    ).as_sequence()
 
 
 def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
     """Load a codemod document or sequence and return its normalized JSON shape."""
 
-    payload = cast(JsonObject, JsonDocumentSource(path).load())
-    if CodemodPlanSequence.is_sequence_payload(payload):
-        return CodemodPlanSequence.from_json_value(payload).to_dict()
-    return CodemodPlanDocument.from_json_value(payload).to_dict()
+    return CodemodPlanRoot.from_json_value(JsonDocumentSource(path).load()).to_dict()
 
 
 def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
