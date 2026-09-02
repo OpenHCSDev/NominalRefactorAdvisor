@@ -8,7 +8,6 @@ recommended way to analyse a path or inspect subsystem evidence clusters.
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import multiprocessing
 import os
@@ -50,7 +49,12 @@ from .analysis_cache import (
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
 )
-from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
+from .ast_tools import (
+    ParsedModule,
+    PythonModulePathAuthority,
+    PythonSourcePathPolicy,
+    parse_python_module_roots,
+)
 from .cache_paths import (
     ParseCachePolicy,
     default_parse_cache_dir,
@@ -88,7 +92,6 @@ from .codemod import (
     SourcePathCandidateSet,
     codemod_class_plan_from_findings,
     evaluate_architecture_guards,
-    module_name_from_source_path,
 )
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
@@ -2188,36 +2191,28 @@ class ArchitectureGuardSourceEvaluator:
         self,
         source_by_path: dict[str, str],
     ) -> tuple[ParsedModule, ...]:
-        updated_modules = []
-        known_file_paths = set()
-        for parsed_module in self.modules:
-            file_path = parsed_module.file_path
-            known_file_paths.add(file_path)
-            if file_path in source_by_path:
-                source = source_by_path[file_path]
-            else:
-                source = parsed_module.source
-            updated_modules.append(
-                ParsedModule(
-                    parsed_module.path,
-                    parsed_module.module_name,
-                    parsed_module.is_package_init,
-                    ast.parse(source, filename=file_path),
-                    source,
-                )
-            )
+        module_path_authority = PythonModulePathAuthority.from_parsed_modules(
+            self.modules
+        )
+        updated_modules = [
+            module_path_authority.source_module(
+                parsed_module.path,
+                source_by_path.get(
+                    parsed_module.file_path,
+                    parsed_module.source,
+                ),
+            ).parse()
+            for parsed_module in self.modules
+        ]
+        known_file_paths = {
+            parsed_module.file_path for parsed_module in self.modules
+        }
         for file_path, source in sorted(source_by_path.items()):
             if file_path in known_file_paths:
                 continue
             path = Path(file_path)
             updated_modules.append(
-                ParsedModule(
-                    path,
-                    module_name_from_source_path(file_path),
-                    path.name == "__init__.py",
-                    ast.parse(source, filename=file_path),
-                    source,
-                )
+                module_path_authority.source_module(path, source).parse()
             )
         return tuple(updated_modules)
 

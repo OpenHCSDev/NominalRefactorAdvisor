@@ -442,7 +442,15 @@ class PythonModulePathIdentity:
         analysis_root: Path,
     ) -> "PythonModulePathIdentity":
         import_root = cls.import_root(path, analysis_root)
-        relative = path.relative_to(import_root)
+        return cls.from_import_root(path, import_root)
+
+    @classmethod
+    def from_import_root(
+        cls,
+        path: Path,
+        import_root: Path,
+    ) -> "PythonModulePathIdentity":
+        relative = path.resolve().relative_to(import_root.resolve())
         module_parts = list(relative.with_suffix("").parts)
         is_package_init = bool(module_parts and module_parts[-1] == "__init__")
         if is_package_init:
@@ -454,6 +462,17 @@ class PythonModulePathIdentity:
             is_package_init=is_package_init,
         )
 
+    @classmethod
+    def from_source_path(cls, path: Path) -> "PythonModulePathIdentity":
+        """Derive context-free identity when no parsed project declarations exist."""
+
+        import_root = Path(path.anchor) if path.is_absolute() else Path.cwd()
+        return cls.from_import_root(path, import_root)
+
+    @staticmethod
+    def analysis_root_for_scan_root(root: Path) -> Path:
+        return root.parent if root.is_file() else root
+
     @staticmethod
     def import_root(path: Path, analysis_root: Path) -> Path:
         """Use the outer edge of the source package as import-name authority."""
@@ -464,6 +483,28 @@ class PythonModulePathIdentity:
             import_root = package_directory.parent
             package_directory = package_directory.parent
         return analysis_root if import_root is None else import_root
+
+    @property
+    def declared_source_relative_path(self) -> Path:
+        module_parts = tuple(self.import_name.split("."))
+        if self.is_package_init:
+            if module_parts == ("__init__",):
+                return Path("__init__.py")
+            return Path(*module_parts, "__init__.py")
+        return Path(*module_parts[:-1], f"{module_parts[-1]}.py")
+
+    @property
+    def declared_import_root(self) -> Path:
+        import_root = self.path.resolve()
+        for _part in self.declared_source_relative_path.parts:
+            import_root = import_root.parent
+        if (
+            import_root / self.declared_source_relative_path
+        ).resolve() != self.path.resolve():
+            raise ValueError(
+                f"Module name {self.import_name!r} does not describe {self.path}"
+            )
+        return import_root
 
     @property
     def is_importable(self) -> bool:
@@ -833,6 +874,93 @@ class SourceModule(SourceFileIdentity):
         """Parse this exact in-memory source into its nominal module record."""
 
         return self.parsed_module(ast.parse(self.source, filename=str(self.path)))
+
+
+@dataclass(frozen=True)
+class PythonModulePathAuthority:
+    """Resolve projected module identities from known declarations and scan roots."""
+
+    identities: tuple[PythonModulePathIdentity, ...]
+    analysis_roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def from_parsed_modules(
+        cls,
+        modules: Iterable[ParsedModule],
+        analysis_roots: Iterable[Path] = (),
+    ) -> "PythonModulePathAuthority":
+        return cls(
+            identities=tuple(
+                PythonModulePathIdentity(
+                    path=module.path,
+                    import_name=module.module_name,
+                    is_package_init=module.is_package_init,
+                )
+                for module in modules
+            ),
+            analysis_roots=tuple(
+                PythonModulePathIdentity.analysis_root_for_scan_root(root)
+                for root in analysis_roots
+            ),
+        )
+
+    @cached_property
+    def import_roots(self) -> tuple[Path, ...]:
+        return tuple(
+            dict.fromkeys(
+                identity.declared_import_root for identity in self.identities
+            )
+        )
+
+    @cached_property
+    def identities_by_resolved_path(self) -> dict[Path, PythonModulePathIdentity]:
+        identities_by_path: dict[Path, PythonModulePathIdentity] = {}
+        for identity in self.identities:
+            resolved_path = identity.path.resolve()
+            previous = identities_by_path.get(resolved_path)
+            if previous is not None and previous != identity:
+                raise ValueError(
+                    f"Conflicting module identities describe {identity.path}"
+                )
+            identities_by_path[resolved_path] = identity
+        return identities_by_path
+
+    def identity_for_path(self, path: Path) -> PythonModulePathIdentity:
+        known_identity = self.identities_by_resolved_path.get(path.resolve())
+        if known_identity is not None:
+            return known_identity
+        import_root = self.closest_containing_root(self.import_roots, path)
+        if import_root is not None:
+            return PythonModulePathIdentity.from_import_root(path, import_root)
+        analysis_root = self.closest_containing_root(self.analysis_roots, path)
+        if analysis_root is not None:
+            return PythonModulePathIdentity.from_path(path, analysis_root)
+        return PythonModulePathIdentity.from_path(path, path.parent)
+
+    def source_module(self, path: Path, source: str) -> SourceModule:
+        identity = self.identity_for_path(path)
+        return SourceModule(
+            path=path,
+            module_name=identity.import_name,
+            source=source,
+        )
+
+    @staticmethod
+    def closest_containing_root(
+        roots: Iterable[Path],
+        path: Path,
+    ) -> Path | None:
+        resolved_path = path.resolve()
+        matching_roots: list[Path] = []
+        for root in roots:
+            try:
+                resolved_path.relative_to(root.resolve())
+            except ValueError:
+                continue
+            matching_roots.append(root)
+        if not matching_roots:
+            return None
+        return max(matching_roots, key=lambda root: len(root.resolve().parts))
 
 
 @dataclass(frozen=True)
@@ -2357,7 +2485,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         active_source_policy = source_policy or PythonSourcePathPolicy()
         return cls(
             root=root,
-            analysis_root=root.parent if root.is_file() else root,
+            analysis_root=PythonModulePathIdentity.analysis_root_for_scan_root(root),
             parse_cache_dir=resolved_cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,

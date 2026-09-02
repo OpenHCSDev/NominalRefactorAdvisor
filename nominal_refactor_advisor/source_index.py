@@ -7,9 +7,15 @@ import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from pathlib import Path
 from typing import Generic, Iterable, TypeAlias, TypeVar
 
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import (
+    ClassFunctionStackNodeVisitor,
+    ParsedModule,
+    PythonModulePathAuthority,
+    PythonModulePathIdentity,
+)
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .models import RefactorFinding, SourceLocation, stable_source_location_id
 
@@ -83,6 +89,14 @@ class SourceFileDigest:
     file_path: str
     module_name: str
     is_package_init: bool
+
+    @property
+    def module_path_identity(self) -> PythonModulePathIdentity:
+        return PythonModulePathIdentity(
+            path=Path(self.file_path),
+            import_name=self.module_name,
+            is_package_init=self.is_package_init,
+        )
 
 
 @dataclass(frozen=True)
@@ -366,6 +380,12 @@ class SourceIndex:
     files: tuple[SourceFileDigest, ...] = ()
     ast_targets: tuple[AstTargetDigest, ...] = ()
     evidence: tuple[EvidenceDigest, ...] = ()
+
+    @cached_property
+    def module_path_authority(self) -> PythonModulePathAuthority:
+        return PythonModulePathAuthority(
+            tuple(source_file.module_path_identity for source_file in self.files)
+        )
 
     @cached_property
     def file_by_id(self) -> dict[str, SourceFileDigest]:

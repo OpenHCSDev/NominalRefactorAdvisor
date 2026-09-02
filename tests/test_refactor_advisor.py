@@ -13064,6 +13064,18 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
     )
     assert len(simulation.stage_reports) == 2
     first_stage, second_stage = simulation.stage_reports
+    first_generated_file = next(
+        source_file
+        for source_file in first_stage.after_source_index.files
+        if source_file.file_path == generated_path.as_posix()
+    )
+    second_generated_file = next(
+        source_file
+        for source_file in second_stage.before_source_index.files
+        if source_file.file_path == generated_path.as_posix()
+    )
+    assert first_generated_file.module_name == "pkg.generated"
+    assert second_generated_file.module_name == first_generated_file.module_name
     assert (
         tuple(stage.document_simulation.document for stage in simulation.stage_reports)
         == sequence.documents

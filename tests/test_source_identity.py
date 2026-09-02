@@ -3,7 +3,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import PythonModulePathAuthority
+from nominal_refactor_advisor.ast_tools import PythonModulePathIdentity
 from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
@@ -80,3 +84,36 @@ def test_canonical_source_mapping_rejects_duplicate_path_identities() -> None:
         assert "same canonical identity" in str(error)
     else:
         raise AssertionError("duplicate source identity was accepted")
+
+
+def test_projected_module_identity_uses_closest_declared_import_root(
+    tmp_path: Path,
+) -> None:
+    outer_module = PythonModulePathIdentity(
+        path=tmp_path / "outer.py",
+        import_name="outer",
+        is_package_init=False,
+    )
+    nested_root = tmp_path / "nested"
+    nested_module = PythonModulePathIdentity(
+        path=nested_root / "existing.py",
+        import_name="existing",
+        is_package_init=False,
+    )
+    identities = PythonModulePathAuthority((outer_module, nested_module))
+
+    projected = identities.identity_for_path(nested_root / "generated.py")
+
+    assert projected.import_name == "generated"
+    assert projected.declared_import_root == nested_root
+
+
+def test_module_identity_rejects_path_name_mismatch(tmp_path: Path) -> None:
+    identity = PythonModulePathIdentity(
+        path=tmp_path / "actual.py",
+        import_name="different",
+        is_package_init=False,
+    )
+
+    with pytest.raises(ValueError, match="does not describe"):
+        identity.declared_import_root

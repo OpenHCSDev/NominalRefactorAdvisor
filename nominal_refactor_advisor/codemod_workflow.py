@@ -22,7 +22,11 @@ from .analysis import (
     analyze_modules,
     default_detector_types_for_analysis,
 )
-from .ast_tools import ParsedModule, parse_python_module_roots
+from .ast_tools import (
+    ParsedModule,
+    PythonModulePathAuthority,
+    parse_python_module_roots,
+)
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
@@ -39,7 +43,6 @@ from .codemod import (
     FindingRecipeTrajectoryObstacle,
     JsonObject,
     RefactorConcept,
-    module_name_from_source_path,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import FindingObligationClass, RefactorFinding
@@ -1928,6 +1931,13 @@ class ProjectedScanModuleSet:
     simulation: CodemodSimulationReport
     roots: tuple[Path, ...] = ()
 
+    @cached_property
+    def module_path_authority(self) -> PythonModulePathAuthority:
+        return PythonModulePathAuthority.from_parsed_modules(
+            self.modules,
+            self.roots,
+        )
+
     def modules_after_projection(self) -> tuple[ParsedModule, ...]:
         return (
             *self.projected_existing_modules(),
@@ -1966,40 +1976,7 @@ class ProjectedScanModuleSet:
 
     def created_module(self, file_path: str, source: str) -> ParsedModule:
         path = Path(file_path)
-        return ParsedModule(
-            path=path,
-            module_name=ProjectedModuleName(
-                file_path=path,
-                roots=self.roots,
-            ).module_name(),
-            is_package_init=path.name == "__init__.py",
-            module=ast.parse(source, filename=file_path),
-            source=source,
-        )
-
-
-@dataclass(frozen=True)
-class ProjectedModuleName:
-    """Resolve module names for simulated sources using known scan roots."""
-
-    file_path: Path
-    roots: tuple[Path, ...] = ()
-
-    def module_name(self) -> str:
-        relative_path = self.relative_path()
-        return module_name_from_source_path(relative_path.as_posix())
-
-    def relative_path(self) -> Path:
-        resolved_file_path = self.file_path.resolve()
-        for root in self.roots:
-            resolved_root = root.resolve()
-            if resolved_root.is_file():
-                resolved_root = resolved_root.parent
-            try:
-                return resolved_file_path.relative_to(resolved_root)
-            except ValueError:
-                continue
-        return self.file_path
+        return self.module_path_authority.source_module(path, source).parse()
 
 
 @dataclass(frozen=True)

@@ -52,6 +52,7 @@ from .ast_tools import (
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
+    PythonModulePathIdentity,
     SourceModule,
     SourceModuleBatchParser,
     python_module_name_is_importable,
@@ -1372,19 +1373,6 @@ class SourceCreationPathAuthority(SourcePathCandidateAuthority):
         )
 
 
-def module_name_from_source_path(file_path: str) -> str:
-    path = Path(file_path)
-    without_suffix = path.with_suffix("").as_posix().strip("/")
-    if without_suffix.endswith("/__init__"):
-        without_suffix = without_suffix[: -len("/__init__")]
-    module_name = without_suffix.replace("/", ".")
-    if module_name:
-        return module_name
-    if path.stem:
-        return path.stem
-    return "__main__"
-
-
 @dataclass(frozen=True)
 class SourceModuleImportGraph:
     """Source-index-local import graph for cycle-safe generated imports."""
@@ -1687,10 +1675,9 @@ class CodemodSourceContext:
     ) -> tuple[ParsedModule, ...]:
         return SourceModuleBatchParser(
             source_modules=tuple(
-                SourceModule(
-                    path=Path(file_path),
-                    module_name=module_name_from_source_path(file_path),
-                    source=self.sources_by_file_path[file_path],
+                self.source_index.module_path_authority.source_module(
+                    Path(file_path),
+                    self.sources_by_file_path[file_path],
                 )
                 for file_path in self.source_paths_for_findings(findings)
             ),
@@ -1720,13 +1707,12 @@ class CodemodSourceContext:
 
 def _parsed_module_from_source(file_path: str, source: str) -> ParsedModule:
     path = Path(file_path)
-    return ParsedModule(
+    identity = PythonModulePathIdentity.from_source_path(path)
+    return SourceModule(
         path=path,
-        module_name=module_name_from_source_path(file_path),
-        is_package_init=path.name == "__init__.py",
-        module=ast.parse(source, filename=file_path),
+        module_name=identity.import_name,
         source=source,
-    )
+    ).parse()
 
 
 def _parsed_modules_from_source_mapping(
@@ -2321,25 +2307,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         """Build the complete execution context for an existing source index."""
 
         canonical_sources = canonical_source_mapping(source_by_path)
-        source_files_by_path = {
-            source_file.file_path: source_file for source_file in source_index.files
-        }
         modules = tuple(
-            ParsedModule(
-                path=Path(file_path),
-                module_name=(
-                    source_files_by_path[file_path].module_name
-                    if file_path in source_files_by_path
-                    else module_name_from_source_path(file_path)
-                ),
-                is_package_init=(
-                    source_files_by_path[file_path].is_package_init
-                    if file_path in source_files_by_path
-                    else Path(file_path).name == "__init__.py"
-                ),
-                module=ast.parse(source, filename=file_path),
-                source=source,
-            )
+            source_index.module_path_authority.source_module(
+                Path(file_path),
+                source,
+            ).parse()
             for file_path, source in sorted(canonical_sources.items())
         )
         module_node_cache = {module.file_path: module.module for module in modules}
@@ -2442,7 +2414,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             for source_file in self.source_index.files
         )
         new_modules = tuple(
-            _parsed_module_from_source(file_path, source_overlay[file_path])
+            self.source_index.module_path_authority.source_module(
+                Path(file_path),
+                source_overlay[file_path],
+            ).parse()
             for file_path in sorted(source_overlay)
             if file_path not in existing_paths
         )
