@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, SourceModule
 from nominal_refactor_advisor.ast_tools import PythonModulePathAuthority
 from nominal_refactor_advisor.ast_tools import PythonModulePathIdentity
 from nominal_refactor_advisor.class_index import build_class_family_index
@@ -116,4 +116,29 @@ def test_module_identity_rejects_path_name_mismatch(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="does not describe"):
-        identity.declared_import_root
+        PythonModulePathAuthority((identity,)).identity_for_path(identity.path)
+
+
+def test_parsed_module_source_projection_preserves_declared_identity(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pkg/projected.py"
+    identity = PythonModulePathIdentity(
+        path=path,
+        import_name="pkg.projected",
+        is_package_init=False,
+    )
+    family_cache_dir = tmp_path / "family-cache"
+    module = SourceModule.from_path_identity(
+        identity,
+        "VALUE = 1\n",
+        family_cache_dir=family_cache_dir,
+    ).parse()
+
+    projected = module.with_source("VALUE = 2\n")
+
+    assert projected.module_path_identity == identity
+    assert projected.source == "VALUE = 2\n"
+    assert projected.semantic_hash is None
+    assert projected.family_cache_dir == family_cache_dir
+    assert ast.unparse(projected.module) == "VALUE = 2"

@@ -52,7 +52,6 @@ from .ast_tools import (
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
-    PythonModulePathIdentity,
     SourceModule,
     SourceModuleBatchParser,
     python_module_name_is_importable,
@@ -1705,21 +1704,11 @@ class CodemodSourceContext:
         return tuple(sorted(source_paths))
 
 
-def _parsed_module_from_source(file_path: str, source: str) -> ParsedModule:
-    path = Path(file_path)
-    identity = PythonModulePathIdentity.from_source_path(path)
-    return SourceModule(
-        path=path,
-        module_name=identity.import_name,
-        source=source,
-    ).parse()
-
-
 def _parsed_modules_from_source_mapping(
     source_by_path: Mapping[str, str],
 ) -> tuple[ParsedModule, ...]:
     return tuple(
-        _parsed_module_from_source(file_path, source)
+        SourceModule.from_source_path(Path(file_path), source).parse()
         for file_path, source in sorted(source_by_path.items())
     )
 
@@ -2023,12 +2012,11 @@ class CodemodSelectorContext:
         source = self.sources_by_file_path.get(source_file.file_path)
         if module is None or source is None:
             raise ValueError(f"Source module {source_path!r} is unavailable")
-        cache[source_file.file_path] = ParsedModule(
-            path=Path(source_file.file_path),
-            module_name=source_file.module_name,
-            is_package_init=source_file.is_package_init,
-            module=module,
-            source=source,
+        cache[source_file.file_path] = SourceModule.from_path_identity(
+            source_file.module_path_identity,
+            source,
+        ).parsed_module(
+            module,
         )
         return cache[source_file.file_path]
 
@@ -2430,19 +2418,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> ParsedModule:
         file_path = source_file.file_path
         source = source_overlay.get(file_path, self.sources_by_file_path[file_path])
-        if file_path in source_overlay:
-            module_node = _parsed_module_from_source(file_path, source).module
-        elif self.module_node_cache is not None and file_path in self.module_node_cache:
-            module_node = self.module_node_cache[file_path]
-        else:
-            module_node = ast.parse(source, filename=file_path)
-        return ParsedModule(
-            Path(file_path),
-            source_file.module_name,
-            source_file.is_package_init,
-            module_node,
+        source_module = SourceModule.from_path_identity(
+            source_file.module_path_identity,
             source,
         )
+        if file_path in source_overlay:
+            return source_module.parse()
+        if self.module_node_cache is not None and file_path in self.module_node_cache:
+            return source_module.parsed_module(self.module_node_cache[file_path])
+        return source_module.parse()
 
     @property
     def parsed_modules(self) -> tuple[ParsedModule, ...]:

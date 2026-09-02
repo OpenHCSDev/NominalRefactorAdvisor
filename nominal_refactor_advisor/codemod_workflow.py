@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 from abc import ABC, abstractmethod
 from collections import Counter, deque
 from collections.abc import Callable, Hashable, Iterable
@@ -1954,14 +1953,7 @@ class ProjectedScanModuleSet:
         )
         if not projection.has_rewrite:
             return module
-        source = projection.source
-        return ParsedModule(
-            path=module.path,
-            module_name=module.module_name,
-            is_package_init=module.is_package_init,
-            module=ast.parse(source, filename=module.file_path),
-            source=source,
-        )
+        return module.with_source(projection.source)
 
     def created_modules(self) -> tuple[ParsedModule, ...]:
         known_paths = self.known_resolved_paths()

@@ -495,6 +495,10 @@ class PythonModulePathIdentity:
 
     @property
     def declared_import_root(self) -> Path:
+        if self.is_package_init != (self.path.name == "__init__.py"):
+            raise ValueError(
+                f"Package-init identity does not describe {self.path}"
+            )
         import_root = self.path.resolve()
         for _part in self.declared_source_relative_path.parts:
             import_root = import_root.parent
@@ -848,6 +852,25 @@ class ParsedModule(SourceFileIdentity):
 
         return SourceLineSegmentAuthority(self.source)
 
+    @property
+    def module_path_identity(self) -> PythonModulePathIdentity:
+        """Return the source-independent identity retained by source projections."""
+
+        return PythonModulePathIdentity(
+            path=self.path,
+            import_name=self.module_name,
+            is_package_init=self.is_package_init,
+        )
+
+    def with_source(self, source: str) -> "ParsedModule":
+        """Parse replacement source while preserving this module's identity."""
+
+        return SourceModule.from_path_identity(
+            self.module_path_identity,
+            source,
+            family_cache_dir=self.family_cache_dir,
+        ).parse()
+
 
 @dataclass(frozen=True)
 class SourceModule(SourceFileIdentity):
@@ -857,6 +880,39 @@ class SourceModule(SourceFileIdentity):
     module_name: str
     source: str
     family_cache_dir: Path | None = None
+
+    @classmethod
+    def from_path_identity(
+        cls,
+        identity: PythonModulePathIdentity,
+        source: str,
+        *,
+        family_cache_dir: Path | None = None,
+    ) -> "SourceModule":
+        """Bind source to one already-derived Python module identity."""
+
+        return cls(
+            path=identity.path,
+            module_name=identity.import_name,
+            source=source,
+            family_cache_dir=family_cache_dir,
+        )
+
+    @classmethod
+    def from_source_path(
+        cls,
+        path: Path,
+        source: str,
+        *,
+        family_cache_dir: Path | None = None,
+    ) -> "SourceModule":
+        """Bind source when no project-level module declarations are available."""
+
+        return cls.from_path_identity(
+            PythonModulePathIdentity.from_source_path(path),
+            source,
+            family_cache_dir=family_cache_dir,
+        )
 
     def parsed_module(self, module: ast.Module) -> ParsedModule:
         """Attach an exact AST projection without rebuilding source identity."""
@@ -890,14 +946,7 @@ class PythonModulePathAuthority:
         analysis_roots: Iterable[Path] = (),
     ) -> "PythonModulePathAuthority":
         return cls(
-            identities=tuple(
-                PythonModulePathIdentity(
-                    path=module.path,
-                    import_name=module.module_name,
-                    is_package_init=module.is_package_init,
-                )
-                for module in modules
-            ),
+            identities=tuple(module.module_path_identity for module in modules),
             analysis_roots=tuple(
                 PythonModulePathIdentity.analysis_root_for_scan_root(root)
                 for root in analysis_roots
@@ -916,7 +965,10 @@ class PythonModulePathAuthority:
     def identities_by_resolved_path(self) -> dict[Path, PythonModulePathIdentity]:
         identities_by_path: dict[Path, PythonModulePathIdentity] = {}
         for identity in self.identities:
-            resolved_path = identity.path.resolve()
+            resolved_path = (
+                identity.declared_import_root
+                / identity.declared_source_relative_path
+            ).resolve()
             previous = identities_by_path.get(resolved_path)
             if previous is not None and previous != identity:
                 raise ValueError(
@@ -938,11 +990,9 @@ class PythonModulePathAuthority:
         return PythonModulePathIdentity.from_path(path, path.parent)
 
     def source_module(self, path: Path, source: str) -> SourceModule:
-        identity = self.identity_for_path(path)
-        return SourceModule(
-            path=path,
-            module_name=identity.import_name,
-            source=source,
+        return SourceModule.from_path_identity(
+            self.identity_for_path(path),
+            source,
         )
 
     @staticmethod
