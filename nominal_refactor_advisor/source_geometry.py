@@ -30,6 +30,15 @@ class SourceByteSpan:
             end_byte=node.end_col_offset,
         )
 
+    @classmethod
+    def require_node(cls, node: ast.expr | ast.stmt) -> SourceByteSpan:
+        """Return one complete parser-provided span or fail closed."""
+
+        span = cls.from_node(node)
+        if span is None:
+            raise ValueError("AST node has no complete UTF-8 source span")
+        return span
+
     def fits_lines(self, lines: tuple[str, ...]) -> bool:
         return (
             self.start_line_index >= 0

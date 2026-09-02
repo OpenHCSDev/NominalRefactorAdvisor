@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.codemod import (
+    CollapseClosedParameterConveyorOperation,
+    CodemodSourceSnapshot,
+    FindingRecipeSynthesisStatus,
+    RefactorRecipeOperation,
+    codemod_plan_from_findings,
+)
 from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
@@ -223,6 +230,325 @@ def test_detector_does_not_emit_an_open_parameter_conveyor() -> None:
     )
 
     assert findings == []
+
+
+def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
+    module = _module("pkg.complete", _base_source())
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+
+    assert len(plan.records) == 1
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert len(plan.document.recipes) == 1
+    operation = plan.document.recipes[0].operations[0]
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if snapshot.source_index.symbol_for_target(target) == "pkg.complete._CacheKey"
+    )
+    assert operation.target.target_id == authority_target.target_id
+    assert isinstance(operation, CollapseClosedParameterConveyorOperation)
+    operation_payload = operation.to_dict()
+    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    assert "source_edits_by_state_id" not in operation_payload
+
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+    rewritten_source = simulation.rewritten_sources[module.file_path]
+    assert rewritten_source == _base_source().replace(
+        "def _build(left, right):\n    return left, right\n",
+        "def _build(*, cache_key):\n    return cache_key.left, cache_key.right\n",
+    ).replace(
+        "    return _build(left, right)\n",
+        "    return _build(cache_key=key)\n",
+    )
+    original_namespace = {"__name__": "pkg.complete_original"}
+    rewritten_namespace = {"__name__": "pkg.complete_rewritten"}
+    exec(
+        compile(module.source, module.file_path, "exec", dont_inherit=True),
+        original_namespace,
+    )
+    exec(
+        compile(rewritten_source, module.file_path, "exec", dont_inherit=True),
+        rewritten_namespace,
+    )
+    assert original_namespace["caller"]("left", "right") == rewritten_namespace[
+        "caller"
+    ]("left", "right")
+
+    rewritten_snapshot = snapshot.with_virtual_sources(simulation.rewritten_sources)
+    assert (
+        ClosedParameterConveyorDetector().detect(
+            rewritten_snapshot.parsed_modules,
+            DetectorConfig(),
+        )
+        == []
+    )
+
+
+def test_parameter_conveyor_recipe_reproves_current_source_before_rewriting() -> None:
+    module = _module("pkg.stale", _base_source())
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    original_snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    current_snapshot = original_snapshot.with_virtual_sources(
+        {
+            module.file_path: _base_source()
+            + "\n"
+            + "def unconverted(left, right):\n"
+            + "    return _build(transform(left), right)\n"
+        }
+    )
+
+    plan = codemod_plan_from_findings(findings, selector_context=current_snapshot)
+
+    assert plan.document.recipes == ()
+    assert len(plan.records) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "0 current proven parameter-conveyor components" in plan.records[0].reason
+
+
+def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "\n"
+        "def _second(first_value, second_value):\n"
+        "    return first_value, second_value\n"
+        "\n"
+        "def _first(left, right):\n"
+        "    first_alias = left\n"
+        "    second_alias = right\n"
+        "    return _second(first_alias, second_alias)\n"
+        "\n"
+        "def caller(left, right):\n"
+        "    key = _CacheKey(left=left, right=right)\n"
+        "    return _first(left, right)\n"
+    )
+    module = _module("pkg.chain_rewrite", source)
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+    rewritten_source = simulation.rewritten_sources[module.file_path]
+
+    assert "def _second(*, cache_key):" in rewritten_source
+    assert "return cache_key.left, cache_key.right" in rewritten_source
+    assert "def _first(*, cache_key):" in rewritten_source
+    assert "first_alias = cache_key.left" in rewritten_source
+    assert "second_alias = cache_key.right" in rewritten_source
+    assert "return _second(cache_key=cache_key)" in rewritten_source
+    assert "return _first(cache_key=key)" in rewritten_source
+    rewritten_snapshot = snapshot.with_virtual_sources(simulation.rewritten_sources)
+    assert (
+        ClosedParameterConveyorDetector().detect(
+            rewritten_snapshot.parsed_modules,
+            DetectorConfig(),
+        )
+        == []
+    )
+
+
+def test_parameter_conveyor_rewrite_targets_multiple_calls_on_one_line_exactly() -> (
+    None
+):
+    source = _base_source().replace(
+        "    return _build(left, right)\n",
+        "    return _build(left, right), _build(left, right)\n",
+    )
+    module = _module("pkg.same_line", source)
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+
+    assert (
+        "return _build(cache_key=key), _build(cache_key=key)"
+        in simulation.rewritten_sources[module.file_path]
+    )
+
+
+def test_parameter_conveyor_rewrite_preserves_a_private_method_receiver() -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "\n"
+        "class _Builder:\n"
+        "    def _build(self, left, right):\n"
+        "        return left, right\n"
+        "\n"
+        "    def caller(self, left, right):\n"
+        "        key = _CacheKey(left=left, right=right)\n"
+        "        return self._build(left, right)\n"
+    )
+    module = _module("pkg.method", source)
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+    rewritten_source = simulation.rewritten_sources[module.file_path]
+
+    assert "def _build(self, *, cache_key):" in rewritten_source
+    assert "return self._build(cache_key=key)" in rewritten_source
+
+
+def test_parameter_conveyor_rewrite_preserves_cross_module_identity() -> None:
+    authority_module = _module(
+        "pkg.types",
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _CacheKey:\n"
+        "    left: object\n"
+        "    right: object\n",
+    )
+    worker_module = _module(
+        "pkg.worker",
+        "from pkg.types import _CacheKey\n"
+        "\n"
+        "def _build(left, right):\n"
+        "    return left, right\n"
+        "\n"
+        "def caller(left, right):\n"
+        "    key = _CacheKey(left=left, right=right)\n"
+        "    return _build(left, right)\n",
+    )
+    modules = (authority_module, worker_module)
+    findings = ClosedParameterConveyorDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+
+    assert tuple(simulation.rewritten_sources) == (worker_module.file_path,)
+    assert (
+        "def _build(*, cache_key):"
+        in simulation.rewritten_sources[worker_module.file_path]
+    )
+    assert (
+        snapshot.source_index.symbol_for_target(
+            next(
+                target
+                for target in snapshot.source_index.ast_targets
+                if target.target_id
+                == plan.document.recipes[0].operations[0].target.target_id
+            )
+        )
+        == "pkg.types._CacheKey"
+    )
+
+
+def test_parameter_conveyor_rewrite_avoids_existing_carrier_name_bindings() -> None:
+    module = _module(
+        "pkg.collision",
+        _base_source(
+            callee_body=(
+                "    cache_key = normalize()\n    return left, right, cache_key\n"
+            )
+        ),
+    )
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = snapshot.simulate_rewrites(
+        snapshot.source_rewrite_batch_for_document(plan.document)
+    )
+    rewritten_source = simulation.rewritten_sources[module.file_path]
+
+    assert "def _build(*, cache_key_2):" in rewritten_source
+    assert "return cache_key_2.left, cache_key_2.right, cache_key" in rewritten_source
+    assert "return _build(cache_key_2=key)" in rewritten_source
+
+
+@pytest.mark.parametrize(
+    "callee_source,rejection_fragment",
+    (
+        (
+            "def _build(\n"
+            "    left,  # first field\n"
+            "    right,\n"
+            "):\n"
+            "    return left, right\n",
+            "comments inside its signature",
+        ),
+        (
+            "def _build(left, right):\n"
+            "    marker = lambda: None\n"
+            "    return left, right\n",
+            "contains nested lexical scopes",
+        ),
+    ),
+)
+def test_parameter_conveyor_recipe_rejects_lossy_source_reconstruction(
+    callee_source: str,
+    rejection_fragment: str,
+) -> None:
+    module = _module(
+        "pkg.lossy",
+        _base_source().replace(
+            "def _build(left, right):\n    return left, right\n",
+            callee_source,
+        ),
+    )
+    findings = ClosedParameterConveyorDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+    assert len(findings) == 1
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+
+    assert plan.document.recipes == ()
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert rejection_fragment in plan.records[0].reason
 
 
 def test_multistep_forwarding_forms_one_maximal_component_not_per_edge() -> None:

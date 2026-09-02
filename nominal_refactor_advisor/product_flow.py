@@ -12,9 +12,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from typing import Self
+from typing import Self, TypeAlias
 
 from .ast_tools import CollectedFamily, CompactModuleIdentity, ParsedModule
+from .source_geometry import SourceByteSpan
+
+
+SourcePositionedNode: TypeAlias = ast.expr | ast.stmt | ast.ExceptHandler | ast.pattern
 
 
 class CompactParameterKind(StrEnum):
@@ -872,7 +876,11 @@ class CompactFunctionCall:
     keyword_arguments: tuple[CompactKeywordArgument, ...]
     result: CompactCallResult
     position: CompactFlowPosition
-    line: int
+    source_span: SourceByteSpan
+
+    @property
+    def line(self) -> int:
+        return self.source_span.start_line_index + 1
 
     @property
     def result_use(self) -> CompactCallResultUse:
@@ -1402,14 +1410,14 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def _record_mutation(
         self,
         reference: LexicalValueReference,
-        node: ast.AST,
+        node: SourcePositionedNode,
         kind: CompactMutationKind | None = None,
     ) -> CompactLexicalMutation:
         mutation = CompactLexicalMutation(
             reference=reference,
             kind=self.mutation_kind if kind is None else kind,
             position=self._position(),
-            line=getattr(node, "lineno", 0),
+            line=node.lineno,
         )
         self.mutations.append(mutation)
         return mutation
@@ -1458,7 +1466,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def _record_callable_reference(
         self,
         reference: LexicalValueReference,
-        node: ast.AST,
+        node: ast.expr,
     ) -> None:
         if not self._is_potential_callable_reference(reference):
             return
@@ -1466,7 +1474,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             CompactCallableReferenceUse(
                 target=self._call_target(node),
                 position=self._position(),
-                line=getattr(node, "lineno", 0),
+                line=node.lineno,
             )
         )
 
@@ -1508,7 +1516,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
                 ),
                 result=result,
                 position=self._position(),
-                line=node.lineno,
+                source_span=SourceByteSpan.require_node(node),
             )
         )
 

@@ -89,8 +89,18 @@ binds the promoted names, no decorator or class-creation hook can observe the
 ownership move, and the complete method batch pays compression rent.  The
 codemod preflight reconstructs the same proof from the current full AST.
 
+The ``closed_parameter_conveyor`` detector exposes a recipe only for a complete
+private call component that transports every field of one existing dataclass
+authority.  ``CollapseClosedParameterConveyorOperation`` serialises only that
+authority's source target.  Execution re-derives the product and call families
+from the current source snapshot, requires the component proof again, and then
+rewrites all participating signatures, field loads, and calls as one operation.
+Exact byte spans distinguish multiple calls on the same line.  Source forms
+that cannot be edited without losing comments or lexical-scope semantics remain
+rejected; field mappings are never copied into the recipe payload.
+
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

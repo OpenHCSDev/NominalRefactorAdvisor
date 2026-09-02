@@ -4786,6 +4786,60 @@ def test_source_text_geometry_projects_utf8_ast_offsets_to_characters() -> None:
     assert source[slice(*offsets)] == "result = café"
 
 
+def test_source_text_geometry_resolves_multiline_function_parameter_span() -> None:
+    source = (
+        "async def load(\n"
+        "    source,  # retained source\n"
+        "    *,\n"
+        "    limit=3,\n"
+        ") -> object:\n"
+        "    return source\n"
+    )
+    function = ast.parse(source).body[0]
+    assert isinstance(function, ast.AsyncFunctionDef)
+    geometry = SourceTextGeometry(source)
+
+    span = geometry.function_parameter_span(function)
+
+    assert span.source_text(source) == (
+        "\n    source,  # retained source\n    *,\n    limit=3,\n"
+    )
+    assert geometry.span_contains_comment(span)
+
+
+def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
+    source = "VALUE = 1\n"
+    module = ParsedModule(
+        path=Path("/workspace/source.py"),
+        module_name="declared.package.module",
+        is_package_init=False,
+        module=ast.parse(source),
+        source=source,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,))
+
+    reparsed = snapshot.parsed_modules[0]
+    rewritten = snapshot.modules_with_source_overlay({module.file_path: "VALUE = 2\n"})[
+        0
+    ]
+
+    assert reparsed.module_name == "declared.package.module"
+    assert rewritten.module_name == "declared.package.module"
+    assert rewritten.source == "VALUE = 2\n"
+    other_identity_snapshot = CodemodSourceSnapshot.from_modules(
+        (
+            ParsedModule(
+                path=module.path,
+                module_name="other.package.module",
+                is_package_init=False,
+                module=ast.parse(source),
+                source=source,
+            ),
+        )
+    )
+    assert snapshot.source_state_id != other_identity_snapshot.source_state_id
+
+
 def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
 

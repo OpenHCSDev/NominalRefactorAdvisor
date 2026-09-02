@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from collections.abc import Mapping
 from typing import Callable, Self, TypeAlias
 
 from .ast_tools import ParsedModule
@@ -53,6 +54,22 @@ class ParameterConveyorCallEdge(ABC):
     @property
     @abstractmethod
     def authority(self) -> CompactProductAuthority:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
+        """Return participants whose remaining call arguments use the carrier."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def carrier_value_reference(
+        self,
+        carrier_parameter_names: Mapping[str, str],
+    ) -> LexicalValueReference:
+        """Derive the carrier expression supplied to this edge's callee."""
+
         raise NotImplementedError
 
     @property
@@ -109,6 +126,17 @@ class ConstructedProductCallEdge(ParameterConveyorCallEdge):
         return self.construction.authority
 
     @property
+    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
+        return ()
+
+    def carrier_value_reference(
+        self,
+        carrier_parameter_names: Mapping[str, str],
+    ) -> LexicalValueReference:
+        del carrier_parameter_names
+        return self.construction.construction.result_binding
+
+    @property
     def carrier_binding_is_unobserved(self) -> bool:
         return (
             self.construction.construction.result_binding.root_name
@@ -134,6 +162,16 @@ class ForwardedProductCallEdge(ParameterConveyorCallEdge):
     @property
     def authority(self) -> CompactProductAuthority:
         return self.product_authority
+
+    @property
+    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
+        return (self.caller_symbol,)
+
+    def carrier_value_reference(
+        self,
+        carrier_parameter_names: Mapping[str, str],
+    ) -> LexicalValueReference:
+        return LexicalValueReference(carrier_parameter_names[self.caller_symbol])
 
 
 @dataclass(frozen=True)
@@ -465,6 +503,34 @@ class ClosedParameterConveyorComponent:
     @property
     def participant_symbols(self) -> tuple[str, ...]:
         return tuple(participant.symbol for participant in self.participants)
+
+    @property
+    def edges(self) -> tuple[ParameterConveyorCallEdge, ...]:
+        return (*self.root_edges, *self.forwarding_edges)
+
+    @cached_property
+    def field_mapping_by_participant(
+        self,
+    ) -> dict[str, tuple[tuple[str, str], ...]]:
+        """Derive each participant's unique authority-to-parameter relation."""
+
+        if not self.proof.is_proven:
+            raise ValueError(
+                "parameter-conveyor field mapping requires a proven component"
+            )
+        mappings: dict[str, set[tuple[tuple[str, str], ...]]] = defaultdict(set)
+        for edge in self.edges:
+            mappings[edge.callee_symbol].add(edge.field_mapping)
+        if set(mappings) != set(self.participant_symbols) or any(
+            len(participant_mappings) != 1 for participant_mappings in mappings.values()
+        ):
+            raise ValueError(
+                "proven parameter-conveyor component has no unique mapping"
+            )
+        return {
+            participant_symbol: next(iter(participant_mappings))
+            for participant_symbol, participant_mappings in mappings.items()
+        }
 
 
 @dataclass(frozen=True)
@@ -1038,12 +1104,6 @@ class ClosedParameterConveyorComponentBuilder:
                 }
             )
         )
-        authority_module_name = self.repository.class_index.class_for(
-            seed.authority.class_symbol
-        ).module_name
-        participant_module_names = {
-            participant.declaration.identity.module_name for participant in participants
-        }
         open_boundary_symbols = {
             participant.symbol
             for participant in participants
@@ -1051,10 +1111,9 @@ class ClosedParameterConveyorComponentBuilder:
                 participant.declaration
             ).blocks_closed_boundary
         }
-        import_cost = len(participant_module_names - {authority_module_name})
         compression_delta = (len(seed.authority.field_names) - 1) * (
             len(participants) + len(edges)
-        ) - import_cost
+        )
         root_edges_by_call: dict[_CallIdentity, list[ConstructedProductCallEdge]] = (
             defaultdict(list)
         )

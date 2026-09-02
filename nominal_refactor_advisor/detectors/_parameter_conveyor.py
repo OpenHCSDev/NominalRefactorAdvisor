@@ -9,6 +9,7 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from ..codemod import ClosedParameterConveyorFindingRecipeSynthesizer
 from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
 from ..parameter_conveyor import (
     ClosedParameterConveyorComponent,
@@ -28,6 +29,7 @@ from ._base import (
 
 
 class ClosedParameterConveyorDetector(
+    ClosedParameterConveyorFindingRecipeSynthesizer,
     CompactMultiProjectionCandidateDetector[ClosedParameterConveyorComponent],
 ):
     """Expose only whole call families proven safe to collapse to one carrier."""

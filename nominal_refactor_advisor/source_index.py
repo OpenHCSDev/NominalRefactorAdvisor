@@ -388,6 +388,13 @@ class SourceIndex:
             lambda item: item.target_id,
         )
 
+    def symbol_for_target(self, target: AstTargetDigest) -> str:
+        """Derive a target's repository symbol from its owning source file."""
+
+        if target.is_module:
+            return target.qualname
+        return f"{self.file_by_id[target.file_id].module_name}.{target.qualname}"
+
     @cached_property
     def target_index_by_file(self) -> TargetsByFileIndex:
         return TargetsByFileIndex.from_targets(self.ast_targets)

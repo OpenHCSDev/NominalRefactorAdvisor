@@ -114,6 +114,12 @@ from .models import (
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
+from .parameter_conveyor import (
+    ClosedParameterConveyorComponent,
+    ClosedParameterConveyorComponentBuilder,
+    ParameterConveyorCallEdge,
+    ParameterConveyorParticipant,
+)
 from .patterns import PatternId
 from .planner import (
     RefactorExecutionClass,
@@ -121,6 +127,7 @@ from .planner import (
     build_refactor_execution_plan,
     build_refactor_execution_plan_from_groups,
 )
+from .product_flow import LexicalValueReference
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
@@ -2175,9 +2182,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def source_state_id(self) -> str:
         """Return the exact identity of this complete source state."""
 
+        source_files_by_path = {
+            source_file.file_path: source_file
+            for source_file in self.source_index.files
+        }
         return hashlib.blake2s(
             "\0".join(
-                f"{file_path}\0{self.sources_by_file_path[file_path]}"
+                (
+                    f"{file_path}\0{source_files_by_path[file_path].module_name}\0"
+                    f"{int(source_files_by_path[file_path].is_package_init)}\0"
+                    f"{self.sources_by_file_path[file_path]}"
+                )
                 for file_path in sorted(self.sources_by_file_path)
             ).encode("utf-8"),
             digest_size=16,
@@ -2357,7 +2372,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     @property
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
-        return _parsed_modules_from_source_mapping(self.sources_by_file_path)
+        return self.modules_with_source_overlay({})
 
     def simulate_rewrites(
         self,
@@ -3803,6 +3818,10 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     """Line and offset geometry for source-index anchored rewrites."""
 
     @cached_property
+    def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
+        return tuple(tokenize.generate_tokens(io.StringIO(self.source).readline))
+
+    @cached_property
     def line_offsets(self) -> tuple[int, ...]:
         offsets = []
         offset = 0
@@ -3817,6 +3836,87 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def end_offset(self) -> int:
         return sum(len(line) for line in self.lines)
 
+    def token_position_offset(self, position: tuple[int, int]) -> int:
+        line, column = position
+        if line == len(self.line_offsets) + 1 and column == 0:
+            return self.end_offset
+        if not 1 <= line <= len(self.line_offsets):
+            raise ValueError(f"Token position is outside source geometry: {position!r}")
+        return self.line_offsets[line - 1] + column
+
+    def byte_span_offsets(self, span: SourceByteSpan) -> tuple[int, int]:
+        return span.character_offsets(self.lines, self.line_offsets)
+
+    def span_contains_comment(self, span: SourceTextSpan) -> bool:
+        return any(
+            token.type == tokenize.COMMENT
+            and span.start_offset
+            <= self.token_position_offset(token.start)
+            < span.end_offset
+            for token in self.tokens
+        )
+
+    def function_parameter_span(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SourceTextSpan:
+        """Resolve the exact source between one function's parameter parentheses."""
+
+        function_start, function_end = self.byte_span_offsets(
+            SourceByteSpan.require_node(node)
+        )
+        indexed_tokens = tuple(
+            (
+                token,
+                self.token_position_offset(token.start),
+                self.token_position_offset(token.end),
+            )
+            for token in self.tokens
+            if token.type != tokenize.ENDMARKER
+        )
+        definition_index = next(
+            (
+                index
+                for index, (token, start_offset, _end_offset) in enumerate(
+                    indexed_tokens
+                )
+                if token.type == tokenize.NAME
+                and token.string == "def"
+                and function_start <= start_offset < function_end
+            ),
+            None,
+        )
+        if definition_index is None:
+            raise ValueError(f"Cannot resolve parameter span for {node.name!r}")
+        opening_index = next(
+            (
+                index
+                for index in range(definition_index + 1, len(indexed_tokens))
+                if indexed_tokens[index][0].type == tokenize.OP
+                and indexed_tokens[index][0].string == "("
+                and indexed_tokens[index][1] < function_end
+            ),
+            None,
+        )
+        if opening_index is None:
+            raise ValueError(f"Cannot resolve parameter opening for {node.name!r}")
+        depth = 0
+        for token, start_offset, end_offset in indexed_tokens[opening_index:]:
+            if token.type != tokenize.OP:
+                continue
+            if token.string in "([{":
+                depth += 1
+            elif token.string in ")]}":
+                depth -= 1
+                if depth == 0:
+                    return SourceTextSpan(
+                        start_offset=indexed_tokens[opening_index][2],
+                        end_offset=start_offset,
+                    )
+            if end_offset > function_end:
+                break
+        raise ValueError(f"Cannot resolve parameter closing for {node.name!r}")
+
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
         return self._line_span_offsets(span.start_line, span.end_line)
 
@@ -3824,7 +3924,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         span = SourceByteSpan.from_node(node)
         if span is None or not span.fits_lines(self.lines):
             return None
-        return span.character_offsets(self.lines, self.line_offsets)
+        return self.byte_span_offsets(span)
 
     def required_node_offsets(self, node: ast.AST) -> tuple[int, int]:
         if not isinstance(node, ast.expr | ast.stmt):
@@ -4624,6 +4724,539 @@ class ReplaceTextOperation(RefactorRecipeOperation):
                 rationale=self.rationale
                 or f"Replace source text inside {target_digest.qualname!r}.",
             ),
+        )
+
+
+class _ParameterConveyorNameLoadTransformer(ast.NodeTransformer):
+    """Rewrite one participant's proven flat field parameters to its carrier."""
+
+    def __init__(
+        self,
+        *,
+        carrier_parameter_name: str,
+        fields_by_parameter_name: Mapping[str, str],
+    ) -> None:
+        self.carrier_parameter_name = carrier_parameter_name
+        self.fields_by_parameter_name = fields_by_parameter_name
+
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        field_name = self.fields_by_parameter_name.get(node.id)
+        if field_name is None or not isinstance(node.ctx, ast.Load):
+            return node
+        return ast.copy_location(
+            ast.Attribute(
+                value=ast.Name(
+                    id=self.carrier_parameter_name,
+                    ctx=ast.Load(),
+                ),
+                attr=field_name,
+                ctx=ast.Load(),
+            ),
+            node,
+        )
+
+
+@dataclass(frozen=True)
+class _ParameterConveyorParticipantRewrite:
+    participant: ParameterConveyorParticipant
+    target: AstTargetDigest
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    field_mapping: tuple[tuple[str, str], ...]
+    carrier_parameter_name: str
+
+    @property
+    def fields_by_parameter_name(self) -> dict[str, str]:
+        return {
+            parameter_name: field_name
+            for field_name, parameter_name in self.field_mapping
+        }
+
+    @property
+    def mapped_parameter_names(self) -> frozenset[str]:
+        return frozenset(self.fields_by_parameter_name)
+
+    @property
+    def transformer(self) -> _ParameterConveyorNameLoadTransformer:
+        return _ParameterConveyorNameLoadTransformer(
+            carrier_parameter_name=self.carrier_parameter_name,
+            fields_by_parameter_name=self.fields_by_parameter_name,
+        )
+
+    @property
+    def rewritten_arguments_source(self) -> str:
+        arguments = copy.deepcopy(self.node.args)
+        mapped_names = self.mapped_parameter_names
+        positional_parameters = (*arguments.posonlyargs, *arguments.args)
+        positional_defaults = (
+            *(
+                None
+                for _ in range(len(positional_parameters) - len(arguments.defaults))
+            ),
+            *arguments.defaults,
+        )
+        retained_positional = tuple(
+            (parameter, default)
+            for parameter, default in zip(
+                positional_parameters,
+                positional_defaults,
+                strict=True,
+            )
+            if parameter.arg not in mapped_names
+        )
+        retained_positional_only_count = sum(
+            parameter.arg not in mapped_names for parameter in arguments.posonlyargs
+        )
+        arguments.posonlyargs = [
+            parameter
+            for parameter, _default in retained_positional[
+                :retained_positional_only_count
+            ]
+        ]
+        arguments.args = [
+            parameter
+            for parameter, _default in retained_positional[
+                retained_positional_only_count:
+            ]
+        ]
+        arguments.defaults = [
+            default
+            for _parameter, default in retained_positional
+            if default is not None
+        ]
+        retained_keyword_only = tuple(
+            (parameter, default)
+            for parameter, default in zip(
+                arguments.kwonlyargs,
+                arguments.kw_defaults,
+                strict=True,
+            )
+            if parameter.arg not in mapped_names
+        )
+        arguments.kwonlyargs = [
+            parameter for parameter, _default in retained_keyword_only
+        ]
+        arguments.kw_defaults = [
+            default for _parameter, default in retained_keyword_only
+        ]
+        arguments.kwonlyargs.append(ast.arg(arg=self.carrier_parameter_name))
+        arguments.kw_defaults.append(None)
+        return ast.unparse(arguments)
+
+
+@dataclass(frozen=True)
+class _ClosedParameterConveyorSourceRewrite:
+    """Derive one atomic physical rewrite from a current proven component."""
+
+    context: CodemodSourceSnapshot
+    component: ClosedParameterConveyorComponent
+    rationale: str
+
+    _nested_scope_types: ClassVar[tuple[type[ast.AST], ...]] = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.Lambda,
+        ast.ClassDef,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+
+    def __post_init__(self) -> None:
+        if not self.component.proof.is_proven:
+            raise ValueError("parameter-conveyor rewrite requires a proven component")
+
+    @cached_property
+    def geometries_by_file_path(self) -> dict[str, SourceTextGeometry]:
+        return {
+            file_path: SourceTextGeometry(source)
+            for file_path, source in self.context.sources_by_file_path.items()
+        }
+
+    @cached_property
+    def participant_rewrites(
+        self,
+    ) -> tuple[_ParameterConveyorParticipantRewrite, ...]:
+        rewrites = []
+        for participant in self.component.participants:
+            target, node = self._participant_target(participant)
+            field_mapping = self.component.field_mapping_by_participant[
+                participant.symbol
+            ]
+            self._require_reconstructible_participant(
+                node,
+                self.geometries_by_file_path[target.file_path],
+            )
+            rewrites.append(
+                _ParameterConveyorParticipantRewrite(
+                    participant=participant,
+                    target=target,
+                    node=node,
+                    field_mapping=field_mapping,
+                    carrier_parameter_name=self._carrier_parameter_name(
+                        participant,
+                        node,
+                        frozenset(
+                            parameter_name
+                            for _field_name, parameter_name in field_mapping
+                        ),
+                    ),
+                )
+            )
+        return tuple(rewrites)
+
+    @cached_property
+    def participant_rewrites_by_symbol(
+        self,
+    ) -> dict[str, _ParameterConveyorParticipantRewrite]:
+        return {
+            rewrite.participant.symbol: rewrite for rewrite in self.participant_rewrites
+        }
+
+    @cached_property
+    def carrier_parameter_names(self) -> dict[str, str]:
+        return {
+            participant_symbol: rewrite.carrier_parameter_name
+            for participant_symbol, rewrite in self.participant_rewrites_by_symbol.items()
+        }
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        call_replacements = tuple(
+            (edge.resolved_call.context.file_path, self._call_replacement(edge))
+            for edge in self.component.edges
+        )
+        call_spans_by_file_path: dict[str, list[SourceTextSpan]] = defaultdict(list)
+        replacements_by_file_path: dict[
+            str,
+            list[SourceTextSpanReplacement],
+        ] = defaultdict(list)
+        for file_path, replacement in call_replacements:
+            call_spans_by_file_path[file_path].append(
+                SourceTextSpan(replacement.start_offset, replacement.end_offset)
+            )
+            replacements_by_file_path[file_path].append(replacement)
+        for rewrite in self.participant_rewrites:
+            geometry = self.geometries_by_file_path[rewrite.target.file_path]
+            parameter_span = geometry.function_parameter_span(rewrite.node)
+            replacements_by_file_path[rewrite.target.file_path].append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=parameter_span.start_offset,
+                    end_offset=parameter_span.end_offset,
+                    replacement_source=rewrite.rewritten_arguments_source,
+                )
+            )
+            replacements_by_file_path[rewrite.target.file_path].extend(
+                self._participant_name_replacements(
+                    rewrite,
+                    call_spans_by_file_path.get(rewrite.target.file_path, ()),
+                )
+            )
+        return tuple(
+            edit
+            for file_path, replacements in sorted(replacements_by_file_path.items())
+            for edit in self.geometries_by_file_path[file_path].physical_edits(
+                file_path=file_path,
+                replacements=replacements,
+                rationale=self.rationale
+                or (
+                    "Replace a closed flat parameter component with its existing "
+                    "nominal carrier."
+                ),
+            )
+        )
+
+    def _participant_target(
+        self,
+        participant: ParameterConveyorParticipant,
+    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef]:
+        declaration = participant.declaration
+        matches = tuple(
+            target
+            for target in self.context.source_index.ast_targets
+            if target.is_function_like
+            and target.file_path == participant.context.file_path
+            and target.qualname == declaration.identity.qualname
+            and target.line == declaration.line
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Participant {participant.symbol!r} has {len(matches)} source targets"
+            )
+        target = matches[0]
+        node = self.context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError(f"Participant {participant.symbol!r} has no function node")
+        return target, node
+
+    def _require_reconstructible_participant(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        geometry: SourceTextGeometry,
+    ) -> None:
+        parameter_span = geometry.function_parameter_span(node)
+        if geometry.span_contains_comment(parameter_span):
+            raise ValueError(
+                f"Participant {node.name!r} has comments inside its signature"
+            )
+        nested_scopes = tuple(
+            nested
+            for nested in walk_function_body_nodes(node)
+            if isinstance(nested, self._nested_scope_types)
+        )
+        if nested_scopes:
+            raise ValueError(
+                f"Participant {node.name!r} contains nested lexical scopes"
+            )
+        if node.type_comment is not None:
+            raise ValueError(f"Participant {node.name!r} has a function type comment")
+
+    def _carrier_parameter_name(
+        self,
+        participant: ParameterConveyorParticipant,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        mapped_parameter_names: frozenset[str],
+    ) -> str:
+        class_name = self.component.authority.class_symbol.rsplit(".", 1)[-1]
+        stem = "_".join(CLASS_NAME_ALGEBRA.ordered_tokens(class_name)) or "carrier"
+        occupied_names = {
+            argument.arg
+            for argument in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                *((node.args.vararg,) if node.args.vararg is not None else ()),
+                *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+            )
+            if argument.arg not in mapped_parameter_names
+        }
+        occupied_names.update(
+            name.id
+            for name in walk_function_body_nodes(node)
+            if isinstance(name, ast.Name) and name.id not in mapped_parameter_names
+        )
+        occupied_names.update(
+            mutation.reference.root_name
+            for mutation in participant.context.flow.mutations
+            if mutation.reference.root_name not in mapped_parameter_names
+        )
+        candidate = stem
+        suffix = 2
+        while candidate in occupied_names:
+            candidate = f"{stem}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _call_replacement(
+        self,
+        edge: ParameterConveyorCallEdge,
+    ) -> SourceTextSpanReplacement:
+        resolved_call = edge.resolved_call
+        geometry = self.geometries_by_file_path[resolved_call.context.file_path]
+        source_span = resolved_call.call.source_span
+        start_offset, end_offset = geometry.byte_span_offsets(source_span)
+        span = SourceTextSpan(start_offset, end_offset)
+        if geometry.span_contains_comment(span):
+            raise ValueError(
+                f"Component call at {resolved_call.context.file_path}:"
+                f"{resolved_call.call.line} contains comments"
+            )
+        node = self._call_node(resolved_call.context.file_path, source_span)
+        rewritten = copy.deepcopy(node)
+        mapped_names = frozenset(
+            parameter_name for _field_name, parameter_name in edge.field_mapping
+        )
+        positional_parameter_names = tuple(
+            parameter.name
+            for parameter in resolved_call.callee.call_signature.parameters
+            if parameter.kind.accepts_positional and not parameter.kind.variadic
+        )
+        rewritten.args = [
+            argument
+            for index, argument in enumerate(rewritten.args)
+            if index >= len(positional_parameter_names)
+            or positional_parameter_names[index] not in mapped_names
+        ]
+        rewritten.keywords = [
+            keyword for keyword in rewritten.keywords if keyword.arg not in mapped_names
+        ]
+        for source_participant_symbol in edge.carrier_source_participant_symbols:
+            transformer = self.participant_rewrites_by_symbol[
+                source_participant_symbol
+            ].transformer
+            rewritten.args = [
+                cast(ast.expr, transformer.visit(argument))
+                for argument in rewritten.args
+            ]
+            rewritten.keywords = [
+                ast.keyword(
+                    arg=keyword.arg,
+                    value=cast(ast.expr, transformer.visit(keyword.value)),
+                )
+                for keyword in rewritten.keywords
+            ]
+        rewritten.keywords.append(
+            ast.keyword(
+                arg=self.carrier_parameter_names[edge.callee_symbol],
+                value=self._reference_expression(
+                    edge.carrier_value_reference(self.carrier_parameter_names)
+                ),
+            )
+        )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=ast.unparse(rewritten),
+        )
+
+    def _call_node(self, file_path: str, source_span: SourceByteSpan) -> ast.Call:
+        matches = tuple(
+            node
+            for node in ast.walk(self.context.module_nodes_by_file_path[file_path])
+            if isinstance(node, ast.Call)
+            and SourceByteSpan.from_node(node) == source_span
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Component call span in {file_path!r} resolved to {len(matches)} nodes"
+            )
+        return matches[0]
+
+    def _participant_name_replacements(
+        self,
+        rewrite: _ParameterConveyorParticipantRewrite,
+        call_spans: Iterable[SourceTextSpan],
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = self.geometries_by_file_path[rewrite.target.file_path]
+        excluded_spans = tuple(call_spans)
+        replacements = []
+        for node in walk_function_body_nodes(rewrite.node):
+            if not (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in rewrite.fields_by_parameter_name
+            ):
+                continue
+            start_offset, end_offset = geometry.byte_span_offsets(
+                SourceByteSpan.require_node(node)
+            )
+            if any(
+                span.start_offset <= start_offset and end_offset <= span.end_offset
+                for span in excluded_spans
+            ):
+                continue
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    replacement_source=(
+                        f"{rewrite.carrier_parameter_name}."
+                        f"{rewrite.fields_by_parameter_name[node.id]}"
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    @staticmethod
+    def _reference_expression(reference: LexicalValueReference) -> ast.expr:
+        parts = reference.parts
+        expression: ast.expr = ast.Name(id=parts[0], ctx=ast.Load())
+        for attribute_name in parts[1:]:
+            expression = ast.Attribute(
+                value=expression,
+                attr=attribute_name,
+                ctx=ast.Load(),
+            )
+        return expression
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseClosedParameterConveyorOperation(RefactorRecipeOperation):
+    """Re-prove and atomically collapse one authority-wide parameter conveyor."""
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        try:
+            snapshot = (
+                CodemodSourceSnapshot.from_indexed_sources(
+                    source_index,
+                    source_by_path,
+                )
+                if selector_context is None
+                else selector_context.execution_snapshot()
+            )
+            return self._source_rewrite(snapshot).source_edits()
+        except CodemodOperationPreflightError:
+            raise
+        except (TypeError, ValueError) as error:
+            raise self.failed_preflight(str(error)) from error
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            self.source_edits_with_context(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return ()
+
+    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
+        return CodemodOperationPreflightError(
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.FAILED,
+                message=message,
+                details={"target": self.target.to_dict()},
+            )
+        )
+
+    def _source_rewrite(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _ClosedParameterConveyorSourceRewrite:
+        (
+            _target_identifier,
+            authority_target,
+            _authority_node,
+        ) = self.target_node_from_context(snapshot)
+        if not authority_target.is_class:
+            raise ValueError("parameter-conveyor authority target must be a class")
+        components = tuple(
+            component
+            for component in ClosedParameterConveyorComponentBuilder.from_modules(
+                snapshot.parsed_modules
+            ).proven_components()
+            if component.authority.file_path == authority_target.file_path
+            and component.authority.line == authority_target.line
+        )
+        if len(components) != 1:
+            raise ValueError(
+                f"Authority {authority_target.qualname!r} has {len(components)} "
+                "current proven parameter-conveyor components"
+            )
+        return _ClosedParameterConveyorSourceRewrite(
+            context=snapshot,
+            component=components[0],
+            rationale=self.rationale,
         )
 
 
@@ -13162,6 +13795,81 @@ class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
                 "under-rented AutoRegisterMeta finding lacks typed rent evidence"
             )
         return self.rejected_evaluation(metrics.recipe_rejection_reason())
+
+
+class ClosedParameterConveyorFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    SemanticCarrierConcept,
+):
+    """Collapse a currently re-proven conveyor into its existing authority."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "parameter-conveyor collapse requires source context"
+            )
+        authority_location = finding.authority_evidence
+        if authority_location is None:
+            return self.rejected_evaluation(
+                "parameter-conveyor finding lacks authority evidence"
+            )
+        try:
+            file_paths = context.resolve_source_paths((authority_location.file_path,))
+        except ValueError as error:
+            return self.rejected_evaluation(str(error))
+        authority_targets = tuple(
+            target
+            for target in context.source_index.ast_targets
+            if target.is_class
+            and target.file_path in file_paths
+            and target.line == authority_location.line
+            and context.source_index.symbol_for_target(target)
+            == authority_location.symbol
+        )
+        if len(authority_targets) != 1:
+            return self.rejected_evaluation(
+                f"parameter-conveyor authority evidence resolves to "
+                f"{len(authority_targets)} class targets"
+            )
+        authority_target = authority_targets[0]
+        operation = CollapseClosedParameterConveyorOperation(
+            target=SourceRewriteTarget(target_id=authority_target.target_id),
+        )
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-collapse-parameter-conveyor",
+                reason=(
+                    "Replace the complete flat parameter component with its "
+                    "existing nominal carrier."
+                ),
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    authority_target,
+                    authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
+                )
+            )
+            .with_operation(operation)
+        )
+        return self.executable_evaluation(recipe)
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            sorted(
+                {
+                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
+                    for evidence in finding.evidence
+                }
+            ),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
