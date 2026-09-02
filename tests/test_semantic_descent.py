@@ -1435,7 +1435,6 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert set(operations[0]) == {
         "operation",
         "target_id",
-        "participant_target_ids",
         "rationale",
     }
     assert not {
@@ -1444,7 +1443,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         "resolution_class_name",
         "resolution_class_source",
     }.intersection(operations[0])
-    assert len(operations[0]["participant_target_ids"]) == 3
+    assert len(plan.records[0].action_keys) == 4
+    assert len(plan.document.recipes[0].authority_claims) == 4
     assert type(RefactorRecipeOperation.from_dict(operations[0])).__name__ == (
         "DeriveAutoRegisterMroOrderingOperation"
     )
@@ -1477,22 +1477,6 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert (
         replay.simulation.rewritten_sources == simulation.simulation.rewritten_sources
     )
-    operation = plan.document.recipes[0].operations[0]
-    under_scoped_operation = replace(
-        operation,
-        participant_target_ids=operation.participant_target_ids[:2],
-    )
-    under_scoped_document = replace(
-        plan.document,
-        recipes=(
-            replace(
-                plan.document.recipes[0],
-                operations=(under_scoped_operation,),
-            ),
-        ),
-    )
-    with pytest.raises(ValueError, match="leaf identities differ"):
-        under_scoped_document.simulate_snapshot(snapshot)
 
     module_path.write_text(
         source.replace("    priority = 10\n", "    priority = 30\n").replace(
@@ -1522,6 +1506,21 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert [
         item.__name__ for item in reprioritized_namespace["Phase"].ordered_types()
     ] == ["SecondPhase", "FirstPhase", "FinalPhase"]
+
+    module_path.write_text(
+        source.replace("    priority = 20\n", "    priority = 10\n"),
+        encoding="utf-8",
+    )
+    duplicate_priority_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    duplicate_priority_preflight = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).preflight_snapshot(duplicate_priority_snapshot)
+    assert duplicate_priority_preflight.preflight_failed is True
+    assert duplicate_priority_preflight.reports[-1].operation == (
+        "derive_auto_register_mro_ordering"
+    )
 
     def plan_for_source(source_root: Path, source_text: str):
         _write_module(source_root, source_text)

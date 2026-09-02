@@ -2025,7 +2025,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                             indexed_class.line,
                             indexed_class.simple_name,
                         ),
-                        *evidence_sites[:5],
+                        *evidence_sites,
                     ),
                     metrics=MappingMetrics(
                         mapping_site_count=len(evidence_sites),

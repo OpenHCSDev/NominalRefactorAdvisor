@@ -15325,37 +15325,6 @@ class AutoRegisterMroOrderingDerivation:
             sorted_call=sorted_call,
         )
 
-    @classmethod
-    def from_context(
-        cls,
-        context: CodemodSelectorContext,
-        root_reference: SourceRewriteTarget,
-        participant_references: tuple[SourceRewriteTarget, ...],
-    ) -> "AutoRegisterMroOrderingDerivation":
-        participants = tuple(
-            ResolvedClassTarget.from_rewrite_target(context, reference)
-            for reference in participant_references
-        )
-        if len(participants) < 2 or len(
-            {participant.target.target_id for participant in participants}
-        ) != len(participants):
-            raise ValueError(
-                "MRO ordering derivation requires at least two unique leaf targets"
-            )
-        derivation = cls.discover(context, root_reference)
-        expected_target_ids = frozenset(
-            participant.target.target_id for participant in participants
-        )
-        derived_target_ids = frozenset(
-            leaf.target.target_id for _priority, leaf in derivation.registered_leaves
-        )
-        if expected_target_ids != derived_target_ids:
-            raise ValueError(
-                "MRO ordering derivation leaf identities differ from the current "
-                "registered family"
-            )
-        return derivation
-
     @property
     def ordering_axis_targets(self) -> tuple[ResolvedClassTarget, ...]:
         return (self.root, *(leaf for _priority, leaf in self.registered_leaves))
@@ -15398,7 +15367,7 @@ class AutoRegisterMroOrderingDerivation:
             "        )\n"
         )
 
-    def source_edits(self) -> tuple[NominalSourceEdit, ...]:
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         source_by_path = self.context.sources_by_file_path
         source_index = self.context.source_index
         sorted_call_source = SourceTextGeometry(
@@ -15711,65 +15680,27 @@ class AutoRegisterMroOrderingDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveAutoRegisterMroOrderingOperation(RefactorRecipeOperation):
+class DeriveAutoRegisterMroOrderingOperation(SourceReprovedOperation):
     """Re-prove one registered family and derive its ordering from current source."""
-
-    participant_target_ids: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
-
-    def __post_init__(self) -> None:
-        if len(self.participant_target_ids) < 2 or len(
-            frozenset(self.participant_target_ids)
-        ) != len(self.participant_target_ids):
-            raise ValueError(
-                "derive_auto_register_mro_ordering requires at least two unique "
-                "participant_target_ids"
-            )
-
-    @property
-    def participant_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return tuple(
-            SourceRewriteTarget(target_id=target_id)
-            for target_id in self.participant_target_ids
-        )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), *self.participant_targets)
 
     def required_derivation(
         self,
         context: CodemodSelectorContext,
     ) -> AutoRegisterMroOrderingDerivation:
-        return AutoRegisterMroOrderingDerivation.from_context(
+        return AutoRegisterMroOrderingDerivation.discover(
             context,
             self.target,
-            self.participant_targets,
         )
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
-
-    def source_edits_with_context(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
-    ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        return self.required_derivation(context).source_edits()
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.required_derivation(snapshot).source_edits()
 
 
 class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
+    FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     AutoRegisterMroOrderingConcept,
     SingleSourcePathFindingMixin,
@@ -15789,30 +15720,6 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         if recipe is None:
             return self.rejected_evaluation(rejection_reason)
         return self.executable_evaluation(recipe)
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if (
-            evidence is None
-            or not isinstance(finding.metrics, MappingMetrics)
-            or len(finding.metrics.plan_field_names) != 1
-        ):
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (
-                    evidence.file_path,
-                    FindingRecipeActionKey.child_subject(
-                        evidence.symbol,
-                        finding.metrics.plan_field_names[0],
-                    ),
-                ),
-            ),
-        )
 
     def recipe_for_finding(
         self,
@@ -15852,24 +15759,21 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
             )
         operation = DeriveAutoRegisterMroOrderingOperation(
             target=SourceRewriteTarget(target_id=root_target.target_id),
-            participant_target_ids=tuple(
-                sorted(
-                    leaf.target.target_id
-                    for _priority, leaf in derivation.registered_leaves
-                )
-            ),
             rationale="Derive registered-family precedence from its nominal MRO.",
         )
-        return (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-derive-mro-ordering",
-                reason=(
-                    "Derive registered-family precedence from one nominal MRO "
-                    "composition."
-                ),
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-derive-mro-ordering",
+            reason=(
+                "Derive registered-family precedence from one nominal MRO "
+                "composition."
+            ),
+        ).with_operation(operation)
+        for target in derivation.ordering_axis_targets:
+            recipe = recipe.with_authority_claim(
+                AstTargetAuthorityClaim.from_target(target.target)
             )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(root_target))
-            .with_operation(operation),
+        return (
+            recipe,
             "",
         )
 
