@@ -8697,23 +8697,80 @@ def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None
     assert findings == []
 
 
-def test_detects_split_dispatch_authority(tmp_path: Path) -> None:
+def test_preserves_independent_nominal_and_generic_dispatch(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom abc import ABC, abstractmethod\nfrom functools import singledispatch\n\n\nclass ModeRunner(ABC):\n    @abstractmethod\n    def run(self, *, random_fn, source_fn):\n        raise NotImplementedError\n\n    @classmethod\n    def for_mode(cls, mode):\n        return _MODE_RUNNERS[mode]\n\n\nclass RandomRunner(ModeRunner):\n    def run(self, *, random_fn, source_fn):\n        return random_fn()\n\n\nclass GuidedRunner(ModeRunner):\n    def run(self, *, random_fn, source_fn):\n        return source_fn()\n\n\n_MODE_RUNNERS = {\n    Mode.RANDOM: RandomRunner(),\n    Mode.GUIDED: GuidedRunner(),\n}\n\n\n@singledispatch\ndef source_for_item(item):\n    raise TypeError(type(item).__name__)\n\n\n@source_for_item.register\ndef _(item: FileItem):\n    return item.path\n\n\n@source_for_item.register\ndef _(item: MemoryItem):\n    return item.payload\n\n\ndef orchestrate(request):\n    runner = ModeRunner.for_mode(request.mode)\n\n    def _source():\n        return source_for_item(request.item)\n\n    return runner.run(\n        random_fn=lambda: request.default_source,\n        source_fn=_source,\n    )\n",
+        """\
+from abc import ABC, abstractmethod
+from enum import Enum
+from functools import singledispatch
+
+from metaclass_registry import AutoRegisterMeta, RegistryFamily, RegistryKeyAttribute
+
+
+class Mode(Enum):
+    RANDOM = "random"
+    GUIDED = "guided"
+
+
+class ModeRunner(ABC, metaclass=AutoRegisterMeta):
+    __registry_family__ = RegistryFamily(RegistryKeyAttribute.STRATEGY_LABEL)
+
+    @abstractmethod
+    def run(self, *, random_fn, source_fn):
+        raise NotImplementedError
+
+    @classmethod
+    def for_mode(cls, mode):
+        return cls.__registry__[mode]()
+
+
+class RandomRunner(ModeRunner):
+    strategy_label = Mode.RANDOM
+
+    def run(self, *, random_fn, source_fn):
+        return random_fn()
+
+
+class GuidedRunner(ModeRunner):
+    strategy_label = Mode.GUIDED
+
+    def run(self, *, random_fn, source_fn):
+        return source_fn()
+
+
+@singledispatch
+def source_for_item(item):
+    raise TypeError(type(item).__name__)
+
+
+@source_for_item.register
+def _(item: FileItem):
+    return item.path
+
+
+@source_for_item.register
+def _(item: MemoryItem):
+    return item.payload
+
+
+def orchestrate(request):
+    runner = ModeRunner.for_mode(request.mode)
+
+    def source():
+        return source_for_item(request.item)
+
+    return runner.run(
+        random_fn=lambda: request.default_source,
+        source_fn=source,
+    )
+""",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "split_dispatch_authority"
-        )
-    )
-    assert "ModeRunner.for_mode(request.mode)" in finding.summary
-    assert "source_for_item(request.item)" in finding.summary
-    assert "ProductPolicy" in (finding.scaffold or "")
+    assert findings == []
 
 
 def test_detects_closed_constant_selector(tmp_path: Path) -> None:
