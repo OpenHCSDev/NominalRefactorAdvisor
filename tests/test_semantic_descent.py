@@ -17,7 +17,10 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    DeriveClassFamilyCollectionOperation,
+    RefactorRecipe,
     RefactorRecipeOperation,
+    SourceRewriteTarget,
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.detectors import (
@@ -3285,13 +3288,33 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert [operation["operation"] for operation in operations] == [
-        "ensure_import",
-        "replace_module_assignment",
+        "derive_class_family_collection",
     ]
-    assert operations[0]["import_source"] == "from .taxonomy import LabeledMode\n"
-    assert operations[1]["source"] == (
+    operation = operations[0]
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    assert "source" not in operation
+    assert "assignment_name" not in operation
+    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    with pytest.raises(
+        ValueError,
+        match="Unsupported DeriveClassFamilyCollectionOperation payload field",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **operation,
+                "assignment_name": "MODE_ENUMS",
+                "class_names": ["CapabilityMode", "ObservationMode"],
+                "source": ("MODE_ENUMS = tuple(LabeledMode.__subclasses__())"),
+            }
+        )
+    assert (
         "MODE_ENUMS: tuple[ModeEnum, ...] = tuple(LabeledMode.__subclasses__())"
-    )
+    ) in rewritten
     assert (
         "from .taxonomy import (\n"
         "    CapabilityMode,\n"
@@ -3341,7 +3364,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate_snapshot(snapshot)
-    operation = plan.document.to_dict()["recipes"][0]["operations"][1]
+    operation = plan.document.to_dict()["recipes"][0]["operations"][0]
     rewritten = next(
         source
         for path, source in simulation.simulation.rewritten_sources.items()
@@ -3351,10 +3374,12 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
-    assert operation["source"] == (
+    assert operation["operation"] == "derive_class_family_collection"
+    assert "source" not in operation
+    assert (
         "OWNER_NAMES = frozenset(member_type.__name__ for member_type in "
         "LabeledMode.__subclasses__())"
-    )
+    ) in rewritten
     assert (
         "from .taxonomy import (\n"
         "    CapabilityMode,\n"
@@ -3362,6 +3387,256 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         "    LabeledMode,\n"
         ")\n"
     ) in rewritten
+
+
+def _class_family_collection_operation(
+    snapshot: CodemodSourceSnapshot,
+    authority_qualname: str,
+    projection_path: Path,
+) -> DeriveClassFamilyCollectionOperation:
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == authority_qualname
+    )
+    projection_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.is_module and target.file_path == projection_path.as_posix()
+    )
+    return DeriveClassFamilyCollectionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id),
+        projection_target_id=projection_target.target_id,
+    )
+
+
+def test_class_family_collection_operation_rederives_current_source(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    taxonomy_path = package_dir / "taxonomy.py"
+    projection_path = package_dir / "projection.py"
+    taxonomy_source = (
+        "class Root:\n"
+        "    pass\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n"
+        "class Beta(Root):\n"
+        "    pass\n"
+    )
+    projection_source = "from .taxonomy import Alpha, Beta\n\nMEMBERS = (Alpha, Beta)\n"
+    taxonomy_path.write_text(taxonomy_source, encoding="utf-8")
+    projection_path.write_text(projection_source, encoding="utf-8")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", projection_path)
+    payload = operation.to_dict()
+    replayed = RefactorRecipeOperation.from_dict(payload)
+    changed_projection_source = projection_source.replace(
+        "(Alpha, Beta)",
+        "(Beta, Alpha)",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {
+            taxonomy_path.as_posix(): taxonomy_source,
+            projection_path.as_posix(): changed_projection_source,
+        },
+    )
+
+    assert set(payload) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    assert replayed == operation
+    with pytest.raises(ValueError, match="exactly one complete literal collection"):
+        replayed.source_edits_with_context(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+
+
+def test_class_family_collection_operation_rejects_ambiguous_projections(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "class Root:\n"
+        "    pass\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n"
+        "class Beta(Root):\n"
+        "    pass\n\n"
+        "FIRST = (Alpha, Beta)\n"
+        "SECOND = (Alpha, Beta)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", module_path)
+
+    with pytest.raises(
+        ValueError,
+        match="exactly one complete literal collection; found 2",
+    ):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
+
+
+def test_class_family_collection_operation_executes_source_derived_view(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "class Root:\n"
+        "    pass\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n"
+        "class Beta(Root):\n"
+        "    pass\n\n"
+        "MEMBERS: tuple[type[Root], ...] = (Alpha, Beta)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", module_path)
+
+    direct_edits = operation.source_edits(
+        snapshot.source_index,
+        snapshot.sources_by_file_path,
+    )
+    simulation = (
+        RefactorRecipe("derive-members")
+        .with_operation(operation)
+        .simulate(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+        )
+    )
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+
+    assert direct_edits
+    assert "MEMBERS: tuple[type[Root], ...] = tuple(Root.__subclasses__())" in rewritten
+    assert namespace["MEMBERS"] == (namespace["Alpha"], namespace["Beta"])
+
+
+@pytest.mark.parametrize(
+    ("collection_source", "is_executable"),
+    (
+        ("(Alpha, Beta)", False),
+        ("frozenset({Alpha, Beta})", True),
+    ),
+)
+def test_class_family_collection_operation_requires_provable_runtime_order(
+    tmp_path: Path,
+    collection_source: str,
+    is_executable: bool,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    (package_dir / "root.py").write_text("class Root:\n    pass\n", encoding="utf-8")
+    (package_dir / "alpha.py").write_text(
+        "from .root import Root\n\nclass Alpha(Root):\n    pass\n",
+        encoding="utf-8",
+    )
+    (package_dir / "beta.py").write_text(
+        "from .root import Root\n\nclass Beta(Root):\n    pass\n",
+        encoding="utf-8",
+    )
+    projection_path = package_dir / "projection.py"
+    projection_path.write_text(
+        "from .alpha import Alpha\n"
+        "from .beta import Beta\n\n"
+        f"MEMBERS = {collection_source}\n",
+        encoding="utf-8",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", projection_path)
+
+    if not is_executable:
+        with pytest.raises(
+            ValueError,
+            match="exactly one complete literal collection",
+        ):
+            operation.source_edits_with_context(
+                snapshot.source_index,
+                snapshot.sources_by_file_path,
+                selector_context=snapshot,
+            )
+        return
+
+    edits = operation.source_edits_with_context(
+        snapshot.source_index,
+        snapshot.sources_by_file_path,
+        selector_context=snapshot,
+    )
+
+    assert edits
+    assert any(
+        "frozenset(Root.__subclasses__())" in "".join(edit.replacement_lines)
+        for edit in edits
+        if hasattr(edit, "replacement_lines")
+    )
+
+
+def test_class_family_collection_operation_rejects_shadowed_factory(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "class Root:\n"
+        "    pass\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n"
+        "class Beta(Root):\n"
+        "    pass\n\n"
+        "frozenset = lambda values: tuple(values)\n"
+        "MEMBERS = frozenset({Alpha, Beta})\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", module_path)
+
+    with pytest.raises(ValueError, match="exactly one complete literal collection"):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
+
+
+def test_class_family_collection_operation_rejects_authority_name_collision(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    taxonomy_path = package_dir / "taxonomy.py"
+    projection_path = package_dir / "projection.py"
+    taxonomy_path.write_text(
+        "class Root:\n"
+        "    pass\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n"
+        "class Beta(Root):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    projection_path.write_text(
+        "from .taxonomy import Alpha, Beta\n\nRoot = object\nMEMBERS = (Alpha, Beta)\n",
+        encoding="utf-8",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_family_collection_operation(snapshot, "Root", projection_path)
+
+    with pytest.raises(ValueError, match="authority name 'Root' is rebound"):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
 
 
 def test_semantic_mirror_preserves_public_export_contract(tmp_path: Path) -> None:
@@ -3436,7 +3711,7 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
 
     assert record.status.value == "rejected_by_safety_check"
     assert (
-        "no complete runtime member query"
+        "exactly one complete literal collection"
         in obstacles_by_declaration["ClassFamilyCollectionSemanticMirrorRecipeBuilder"]
     )
     assert plan.document.recipes == ()

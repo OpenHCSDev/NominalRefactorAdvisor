@@ -9342,12 +9342,6 @@ class RegistryKeyDeclarationRewriteMixin:
         ) == ast.dump(expected, include_attributes=False)
 
 
-class SharedAssignmentValueMixin:
-    @staticmethod
-    def assignment_value(statement: ast.Assign | ast.AnnAssign) -> ast.AST | None:
-        return statement.value
-
-
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
     RegistryKeyDeclarationRewriteMixin,
@@ -19806,32 +19800,163 @@ class RegistrationSemanticMirrorRecipeStrategy(
         )
 
 
+class ClassFamilyCollectionFactory(StrEnum):
+    """Collection syntax and ordering semantics for one derived family view."""
+
+    def __new__(
+        cls,
+        value: str,
+        literal_node_type: type[ast.Tuple | ast.List | ast.Set] | None,
+        preserves_order: bool,
+    ) -> "ClassFamilyCollectionFactory":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._literal_node_type = literal_node_type
+        member._preserves_order = preserves_order
+        return member
+
+    TUPLE = (BuiltinCallName.TUPLE.value, ast.Tuple, True)
+    LIST = (BuiltinCallName.LIST.value, ast.List, True)
+    SET = (BuiltinCallName.SET.value, ast.Set, False)
+    FROZENSET = (BuiltinCallName.FROZENSET.value, None, False)
+
+    def elements(
+        self,
+        value: ast.AST,
+        unavailable_builtin_names: frozenset[str],
+    ) -> tuple[ast.expr, ...] | None:
+        if self._literal_node_type is not None and isinstance(
+            value, self._literal_node_type
+        ):
+            return tuple(value.elts)
+        if (
+            not isinstance(value, ast.Call)
+            or not isinstance(value.func, ast.Name)
+            or value.func.id != self.value
+            or self.value in unavailable_builtin_names
+            or len(value.args) != 1
+            or value.keywords
+            or not isinstance(value.args[0], ast.Tuple | ast.List | ast.Set)
+        ):
+            return None
+        return tuple(value.args[0].elts)
+
+    def preserves_member_sequence(
+        self,
+        observed: tuple[str, ...],
+        expected: tuple[str, ...],
+    ) -> bool:
+        if len(observed) != len(expected):
+            return False
+        if self._preserves_order:
+            return observed == expected
+        return frozenset(observed) == frozenset(expected)
+
+    def runtime_member_sequence(
+        self,
+        member_symbols: tuple[str, ...],
+        class_index: ClassFamilyIndex,
+    ) -> tuple[str, ...] | None:
+        if not self._preserves_order:
+            return member_symbols
+        members = tuple(class_index.class_for(symbol) for symbol in member_symbols)
+        if any(member is None for member in members):
+            return None
+        indexed_members = cast(tuple[IndexedClass, ...], members)
+        if len({member.file_path for member in indexed_members}) != 1:
+            return None
+        return tuple(
+            member.symbol
+            for member in sorted(indexed_members, key=lambda member: member.line)
+        )
+
+
+def _class_object_family_symbols(
+    elements: tuple[ast.expr, ...],
+    resolver: ModuleClassReferenceResolver,
+    family_symbols: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    del family_symbols
+    symbols = tuple(resolver.symbol_for_reference(element) for element in elements)
+    if any(symbol is None for symbol in symbols):
+        return None
+    return cast(tuple[str, ...], symbols)
+
+
+def _class_name_family_symbols(
+    elements: tuple[ast.expr, ...],
+    resolver: ModuleClassReferenceResolver,
+    family_symbols: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    del resolver
+    symbols_by_name: dict[str, str] = {}
+    for symbol in family_symbols:
+        name = symbol.rsplit(".", 1)[-1]
+        if name in symbols_by_name:
+            return None
+        symbols_by_name[name] = symbol
+    names = tuple(
+        element.value
+        for element in elements
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    )
+    if len(names) != len(elements):
+        return None
+    symbols = tuple(symbols_by_name.get(name) for name in names)
+    if any(symbol is None for symbol in symbols):
+        return None
+    return cast(tuple[str, ...], symbols)
+
+
 class ClassFamilyCollectionElementProjection(StrEnum):
     """How one collection projection references a class-family member."""
 
     def __new__(
         cls,
         value: str,
+        symbol_projector: Callable[
+            [
+                tuple[ast.expr, ...],
+                ModuleClassReferenceResolver,
+                tuple[str, ...],
+            ],
+            tuple[str, ...] | None,
+        ],
         value_source_builder: Callable[[str, str], str],
     ) -> "ClassFamilyCollectionElementProjection":
         member = str.__new__(cls, value)
         member._value_ = value
+        member._symbol_projector = symbol_projector
         member._value_source_builder = value_source_builder
         return member
 
     CLASS_OBJECT = (
         "class_object",
+        _class_object_family_symbols,
         lambda factory_name, member_source: f"{factory_name}({member_source})",
     )
     CLASS_NAME = (
         "class_name",
+        _class_name_family_symbols,
         lambda factory_name, member_source: (
             f"{factory_name}(member_type.__name__ for member_type in {member_source})"
         ),
     )
 
-    def value_source(self, factory_name: str, member_source: str) -> str:
-        return self._value_source_builder(factory_name, member_source)
+    def projected_symbols(
+        self,
+        elements: tuple[ast.expr, ...],
+        resolver: ModuleClassReferenceResolver,
+        family_symbols: tuple[str, ...],
+    ) -> tuple[str, ...] | None:
+        return self._symbol_projector(elements, resolver, family_symbols)
+
+    def value_source(
+        self,
+        factory: ClassFamilyCollectionFactory,
+        member_source: str,
+    ) -> str:
+        return self._value_source_builder(factory.value, member_source)
 
 
 class ClassFamilyCollectionMembershipProjection(StrEnum):
@@ -19841,11 +19966,13 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
         cls,
         value: str,
         authority_matcher: Callable[[bool, bool, bool], bool],
+        member_symbol_projector: Callable[[ClassFamilyIndex, str], tuple[str, ...]],
         value_source_builder: Callable[[str], str],
     ) -> "ClassFamilyCollectionMembershipProjection":
         member = str.__new__(cls, value)
         member._value_ = value
         member._authority_matcher = authority_matcher
+        member._member_symbol_projector = member_symbol_projector
         member._value_source_builder = value_source_builder
         return member
 
@@ -19854,12 +19981,18 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
         lambda declares_autoregister, covers_family, _all_direct: (
             declares_autoregister and covers_family
         ),
+        lambda class_index, authority_symbol: class_index.descendant_symbols(
+            authority_symbol
+        ),
         lambda authority_name: f"{authority_name}.__registry__.values()",
     )
     DIRECT_SUBCLASSES = (
         "direct_subclasses",
         lambda declares_autoregister, covers_family, all_direct: (
             not declares_autoregister and covers_family and all_direct
+        ),
+        lambda class_index, authority_symbol: class_index.children_by_symbol.get(
+            authority_symbol, ()
         ),
         lambda authority_name: f"{authority_name}.__subclasses__()",
     )
@@ -19886,13 +20019,49 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
     def value_source(self, authority_name: str) -> str:
         return self._value_source_builder(authority_name)
 
+    def member_symbols(
+        self,
+        class_index: ClassFamilyIndex,
+        authority_symbol: str,
+    ) -> tuple[str, ...]:
+        return self._member_symbol_projector(class_index, authority_symbol)
+
 
 @dataclass(frozen=True)
 class ClassFamilyCollectionProjection:
     """Source-level collection shape proven to mirror class-family members."""
 
-    factory_name: str
+    factory: ClassFamilyCollectionFactory
     element_projection: ClassFamilyCollectionElementProjection
+    projected_symbols: tuple[str, ...]
+
+    @classmethod
+    def from_value(
+        cls,
+        value: ast.AST,
+        unavailable_builtin_names: frozenset[str],
+        resolver: ModuleClassReferenceResolver,
+        family_symbols: tuple[str, ...],
+    ) -> tuple["ClassFamilyCollectionProjection", ...]:
+        return tuple(
+            cls(
+                factory=factory,
+                element_projection=element_projection,
+                projected_symbols=projected_symbols,
+            )
+            for factory in ClassFamilyCollectionFactory
+            if (elements := factory.elements(value, unavailable_builtin_names))
+            is not None
+            for element_projection in ClassFamilyCollectionElementProjection
+            if (
+                projected_symbols := element_projection.projected_symbols(
+                    elements,
+                    resolver,
+                    family_symbols,
+                )
+            )
+            is not None
+        )
 
     def value_source(
         self,
@@ -19900,7 +20069,7 @@ class ClassFamilyCollectionProjection:
         membership_projection: ClassFamilyCollectionMembershipProjection,
     ) -> str:
         return self.element_projection.value_source(
-            self.factory_name,
+            self.factory,
             membership_projection.value_source(authority_name),
         )
 
@@ -19978,339 +20147,434 @@ class ContextualSemanticMirrorRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionAuthorityResolution:
-    """Exact class-family target and its complete runtime member projection."""
+class ClassFamilyCollectionCandidate:
+    """One source projection proven equal to a complete nominal class family."""
 
-    target: AstTargetDigest
-    membership_projection: ClassFamilyCollectionMembershipProjection
+    assignment_name: str
+    statement: ast.Assign | ast.AnnAssign
+    collection: ClassFamilyCollectionProjection
+    membership: ClassFamilyCollectionMembershipProjection
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionSemanticMirrorRecipeParts:
-    """Executable recipe facts for a subclass-collection semantic mirror."""
+class ClassFamilyCollectionAuthorityProof:
+    """Authority and source context for proving one family projection."""
 
-    projection_path: str
-    authority_target: AstTargetDigest
-    assignment_name: str
-    assignment_source: str
-
-    @property
-    def authority_path(self) -> str:
-        return self.authority_target.file_path
+    resolver: ModuleClassReferenceResolver
+    symbol_table: ModuleSymbolTable
+    class_index: ClassFamilyIndex
+    authority_symbol: str
+    authority_declaration: IndexedClass
+    descendant_symbols: tuple[str, ...]
 
     @property
-    def authority_name(self) -> str:
-        return self.authority_target.name
-
-    @property
-    def authority_claim(self) -> AuthorityClaim:
-        return AstTargetAuthorityClaim.from_target(
-            self.authority_target,
-            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+    def unavailable_builtin_names(self) -> frozenset[str]:
+        return frozenset(
+            (
+                *self.symbol_table.top_level_names,
+                *self.symbol_table.import_sources_by_name,
+            )
         )
 
-    def import_source(self, graph: SourceModuleImportGraph) -> str | None:
-        return graph.import_source(
-            importing_file_path=self.projection_path,
-            imported_file_path=self.authority_path,
-            imported_name=self.authority_name,
-        )
-
-    def recipe_for(
+    def candidate_for_statement(
         self,
-        finding: RefactorFinding,
-        import_graph: SourceModuleImportGraph,
-    ) -> RefactorRecipe | None:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-class-family-collection",
-            reason="Derive subclass collection from the class-family authority.",
-        ).with_authority_claim(self.authority_claim)
-        if self.projection_path != self.authority_path:
-            import_source = self.import_source(import_graph)
-            if import_source is None:
-                return None
-            recipe = recipe.with_operation(
-                EnsureImportOperation(
-                    target=SourceRewriteTarget(file_path=self.projection_path),
-                    import_source=import_source,
-                    rationale="",
+        statement: ast.stmt,
+    ) -> ClassFamilyCollectionCandidate | None:
+        pair = SingleAssignmentAndValueNameProjection(statement).pair
+        if pair is None or pair[0] == "__all__":
+            return None
+        assignment_name, value = pair
+        return single_item(
+            tuple(
+                candidate
+                for collection in ClassFamilyCollectionProjection.from_value(
+                    value,
+                    self.unavailable_builtin_names,
+                    self.resolver,
+                    self.descendant_symbols,
+                )
+                if (
+                    candidate := self.candidate_for_projection(
+                        assignment_name,
+                        cast(ast.Assign | ast.AnnAssign, statement),
+                        collection,
+                    )
+                )
+                is not None
+            )
+        )
+
+    def candidate_for_projection(
+        self,
+        assignment_name: str,
+        statement: ast.Assign | ast.AnnAssign,
+        collection: ClassFamilyCollectionProjection,
+    ) -> ClassFamilyCollectionCandidate | None:
+        membership = (
+            ClassFamilyCollectionMembershipProjection.for_authority_declaration(
+                self.authority_declaration.declares_autoregister_meta,
+                self.same_members(
+                    collection.projected_symbols,
+                    self.descendant_symbols,
+                ),
+                self.same_members(
+                    collection.projected_symbols,
+                    self.class_index.children_by_symbol.get(self.authority_symbol, ()),
+                ),
+            )
+        )
+        if membership is None:
+            return None
+        runtime_symbols = collection.factory.runtime_member_sequence(
+            membership.member_symbols(self.class_index, self.authority_symbol),
+            self.class_index,
+        )
+        if runtime_symbols is None or not collection.factory.preserves_member_sequence(
+            collection.projected_symbols,
+            runtime_symbols,
+        ):
+            return None
+        return ClassFamilyCollectionCandidate(
+            assignment_name=assignment_name,
+            statement=statement,
+            collection=collection,
+            membership=membership,
+        )
+
+    @staticmethod
+    def same_members(
+        left: tuple[str, ...],
+        right: tuple[str, ...],
+    ) -> bool:
+        return len(left) == len(right) and frozenset(left) == frozenset(right)
+
+
+@dataclass(frozen=True)
+class ClassFamilyCollectionDerivation:
+    """Exact source proof for deriving one collection from its class authority."""
+
+    authority: ResolvedClassTarget
+    projection_module: AstTargetDigest
+    candidate: ClassFamilyCollectionCandidate
+    import_source: str | None
+
+    @property
+    def projection_path(self) -> str:
+        return self.projection_module.file_path
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> "ClassFamilyCollectionDerivation":
+        _authority_id, authority_digest, authority_node = (
+            context.target_node_for_rewrite_target(authority_reference)
+        )
+        if not authority_digest.is_class or not isinstance(
+            authority_node, ast.ClassDef
+        ):
+            raise ValueError("Class-family collection authority must be a class")
+        if "." in authority_digest.qualname:
+            raise ValueError("Class-family collection authority must be top level")
+        projection_id = projection_reference.required_target_id(context.source_index)
+        projection_module = context.source_index.target_by_id[projection_id]
+        if not projection_module.is_module:
+            raise ValueError("Class-family collection projection must target a module")
+        authority = ResolvedClassTarget(authority_digest, authority_node)
+        class_index = context.required_class_family_index
+        authority_symbol = class_index.symbol_for(
+            file_path=authority.file_path,
+            qualname=authority.qualname,
+        )
+        if authority_symbol is None:
+            raise ValueError("Class-family authority has no indexed nominal identity")
+        authority_declaration = class_index.class_for(authority_symbol)
+        if authority_declaration is None:
+            raise ValueError("Class-family authority declaration is unavailable")
+        descendant_symbols = class_index.descendant_symbols(authority_symbol)
+        if not descendant_symbols:
+            raise ValueError("Class-family authority has no indexed descendants")
+        parsed_module = cls.parsed_projection_module(context, projection_module)
+        symbol_table = ModuleSymbolTable(
+            file_path=projection_module.file_path,
+            source=parsed_module.source,
+            module=parsed_module.module,
+        )
+        resolver = ModuleClassReferenceResolver(parsed_module, class_index)
+        proof = ClassFamilyCollectionAuthorityProof(
+            resolver=resolver,
+            symbol_table=symbol_table,
+            class_index=class_index,
+            authority_symbol=authority_symbol,
+            authority_declaration=authority_declaration,
+            descendant_symbols=descendant_symbols,
+        )
+        candidates = tuple(
+            candidate
+            for statement in parsed_module.module.body
+            if (candidate := proof.candidate_for_statement(statement)) is not None
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Class-family authority and projection module must expose exactly "
+                f"one complete literal collection; found {len(candidates)}"
+            )
+        return cls(
+            authority=authority,
+            projection_module=projection_module,
+            candidate=candidates[0],
+            import_source=cls.required_import_source(
+                context,
+                authority,
+                authority_symbol,
+                parsed_module,
+                symbol_table,
+                resolver,
+            ),
+        )
+
+    @staticmethod
+    def parsed_projection_module(
+        context: CodemodSelectorContext,
+        projection_module: AstTargetDigest,
+    ) -> ParsedModule:
+        source_file = context.module_import_graph.source_file_for_path(
+            projection_module.file_path
+        )
+        module = context.module_nodes_by_file_path.get(projection_module.file_path)
+        source = context.sources_by_file_path.get(projection_module.file_path)
+        if source_file is None or module is None or source is None:
+            raise ValueError("Class-family projection module source is unavailable")
+        return ParsedModule(
+            path=Path(projection_module.file_path),
+            module_name=source_file.module_name,
+            is_package_init=source_file.is_package_init,
+            module=module,
+            source=source,
+        )
+
+    @staticmethod
+    def required_import_source(
+        context: CodemodSelectorContext,
+        authority: ResolvedClassTarget,
+        authority_symbol: str,
+        parsed_module: ParsedModule,
+        symbol_table: ModuleSymbolTable,
+        resolver: ModuleClassReferenceResolver,
+    ) -> str | None:
+        if any(
+            isinstance(statement, ast.ImportFrom)
+            and any(alias.name == "*" for alias in statement.names)
+            for statement in parsed_module.module.body
+        ):
+            raise ValueError(
+                "Class-family projection module has an ambiguous star import"
+            )
+        authority_name = authority.target.name
+        declaration_bindings = symbol_table.binding_statements(authority_name)
+        import_binding = symbol_table.import_sources_by_name.get(authority_name)
+        if parsed_module.file_path == authority.file_path:
+            authority_binding_is_exact = (
+                len(declaration_bindings) == 1
+                and isinstance(declaration_bindings[0], ast.ClassDef)
+                and declaration_bindings[0].lineno == authority.target.line
+                and declaration_bindings[0].name == authority_name
+            )
+            if not authority_binding_is_exact or import_binding is not None:
+                raise ValueError(
+                    f"Class-family authority name {authority_name!r} is rebound"
+                )
+            return None
+        if declaration_bindings:
+            raise ValueError(
+                f"Class-family authority name {authority_name!r} is rebound"
+            )
+        reference = ast.Name(id=authority_name, ctx=ast.Load())
+        if resolver.symbol_for_reference(reference) == authority_symbol:
+            return None
+        if import_binding is not None:
+            raise ValueError(
+                f"Class-family authority name {authority_name!r} is imported from "
+                "another declaration"
+            )
+        import_source = context.module_import_graph.import_source(
+            importing_file_path=parsed_module.file_path,
+            imported_file_path=authority.file_path,
+            imported_name=authority_name,
+        )
+        if import_source is None:
+            raise ValueError(
+                "Class-family authority has no cycle-safe canonical import"
+            )
+        return import_source
+
+    def replacement_source(self) -> str:
+        candidate = self.candidate
+        value_source = candidate.collection.value_source(
+            self.authority.target.name,
+            candidate.membership,
+        )
+        if isinstance(candidate.statement, ast.AnnAssign):
+            return (
+                f"{candidate.assignment_name}: "
+                f"{ast.unparse(candidate.statement.annotation)} = {value_source}"
+            )
+        return f"{candidate.assignment_name} = {value_source}"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveClassFamilyCollectionOperation(RefactorRecipeOperation):
+    """Derive one complete collection projection from its class authority."""
+
+    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    @property
+    def projection_target(self) -> SourceRewriteTarget:
+        return SourceRewriteTarget(target_id=self.projection_target_id)
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), self.projection_target)
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
+        )
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
+        derivation = self.required_derivation(context)
+        edits: list[NominalSourceEdit] = []
+        if derivation.import_source is not None:
+            edits.extend(
+                self.required_import_mutations(
+                    context.source_index,
+                    context.sources_by_file_path,
+                    derivation.projection_path,
+                    import_source=derivation.import_source,
+                    default_rationale="Import the class-family authority.",
                 )
             )
-        return recipe.with_operation(
-            ReplaceModuleAssignmentOperation(
-                target=SourceRewriteTarget(file_path=self.projection_path),
-                assignment_name=self.assignment_name,
-                source=self.assignment_source,
-                rationale="",
+        statement = derivation.candidate.statement
+        edits.append(
+            SourceSpanReplacement(
+                file_path=derivation.projection_path,
+                start_line=statement.lineno,
+                end_line=statement.end_lineno or statement.lineno,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    derivation.replacement_source()
+                ),
+                rationale=self.rationale_text(
+                    f"Derive {derivation.candidate.assignment_name!r} from "
+                    f"{derivation.authority.target.name!r}."
+                ),
             )
+        )
+        return tuple(edits)
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> ClassFamilyCollectionDerivation:
+        return ClassFamilyCollectionDerivation.from_context(
+            context,
+            self.target,
+            self.projection_target,
         )
 
 
 @dataclass(frozen=True, kw_only=True)
 class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
-    SharedAssignmentValueMixin,
     ContextualSemanticMirrorRecipeBuilder,
     ClassFamilyAuthorityConcept,
 ):
-    """Build recipes for literal subclass collections that mirror a class family."""
+    """Build a source-derived class-family projection recipe."""
+
+    @cached_property
+    def candidate_operation(self) -> DeriveClassFamilyCollectionOperation | None:
+        locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
+        if locations is None:
+            return None
+        projection_location, authority_location = locations
+        projection_paths = self.resolve_source_paths((projection_location.file_path,))
+        if len(projection_paths) != 1:
+            return None
+        authority = MappingSemanticMirrorRecipeStrategy.authority_class_target(
+            self,
+            authority_location,
+            authority_location.symbol,
+        )
+        if authority is None:
+            return None
+        projection_path = next(iter(projection_paths))
+        projection_target_id = SourceRewriteTarget(
+            file_path=projection_path
+        ).optional_target_id(self.source_index)
+        if projection_target_id is None:
+            return None
+        return DeriveClassFamilyCollectionOperation(
+            target=SourceRewriteTarget(target_id=authority.target.target_id),
+            projection_target_id=projection_target_id,
+        )
+
+    @cached_property
+    def proven_operation(self) -> DeriveClassFamilyCollectionOperation | None:
+        operation = self.candidate_operation
+        if operation is None:
+            return None
+        try:
+            operation.required_derivation(self)
+        except ValueError:
+            return None
+        return operation
 
     def recipe(self) -> RefactorRecipe | None:
-        parts = self.parts()
-        if parts is None:
+        operation = self.proven_operation
+        if operation is None:
             return None
-        return parts.recipe_for(self.finding, self.module_import_graph)
-
-    def parts(self) -> ClassFamilyCollectionSemanticMirrorRecipeParts | None:
+        authority_target_id = operation.target.required_target_id(self.source_index)
+        authority_target = self.source_index.target_by_id[authority_target_id]
         return (
-            Maybe.of(
-                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+            RefactorRecipe(
+                recipe_id=(f"{self.finding.stable_id}-derive-class-family-collection"),
+                reason="Derive subclass collection from the class-family authority.",
             )
-            .combine(
-                lambda _seed: self.finding.metrics.plan_registry_name,
-                lambda seed, assignment_name: (seed, assignment_name),
-            )
-            .combine(
-                lambda row: self.module_assignment_statement(
-                    row[0].projection_file_path(),
-                    row[1],
-                ),
-                lambda row, statement: (row[0], row[1], statement),
-            )
-            .combine(
-                lambda row: self.collection_projection(row[2]),
-                lambda row, projection: (row[0], row[1], row[2], projection),
-            )
-            .combine(
-                lambda row: self.authority_resolution_for(row[0]),
-                lambda row, authority_resolution: (
-                    row[0],
-                    row[1],
-                    row[2],
-                    row[3],
-                    authority_resolution,
-                ),
-            )
-            .map(
-                lambda row: ClassFamilyCollectionSemanticMirrorRecipeParts(
-                    projection_path=row[0].projection_file_path(),
-                    authority_target=row[4].target,
-                    assignment_name=row[1],
-                    assignment_source=self.replacement_assignment_source(
-                        row[2],
-                        row[1],
-                        row[4].target.name,
-                        row[3],
-                        row[4].membership_projection,
-                    ),
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    authority_target,
+                    authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
                 )
             )
-            .unwrap_or_none()
+            .with_operation(operation)
         )
 
     def rejection_reason(self) -> str:
-        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
-        if seed is None:
-            return "semantic mirror finding does not expose projection and authority locations"
-        assignment_name = self.finding.metrics.plan_registry_name
-        if assignment_name is None:
-            return "semantic mirror finding exposes no collection assignment name"
-        statement = self.module_assignment_statement(
-            seed.projection_file_path(),
-            assignment_name,
-        )
-        if statement is None:
-            return f"could not resolve one module assignment named {assignment_name!r}"
-        if self.collection_projection(statement) is None:
+        operation = self.candidate_operation
+        if operation is None:
             return (
-                "projection assignment is not a literal class or class-name "
-                "collection matching all mirrored class names"
+                "semantic mirror finding does not resolve one class authority and "
+                "one projection module"
             )
-        authority_resolution = self.authority_resolution_for(seed)
-        if authority_resolution is None:
-            return (
-                "nominal class-family authority exposes no complete runtime member "
-                "query for this projection"
-            )
-        if (
-            seed.projection_file_path() != seed.authority_file_path()
-            and self.module_import_graph.import_source(
-                importing_file_path=seed.projection_file_path(),
-                imported_file_path=authority_resolution.target.file_path,
-                imported_name=authority_resolution.target.name,
-            )
-            is None
-        ):
-            return "semantic authority has no canonical importable module identity"
+        try:
+            operation.required_derivation(self)
+        except ValueError as error:
+            return str(error)
         return "class-family collection derivation is available"
-
-    def authority_resolution_for(
-        self,
-        seed: SemanticMirrorRecipeSeedLocations,
-    ) -> ClassFamilyCollectionAuthorityResolution | None:
-        if self.class_family_index is None:
-            return None
-        resolved_target = MappingSemanticMirrorRecipeStrategy.authority_class_target(
-            self,
-            seed.authority_source_location(),
-            seed.authority_symbol(),
-        )
-        if resolved_target is None:
-            return None
-        authority_symbol = self.class_family_index.symbol_for(
-            file_path=resolved_target.file_path,
-            qualname=resolved_target.qualname,
-        )
-        if authority_symbol is None:
-            return None
-        authority_declaration = self.class_family_index.class_for(authority_symbol)
-        if authority_declaration is None:
-            return None
-        projected_member_names = frozenset(self.finding.metrics.plan_class_names)
-        descendant_names = frozenset(
-            descendant.simple_name
-            for descendant_symbol in self.class_family_index.descendant_symbols(
-                authority_symbol
-            )
-            if (descendant := self.class_family_index.class_for(descendant_symbol))
-            is not None
-        )
-        direct_member_names = frozenset(
-            child.simple_name
-            for child_symbol in self.class_family_index.children_by_symbol.get(
-                authority_symbol,
-                (),
-            )
-            if (child := self.class_family_index.class_for(child_symbol)) is not None
-        )
-        membership_projection = (
-            ClassFamilyCollectionMembershipProjection.for_authority_declaration(
-                authority_declaration.declares_autoregister_meta,
-                projected_member_names == descendant_names,
-                projected_member_names == direct_member_names,
-            )
-        )
-        if membership_projection is None:
-            return None
-        return ClassFamilyCollectionAuthorityResolution(
-            target=resolved_target.target,
-            membership_projection=membership_projection,
-        )
-
-    def assignment_matches_class_collection(
-        self,
-        statement: ast.Assign | ast.AnnAssign,
-    ) -> bool:
-        return self.collection_projection(statement) is not None
-
-    def collection_projection(
-        self,
-        statement: ast.Assign | ast.AnnAssign,
-    ) -> ClassFamilyCollectionProjection | None:
-        return (
-            Maybe.of(self.collection_value(statement))
-            .combine(
-                lambda collection: self.element_projection_for(collection[1]),
-                lambda collection, element_projection: (
-                    collection[0],
-                    element_projection,
-                ),
-            )
-            .map(
-                lambda row: ClassFamilyCollectionProjection(
-                    factory_name=row[0],
-                    element_projection=row[1],
-                )
-            )
-            .unwrap_or_none()
-        )
-
-    def element_projection_for(
-        self,
-        elements: tuple[ast.expr, ...],
-    ) -> ClassFamilyCollectionElementProjection | None:
-        if self.element_names_match_class_names(
-            self.element_names_from_class_references(elements)
-        ):
-            return ClassFamilyCollectionElementProjection.CLASS_OBJECT
-        if self.element_names_match_class_names(
-            self.element_names_from_string_literals(elements)
-        ):
-            return ClassFamilyCollectionElementProjection.CLASS_NAME
-        return None
-
-    def element_names_match_class_names(self, element_names: tuple[str, ...]) -> bool:
-        class_names = self.finding.metrics.plan_class_names
-        return len(element_names) == len(class_names) and frozenset(
-            element_names
-        ) == frozenset(class_names)
-
-    @staticmethod
-    def element_names_from_class_references(
-        elements: tuple[ast.expr, ...],
-    ) -> tuple[str, ...]:
-        return tuple(
-            terminal_name
-            for element in elements
-            if (terminal_name := _terminal_name(element)) is not None
-        )
-
-    @staticmethod
-    def element_names_from_string_literals(
-        elements: tuple[ast.expr, ...],
-    ) -> tuple[str, ...]:
-        return tuple(
-            value
-            for element in elements
-            if isinstance(element, ast.Constant)
-            and isinstance((value := element.value), str)
-        )
-
-    def collection_value(
-        self,
-        statement: ast.Assign | ast.AnnAssign,
-    ) -> tuple[str, tuple[ast.expr, ...]] | None:
-        value = self.assignment_value(statement)
-        if isinstance(value, ast.Tuple | ast.List | ast.Set):
-            return self.collection_factory(value), tuple(value.elts)
-        if not isinstance(value, ast.Call):
-            return None
-        factory_name = _terminal_name(value.func)
-        if factory_name not in BuiltinCallName.collection_factory_names():
-            return None
-        if len(value.args) != 1 or value.keywords:
-            return None
-        argument = value.args[0]
-        if not isinstance(argument, ast.Tuple | ast.List | ast.Set):
-            return None
-        return factory_name, tuple(argument.elts)
-
-    @classmethod
-    def replacement_assignment_source(
-        cls,
-        statement: ast.Assign | ast.AnnAssign,
-        assignment_name: str,
-        authority_name: str,
-        collection_projection: ClassFamilyCollectionProjection,
-        membership_projection: ClassFamilyCollectionMembershipProjection,
-    ) -> str:
-        value = cls.assignment_value(statement)
-        if value is None:
-            raise ValueError("class-family collection replacement requires a value")
-        value_source = collection_projection.value_source(
-            authority_name,
-            membership_projection,
-        )
-        if isinstance(statement, ast.AnnAssign):
-            return f"{assignment_name}: {ast.unparse(statement.annotation)} = {value_source}"
-        return f"{assignment_name} = {value_source}"
-
-    @staticmethod
-    def collection_factory(value: ast.AST) -> str:
-        if isinstance(value, ast.List):
-            return "list"
-        if isinstance(value, ast.Set):
-            return "set"
-        return "tuple"
 
 
 @dataclass(frozen=True, kw_only=True)
