@@ -4613,6 +4613,37 @@ class RefactorRecipeOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceDerivedAuthorityProjectionOperation(RefactorRecipeOperation, ABC):
+    """Exact authority/projection pair whose edits derive from current source."""
+
+    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    @property
+    def projection_target(self) -> SourceRewriteTarget:
+        return SourceRewriteTarget(target_id=self.projection_target_id)
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), self.projection_target)
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    @abstractmethod
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
 class ReplaceTargetOperation(RefactorRecipeOperation):
     """Replace one exact source-index target with caller-declared source."""
 
@@ -16319,24 +16350,8 @@ class EnumSubsetDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveEnumSubsetOperation(RefactorRecipeOperation):
+class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
     """Move one literal enum-value subset behind its enum authority."""
-
-    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    @property
-    def projection_target(self) -> SourceRewriteTarget:
-        return SourceRewriteTarget(target_id=self.projection_target_id)
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), self.projection_target)
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
 
     def source_edits_with_context(
         self,
@@ -16541,6 +16556,25 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
     node: ast.FunctionDef | ast.AsyncFunctionDef
 
     @staticmethod
+    def from_rewrite_target(
+        context: CodemodSelectorContext,
+        target_reference: SourceRewriteTarget,
+    ) -> "ResolvedFunctionProjectionTarget":
+        _target_id, target, node = context.target_node_for_rewrite_target(
+            target_reference
+        )
+        if not target.is_function_like or not isinstance(
+            node, ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            raise ValueError("Projection must target one exact function")
+        return ResolvedFunctionProjectionTarget(
+            source_path=target.file_path,
+            function_qualname=target.qualname,
+            target=target,
+            node=node,
+        )
+
+    @staticmethod
     def from_function_identity(
         context: CodemodSelectorContext,
         *,
@@ -16620,7 +16654,7 @@ class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
             return None
         matches = tuple(
             child
-            for child in ast.walk(function.node)
+            for child in walk_function_body_nodes(function.node)
             if isinstance(child, ast.Return) and child.lineno == line
         )
         if len(matches) != 1:
@@ -16829,6 +16863,26 @@ class DataclassPayloadAuthorityTarget:
     target: AstTargetDigest
     node: ast.ClassDef
 
+    @classmethod
+    def from_rewrite_target(
+        cls,
+        context: CodemodSelectorContext,
+        target_reference: SourceRewriteTarget,
+    ) -> "DataclassPayloadAuthorityTarget":
+        _target_id, target, node = context.target_node_for_rewrite_target(
+            target_reference
+        )
+        if not target.is_class or not isinstance(node, ast.ClassDef):
+            raise ValueError("Dataclass projection authority must target a class")
+        if "." in target.qualname:
+            raise ValueError("Dataclass projection authority must be top level")
+        authority = cls(target=target, node=node)
+        if not authority.is_dataclass:
+            raise ValueError("Dataclass projection authority must be a dataclass")
+        if not authority.field_names:
+            raise ValueError("Dataclass projection authority has no direct fields")
+        return authority
+
     @property
     def source_path(self) -> str:
         return self.target.file_path
@@ -16840,6 +16894,23 @@ class DataclassPayloadAuthorityTarget:
     @property
     def field_names(self) -> tuple[str, ...]:
         return self.field_names_for_node(self.node)
+
+    @property
+    def is_dataclass(self) -> bool:
+        return self.node_is_dataclass(self.node)
+
+    @classmethod
+    def node_is_dataclass(cls, node: ast.ClassDef) -> bool:
+        return any(
+            cls.decorator_name(decorator) == "dataclass"
+            for decorator in node.decorator_list
+        )
+
+    @classmethod
+    def decorator_name(cls, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Call):
+            return cls.decorator_name(node.func)
+        return _terminal_name(node)
 
     @staticmethod
     def field_names_for_node(node: ast.ClassDef) -> tuple[str, ...]:
@@ -16862,17 +16933,47 @@ class DataclassPayloadAuthorityTarget:
             qualname=self.target.qualname,
         )
 
+    def require_complete_owned_schema(
+        self,
+        context: CodemodSelectorContext,
+    ) -> None:
+        authority_symbol = self.class_symbol(context)
+        if authority_symbol is None:
+            raise ValueError("Dataclass projection authority has no nominal identity")
+        class_index = context.required_class_family_index
+        if any(
+            (ancestor := class_index.class_for(ancestor_symbol)) is not None
+            and self.node_is_dataclass(ancestor.node)
+            for ancestor_symbol in class_index.ancestor_symbols(authority_symbol)
+        ):
+            raise ValueError(
+                "Dataclass projection authority must own its complete field schema"
+            )
+
 
 @dataclass(frozen=True)
 class DataclassAuthorityReferenceProof:
     """Resolved dataclass authority identity at one source boundary."""
 
-    target_name: str
-    target_symbol: str
-    resolver: ModuleClassReferenceResolver
-    symbol_table: ModuleSymbolTable
+    reference: ClassAuthorityReferenceProof
     generated_import_source: str | None
     top_level_target_binding_is_nominal: bool
+
+    @property
+    def target_name(self) -> str:
+        return self.reference.authority.target.name
+
+    @property
+    def target_symbol(self) -> str:
+        return self.reference.authority_symbol
+
+    @property
+    def resolver(self) -> ModuleClassReferenceResolver:
+        return self.reference.resolver
+
+    @property
+    def symbol_table(self) -> ModuleSymbolTable:
+        return self.reference.symbol_table
 
     @classmethod
     def from_target(
@@ -16882,38 +16983,21 @@ class DataclassAuthorityReferenceProof:
         target: DataclassPayloadAuthorityTarget,
         generated_import_source: str | None,
     ) -> "DataclassAuthorityReferenceProof | None":
-        source_file = context.module_import_graph.source_file_for_path(source_path)
-        target_symbol = target.class_symbol(context)
-        if source_file is None or target_symbol is None:
+        try:
+            reference = ClassAuthorityReferenceProof.from_context(
+                context,
+                ResolvedClassTarget(target.target, target.node),
+                source_path,
+            )
+        except ValueError:
             return None
-        module = context.module_nodes_by_file_path.get(source_file.file_path)
-        source = context.sources_by_file_path.get(source_file.file_path)
-        if module is None or source is None:
-            return None
-        symbol_table = ModuleSymbolTable(
-            file_path=source_file.file_path,
-            source=source,
-            module=module,
-        )
         return cls(
-            target_name=target.class_name,
-            target_symbol=target_symbol,
-            resolver=ModuleClassReferenceResolver(
-                ParsedModule(
-                    path=Path(source_file.file_path),
-                    module_name=source_file.module_name,
-                    is_package_init=source_file.is_package_init,
-                    module=module,
-                    source=source,
-                ),
-                context.required_class_family_index,
-            ),
-            symbol_table=symbol_table,
+            reference=reference,
             generated_import_source=generated_import_source,
             top_level_target_binding_is_nominal=(
                 cls.top_level_target_binding_is_nominal(
-                    symbol_table,
-                    source_file.file_path,
+                    reference.symbol_table,
+                    reference.projection_module.file_path,
                     target,
                 )
             ),
@@ -17572,27 +17656,21 @@ class DataclassAuthorityMappingRecipeBuilder(
         resolved_target: ResolvedClassTarget,
         field_names: frozenset[str],
     ) -> bool:
-        declared_field_names = DataclassPayloadAuthorityTarget.field_names_for_node(
-            resolved_target.node
+        authority = DataclassPayloadAuthorityTarget(
+            target=resolved_target.target,
+            node=resolved_target.node,
         )
         if (
-            not self.is_dataclass_authority(resolved_target.node)
-            or field_names != frozenset(declared_field_names)
-            or not declared_field_names
+            not authority.is_dataclass
+            or field_names != frozenset(authority.field_names)
+            or not authority.field_names
         ):
             return False
-        class_index = self.required_class_family_index
-        class_symbol = class_index.symbol_for(
-            file_path=resolved_target.file_path,
-            qualname=resolved_target.qualname,
-        )
-        if class_symbol is None:
+        try:
+            authority.require_complete_owned_schema(self)
+        except ValueError:
             return False
-        return not any(
-            (ancestor := class_index.class_for(ancestor_symbol)) is not None
-            and self.is_dataclass_authority(ancestor.node)
-            for ancestor_symbol in class_index.ancestor_symbols(class_symbol)
-        )
+        return True
 
     @abstractmethod
     def projection_shape_is_applicable(
@@ -17682,21 +17760,7 @@ class DataclassAuthorityMappingRecipeBuilder(
 
     @staticmethod
     def is_dataclass_authority(node: ast.ClassDef) -> bool:
-        return any(
-            DataclassAuthorityMappingRecipeBuilder.decorator_name(decorator)
-            == "dataclass"
-            for decorator in node.decorator_list
-        )
-
-    @staticmethod
-    def decorator_name(node: ast.expr) -> str | None:
-        if isinstance(node, ast.Call):
-            return DataclassAuthorityMappingRecipeBuilder.decorator_name(node.func)
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        return None
+        return DataclassPayloadAuthorityTarget.node_is_dataclass(node)
 
     @staticmethod
     def annotated_field_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -17770,12 +17834,284 @@ class DataclassProjectionRecipeParts(FindingRecipeParts):
         return recipe
 
 
+@dataclass(frozen=True)
+class DataclassPayloadProjectionCandidate:
+    """One exhaustive return-dict projection proved against a dataclass."""
+
+    projection: ReturnDictProjectionTarget
+    field_run: DataclassInstanceFieldRunProjection
+    dataclasses_reference: DataclassesModuleReference
+    source_replacement: SourceTextReplacement
+
+
+@dataclass(frozen=True)
+class DataclassPayloadProjectionDerivation(DataclassPayloadProjectionCandidate):
+    """Current-source proof for one exhaustive dataclass return-dict projection."""
+
+    authority: DataclassPayloadAuthorityTarget
+    authority_import_source: str | None
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> "DataclassPayloadProjectionDerivation":
+        authority = DataclassPayloadAuthorityTarget.from_rewrite_target(
+            context,
+            authority_reference,
+        )
+        authority.require_complete_owned_schema(context)
+        projection_function = ResolvedFunctionProjectionTarget.from_rewrite_target(
+            context,
+            projection_reference,
+        )
+        authority_reference_proof = ClassAuthorityReferenceProof.from_context(
+            context,
+            ResolvedClassTarget(authority.target, authority.node),
+            projection_function.source_path,
+        )
+        authority_import_source = authority_reference_proof.required_import_source(
+            context
+        )
+        candidates = tuple(
+            candidate
+            for node in walk_function_body_nodes(projection_function.node)
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
+            if (
+                candidate := cls.candidate_from_return(
+                    context,
+                    authority,
+                    projection_function,
+                    node,
+                    authority_import_source,
+                )
+            )
+            is not None
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Dataclass authority and projection function must expose exactly "
+                f"one exhaustive return-dict projection; found {len(candidates)}"
+            )
+        candidate = candidates[0]
+        return cls(
+            authority=authority,
+            authority_import_source=authority_import_source,
+            projection=candidate.projection,
+            field_run=candidate.field_run,
+            dataclasses_reference=candidate.dataclasses_reference,
+            source_replacement=candidate.source_replacement,
+        )
+
+    @classmethod
+    def candidate_from_return(
+        cls,
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        function: ResolvedFunctionProjectionTarget,
+        return_node: ast.Return,
+        authority_import_source: str | None,
+    ) -> DataclassPayloadProjectionCandidate | None:
+        if not isinstance(return_node.value, ast.Dict):
+            return None
+        dict_node = return_node.value
+        field_values = ReturnDictProjectionTargetAuthority.field_values(
+            dict_node,
+            authority.field_names,
+        )
+        projection = ReturnDictProjectionTarget(
+            source_path=function.source_path,
+            function_qualname=function.function_qualname,
+            target=function.target,
+            node=function.node,
+            return_node=return_node,
+            dict_node=dict_node,
+            field_values=field_values,
+        )
+        field_run = DataclassInstanceFieldRunProjection.from_targets(
+            authority,
+            projection,
+        )
+        dataclasses_reference = DataclassesModuleReference.from_projection(
+            context,
+            projection,
+        )
+        if (
+            field_run is None
+            or dataclasses_reference is None
+            or not field_run.owner_has_nominal_authority_type(
+                context,
+                authority,
+                projection,
+                authority_import_source,
+            )
+        ):
+            return None
+        source_replacement = cls.projection_replacement(
+            context,
+            authority,
+            projection,
+            field_run,
+            dataclasses_reference,
+        )
+        if source_replacement is None:
+            return None
+        return DataclassPayloadProjectionCandidate(
+            projection=projection,
+            field_run=field_run,
+            dataclasses_reference=dataclasses_reference,
+            source_replacement=source_replacement,
+        )
+
+    @staticmethod
+    def projection_replacement(
+        context: CodemodSelectorContext,
+        authority: DataclassPayloadAuthorityTarget,
+        projection: ReturnDictProjectionTarget,
+        field_run: DataclassInstanceFieldRunProjection,
+        dataclasses_reference: DataclassesModuleReference,
+    ) -> SourceTextReplacement | None:
+        source = context.sources_by_file_path[projection.source_path]
+        geometry = SourceTextGeometry(source)
+        first_key_offsets = geometry.node_offsets(field_run.first_key_node)
+        last_value_offsets = geometry.node_offsets(field_run.last_value_node)
+        owner_source = geometry.segment_for_node(field_run.owner_node)
+        if (
+            first_key_offsets is None
+            or last_value_offsets is None
+            or owner_source is None
+        ):
+            return None
+        replacement_span = SourceTextSpan(
+            start_offset=first_key_offsets[0],
+            end_offset=last_value_offsets[1],
+        )
+        if replacement_span.contains_comment(source):
+            return None
+        indentation = " " * field_run.first_key_node.col_offset
+        continuation_indentation = f"{indentation}    "
+        nested_indentation = f"{continuation_indentation}    "
+        replacement_source = (
+            "**{\n"
+            f"{continuation_indentation}field.name: getattr(\n"
+            f"{nested_indentation}{owner_source},\n"
+            f"{nested_indentation}field.name,\n"
+            f"{continuation_indentation})\n"
+            f"{continuation_indentation}for field in "
+            f"{dataclasses_reference.expression}.fields(\n"
+            f"{nested_indentation}{authority.class_name}\n"
+            f"{continuation_indentation})\n"
+            f"{indentation}}}"
+        )
+        return replacement_span.replacement(source, replacement_source)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveDataclassPayloadProjectionOperation(
+    SourceDerivedAuthorityProjectionOperation
+):
+    """Derive one exhaustive return-dict projection from a dataclass authority."""
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
+        )
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
+        derivation = self.required_derivation(context)
+        import_sources = tuple(
+            import_source
+            for import_source in (
+                derivation.authority_import_source,
+                derivation.dataclasses_reference.import_source,
+            )
+            if import_source is not None
+        )
+        edits = tuple(
+            edit
+            for import_source in import_sources
+            for edit in self.required_import_mutations(
+                context.source_index,
+                context.sources_by_file_path,
+                derivation.projection.source_path,
+                import_source=import_source,
+                default_rationale=(
+                    "Import a declaration required by the dataclass-derived projection."
+                ),
+            )
+        )
+        replacement = derivation.source_replacement
+        replacement_edits = ReplaceTextOperation(
+            target=SourceRewriteTarget(
+                target_id=derivation.projection.target.target_id,
+            ),
+            old_source=replacement.old_source,
+            new_source=replacement.new_source,
+            rationale=("Replace mirrored fields with an authority-owned projection."),
+        ).source_edits_with_context(
+            context.source_index,
+            context.sources_by_file_path,
+            selector_context=context,
+        )
+        return (*edits, *replacement_edits)
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> DataclassPayloadProjectionDerivation:
+        return DataclassPayloadProjectionDerivation.from_context(
+            context,
+            self.target,
+            self.projection_target,
+        )
+
+
+@dataclass(frozen=True)
+class SourceDerivedDataclassPayloadProjectionRecipeParts(FindingRecipeParts):
+    """Exact targets for a source-derived dataclass return-dict recipe."""
+
+    authority: DataclassPayloadAuthorityTarget
+    projection: ReturnDictProjectionTarget
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-derive-dataclass-projection",
+                reason="Derive a mirrored projection from its dataclass authority.",
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    self.authority.target,
+                    authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
+                )
+            )
+            .with_operation(
+                DeriveDataclassPayloadProjectionOperation(
+                    target=SourceRewriteTarget(
+                        target_id=self.authority.target.target_id
+                    ),
+                    projection_target_id=self.projection.target.target_id,
+                )
+            )
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class DataclassPayloadProjectionMappingRecipeBuilder(
     ReturnDictFieldValueExtractor,
     DataclassAuthorityMappingRecipeBuilder[
         ReturnDictProjectionTarget,
-        DataclassProjectionRecipeParts,
+        SourceDerivedDataclassPayloadProjectionRecipeParts,
     ],
     InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
@@ -17853,96 +18189,18 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnDictProjectionTarget,
-    ) -> DataclassProjectionRecipeParts | None:
-        authority_import = self.authority_import_requirement(
-            authority,
-            projection,
+    ) -> SourceDerivedDataclassPayloadProjectionRecipeParts | None:
+        operation = DeriveDataclassPayloadProjectionOperation(
+            target=SourceRewriteTarget(target_id=authority.target.target_id),
+            projection_target_id=projection.target.target_id,
         )
-        if authority_import is None:
+        try:
+            operation.required_derivation(self)
+        except ValueError:
             return None
-        authority_import_source = authority_import.import_source
-        instance_field_run = DataclassInstanceFieldRunProjection.from_targets(
-            authority,
-            projection,
-        )
-        dataclasses_reference = DataclassesModuleReference.from_projection(
-            self,
-            projection,
-        )
-        if (
-            instance_field_run is None
-            or dataclasses_reference is None
-            or not instance_field_run.owner_has_nominal_authority_type(
-                self,
-                authority,
-                projection,
-                authority_import_source,
-            )
-        ):
-            return None
-        projection_rewrite = self.projection_rewrite_parts(
-            authority,
-            projection,
-            instance_field_run,
-            dataclasses_reference,
-        )
-        if projection_rewrite is None:
-            return None
-        return DataclassProjectionRecipeParts(
-            projection=projection,
+        return SourceDerivedDataclassPayloadProjectionRecipeParts(
             authority=authority,
-            projection_old_source=projection_rewrite.old_source,
-            projection_new_source=projection_rewrite.new_source,
-            import_source=authority_import_source,
-            support_import_sources=(
-                (dataclasses_reference.import_source,)
-                if dataclasses_reference.import_source is not None
-                else ()
-            ),
-        )
-
-    def projection_rewrite_parts(
-        self,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnDictProjectionTarget,
-        instance_field_run: DataclassInstanceFieldRunProjection,
-        dataclasses_reference: DataclassesModuleReference,
-    ) -> SourceTextReplacement | None:
-        source = self.sources_by_file_path[projection.source_path]
-        geometry = SourceTextGeometry(source)
-        first_key_offsets = geometry.node_offsets(instance_field_run.first_key_node)
-        last_value_offsets = geometry.node_offsets(instance_field_run.last_value_node)
-        owner_source = geometry.segment_for_node(instance_field_run.owner_node)
-        if (
-            first_key_offsets is None
-            or last_value_offsets is None
-            or owner_source is None
-        ):
-            return None
-        indentation = " " * instance_field_run.first_key_node.col_offset
-        continuation_indentation = f"{indentation}    "
-        nested_indentation = f"{continuation_indentation}    "
-        replacement_source = (
-            "**{\n"
-            f"{continuation_indentation}field.name: getattr(\n"
-            f"{nested_indentation}{owner_source},\n"
-            f"{nested_indentation}field.name,\n"
-            f"{continuation_indentation})\n"
-            f"{continuation_indentation}for field in "
-            f"{dataclasses_reference.expression}.fields(\n"
-            f"{nested_indentation}{authority.class_name}\n"
-            f"{continuation_indentation})\n"
-            f"{indentation}}}"
-        )
-        replacement_span = SourceTextSpan(
-            start_offset=first_key_offsets[0],
-            end_offset=last_value_offsets[1],
-        )
-        if replacement_span.contains_comment(source):
-            return None
-        return replacement_span.replacement(
-            source,
-            replacement_source,
+            projection=projection,
         )
 
 
@@ -20576,24 +20834,8 @@ class ClassFamilyCollectionDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveClassFamilyCollectionOperation(RefactorRecipeOperation):
+class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOperation):
     """Derive one complete collection projection from its class authority."""
-
-    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    @property
-    def projection_target(self) -> SourceRewriteTarget:
-        return SourceRewriteTarget(target_id=self.projection_target_id)
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), self.projection_target)
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
 
     def source_edits_with_context(
         self,

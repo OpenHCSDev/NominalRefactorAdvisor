@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
+    DeriveDataclassPayloadProjectionOperation,
     DeriveEnumSubsetOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
@@ -2270,9 +2271,31 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         == "DataclassPayloadProjectionMappingRecipeBuilder"
     )
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
-        "ensure_import",
-        "replace_text",
+        "derive_dataclass_payload_projection",
     )
+    operation = recipe.operations[0]
+    assert isinstance(operation, DeriveDataclassPayloadProjectionOperation)
+    operation_payload = operation.to_dict()
+    assert set(operation_payload) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    with pytest.raises(
+        ValueError,
+        match="Unsupported DeriveDataclassPayloadProjectionOperation payload field",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **operation_payload,
+                "field_names": ["kind", "description", "confidence"],
+                "old_source": "copied projection source",
+                "new_source": "copied generated source",
+                "import_source": "import dataclasses",
+            }
+        )
     assert "import dataclasses" in rewritten_source
     assert "for field in dataclasses.fields(" in rewritten_source
     assert "RefactorAction\n" in rewritten_source
@@ -2290,6 +2313,182 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         "confidence": "high",
         "emitted": True,
     }
+
+
+def _dataclass_payload_projection_operation(
+    snapshot: CodemodSourceSnapshot,
+    authority_qualname: str,
+    projection_qualname: str,
+) -> DeriveDataclassPayloadProjectionOperation:
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == authority_qualname
+    )
+    projection_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == projection_qualname
+    )
+    return DeriveDataclassPayloadProjectionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id),
+        projection_target_id=projection_target.target_id,
+    )
+
+
+def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n\n"
+        "def payload(action: RefactorAction):\n"
+        "    return {\n"
+        "        'kind': action.kind,\n"
+        "        'description': action.description,\n"
+        "    }\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(
+        snapshot,
+        "RefactorAction",
+        "payload",
+    )
+    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "action",
+        "record",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+
+    simulation = (
+        RefactorRecipe("derive-current-dataclass-payload")
+        .with_operation(replayed)
+        .simulate(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+    )
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert "getattr(" in rewritten
+    assert "record," in rewritten
+    assert "action.kind" not in rewritten
+    assert "action.description" not in rewritten
+
+
+def test_dataclass_payload_operation_rejects_authority_schema_drift(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n\n"
+        "def payload(action: RefactorAction):\n"
+        "    return {\n"
+        "        'kind': action.kind,\n"
+        "        'description': action.description,\n"
+        "    }\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(
+        snapshot,
+        "RefactorAction",
+        "payload",
+    )
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "    description: str",
+        "    summary: str",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+
+    with pytest.raises(ValueError, match="exactly one exhaustive return-dict"):
+        operation.source_edits_with_context(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+
+
+def test_dataclass_payload_operation_rejects_ambiguous_return_projections(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n\n"
+        "def payload(action: RefactorAction, alternate: bool):\n"
+        "    if alternate:\n"
+        "        return {\n"
+        "            'kind': action.kind,\n"
+        "            'description': action.description,\n"
+        "        }\n"
+        "    return {\n"
+        "        'kind': action.kind,\n"
+        "        'description': action.description,\n"
+        "    }\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(
+        snapshot,
+        "RefactorAction",
+        "payload",
+    )
+
+    with pytest.raises(ValueError, match="exhaustive return-dict.*found 2"):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
+
+
+def test_dataclass_payload_operation_ignores_nested_function_returns(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RefactorAction:\n"
+        "    kind: str\n"
+        "    description: str\n\n"
+        "def payload(action: RefactorAction):\n"
+        "    def nested():\n"
+        "        return {\n"
+        "            'kind': action.kind,\n"
+        "            'description': action.description,\n"
+        "        }\n"
+        "    return {}\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(
+        snapshot,
+        "RefactorAction",
+        "payload",
+    )
+
+    with pytest.raises(ValueError, match="exhaustive return-dict.*found 0"):
+        operation.source_edits_with_context(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            selector_context=snapshot,
+        )
 
 
 def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
@@ -2634,9 +2833,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert record.refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
-        "ensure_import",
-        "ensure_import",
-        "replace_text",
+        "derive_dataclass_payload_projection",
     )
     assert "from .model import RefactorAction" in rewritten_report
     assert "import dataclasses" in rewritten_report
@@ -2676,11 +2873,13 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert tuple(
         operation.operation_key()
         for operation in imported_plan.document.recipes[0].operations
-    ) == ("ensure_import", "replace_text")
-    assert (
-        imported_plan.document.recipes[0].operations[0].import_source
-        == "import dataclasses"
-    )
+    ) == ("derive_dataclass_payload_projection",)
+    imported_simulation = imported_plan.simulate_snapshot(imported_snapshot)
+    imported_rewritten_report = imported_simulation.simulation.rewritten_sources[
+        report_path.as_posix()
+    ]
+    assert imported_rewritten_report.count("from .model import RefactorAction") == 1
+    assert "import dataclasses" in imported_rewritten_report
 
     report_path.write_text(
         report_path.read_text(encoding="utf-8").replace(
