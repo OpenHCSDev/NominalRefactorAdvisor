@@ -1374,52 +1374,6 @@ class SplitDispatchAuthorityDetector(
         )
 
 
-class EmptyLeafProductFamilyDetector(
-    ModuleCollectorCandidateDetector[EmptyLeafProductFamilyCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        "Empty multiple-inheritance leaves should collapse into one product-family authority",
-        "The docs allow mixins for orthogonal reusable concerns, but empty leaf classes that merely enumerate all combinations of two reusable axes are usually a handwritten product table in inheritance form. That product should become one keyed authority or one product-family selector.",
-        "single authoritative keyed product family instead of empty inheritance combinations",
-        "empty leaf classes encode the full Cartesian product of two reusable inheritance axes",
-        (
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.REPEATED_METHOD_ROLES,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, product_candidate: EmptyLeafProductFamilyCandidate
-    ) -> RefactorFinding:
-        left_axis = ", ".join(product_candidate.left_axis_base_names)
-        right_axis = ", ".join(product_candidate.right_axis_base_names)
-        leaf_preview = ", ".join(product_candidate.leaf_class_names[:6])
-        return self.build_finding(
-            (
-                f"Empty leaf classes {leaf_preview} encode `{left_axis}` x `{right_axis}` through multiple inheritance instead of one product-family authority."
-            ),
-            product_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass ProductRule:\n    axis_left: object\n    axis_right: object\n    policy_type: type[object]\n\nPRODUCT_RULES = (...)\n"
-            ),
-            codemod_patch=(
-                "# Replace the empty Cartesian-product leaf classes with one keyed product table or one nominal selector family.\n# Keep only irreducible axis-local behavior on the reusable bases; do not encode the cross product as `pass` subclasses."
-            ),
-            metrics=DispatchCountMetrics.from_literal_family(
-                dispatch_axis=(
-                    f"{' | '.join(product_candidate.left_axis_base_names)} x {' | '.join(product_candidate.right_axis_base_names)}"
-                ),
-                literal_cases=product_candidate.leaf_class_names,
-            ),
-        )
-
-
 class ClosedConstantSelectorDetector(
     ModuleCollectorCandidateDetector[ClosedConstantSelectorCandidate]
 ):

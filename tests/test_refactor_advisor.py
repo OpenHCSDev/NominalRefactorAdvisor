@@ -20497,23 +20497,70 @@ def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
     assert "AlphaPreparation" in finding.summary
 
 
-def test_detects_empty_leaf_product_families(tmp_path: Path) -> None:
+def test_preserves_empty_multiple_inheritance_product_families(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\n\n\nclass DispatchFamily(ABC):\n    @classmethod\n    @abstractmethod\n    def matches_mode(cls, request) -> bool:\n        raise NotImplementedError\n\n    @abstractmethod\n    def run(self, request):\n        raise NotImplementedError\n\n\nclass GuidedPolicy(DispatchFamily, ABC):\n    @classmethod\n    def matches_mode(cls, request) -> bool:\n        return request.mode == "guided"\n\n\nclass HybridPolicy(DispatchFamily, ABC):\n    @classmethod\n    def matches_mode(cls, request) -> bool:\n        return request.mode == "hybrid"\n\n\nclass LocalTemplatesMixin(ABC):\n    def templates(self, request):\n        return request.local_templates\n\n\nclass RemoteTemplatesMixin(ABC):\n    def templates(self, request):\n        return request.remote_templates\n\n\nclass LocalGuidedPolicy(LocalTemplatesMixin, GuidedPolicy):\n    pass\n\n\nclass RemoteGuidedPolicy(RemoteTemplatesMixin, GuidedPolicy):\n    pass\n\n\nclass LocalHybridPolicy(LocalTemplatesMixin, HybridPolicy):\n    pass\n\n\nclass RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):\n    pass\n',
+        """\
+from abc import ABC, abstractmethod
+
+
+class DispatchFamily(ABC):
+    @classmethod
+    @abstractmethod
+    def matches_mode(cls, request) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def templates(self, request):
+        raise NotImplementedError
+
+    def run(self, request):
+        return self.templates(request)
+
+
+class GuidedPolicy(DispatchFamily, ABC):
+    @classmethod
+    def matches_mode(cls, request) -> bool:
+        return request.mode == "guided"
+
+
+class HybridPolicy(DispatchFamily, ABC):
+    @classmethod
+    def matches_mode(cls, request) -> bool:
+        return request.mode == "hybrid"
+
+
+class LocalTemplatesMixin(ABC):
+    def templates(self, request):
+        return request.local_templates
+
+
+class RemoteTemplatesMixin(ABC):
+    def templates(self, request):
+        return request.remote_templates
+
+
+class LocalGuidedPolicy(LocalTemplatesMixin, GuidedPolicy):
+    pass
+
+
+class RemoteGuidedPolicy(RemoteTemplatesMixin, GuidedPolicy):
+    pass
+
+
+class LocalHybridPolicy(LocalTemplatesMixin, HybridPolicy):
+    pass
+
+
+class RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):
+    pass
+""",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "empty_leaf_product_family"
-        )
-    )
-    assert "LocalTemplatesMixin" in finding.summary
-    assert "GuidedPolicy" in finding.summary
-    assert "Cartesian-product leaf classes" in (finding.codemod_patch or "")
+    assert findings == []
 
 
 def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:

@@ -448,6 +448,14 @@ Use mixins / multiple inheritance when:
 - the concern should be reusable without being externalized into a composition wrapper
 - you need class-level or method-resolution participation from more than one reusable concern
 
+Implementation reuse is not evidence against inheritance.  When the declared
+types satisfy the required nominal relations and substitution, inherited
+implementation is native derivation from those declarations.  Replacing that
+family with delegates only manufactures another identity and forwarding
+surface.  Composition requires positive evidence for a contained object with
+its own identity, lifecycle, or invariants; orthogonality alone does not prove
+that boundary.
+
 Use an enum when:
 
 - the family is closed and small

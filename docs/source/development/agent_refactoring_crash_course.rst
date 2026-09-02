@@ -328,7 +328,9 @@ Required refactor:
 
 - create an authoritative request / context / plan dataclass
 - use inheritance when the methods represent refinements of the same concept
-- use composition only when the concerns are genuinely orthogonal
+- use composition only when a contained object has independent identity,
+  lifecycle, or invariants; orthogonality alone can still belong in a mixin
+  family
 
 
 Explicit repeated ``None`` handling

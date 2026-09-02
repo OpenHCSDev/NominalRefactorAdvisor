@@ -1121,7 +1121,6 @@ ManualRecordConstructorFieldPartition: TypeAlias = tuple[
 ]
 ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
-ProductAxisPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 
 
 def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeValueT]:
@@ -3766,179 +3765,6 @@ def _split_dispatch_authority_candidates(
         generic_specs,
         candidate_keys,
     )
-
-
-def _is_trivial_empty_class(node: ast.ClassDef) -> bool:
-    body = _trim_docstring_body(list(node.body))
-    if len(body) != 1:
-        return False
-    statement = body[0]
-    if isinstance(statement, ast.Pass):
-        return True
-    return bool(
-        isinstance(statement, ast.Expr)
-        and isinstance(statement.value, ast.Constant)
-        and (statement.value.value is Ellipsis)
-    )
-
-
-def _is_reusable_axis_base(
-    class_defs_by_name: dict[str, ast.ClassDef],
-    base_name: str,
-) -> bool:
-    if base_name.endswith("Mixin"):
-        return True
-    base_node = class_defs_by_name.get(base_name)
-    return base_node is not None and CLASS_NODE_AUTHORITY.is_abstract(base_node)
-
-
-def _bipartition_product_axes(
-    edges: tuple[tuple[str, str], ...],
-) -> ProductAxisPartition | None:
-    adjacency: dict[str, set[str]] = defaultdict(set)
-    for left_name, right_name in edges:
-        adjacency[left_name].add(right_name)
-        adjacency[right_name].add(left_name)
-    colors: dict[str, int] = {}
-    for node_name in sorted(adjacency):
-        if node_name in colors:
-            continue
-        colors[node_name] = 0
-        queue = [node_name]
-        while queue:
-            current = queue.pop(0)
-            for neighbor in sorted(adjacency[current]):
-                expected = 1 - colors[current]
-                if neighbor in colors:
-                    if colors[neighbor] != expected:
-                        return None
-                    continue
-                colors[neighbor] = expected
-                queue.append(neighbor)
-    left_axis = sorted_tuple((name for name, color in colors.items() if color == 0))
-    right_axis = sorted_tuple((name for name, color in colors.items() if color == 1))
-    if len(left_axis) < 2 or len(right_axis) < 2:
-        return None
-    return (left_axis, right_axis)
-
-
-@dataclass(frozen=True)
-class ProductAxisLeafKey:
-    left_axis_base_name: str
-    right_axis_base_name: str
-
-
-@dataclass(frozen=True)
-class ProductAxisLeafSite:
-    class_name: str
-    line: int
-
-
-def _empty_leaf_product_family_candidates(
-    module: ParsedModule,
-) -> tuple[EmptyLeafProductFamilyCandidate, ...]:
-    class_defs_by_name = _module_class_defs_by_name(module)
-    leaves: list[tuple[str, int, tuple[str, str]]] = []
-    for node in _walk_nodes(module.module):
-        if (
-            not isinstance(node, ast.ClassDef)
-            or CLASS_NODE_AUTHORITY.is_abstract(node)
-            or (not _is_trivial_empty_class(node))
-        ):
-            continue
-        base_names = tuple(
-            (
-                name
-                for name in CLASS_NODE_AUTHORITY.declared_base_names(node)
-                if name not in _IGNORED_BASE_NAMES
-            )
-        )
-        if len(base_names) != 2:
-            continue
-        if not all(
-            (_is_reusable_axis_base(class_defs_by_name, name) for name in base_names)
-        ):
-            continue
-        leaves.append((node.name, node.lineno, cast(tuple[str, str], base_names)))
-    if len(leaves) < 4:
-        return ()
-    base_graph_edges = sorted_tuple({leaf[2] for leaf in leaves})
-    adjacency: dict[str, set[str]] = defaultdict(set)
-    for left_name, right_name in base_graph_edges:
-        adjacency[left_name].add(right_name)
-        adjacency[right_name].add(left_name)
-    visited: set[str] = set()
-    candidates: list[EmptyLeafProductFamilyCandidate] = []
-    for start_name in sorted(adjacency):
-        if start_name in visited:
-            continue
-        component_nodes: set[str] = set()
-        queue = [start_name]
-        while queue:
-            current = queue.pop(0)
-            if current in component_nodes:
-                continue
-            component_nodes.add(current)
-            visited.add(current)
-            queue.extend(sorted(adjacency[current] - component_nodes))
-        component_edges = sorted_tuple(
-            (
-                edge
-                for edge in base_graph_edges
-                if edge[0] in component_nodes and edge[1] in component_nodes
-            )
-        )
-        if len(component_edges) < 4:
-            continue
-        axes = _bipartition_product_axes(component_edges)
-        if axes is None:
-            continue
-        left_axis, right_axis = axes
-        if len(component_edges) != len(left_axis) * len(right_axis):
-            continue
-        leaf_map: dict[ProductAxisLeafKey, ProductAxisLeafSite] = {}
-        for class_name, line, base_names in leaves:
-            if set(base_names) - component_nodes:
-                continue
-            left_name, right_name = base_names
-            if left_name in right_axis and right_name in left_axis:
-                left_name, right_name = (right_name, left_name)
-            if left_name not in left_axis or right_name not in right_axis:
-                break
-            key = ProductAxisLeafKey(
-                left_axis_base_name=left_name,
-                right_axis_base_name=right_name,
-            )
-            if key in leaf_map:
-                break
-            leaf_map[key] = ProductAxisLeafSite(class_name=class_name, line=line)
-        else:
-            if len(leaf_map) != len(left_axis) * len(right_axis):
-                continue
-            ordered_leaves = tuple(
-                (
-                    leaf_map[
-                        ProductAxisLeafKey(
-                            left_axis_base_name=left_name,
-                            right_axis_base_name=right_name,
-                        )
-                    ]
-                    for left_name in left_axis
-                    for right_name in right_axis
-                )
-            )
-            candidates.append(
-                EmptyLeafProductFamilyCandidate(
-                    file_path=module.file_path,
-                    left_axis_base_names=left_axis,
-                    right_axis_base_names=right_axis,
-                    leaf_class_names=tuple(
-                        (leaf.class_name for leaf in ordered_leaves)
-                    ),
-                    leaf_lines=tuple((leaf.line for leaf in ordered_leaves)),
-                )
-            )
-    return tuple(candidates)
 
 
 def _self_method_call_name(node: ast.AST) -> str | None:
@@ -9498,17 +9324,6 @@ class ImplicitSelfContractMixinCandidate(LineWitnessCandidate):
             ),
         ]
         return tuple(evidence[:6])
-
-
-@dataclass(frozen=True)
-class EmptyLeafProductFamilyCandidate:
-    file_path: str
-    left_axis_base_names: tuple[str, ...]
-    right_axis_base_names: tuple[str, ...]
-    leaf_class_names: tuple[str, ...]
-    leaf_lines: tuple[int, ...]
-
-    evidence = ZippedSourceLocationEvidenceProperty("leaf_lines", "leaf_class_names")
 
 
 @dataclass(frozen=True)
