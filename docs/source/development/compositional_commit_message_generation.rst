@@ -103,7 +103,7 @@ Step 5: Synthesize Final Message
    Changes by functional area:
 
    * Detector Substrate: collapse repeated helper logic and keep detector registration
-     and genericity machinery in one authoritative layer
+     and derived metadata in one authoritative layer
    * Pattern/Planner Surface: align plan composition with the canonical pattern metadata
    * Regression Coverage: add tests that lock in the new structural contracts
 

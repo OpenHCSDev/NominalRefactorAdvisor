@@ -50,4 +50,5 @@ def test_authority_boundary_relations_are_inherited_by_detector_families() -> No
     )
     assert "repeated_builder_calls" in ssot_authority_ids
     assert "repeated_builder_calls" not in semantic_mirror_ids
+    assert not hasattr(IssueDetector, "genericity")
     assert not hasattr(IssueDetector, "semantic_mirror_authority_evidence_indices")

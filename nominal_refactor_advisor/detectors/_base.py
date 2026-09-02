@@ -464,7 +464,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
-    genericity: ClassVar[str] = "generic"
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
