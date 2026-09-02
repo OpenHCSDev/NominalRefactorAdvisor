@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
@@ -31,7 +33,12 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
+    AuthorityClaim,
+    AuthorityClaimResolution,
+    AuthorityClaimStatus,
     AuthorityClaimProvenance,
+    AuthorityDiscoveryRequired,
+    AuthorityProofEdge,
     AuthorityProofEdgeKind,
     ConstructionAuthorityResolver,
     PresentationAuthorityConstruction,
@@ -71,6 +78,56 @@ def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> N
     assert SemanticAuthorityMirrorPolicy.registered_authority_kinds() == frozenset(
         SemanticAuthorityKind
     )
+
+
+def test_authority_claim_status_owns_actionability_and_resolution_shape() -> None:
+    assert AuthorityClaimStatus.RESOLVED.is_actionable is True
+    assert AuthorityClaimStatus.DECLARED.is_actionable is True
+    assert AuthorityClaimStatus.AMBIGUOUS.requires_discovery is True
+    assert AuthorityClaimStatus.UNRESOLVED.requires_discovery is True
+
+    claim = AuthorityClaim(claimed_symbol="AlphaAuthority")
+    proof_edges = tuple(
+        AuthorityProofEdge(
+            edge_kind=edge_kind,
+            authority_id="alpha-authority",
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            file_path="pkg/mod.py",
+            line=line,
+            symbol="AlphaAuthority",
+        )
+        for line, edge_kind in enumerate(
+            (
+                AuthorityProofEdgeKind.SOURCE_INDEX_TARGET,
+                AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
+            ),
+            start=1,
+        )
+    )
+
+    resolution = AuthorityClaimResolution.from_proof_edges(
+        claim,
+        proof_edges,
+        searched_symbols=claim.searched_symbols,
+        ambiguity_reason="not used for a unique authority",
+    )
+
+    assert resolution.status is AuthorityClaimStatus.RESOLVED
+    assert resolution.proof_edges == proof_edges
+    assert resolution.discovery_required is None
+
+    with pytest.raises(ValueError, match="ambiguous authority resolution"):
+        AuthorityClaimResolution(
+            claim=claim,
+            status=AuthorityClaimStatus.AMBIGUOUS,
+            proof_edges=proof_edges,
+            discovery_required=AuthorityDiscoveryRequired(
+                claimed_symbol=claim.claimed_symbol,
+                searched_symbols=claim.searched_symbols,
+                candidate_count=1,
+                reason="one identity cannot be ambiguous",
+            ),
+        )
 
 
 def test_semantic_authority_selection_is_one_mro_owned_fallback_chain() -> None:
@@ -1751,7 +1808,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "Step"
-    assert claim.authority_kind == "autoregister_family"
+    assert claim.authority_kind is SemanticAuthorityKind.AUTOREGISTER_FAMILY
     assert claim.file_path.endswith("pkg/mod.py")
     assert claim.qualname == "Step"
     assert claim.authority_id
@@ -2163,7 +2220,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "RefactorAction"
-    assert claim.authority_kind == "dataclass_schema"
+    assert claim.authority_kind is SemanticAuthorityKind.DATACLASS_SCHEMA
     assert claim.file_path == module_path.as_posix()
     assert claim.qualname == "RefactorAction"
     assert claim.authority_id
@@ -3017,7 +3074,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "ConfidenceLevel"
-    assert claim.authority_kind == "enum"
+    assert claim.authority_kind is SemanticAuthorityKind.ENUM
     assert claim.file_path == (package_dir / "taxonomy.py").as_posix()
     assert claim.qualname == "ConfidenceLevel"
     assert claim.authority_id
@@ -3076,7 +3133,7 @@ def test_role_case_recipe_declares_its_new_authority_boundary(
     assert len(recipe.declared_authority_claims) == 1
     claim = recipe.declared_authority_claims[0]
     assert claim.claimed_symbol == "ChooseRoleCaseAuthority"
-    assert claim.authority_kind == "class_family"
+    assert claim.authority_kind is SemanticAuthorityKind.CLASS_FAMILY
     assert claim.file_path == module_path.as_posix()
     assert claim.qualname == "ChooseRoleCaseAuthority"
     assert recipe.operations[0].operation_key() == "declare_authority"
@@ -3190,7 +3247,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     assert claim.claimed_symbol == "LabeledMode"
     assert claim.file_path == (package_dir / "taxonomy.py").as_posix()
     assert claim.qualname == "LabeledMode"
-    assert claim.authority_kind == "class_family"
+    assert claim.authority_kind is SemanticAuthorityKind.CLASS_FAMILY
     assert claim.authority_id
     assert claim.claimed_symbol not in {"CapabilityMode", "ObservationMode"}
     assert plan.expected_removed_finding_count == 1

@@ -65,6 +65,7 @@ from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .codemod_payload import (
     CodemodPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
+    OptionalStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
@@ -245,10 +246,46 @@ class SemanticFactKind(StrEnum):
 class AuthorityClaimStatus(StrEnum):
     """Resolution state for an agent- or detector-authored authority claim."""
 
-    RESOLVED = "resolved"
-    AMBIGUOUS = "ambiguous"
-    UNRESOLVED = "unresolved"
-    DECLARED = "declared"
+    def __new__(
+        cls,
+        value: str,
+        is_actionable: bool,
+        minimum_authorities: int,
+        maximum_authorities: int | None,
+    ) -> "AuthorityClaimStatus":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._is_actionable = is_actionable
+        member._minimum_authorities = minimum_authorities
+        member._maximum_authorities = maximum_authorities
+        return member
+
+    RESOLVED = ("resolved", True, 1, 1)
+    AMBIGUOUS = ("ambiguous", False, 2, None)
+    UNRESOLVED = ("unresolved", False, 0, 0)
+    DECLARED = ("declared", True, 1, 1)
+
+    @property
+    def is_actionable(self) -> bool:
+        return self._is_actionable
+
+    @property
+    def requires_discovery(self) -> bool:
+        return not self.is_actionable
+
+    def accepts_authority_count(self, authority_count: int) -> bool:
+        return authority_count >= self._minimum_authorities and (
+            self._maximum_authorities is None
+            or authority_count <= self._maximum_authorities
+        )
+
+    @classmethod
+    def from_authority_count(cls, authority_count: int) -> "AuthorityClaimStatus":
+        if authority_count < 1:
+            raise ValueError("proved authority resolution requires a proof edge")
+        if authority_count == 1:
+            return cls.RESOLVED
+        return cls.AMBIGUOUS
 
 
 class AuthorityClaimProvenance(StrEnum):
@@ -753,9 +790,9 @@ class AuthorityClaim(CodemodPayloadRecord, SemanticRecord):
     """Structured claim that a named authority exists or is being declared."""
 
     claimed_symbol: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    authority_kind: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(),
-        default="",
+    authority_kind: SemanticAuthorityKind | None = codemod_payload_field(
+        OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind),
+        default=None,
     )
     file_path: str = codemod_payload_field(
         EmptyDefaultStringPayloadValueCodec(),
@@ -770,11 +807,18 @@ class AuthorityClaim(CodemodPayloadRecord, SemanticRecord):
         default="",
     )
 
+    def __post_init__(self) -> None:
+        if self.authority_kind is not None and not isinstance(
+            self.authority_kind,
+            SemanticAuthorityKind,
+        ):
+            raise TypeError("authority_kind must be a SemanticAuthorityKind")
+
     @classmethod
     def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":
         return cls(
             claimed_symbol=authority.name,
-            authority_kind=authority.kind.value,
+            authority_kind=authority.kind,
             file_path=authority.location.file_path,
             qualname=authority.location.symbol,
             authority_id=authority.authority_id,
@@ -795,51 +839,61 @@ class AuthorityClaim(CodemodPayloadRecord, SemanticRecord):
         )
 
     def matches_declared_claim(self, declared_claim: "AuthorityClaim") -> bool:
-        return (
-            declared_claim.claimed_symbol == self.claimed_symbol
-            and self.compatible_authority_kind(declared_claim)
-            and self.compatible_location(declared_claim)
-        )
+        return self.matches_source_identity(
+            authority_id=declared_claim.authority_id,
+            name=declared_claim.claimed_symbol,
+            file_path=declared_claim.file_path,
+            qualname=declared_claim.qualname,
+        ) and self.compatible_authority_kind(declared_claim)
 
     def matches_authority(self, authority: SemanticAuthority) -> bool:
-        return self.matches_authority_kind(authority) and self.matches_file_qualname(
-            authority.location.file_path,
-            authority.location.symbol,
+        return self.matches_authority_kind(authority) and self.matches_source_identity(
+            authority_id=authority.authority_id,
+            name=authority.name,
+            file_path=authority.location.file_path,
+            qualname=authority.location.symbol,
         )
 
     def matches_authority_kind(self, authority: SemanticAuthority) -> bool:
-        return not self.authority_kind or authority.kind.value == self.authority_kind
+        return self.authority_kind is None or authority.kind is self.authority_kind
 
     def compatible_authority_kind(self, declared_claim: "AuthorityClaim") -> bool:
         return (
-            not self.authority_kind
-            or not declared_claim.authority_kind
-            or declared_claim.authority_kind == self.authority_kind
+            self.authority_kind is None
+            or declared_claim.authority_kind is self.authority_kind
         )
 
-    def compatible_location(self, declared_claim: "AuthorityClaim") -> bool:
-        return self.matches_file_qualname(
-            declared_claim.file_path,
-            declared_claim.qualname,
-            allow_empty_candidate=True,
+    def matches_source_identity(
+        self,
+        *,
+        authority_id: str,
+        name: str,
+        file_path: str,
+        qualname: str,
+    ) -> bool:
+        return (
+            (not self.authority_id or authority_id == self.authority_id)
+            and name == self.claimed_symbol
+            and self.matches_file_qualname(
+                file_path,
+                qualname,
+            )
         )
 
     def matches_file_qualname(
         self,
         file_path: str,
         qualname: str,
-        *,
-        allow_empty_candidate: bool = False,
     ) -> bool:
-        return (
-            not self.file_path
-            or (allow_empty_candidate and not file_path)
-            or file_path == self.file_path
-        ) and (
-            not self.qualname
-            or (allow_empty_candidate and not qualname)
-            or qualname == self.qualname
+        return (not self.file_path or file_path == self.file_path) and (
+            not self.qualname or qualname == self.qualname
         )
+
+    def scaffold_source(self) -> str:
+        arguments = ", ".join(
+            f"{field_name}={value!r}" for field_name, value in self.to_dict().items()
+        )
+        return f"AuthorityClaim({arguments})"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -855,7 +909,7 @@ class AuthorityProofEdge(SemanticRecord):
 
     edge_kind: AuthorityProofEdgeKind
     authority_id: str
-    authority_kind: str
+    authority_kind: SemanticAuthorityKind | None
     file_path: str
     line: int
     symbol: str
@@ -888,7 +942,7 @@ class AuthorityProofEdge(SemanticRecord):
         return cls(
             edge_kind=edge_kind,
             authority_id=authority.authority_id,
-            authority_kind=authority.kind.value,
+            authority_kind=authority.kind,
             file_path=location.file_path,
             line=location.line,
             symbol=location.symbol,
@@ -916,16 +970,49 @@ class AuthorityClaimResolution(SemanticRecord):
     discovery_required: AuthorityDiscoveryRequired | None = None
 
     @property
-    def is_resolved(self) -> bool:
-        return self.status is AuthorityClaimStatus.RESOLVED
-
-    @property
-    def is_declared(self) -> bool:
-        return self.status is AuthorityClaimStatus.DECLARED
-
-    @property
     def is_actionable(self) -> bool:
-        return self.is_resolved or self.is_declared
+        return self.status.is_actionable
+
+    def __post_init__(self) -> None:
+        authority_count = len(frozenset(edge.authority_id for edge in self.proof_edges))
+        if not self.status.accepts_authority_count(authority_count):
+            raise ValueError(
+                f"{self.status.value} authority resolution does not accept "
+                f"{authority_count} proved authority identity or identities"
+            )
+        has_discovery = self.discovery_required is not None
+        if has_discovery is not self.status.requires_discovery:
+            raise ValueError(
+                f"{self.status.value} authority resolution discovery shape is invalid"
+            )
+
+    @classmethod
+    def from_proof_edges(
+        cls,
+        claim: AuthorityClaim,
+        proof_edges: tuple[AuthorityProofEdge, ...],
+        *,
+        searched_symbols: tuple[str, ...],
+        ambiguity_reason: str,
+    ) -> "AuthorityClaimResolution":
+        authority_count = len(frozenset(edge.authority_id for edge in proof_edges))
+        status = AuthorityClaimStatus.from_authority_count(authority_count)
+        discovery_required = (
+            AuthorityDiscoveryRequired(
+                claimed_symbol=claim.claimed_symbol,
+                searched_symbols=searched_symbols,
+                candidate_count=authority_count,
+                reason=ambiguity_reason,
+            )
+            if status.requires_discovery
+            else None
+        )
+        return cls(
+            claim=claim,
+            status=status,
+            proof_edges=proof_edges,
+            discovery_required=discovery_required,
+        )
 
     @classmethod
     def declared(
@@ -1004,36 +1091,18 @@ class AuthorityClaimResolver:
                     "evidence rather than proved by a source declaration"
                 ),
             )
-        if len(proved_candidates) > 1:
-            return AuthorityClaimResolution(
-                claim=claim,
-                status=AuthorityClaimStatus.AMBIGUOUS,
-                proof_edges=tuple(
-                    AuthorityProofEdge.from_authority(
-                        authority,
-                        AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
-                        detail="multiple graph authorities match this claim",
-                    )
-                    for authority in proved_candidates
-                ),
-                discovery_required=AuthorityDiscoveryRequired(
-                    claimed_symbol=claim.claimed_symbol,
-                    searched_symbols=searched_symbols,
-                    candidate_count=len(proved_candidates),
-                    reason="multiple source-backed authorities match the claim",
-                ),
-            )
-        authority = proved_candidates[0]
-        return AuthorityClaimResolution(
-            claim=claim,
-            status=AuthorityClaimStatus.RESOLVED,
-            proof_edges=(
+        return AuthorityClaimResolution.from_proof_edges(
+            claim,
+            tuple(
                 AuthorityProofEdge.from_authority(
                     authority,
                     AuthorityProofEdgeKind.SEMANTIC_DESCENT_GRAPH,
                     detail="claim matched semantic-descent authority catalog",
-                ),
+                )
+                for authority in proved_candidates
             ),
+            searched_symbols=searched_symbols,
+            ambiguity_reason="multiple source-backed authorities match the claim",
         )
 
     def _candidate_authorities(
@@ -2452,7 +2521,7 @@ class SemanticDescentGraphModuleOverlay:
 class SemanticDescentAuthorityKindCount(SemanticRecord):
     """Count of graph authorities for one nominal authority kind."""
 
-    authority_kind: str
+    authority_kind: SemanticAuthorityKind
     count: int
 
 
@@ -2460,7 +2529,7 @@ class SemanticDescentAuthorityKindCount(SemanticRecord):
 class SemanticDescentProjectionKindCount(SemanticRecord):
     """Count of graph projections for one presentation projection kind."""
 
-    projection_kind: str
+    projection_kind: PresentationProjectionKind
     count: int
 
 
@@ -2469,9 +2538,9 @@ class SemanticDescentCertificateSummary(SemanticRecord):
     """Compact report row for one missing semantic-descent certificate."""
 
     authority_name: str
-    authority_kind: str
+    authority_kind: SemanticAuthorityKind
     projection_label: str
-    projection_kind: str
+    projection_kind: PresentationProjectionKind
     projection_owner_symbol: str
     file_path: str
     line: int
@@ -2491,9 +2560,9 @@ class SemanticDescentCertificateSummary(SemanticRecord):
         projection = graph.projection_catalog.projection_for_edge(edge)
         return cls(
             authority_name=authority.name,
-            authority_kind=authority.kind.value,
+            authority_kind=authority.kind,
             projection_label=projection.label,
-            projection_kind=projection.kind.value,
+            projection_kind=projection.kind,
             projection_owner_symbol=projection.owner_symbol,
             file_path=projection.location.file_path,
             line=projection.location.line,
@@ -2533,17 +2602,13 @@ class SemanticDescentGraphReport(SemanticRecord):
             authorities_by_kind=tuple(
                 SemanticDescentAuthorityKindCount(authority_kind, count)
                 for authority_kind, count in sorted(
-                    Counter(
-                        authority.kind.value for authority in graph.authorities
-                    ).items()
+                    Counter(authority.kind for authority in graph.authorities).items()
                 )
             ),
             projections_by_kind=tuple(
                 SemanticDescentProjectionKindCount(projection_kind, count)
                 for projection_kind, count in sorted(
-                    Counter(
-                        projection.kind.value for projection in graph.projections
-                    ).items()
+                    Counter(projection.kind for projection in graph.projections).items()
                 )
             ),
             top_certificates=tuple(

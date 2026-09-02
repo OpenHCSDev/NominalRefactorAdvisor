@@ -328,32 +328,75 @@ class OptionalStringPayloadValueCodec(
         del value, field_name
 
 
-@dataclass(frozen=True)
-class StrEnumPayloadValueCodec(PayloadValueCodec[StrEnumT], Generic[StrEnumT]):
-    """Typed string-enum payload semantics with a declared default."""
+class _StrEnumPayloadValueCodec(
+    PayloadValueCodec[PayloadValueT],
+    Generic[StrEnumT, PayloadValueT],
+    ABC,
+):
+    """Shared wire mechanics for typed string-enum payload policies."""
 
     enum_type: type[StrEnumT]
-    declared_default: StrEnumT
+
+    @abstractmethod
+    def value_when_missing(self) -> PayloadValueT:
+        raise NotImplementedError
+
+    def serialize_missing(self) -> JsonValue:
+        raise TypeError(f"string-enum payload codec requires {self.enum_type.__name__}")
 
     def read(
         self,
         payload: Mapping[str, JsonValue],
         field_name: str,
-    ) -> StrEnumT:
-        value = payload.get(field_name, self.declared_default.value)
+    ) -> PayloadValueT:
+        value = payload.get(field_name)
+        if value is None:
+            return self.value_when_missing()
         if not isinstance(value, str):
             raise ValueError(f"Expected string enum field {field_name!r}")
         try:
-            return self.enum_type(value)
+            return cast(PayloadValueT, self.enum_type(value))
         except ValueError as error:
             raise ValueError(f"Unsupported {field_name!r} value: {value!r}") from error
 
     def serialize(self, value: object) -> JsonValue:
+        if value is None:
+            return self.serialize_missing()
         if not isinstance(value, self.enum_type):
             raise TypeError(
                 f"string-enum payload codec requires {self.enum_type.__name__}"
             )
         return value.value
+
+
+@dataclass(frozen=True)
+class StrEnumPayloadValueCodec(
+    _StrEnumPayloadValueCodec[StrEnumT, StrEnumT],
+    Generic[StrEnumT],
+):
+    """Typed string-enum payload semantics with a declared default."""
+
+    enum_type: type[StrEnumT]
+    declared_default: StrEnumT
+
+    def value_when_missing(self) -> StrEnumT:
+        return self.declared_default
+
+
+@dataclass(frozen=True)
+class OptionalStrEnumPayloadValueCodec(
+    _StrEnumPayloadValueCodec[StrEnumT, StrEnumT | None],
+    Generic[StrEnumT],
+):
+    """Optional typed string-enum payload semantics."""
+
+    enum_type: type[StrEnumT]
+
+    def value_when_missing(self) -> None:
+        return None
+
+    def serialize_missing(self) -> None:
+        return None
 
 
 @dataclass(frozen=True)

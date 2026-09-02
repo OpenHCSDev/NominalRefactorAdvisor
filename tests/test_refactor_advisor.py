@@ -113,6 +113,7 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardViolationKind,
+    AuthorityClaimSourceIndexResolver,
     AstTargetNodeIndex,
     AstTargetNodeIndexCache,
     AddClassBaseOperation,
@@ -1135,7 +1136,7 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     snapshot = CodemodSourceSnapshot.from_modules(modules)
     claim = AuthorityClaim(
         claimed_symbol="MissingAuthority",
-        authority_kind="class_family",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
         file_path=module_path.as_posix(),
         qualname="MissingAuthority",
     )
@@ -1164,6 +1165,120 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     assert "class MissingAuthority(ABC)" in simulation.unified_diff(
         {module_path.as_posix(): module_path.read_text()}
     )
+
+
+def test_authority_claim_exact_target_id_rejects_mismatched_symbol(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass AlphaAuthority:\n    pass\n\nclass BetaAuthority:\n    pass\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    alpha_target = next(
+        target
+        for target in source_index.ast_targets
+        if target.qualname == "AlphaAuthority"
+    )
+    claim = AuthorityClaim(
+        claimed_symbol="BetaAuthority",
+        authority_id=alpha_target.target_id,
+    )
+
+    resolution = AuthorityClaimSourceIndexResolver(source_index).resolve(claim)
+
+    assert resolution.status.value == "unresolved"
+    assert resolution.proof_edges == ()
+    assert resolution.discovery_required is not None
+
+
+def test_authority_claim_exact_target_id_does_not_fall_back_to_vague_declaration(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Existing:\n    pass\n")
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    claim = AuthorityClaim(
+        claimed_symbol="FutureAuthority",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+        file_path=(tmp_path / "pkg/mod.py").as_posix(),
+        qualname="FutureAuthority",
+        authority_id="prospective-authority-id",
+    )
+    vague_declaration = AuthorityClaim(
+        claimed_symbol="FutureAuthority",
+        authority_kind=claim.authority_kind,
+        file_path=claim.file_path,
+        qualname=claim.qualname,
+    )
+
+    unresolved = AuthorityClaimSourceIndexResolver(
+        source_index,
+        declared_claims=(vague_declaration,),
+    ).resolve(claim)
+    declared = AuthorityClaimSourceIndexResolver(
+        source_index,
+        declared_claims=(claim,),
+    ).resolve(claim)
+
+    assert unresolved.status.value == "unresolved"
+    assert declared.status.value == "declared"
+
+
+def test_authority_claim_declaration_requires_claimed_kind_and_location(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Existing:\n    pass\n")
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    claim = AuthorityClaim(
+        claimed_symbol="FutureAuthority",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+        file_path=module_path.as_posix(),
+        qualname="FutureAuthority",
+    )
+    incomplete_declarations = (
+        replace(claim, authority_kind=None),
+        replace(claim, file_path=""),
+        replace(claim, qualname=""),
+    )
+
+    resolutions = tuple(
+        AuthorityClaimSourceIndexResolver(
+            source_index,
+            declared_claims=(declared_claim,),
+        ).resolve(claim)
+        for declared_claim in incomplete_declarations
+    )
+
+    assert all(resolution.status.value == "unresolved" for resolution in resolutions)
+    assert (
+        AuthorityClaimSourceIndexResolver(
+            source_index,
+            declared_claims=(claim,),
+        )
+        .resolve(claim)
+        .status.value
+        == "declared"
+    )
+
+
+def test_authority_claim_name_lookup_preserves_ambiguous_proof_paths(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "first.py", "\nclass SharedAuthority:\n    pass\n")
+    _write_module(tmp_path, "second.py", "\nclass SharedAuthority:\n    pass\n")
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+
+    resolution = AuthorityClaimSourceIndexResolver(source_index).resolve(
+        AuthorityClaim(claimed_symbol="SharedAuthority")
+    )
+
+    assert resolution.status.value == "ambiguous"
+    assert resolution.is_actionable is False
+    assert len(resolution.proof_edges) == 2
+    assert resolution.discovery_required is not None
+    assert resolution.discovery_required.candidate_count == 2
 
 
 def test_generic_recipe_evaluation_does_not_infer_proof_from_rationale() -> None:
@@ -5423,7 +5538,7 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
         helper_path.as_posix(),
         parser_path.as_posix(),
     )
-    assert sequence.has_unresolved_source_targets is False
+    assert sequence.has_unresolved_source_dependencies is False
     assert snapshot is not None
     assert set(snapshot.sources_by_file_path) == {
         helper_path.as_posix(),
@@ -5433,6 +5548,137 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
         "old_helper",
         "Parser.parse",
     }
+
+
+def test_exact_recipe_fast_snapshot_includes_authority_claim_source(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/authority.py"
+    _write_module(
+        tmp_path,
+        "pkg/authority.py",
+        "class AlphaAuthority:\n    pass\n",
+    )
+    claim = AuthorityClaim(
+        claimed_symbol="AlphaAuthority",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+        file_path=module_path.as_posix(),
+        qualname="AlphaAuthority",
+    )
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(
+                    recipe_id="claim-only-plan",
+                    authority_claims=(claim,),
+                ),
+            ),
+        )
+    )
+
+    snapshot = CodemodRecipePlanFastSourceSnapshot(
+        sequence=sequence,
+        roots=(tmp_path,),
+        cwd=tmp_path,
+    ).optional_snapshot()
+
+    assert sequence.explicit_source_paths() == (module_path.as_posix(),)
+    assert sequence.has_unresolved_source_dependencies is False
+    assert snapshot is not None
+    report = sequence.preflight_snapshot(snapshot)
+    assert report.is_clean is True
+    assert report.reports[0].details["resolutions"][0]["status"] == "resolved"
+
+
+def test_exact_recipe_fast_snapshot_rejects_unbounded_proof_dependencies(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/authority.py", "class AlphaAuthority:\n    pass\n")
+    unlocated_claim_sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(
+                    recipe_id="unlocated-claim",
+                    authority_claims=(AuthorityClaim(claimed_symbol="AlphaAuthority"),),
+                ),
+            ),
+        )
+    )
+    guarded_sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            guard_suite=ArchitectureGuardSuite(
+                (
+                    ArchitectureGuardRule(
+                        rule_id="repository-wide-guard",
+                        forbidden_call_names=("legacy_call",),
+                    ),
+                )
+            )
+        )
+    )
+
+    for sequence in (unlocated_claim_sequence, guarded_sequence):
+        assert sequence.has_unresolved_source_dependencies is True
+        assert (
+            CodemodRecipePlanFastSourceSnapshot(
+                sequence=sequence,
+                roots=(tmp_path,),
+                cwd=tmp_path,
+            ).optional_snapshot()
+            is None
+        )
+
+
+def test_module_cli_preflights_claim_only_plan_against_claim_source(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/authority.py"
+    _write_module(
+        tmp_path,
+        "pkg/authority.py",
+        "class AlphaAuthority:\n    pass\n",
+    )
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "claim-only-cli-plan",
+                "authority_claims": [
+                    {
+                        "claimed_symbol": "AlphaAuthority",
+                        "authority_kind": "class_family",
+                        "file_path": module_path.as_posix(),
+                        "qualname": "AlphaAuthority",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-preflight",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    resolution = payload["reports"][0]["details"]["resolutions"][0]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["is_clean"] is True
+    assert resolution["status"] == "resolved"
+    assert resolution["claim"]["authority_kind"] == "class_family"
+    assert resolution["proof_edges"][0]["file_path"] == module_path.as_posix()
 
 
 def test_exact_recipe_fast_snapshot_preserves_declared_relative_path_identity(
@@ -15582,7 +15828,7 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
 def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
     claim = AuthorityClaim(
         claimed_symbol="HandlerAuthority",
-        authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+        authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
         file_path="pkg/handlers.py",
         qualname="HandlerAuthority",
         authority_id="handler-authority",

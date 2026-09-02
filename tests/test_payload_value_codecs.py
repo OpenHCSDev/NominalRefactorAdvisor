@@ -26,6 +26,7 @@ from nominal_refactor_advisor.codemod_payload import (
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
     ObjectPayloadValueCodec,
+    OptionalStrEnumPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadBindingSet,
@@ -36,7 +37,10 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
 )
-from nominal_refactor_advisor.semantic_descent import AuthorityClaim
+from nominal_refactor_advisor.semantic_descent import (
+    AuthorityClaim,
+    SemanticAuthorityKind,
+)
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
@@ -82,7 +86,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     )
     authority_claim = AuthorityClaim(
         claimed_symbol="AlphaAuthority",
-        authority_kind="class_family",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
         file_path="pkg/example.py",
         qualname="AlphaAuthority",
     )
@@ -93,6 +97,10 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (DefaultedStringPayloadValueCodec("default"), "Alpha.run"),
         (EmptyDefaultStringPayloadValueCodec(), ""),
         (OptionalStringPayloadValueCodec(), ""),
+        (
+            OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind),
+            SemanticAuthorityKind.CLASS_FAMILY,
+        ),
         (StringArrayPayloadValueCodec(), ("Alpha", "Beta")),
         (BooleanPayloadValueCodec(), True),
         (IntegerPayloadValueCodec(), 3),
@@ -113,6 +121,9 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     for codec, value in cases:
         serialized = codec.serialize(value)
         assert codec.read({"value": serialized}, "value") == value
+
+    assert "authority_kind='class_family'" in authority_claim.scaffold_source()
+    assert "SemanticAuthorityKind" not in authority_claim.scaffold_source()
 
 
 def test_flattened_record_codec_owns_nested_projection() -> None:
@@ -140,6 +151,19 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     assert IntegerPayloadValueCodec().serialize(None) is None
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")
+    with pytest.raises(ValueError, match="Unsupported 'authority_kind'"):
+        OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind).read(
+            {"authority_kind": "invented_kind"},
+            "authority_kind",
+        )
+
+
+def test_authority_claim_rejects_untyped_authority_kind() -> None:
+    with pytest.raises(TypeError, match="SemanticAuthorityKind"):
+        AuthorityClaim(
+            claimed_symbol="AlphaAuthority",
+            authority_kind="class_family",  # type: ignore[arg-type]
+        )
 
 
 def test_payload_records_own_boundary_diagnostics() -> None:

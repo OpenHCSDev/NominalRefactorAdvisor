@@ -524,14 +524,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
 
     @staticmethod
     def scaffold_for_claim(claim: AuthorityClaim) -> str:
-        return (
-            "AuthorityClaim("
-            f"claimed_symbol={claim.claimed_symbol!r}, "
-            f"authority_kind={claim.authority_kind!r}, "
-            f"file_path={claim.file_path!r}, "
-            f"qualname={claim.qualname!r}, "
-            f"authority_id={claim.authority_id!r})"
-        )
+        return claim.scaffold_source()
 
 
 @dataclass(frozen=True)

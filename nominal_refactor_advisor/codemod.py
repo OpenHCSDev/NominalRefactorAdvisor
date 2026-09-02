@@ -137,8 +137,6 @@ from .semantic_descent import (
     AuthorityClaim,
     AuthorityClaimCarrier,
     AuthorityClaimResolution,
-    AuthorityClaimStatus,
-    AuthorityDiscoveryRequired,
     AuthorityProofEdge,
     AuthorityProofEdgeKind,
     SemanticAuthorityKind,
@@ -689,7 +687,7 @@ class AstTargetAuthorityClaim:
     def from_target(
         target: AstTargetDigest,
         *,
-        authority_kind: str = "",
+        authority_kind: SemanticAuthorityKind | None = None,
     ) -> AuthorityClaim:
         return AuthorityClaim(
             claimed_symbol=target.name,
@@ -1062,12 +1060,10 @@ class AuthorityClaimSourceIndexResolver:
     def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
         candidates = self._candidate_targets(claim)
         searched_symbols = claim.searched_symbols
-        if len(candidates) == 1:
-            target = candidates[0]
-            return AuthorityClaimResolution(
-                claim=claim,
-                status=AuthorityClaimStatus.RESOLVED,
-                proof_edges=(
+        if candidates:
+            return AuthorityClaimResolution.from_proof_edges(
+                claim,
+                tuple(
                     AuthorityProofEdge(
                         edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET,
                         authority_id=target.target_id,
@@ -1076,30 +1072,12 @@ class AuthorityClaimSourceIndexResolver:
                         line=target.line,
                         symbol=target.qualname,
                         detail="claim matched source-index AST target",
-                    ),
-                ),
-            )
-        if len(candidates) > 1:
-            return AuthorityClaimResolution(
-                claim=claim,
-                status=AuthorityClaimStatus.AMBIGUOUS,
-                proof_edges=tuple(
-                    AuthorityProofEdge(
-                        edge_kind=AuthorityProofEdgeKind.SOURCE_INDEX_TARGET,
-                        authority_id=target.target_id,
-                        authority_kind=claim.authority_kind,
-                        file_path=target.file_path,
-                        line=target.line,
-                        symbol=target.qualname,
-                        detail="multiple source-index targets match this claim",
                     )
                     for target in candidates
                 ),
-                discovery_required=AuthorityDiscoveryRequired(
-                    claimed_symbol=claim.claimed_symbol,
-                    searched_symbols=searched_symbols,
-                    candidate_count=len(candidates),
-                    reason="multiple source-index targets match the authority claim",
+                searched_symbols=searched_symbols,
+                ambiguity_reason=(
+                    "multiple source-index targets match the authority claim"
                 ),
             )
         if any(
@@ -1123,7 +1101,12 @@ class AuthorityClaimSourceIndexResolver:
                 return ()
             return (
                 (target,)
-                if claim.matches_file_qualname(target.file_path, target.qualname)
+                if claim.matches_source_identity(
+                    authority_id=target.target_id,
+                    name=target.name,
+                    file_path=target.file_path,
+                    qualname=target.qualname,
+                )
                 else ()
             )
         symbols = claim.searched_symbols
@@ -1136,7 +1119,12 @@ class AuthorityClaimSourceIndexResolver:
             target
             for target in indexed_candidates.values()
             if not target.is_module
-            and claim.matches_file_qualname(target.file_path, target.qualname)
+            and claim.matches_source_identity(
+                authority_id=target.target_id,
+                name=target.name,
+                file_path=target.file_path,
+                qualname=target.qualname,
+            )
         )
 
 
@@ -9159,7 +9147,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         return (
             AuthorityClaim(
                 claimed_symbol=self.base_name,
-                authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+                authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
                 file_path=self.target.file_path or "",
                 qualname=self.base_name,
             ),
@@ -11251,19 +11239,42 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
             for target in document.referenced_source_targets()
         )
 
+    def referenced_authority_claims(self) -> tuple[AuthorityClaim, ...]:
+        return tuple(
+            dict.fromkeys(
+                claim
+                for document in self.documents
+                for recipe in document.recipes
+                for claim in recipe.effective_authority_claims
+            )
+        )
+
     def explicit_source_paths(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                target.file_path
-                for target in self.referenced_source_targets()
-                if target.file_path is not None
+                (
+                    *(
+                        target.file_path
+                        for target in self.referenced_source_targets()
+                        if target.file_path is not None
+                    ),
+                    *(
+                        claim.file_path
+                        for claim in self.referenced_authority_claims()
+                        if claim.file_path
+                    ),
+                )
             )
         )
 
     @property
-    def has_unresolved_source_targets(self) -> bool:
-        return any(
-            target.file_path is None for target in self.referenced_source_targets()
+    def has_unresolved_source_dependencies(self) -> bool:
+        return (
+            self.has_architecture_guards
+            or any(
+                target.file_path is None for target in self.referenced_source_targets()
+            )
+            or any(not claim.file_path for claim in self.referenced_authority_claims())
         )
 
     def source_rewrite_batch_from_snapshot(
@@ -15844,7 +15855,7 @@ class EnumSubsetSemanticMirrorRecipeParts(FindingRecipeParts):
             .with_authority_claim(
                 AstTargetAuthorityClaim.from_target(
                     self.authority.target,
-                    authority_kind=SemanticAuthorityKind.ENUM.value,
+                    authority_kind=SemanticAuthorityKind.ENUM,
                 )
             )
             .with_operation(
@@ -17256,7 +17267,7 @@ class DataclassProjectionRecipeParts(FindingRecipeParts):
         ).with_authority_claim(
             AstTargetAuthorityClaim.from_target(
                 self.authority.target,
-                authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA.value,
+                authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
             )
         )
         for import_source in (
@@ -18595,7 +18606,7 @@ class LocalRoleCaseLogicRecipeParts:
                     target=SourceRewriteTarget(file_path=self.source_path),
                     authority_claim=AuthorityClaim(
                         claimed_symbol=self.authority_name,
-                        authority_kind=SemanticAuthorityKind.CLASS_FAMILY.value,
+                        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
                         file_path=self.source_path,
                         qualname=self.authority_name,
                     ),
@@ -19780,7 +19791,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts:
     def authority_claim(self) -> AuthorityClaim:
         return AstTargetAuthorityClaim.from_target(
             self.authority_target,
-            authority_kind=SemanticAuthorityKind.CLASS_FAMILY.value,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
         )
 
     def import_source(self, graph: SourceModuleImportGraph) -> str | None:
@@ -20135,7 +20146,7 @@ class AutoregisterInstanceViewRecipeBuilder(
             .with_authority_claim(
                 AstTargetAuthorityClaim.from_target(
                     parts.authority_target,
-                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY.value,
+                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
                 )
             )
             .with_operation(

@@ -2746,7 +2746,7 @@ class CodemodRecipePlanFastSourceSnapshot:
     cwd: Path
 
     def optional_snapshot(self) -> CodemodSourceSnapshot | None:
-        if self.sequence.has_unresolved_source_targets:
+        if self.sequence.has_unresolved_source_dependencies:
             return None
         source_by_path = self.source_mapping()
         if source_by_path is None:

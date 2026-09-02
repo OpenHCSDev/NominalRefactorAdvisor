@@ -58,6 +58,14 @@ contract: each recipe builder must carry a claim derived from its exact resolved
 source target, or use an authority-declaration operation for a newly introduced
 boundary, before its recipe can remain an executable candidate.  The evaluation
 gate validates that proof without guessing authority names from finding text.
+``AuthorityClaim`` carries ``SemanticAuthorityKind`` directly and matches exact
+target identity, name, and any declared location coordinates.  A declaration
+missing a coordinate required by the claim does not prove it.
+``AuthorityClaimStatus`` owns actionability and the admissible number of proved
+authority identities, while ``AuthorityClaimResolution`` derives resolved or
+ambiguous outcomes from proof edges.  Exact-plan source snapshots include claim
+locations as source dependencies; unlocated claims and repository-wide guards
+select the complete scan-backed snapshot instead.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
    :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
