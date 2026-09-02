@@ -196,7 +196,7 @@ class HelperSupportProjectionAuthority:
         )
 
     def constructor_return_call(self, node: ast.FunctionDef) -> ast.Call | None:
-        body = _trim_docstring_body(node.body)
+        body = statements_without_docstring(node.body)
         if (
             len(body) != 1
             or not isinstance(body[0], ast.Return)
@@ -608,7 +608,7 @@ def _candidate_source_name_from_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> str | None:
     assigned_calls: dict[str, str] = {}
-    for statement in _trim_docstring_body(method.body):
+    for statement in statements_without_docstring(method.body):
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target = statement.targets[0]
             if isinstance(target, ast.Name) and isinstance(statement.value, ast.Call):
@@ -726,7 +726,7 @@ def _guarded_delegator_candidates_for_class(
             "build_from_context",
         }:
             continue
-        body = _trim_docstring_body(statement.body)
+        body = statements_without_docstring(statement.body)
         while body and isinstance(body[0], ast.Assign):
             body = body[1:]
         if len(body) != 2:
@@ -803,7 +803,7 @@ def _raised_exception_name(
 def _linear_query_signature(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, tuple[str, ...], str, str] | None:
-    body = _trim_docstring_body(node.body)
+    body = statements_without_docstring(node.body)
     return (
         Maybe.of(_linear_query_loop(body))
         .combine(
@@ -986,7 +986,7 @@ def _structural_observation_property_candidates_for_class(
             for decorator in statement.decorator_list
         ):
             continue
-        body = _trim_docstring_body(statement.body)
+        body = statements_without_docstring(statement.body)
         if len(body) != 1 or not isinstance(body[0], ast.Return):
             continue
         returned = body[0].value
@@ -1148,7 +1148,7 @@ def _property_alias_hook_groups(
                 continue
             if len(statement.args.args) != 1:
                 continue
-            body = _trim_docstring_body(statement.body)
+            body = statements_without_docstring(statement.body)
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
             returned = body[0].value
@@ -1212,7 +1212,7 @@ def _constant_property_default_methods(
             )
         ):
             continue
-        body = _trim_docstring_body(statement.body)
+        body = statements_without_docstring(statement.body)
         returned = single_item(body)
         if (
             not isinstance(returned, ast.Return)
@@ -1326,7 +1326,7 @@ def _guarded_wrapper_function_candidates(
     for statement in module.module.body:
         if not isinstance(statement, ast.FunctionDef):
             continue
-        body = _trim_docstring_body(statement.body)
+        body = statements_without_docstring(statement.body)
         while (
             body
             and isinstance(body[0], ast.Assign)
@@ -2086,7 +2086,7 @@ def _repeated_base_bundle_candidates(
 
 def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int, str]]:
     aliases: dict[str, tuple[str, int, str]] = {}
-    for statement in _trim_docstring_body(module.module.body):
+    for statement in statements_without_docstring(module.module.body):
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
             continue
         target = statement.targets[0]
@@ -2186,7 +2186,7 @@ def _derived_indexed_surface_candidates(
 ) -> tuple[DerivedIndexedSurfaceCandidate, ...]:
     index = NominalAuthorityIndex((module,))
     candidates: list[DerivedIndexedSurfaceCandidate] = []
-    for statement in _trim_docstring_body(module.module.body):
+    for statement in statements_without_docstring(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
@@ -2286,7 +2286,7 @@ class _RegisteredUnionSurfaceSource:
     @classmethod
     def from_node(cls, node: ast.AST) -> "_RegisteredUnionSurfaceSource | None":
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for statement in _trim_docstring_body(node.body):
+            for statement in statements_without_docstring(node.body):
                 if isinstance(statement, ast.For):
                     return cls(node.name, statement.iter, statement.lineno)
                 if isinstance(statement, ast.Assign):
@@ -2431,7 +2431,7 @@ def _parameter_class_call_attribute_names(
             self.generic_visit(node)
 
     Visitor().visit(
-        ast.Module(body=_trim_docstring_body(function.body), type_ignores=[])
+        ast.Module(body=statements_without_docstring(function.body), type_ignores=[])
     )
     return sorted_tuple(attribute_names)
 
@@ -2671,7 +2671,7 @@ def _module_function_named(
     return next(
         (
             statement
-            for statement in _trim_docstring_body(module.module.body)
+            for statement in statements_without_docstring(module.module.body)
             if isinstance(statement, ast.FunctionDef)
             and statement.name == function_name
         ),
@@ -2714,7 +2714,7 @@ def _module_exported_predicate_names(module: ParsedModule) -> frozenset[str]:
     return frozenset(
         (
             predicate_name
-            for statement in _trim_docstring_body(module.module.body)
+            for statement in statements_without_docstring(module.module.body)
             if (predicate_name := _export_all_predicate_name(statement)) is not None
         )
     )
@@ -2899,7 +2899,7 @@ class SubclassTraversalSiteFamily(CollectedFamily[SubclassTraversalSite]):
     def _seed(
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> tuple[str, str] | None:
-        for statement in _trim_docstring_body(node.body):
+        for statement in statements_without_docstring(node.body):
             if (
                 not isinstance(statement, ast.Assign)
                 or len(statement.targets) != 1
@@ -4411,7 +4411,7 @@ class TransportProjectionAuthority:
         exact_depth: int | None = None,
     ) -> tuple[tuple[ast.Call, ...], tuple[ast.AST, ...]] | None:
         return (
-            Maybe.of(single_return_call(_trim_docstring_body(function.body)))
+            Maybe.of(single_return_call(statements_without_docstring(function.body)))
             .map(self.call_chain_from_outer_call)
             .project(
                 lambda chain: (
@@ -4429,7 +4429,7 @@ class TransportProjectionAuthority:
         self,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> tuple[tuple[ast.Call, ...], tuple[ast.AST, ...]] | None:
-        call = single_return_call(_trim_docstring_body(function.body))
+        call = single_return_call(statements_without_docstring(function.body))
         if call is None or not isinstance(call.func, ast.Attribute):
             return None
         path = self.attribute_path(call.func)
@@ -4466,7 +4466,7 @@ def _pipeline_body_stages(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[PipelineAssemblyStage, ...] | None:
     body = list(function.body)
-    if body and _is_docstring_expr(body[0]):
+    if body and is_docstring_statement(body[0]):
         body = body[1:]
     if len(body) < 2:
         return None
@@ -4748,7 +4748,7 @@ def _candidate_collector_method_call(
     body = tuple(
         (
             statement
-            for statement in _trim_docstring_body(method.body)
+            for statement in statements_without_docstring(method.body)
             if not (
                 isinstance(statement, ast.Delete)
                 and any((name_id(target) == "config" for target in statement.targets))
@@ -4859,7 +4859,7 @@ def _typed_candidate_cast_assignment(
     method: ast.FunctionDef,
 ) -> tuple[str, str, str] | None:
     parameter_name = _single_payload_parameter_name(method)
-    body = _trim_docstring_body(method.body)
+    body = statements_without_docstring(method.body)
     call_assignment = _first_named_call_assignment(body)
     if parameter_name is None or call_assignment is None:
         return None
@@ -5143,7 +5143,7 @@ def _direct_build_finding_renderer_candidates(
                 and statement.name == "_finding_for_candidate"
             ):
                 continue
-            body = _trim_docstring_body(statement.body)
+            body = statements_without_docstring(statement.body)
             call = (
                 _self_build_finding_call(single_item(body)) if len(body) == 1 else None
             )
@@ -5265,7 +5265,7 @@ class HelperSyntaxProjectionAuthority:
 
     def classvar_assignment_names(self, node: ast.ClassDef) -> tuple[str, ...] | None:
         assigned_names: list[str] = []
-        for statement in _trim_docstring_body(node.body):
+        for statement in statements_without_docstring(node.body):
             binding = named_value_binding(statement)
             if (
                 binding is None
@@ -5389,7 +5389,7 @@ class HelperSyntaxProjectionAuthority:
         self, node: ast.ClassDef
     ) -> tuple[str, ...] | None:
         assigned_names: list[str] = []
-        for statement in _trim_docstring_body(node.body):
+        for statement in statements_without_docstring(node.body):
             if isinstance(statement, ast.Pass):
                 continue
             binding = named_value_binding(statement)
@@ -5572,7 +5572,7 @@ def _closed_axis_conversion_matrix_candidates(
 
 
 def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    body = _trim_docstring_body(method.body)
+    body = statements_without_docstring(method.body)
     return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
 
 
@@ -5642,7 +5642,7 @@ def _assigned_self_stack_names(
     if method is None:
         return ()
     stack_names: set[str] = set()
-    for statement in _trim_docstring_body(method.body):
+    for statement in statements_without_docstring(method.body):
         if isinstance(statement, ast.AnnAssign) and _is_empty_list_value(
             statement.value
         ):
@@ -5686,7 +5686,7 @@ def _visitor_stack_transition_names(
 ) -> tuple[str, ...]:
     appended: set[str] = set()
     popped: set[str] = set()
-    for statement in _trim_docstring_body(method.body):
+    for statement in statements_without_docstring(method.body):
         if not isinstance(statement, ast.Expr) or not isinstance(
             statement.value, ast.Call
         ):
@@ -5773,7 +5773,7 @@ def _enum_metadata_table_cases(module: ast.Module) -> dict[str, tuple[str, int]]
 
 
 def _enum_metadata_property_table(method: ast.FunctionDef) -> str | None:
-    returned = single_return_value(_trim_docstring_body(method.body))
+    returned = single_return_value(statements_without_docstring(method.body))
     lookup_source = returned.value if isinstance(returned, ast.Attribute) else returned
     lookup = as_ast(lookup_source, ast.Subscript)
     table_name = name_id(None if lookup is None else lookup.value)
@@ -6237,7 +6237,7 @@ def _schema_accessor_method_row(
         return None
     if _is_private_symbol_name(method.name):
         return None
-    body = _trim_docstring_body(list(method.body))
+    body = statements_without_docstring(list(method.body))
     fetches = tuple(
         fetch
         for statement in body

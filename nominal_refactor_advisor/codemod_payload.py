@@ -148,8 +148,7 @@ class FlattenedPayloadRecordValueCodec(
     def serialize(self, value: object) -> JsonValue:
         if not isinstance(value, self.record_type):
             raise TypeError(
-                "flattened payload-record codec requires "
-                f"{self.record_type.__name__}"
+                f"flattened payload-record codec requires {self.record_type.__name__}"
             )
         return value.to_dict()
 
@@ -164,11 +163,16 @@ class FlattenedPayloadRecordValueCodec(
         *,
         omit_none: bool = False,
     ) -> tuple[tuple[str, JsonValue], ...]:
-        del field_name, omit_none
-        serialized = self.serialize(value)
-        if not isinstance(serialized, Mapping):
-            raise TypeError("flattened payload-record codec requires an object payload")
-        return tuple(serialized.items())
+        del field_name
+        if not isinstance(value, self.record_type):
+            raise TypeError(
+                f"flattened payload-record codec requires {self.record_type.__name__}"
+            )
+        return tuple(
+            self.record_type.payload_bindings()
+            .payload(value, omit_none=omit_none)
+            .items()
+        )
 
 
 class StringPayloadValueCodec(

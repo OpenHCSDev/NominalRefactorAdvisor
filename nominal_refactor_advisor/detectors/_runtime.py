@@ -143,7 +143,7 @@ def collect_nested_branch_chains_from_body(
     body: Sequence[ast.stmt],
     spec: BranchChainCollectionSpec[BranchObservationT],
 ) -> tuple[tuple[BranchObservationT, ...], ...]:
-    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    trimmed_body = tuple(statements_without_docstring(tuple(body)))
     chains: list[tuple[BranchObservationT, ...]] = []
     seen: set[tuple[int, ...]] = set()
     for index, statement in enumerate(trimmed_body):
@@ -1455,7 +1455,7 @@ def _stable_text_digest(value: str) -> str:
 def _direct_terminal_return(
     body: Sequence[ast.stmt],
 ) -> ast.Return | None:
-    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    trimmed_body = tuple(statements_without_docstring(tuple(body)))
     if not trimmed_body:
         return None
     statement = trimmed_body[-1]
@@ -3551,20 +3551,21 @@ class SurfaceFunctionIndex:
             for statement in body:
                 if isinstance(statement, ast.ClassDef):
                     visit_body(
-                        _trim_docstring_body(statement.body), (*prefix, statement.name)
+                        statements_without_docstring(statement.body),
+                        (*prefix, statement.name),
                     )
                     continue
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     functions.append((".".join((*prefix, statement.name)), statement))
 
-        visit_body(_trim_docstring_body(module_node.body), ())
+        visit_body(statements_without_docstring(module_node.body), ())
         return cls(tuple(functions))
 
 
 def _trimmed_function_body(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[ast.stmt, ...]:
-    return tuple(_trim_docstring_body(function.body))
+    return tuple(statements_without_docstring(function.body))
 
 
 _CLASSLEVEL_METHOD_DECORATORS = frozenset({"classmethod", "staticmethod"})
@@ -4526,7 +4527,7 @@ def _mirrored_import_fallback_candidates(
     module: ParsedModule,
 ) -> tuple[MirroredImportFallbackCandidate, ...]:
     candidates: list[MirroredImportFallbackCandidate] = []
-    for statement in _trim_docstring_body(module.module.body):
+    for statement in statements_without_docstring(module.module.body):
         if not isinstance(statement, ast.Try) or not statement.handlers:
             continue
         relative_imports = tuple(

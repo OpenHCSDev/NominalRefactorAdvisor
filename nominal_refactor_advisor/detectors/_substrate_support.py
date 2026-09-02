@@ -13,7 +13,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ..ast_tools import ParsedModule, _walk_nodes
+from ..ast_tools import (
+    ParsedModule,
+    is_docstring_statement,
+    statements_without_docstring,
+    _walk_nodes,
+)
 from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
@@ -147,20 +152,6 @@ def _constant_string(node: ast.AST | None) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     return None
-
-
-def _is_docstring_expr(node: ast.stmt) -> bool:
-    return (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
-    )
-
-
-def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
-    if body and _is_docstring_expr(body[0]):
-        return body[1:]
-    return body
 
 
 def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
@@ -359,8 +350,8 @@ def _is_private_symbol_name(name: str) -> bool:
 __all__ = (
     "_camel_case",
     "_constant_string",
-    "_is_docstring_expr",
-    "_trim_docstring_body",
+    "is_docstring_statement",
+    "statements_without_docstring",
     "_ast_terminal_name",
     "_ast_attribute_chain",
     "CLASS_NODE_AUTHORITY",

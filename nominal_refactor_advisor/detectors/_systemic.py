@@ -981,7 +981,7 @@ def _projection_property_family_candidates(
                 )
             ):
                 continue
-            body = _trim_docstring_body(statement.body)
+            body = statements_without_docstring(statement.body)
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
             base_name = _path_projection_base(body[0].value)
@@ -1102,7 +1102,7 @@ def _collection_projection_property_family_candidates(
         for statement in CLASS_NODE_AUTHORITY.methods(class_node):
             if not _is_property_method(statement):
                 continue
-            body = _trim_docstring_body(statement.body)
+            body = statements_without_docstring(statement.body)
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
             shape = _collection_projection_property_shape(body[0].value)

@@ -22,9 +22,7 @@ from ..semantic_match import (
     single_item,
 )
 from ._base import ClassMethodFamilyCandidate
-from ._substrate_support import _trim_docstring_body
-
-
+from ._substrate_support import statements_without_docstring
 
 
 @dataclass(frozen=True)
@@ -41,6 +39,7 @@ class RegexGroupExtractorFamilyCandidate(ClassMethodFamilyCandidate):
     matcher_names: tuple[str, ...]
     group_index: int
 
+
 @dataclass(frozen=True)
 class _AccumulatorFoldStatements:
     assign: ast.stmt
@@ -56,7 +55,6 @@ class _AccumulatorFoldContext:
     step_call: ast.Call
 
 
-
 @dataclass(frozen=True)
 class _AccumulatorFoldMethod:
     method_name: str
@@ -69,8 +67,6 @@ class _AccumulatorFoldMethod:
     @property
     def shape_key(self) -> tuple[str, str]:
         return (self.accumulator_type_name, self.result_method_name)
-
-
 
 
 _ParsedFamilyMethod = TypeVar("_ParsedFamilyMethod")
@@ -112,12 +108,10 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
         return tuple(groups)
 
 
-
-
 def _accumulator_fold_method(
     method: ast.FunctionDef,
 ) -> _AccumulatorFoldMethod | None:
-    body = _trim_docstring_body(method.body)
+    body = statements_without_docstring(method.body)
     fold_shape = _accumulator_fold_shape(body)
     if fold_shape is None:
         return None
@@ -280,7 +274,7 @@ class _RegexGroupExtractorMethod:
         method: ast.FunctionDef,
     ) -> "_RegexGroupExtractorMethod | None":
         statements = ast_sequence(
-            _trim_docstring_body(method.body), ast.Assign, ast.Return
+            statements_without_docstring(method.body), ast.Assign, ast.Return
         )
         if statements is None:
             return None
@@ -362,8 +356,6 @@ def _regex_group_extractor_family_candidates(
                 )
             )
     return tuple(candidates)
-
-
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

@@ -114,6 +114,7 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardViolationKind,
+    AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
     AstTargetNodeIndex,
     AstTargetNodeIndexCache,
@@ -5216,24 +5217,19 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
+        '\ndef traced(function):\n    return function\n\n\ndef render_csv(value):\n    return f"csv:{value}"\n\n\ndef render_json(value):\n    return f"json:{value}"\n\n\n@traced\ndef render(kind, value):\n    """Render one declared format."""\n    if kind == "csv":\n        return f"{kind}:{render_csv(value)}"\n    elif kind == "json":\n        return f"{kind}:{render_json(value)}"\n    raise ValueError(kind)\n',
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
+    render_target = next(
+        target for target in source_index.ast_targets if target.qualname == "render"
+    )
 
     recipe = RefactorRecipe(
         recipe_id="literal-dispatch-to-polymorphism"
     ).with_operation(
         DispatchToPolymorphismOperation(
-            target=SourceRewriteTarget(
-                qualname="render",
-                file_path=module_path.as_posix(),
-            ),
-            dispatch_axis_expression="kind",
-            literal_cases=("'csv'", "'json'"),
-            base_name="RenderDispatchCase",
-            case_key_attribute="case",
-            method_name="apply",
+            target=SourceRewriteTarget(target_id=render_target.target_id),
         )
     )
     simulation = recipe.simulate(
@@ -5249,13 +5245,56 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert "+class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in diff
     assert "+class CsvRenderDispatchCase(RenderDispatchCase):" in diff
     assert "+    case = 'csv'" in diff
-    assert "+        return render_csv(value)" in diff
-    assert "+    return RenderDispatchCase.for_case(kind).apply(value)" in diff
+    assert "render_csv(value)" in diff
+    assert (
+        "+    _dispatch_case_type = RenderDispatchCase.__registry__.get(kind)" in diff
+    )
+    assert "+    return _dispatch_case_type().apply(kind, value)" in diff
+    operation_payload = recipe.operations[0].to_dict()
+    assert RefactorRecipeOperation.from_dict(operation_payload) == recipe.operations[0]
+    assert operation_payload["target_id"] == render_target.target_id
+    assert "dispatch_axis_expression" not in operation_payload
+    assert "literal_cases" not in operation_payload
+    assert "base_name" not in operation_payload
+    assert "case_key_attribute" not in operation_payload
+    assert "method_name" not in operation_payload
     simulation.apply()
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
     assert "class JsonRenderDispatchCase(RenderDispatchCase):" in rewritten
-    assert "return render_json(value)" in rewritten
+    assert "render_json(value)" in rewritten
+    assert "@traced\ndef render(kind, value):" in rewritten
+    assert '    """Render one declared format."""' in rewritten
+
+    def observations(source: str) -> tuple[object, ...]:
+        namespace: dict[str, object] = {}
+        exec(compile(source, module_path.as_posix(), "exec"), namespace)
+        render = namespace["render"]
+        assert callable(render)
+        try:
+            render("xml", "value")
+        except ValueError as error:
+            failure = (type(error), error.args, error.__cause__, error.__context__)
+        else:
+            failure = None
+        return render("csv", "value"), render("json", "value"), failure
+
+    assert observations(rewritten) == observations(
+        source_by_path[module_path.as_posix()]
+    )
+    rewritten_namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
+    csv_case = rewritten_namespace["CsvRenderDispatchCase"]
+    assert isinstance(csv_case, type)
+    render = rewritten_namespace["render"]
+    assert callable(render)
+    assert render.__doc__ == "Render one declared format."
+    assert tuple(class_type.__name__ for class_type in csv_case.__mro__) == (
+        "CsvRenderDispatchCase",
+        "RenderDispatchCase",
+        "ABC",
+        "object",
+    )
     build_source_index(parse_python_modules(tmp_path), ())
 
 
@@ -5270,20 +5309,15 @@ def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
+    walk_target = next(
+        target for target in source_index.ast_targets if target.qualname == "walk"
+    )
 
     recipe = RefactorRecipe(
         recipe_id="attribute-dispatch-must-remain-unplanned"
     ).with_operation(
         DispatchToPolymorphismOperation(
-            target=SourceRewriteTarget(
-                qualname="walk",
-                file_path=module_path.as_posix(),
-            ),
-            dispatch_axis_expression="node.kind",
-            literal_cases=("'alpha'", "'beta'"),
-            base_name="WalkDispatchCase",
-            case_key_attribute="case",
-            method_name="apply",
+            target=SourceRewriteTarget(target_id=walk_target.target_id),
         )
     )
 
@@ -5293,6 +5327,163 @@ def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
             source_by_path,
             backend=CodemodBackend.AST_SPAN,
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "error_fragment"),
+    (
+        pytest.param(
+            '\ndef render(kind):\n    if kind == "csv":\n        return 1\n    elif kind == "csv":\n        return 2\n    raise ValueError(kind)\n',
+            "not a supported literal dispatch",
+            id="duplicate-dispatch-key",
+        ),
+        pytest.param(
+            "\ndef render(kind):\n    if kind == 1:\n        return 1\n    elif kind == 1.0:\n        return 2\n    raise ValueError(kind)\n",
+            "not a supported literal dispatch",
+            id="equal-dispatch-keys",
+        ),
+        pytest.param(
+            '\ndef render(kind):\n    if kind == "foo-bar":\n        return 1\n    elif kind == "foo bar":\n        return 2\n    raise ValueError(kind)\n',
+            "derive duplicate class names",
+            id="derived-class-name-collision",
+        ),
+        pytest.param(
+            'class CsvRenderDispatchCase:\n    pass\n\n\ndef render(kind):\n    if kind == "csv":\n        return 1\n    elif kind == "json":\n        return 2\n    raise ValueError(kind)\n',
+            "class names already exist",
+            id="existing-class-name-collision",
+        ),
+        pytest.param(
+            'CsvRenderDispatchCase = object\n\n\ndef render(kind):\n    if kind == "csv":\n        return 1\n    elif kind == "json":\n        return 2\n    raise ValueError(kind)\n',
+            "class names already exist",
+            id="existing-module-binding-collision",
+        ),
+        pytest.param(
+            '\ndef render(kind):\n    if kind == "csv":\n        return (yield 1)\n    elif kind == "json":\n        return (yield 2)\n    raise ValueError(kind)\n',
+            "not a supported literal dispatch",
+            id="generator-semantics",
+        ),
+        pytest.param(
+            '\ndef render(kind, enabled):\n    match kind:\n        case "csv" if enabled:\n            return 1\n        case "json":\n            return 2\n        case _:\n            raise ValueError(kind)\n',
+            "not a supported literal dispatch",
+            id="guarded-match-semantics",
+        ),
+        pytest.param(
+            'ABC = object\n\n\ndef render(kind):\n    if kind == "csv":\n        return 1\n    elif kind == "json":\n        return 2\n    raise ValueError(kind)\n',
+            "support names already have incompatible bindings",
+            id="generated-support-binding-collision",
+        ),
+    ),
+)
+def test_dispatch_to_polymorphism_rejects_unproved_class_families(
+    tmp_path: Path,
+    source: str,
+    error_fragment: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    render_target = next(
+        target for target in source_index.ast_targets if target.qualname == "render"
+    )
+    recipe = RefactorRecipe(recipe_id="unproved-dispatch-family").with_operation(
+        DispatchToPolymorphismOperation(
+            target=SourceRewriteTarget(target_id=render_target.target_id),
+        )
+    )
+
+    with pytest.raises(ValueError, match=error_fragment):
+        recipe.simulate(
+            source_index,
+            {module_path.as_posix(): source},
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        pytest.param(
+            '\ndef render(kind):\n    match kind:\n        case "csv":\n            return 1\n        case "json":\n            return 2\n        case _:\n            raise ValueError(kind)\n',
+            id="match",
+        ),
+        pytest.param(
+            '\ndef render(kind):\n    if kind == "csv":\n        return 1\n    if kind == "json":\n        return 2\n    return 0\n',
+            id="sequential-guards",
+        ),
+    ),
+)
+def test_dispatch_to_polymorphism_derives_supported_function_shapes(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    render_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "render"
+    )
+    recipe = RefactorRecipe(recipe_id="derived-dispatch-shape").with_operation(
+        DispatchToPolymorphismOperation(
+            target=SourceRewriteTarget(target_id=render_target.target_id),
+        )
+    )
+
+    simulation = recipe.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    def known_results(source_text: str) -> tuple[object, object]:
+        namespace: dict[str, object] = {}
+        exec(compile(source_text, module_path.as_posix(), "exec"), namespace)
+        render = namespace["render"]
+        assert callable(render)
+        return render("csv"), render("json")
+
+    assert simulation.is_clean
+    assert known_results(rewritten) == known_results(source)
+
+
+def test_dispatch_to_polymorphism_derives_unbound_generated_names(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = (
+        "\ndef render(kind, _dispatch_strategy, _dispatch_case_type):\n"
+        '    if kind == "csv":\n'
+        "        return kind, _dispatch_strategy, _dispatch_case_type\n"
+        '    if kind == "json":\n'
+        "        return kind, _dispatch_case_type, _dispatch_strategy\n"
+        "    return _dispatch_strategy + _dispatch_case_type\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    render_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "render"
+    )
+    simulation = (
+        RefactorRecipe(recipe_id="collision-free-generated-bindings")
+        .with_operation(
+            DispatchToPolymorphismOperation(
+                target=SourceRewriteTarget(target_id=render_target.target_id),
+            )
+        )
+        .simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    )
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+    render = namespace["render"]
+    assert callable(render)
+    assert render("csv", "left", "right") == ("csv", "left", "right")
+    assert render("json", "left", "right") == ("json", "right", "left")
+    assert render("unknown", "left", "right") == "leftright"
+    assert "def apply(_dispatch_strategy_2, kind" in rewritten
+    assert "_dispatch_case_type_2 = RenderDispatchCase.__registry__" in rewritten
 
 
 def test_refactor_recipe_moves_decorated_symbol_between_modules(
@@ -19073,7 +19264,52 @@ def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-    assert plan.document.recipes[0].operations[0].target.qualname == "render"
+    operation = plan.document.recipes[0].operations[0]
+    render_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "render"
+    )
+    assert operation.target.target_id == render_target.target_id
+    assert operation.target.qualname is None
+    assert "dispatch_axis_expression" not in operation.to_dict()
+    assert "literal_cases" not in operation.to_dict()
+
+
+def test_numeric_literal_dispatch_goal_proves_one_target_only_replay(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef render(pattern_id, value):\n"
+        "    if pattern_id == 3:\n"
+        "        return value + 1\n"
+        "    elif pattern_id == 5:\n"
+        "        return value + 2\n"
+        "    raise ValueError(pattern_id)\n",
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=AutoRegisterStrategyFamilyConcept,
+        trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PROVED
+    assert report.stage_count == 1
+    assert report.final_target_finding_ids == ()
+    operation = report.replay_sequence.documents[0].recipes[0].operations[0]
+    payload = operation.to_dict()
+    assert isinstance(operation, DispatchToPolymorphismOperation)
+    assert payload["target_id"] is not None
+    assert "dispatch_axis_expression" not in payload
+    assert "literal_cases" not in payload
+    assert "base_name" not in payload
 
 
 def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(

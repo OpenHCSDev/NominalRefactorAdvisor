@@ -139,9 +139,10 @@ def test_flattened_record_codec_owns_nested_projection() -> None:
         "target_qualname",
     )
     assert dict(codec.payload_items(target, "target")) == target.to_dict()
-    assert (
-        dict(codec.payload_items(target, "target", omit_none=True)) == target.to_dict()
-    )
+    assert dict(codec.payload_items(target, "target", omit_none=True)) == {
+        "file_path": "pkg/example.py",
+        "target_qualname": "Alpha.run",
+    }
     assert codec.read(target.to_dict(), "target") == target
 
 

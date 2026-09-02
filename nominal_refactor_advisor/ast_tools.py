@@ -21,7 +21,7 @@ import pickle
 import sys
 import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
@@ -189,9 +189,7 @@ class CollectedFamilyImplementationIdentity:
         return cls(
             tuple(
                 CollectedFamilyImplementationSource.from_module_name(module_name)
-                for module_name in _collected_family_implementation_module_names(
-                    family
-                )
+                for module_name in _collected_family_implementation_module_names(family)
             )
         )
 
@@ -1246,14 +1244,7 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
             self.visit(statement)
 
     def traverse_trimmed_statements(self, body: list[ast.stmt]) -> None:
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            body = body[1:]
-        self.traverse_statements(body)
+        self.traverse_statements(statements_without_docstring(body))
 
     def traverse_node_body(
         self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
@@ -1478,9 +1469,7 @@ class CollectedFamily(
     def registered_implementation_module_names(cls) -> tuple[str, ...]:
         """Project every family producer dependency through registered leaves."""
 
-        return declaration_implementation_module_names(
-            cls.all_registered_families()
-        )
+        return declaration_implementation_module_names(cls.all_registered_families())
 
     @classmethod
     @lru_cache(maxsize=None)
@@ -1505,7 +1494,9 @@ class CollectedFamily(
                     repr(annotation),
                 )
                 for owner in reversed(item_type.__mro__)
-                for name, annotation in owner.__dict__.get("__annotations__", {}).items()
+                for name, annotation in owner.__dict__.get(
+                    "__annotations__", {}
+                ).items()
             )
         )
         return hashlib.blake2s(
@@ -1791,9 +1782,7 @@ class CollectedFamilyCacheContext:
     ) -> bool:
         """Check one cache path without materializing its payload."""
 
-        return self._entry_exists_for_identity(
-            self.identity(family, demand_signature)
-        )
+        return self._entry_exists_for_identity(self.identity(family, demand_signature))
 
     def _entry_exists_for_identity(
         self,
@@ -1956,8 +1945,7 @@ class CollectedFamilyCacheContext:
         if self._bundle_marker_is_complete(marker_path):
             return True
         if not all(
-            self._entry_exists_for_identity(identity)
-            for identity in family_identities
+            self._entry_exists_for_identity(identity) for identity in family_identities
         ):
             return False
         self._store_bundle_marker(marker_path)
@@ -1968,7 +1956,9 @@ class CollectedFamilyCacheContext:
         family_entries: tuple[CollectedFamilyProjectionIdentity, ...],
     ) -> Path:
         if self.family_cache_dir is None:
-            raise ValueError("A cache bundle requires a collected-family cache directory")
+            raise ValueError(
+                "A cache bundle requires a collected-family cache directory"
+            )
         bundle_payload = repr(
             (
                 "collected-family-bundle-v4",
@@ -2700,7 +2690,9 @@ class ModuleSyntaxIndex:
     def enclosing_function_name(self, node_index: int) -> str | None:
         """Return the nearest executable function owner for one indexed node."""
 
-        function_index = self.scopes[self.scope_ids[node_index]].executable_function_index
+        function_index = self.scopes[
+            self.scope_ids[node_index]
+        ].executable_function_index
         if function_index < 0:
             return None
         function = self.depth_first_nodes[function_index]
@@ -2817,7 +2809,7 @@ def walk_function_body_nodes(
     """Return one bounded, reusable walk that excludes nested definition bodies."""
 
     nodes: list[ast.AST] = []
-    stack = list(reversed(_trim_docstring_body(function.body)))
+    stack = list(reversed(statements_without_docstring(function.body)))
     while stack:
         node = stack.pop()
         nodes.append(node)
@@ -3388,30 +3380,36 @@ def _inline_literal_dispatch_observations_for_kind(
     return _inline_literal_dispatch_observations(parsed_module, literal_kind)
 
 
-def _is_docstring_expr(node: ast.stmt) -> bool:
+def is_docstring_statement(statement: ast.stmt) -> bool:
+    """Return whether a statement is a Python documentation literal."""
+
     return (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
     )
 
 
-def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
-    if body and _is_docstring_expr(body[0]):
-        return body[1:]
-    return body
+def statements_without_docstring(body: Sequence[ast.stmt]) -> list[ast.stmt]:
+    """Project executable statements without a leading documentation literal."""
+
+    statements = list(body)
+    if statements and is_docstring_statement(statements[0]):
+        return statements[1:]
+    return statements
 
 
 def _projection_outer_inner_calls(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ast.Call] | None:
     outer_call = (
-        Maybe.of(_trim_docstring_body(function.body))
+        Maybe.of(statements_without_docstring(function.body))
         .project(single_return_call)
         .filter(lambda call: len(call.args) == 1)
         .filter(
-            lambda call: _terminal_name(call.func)
-            in BuiltinCallName.sequence_wrapper_names()
+            lambda call: (
+                _terminal_name(call.func) in BuiltinCallName.sequence_wrapper_names()
+            )
         )
         .unwrap_or_none()
     )
@@ -3440,9 +3438,7 @@ class _ProjectionGeneratorMatch:
     def from_node(cls, node: ast.AST) -> "_ProjectionGeneratorMatch | None":
         return (
             Maybe.of(as_ast(node, ast.GeneratorExp))
-            .with_projection(
-                lambda generator: single_item(generator.generators)
-            )
+            .with_projection(lambda generator: single_item(generator.generators))
             .map(lambda match: cls(*match))
             .unwrap_or_none()
         )
@@ -3559,7 +3555,7 @@ def _scoped_shape_wrapper_function_from_function(
     parsed_module: ParsedModule,
     function: ast.FunctionDef,
 ) -> ScopedShapeWrapperFunction | None:
-    body = _trim_docstring_body(function.body)
+    body = statements_without_docstring(function.body)
     node_types = _scoped_shape_wrapper_node_types(function, body)
     if (
         node_types is None

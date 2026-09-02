@@ -2602,7 +2602,7 @@ def _suffix_axis_surface_methods(
                 operation_name=match.group("operation"),
                 axis_name=match.group("axis"),
                 parameter_names=SUPPORT_PROJECTION_AUTHORITY.parameter_names(function),
-                statement_count=len(_trim_docstring_body(function.body)),
+                statement_count=len(statements_without_docstring(function.body)),
             )
         )
     return sorted_tuple(
@@ -2724,7 +2724,7 @@ def _enum_projection_tables(
 ) -> tuple[EnumProjectionTableCandidate, ...]:
     enum_members = _enum_member_names_by_class(module)
     tables: list[EnumProjectionTableCandidate] = []
-    for statement in _trim_docstring_body(module.module.body):
+    for statement in statements_without_docstring(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
@@ -3219,7 +3219,7 @@ class DispatchAlgebraAuthority:
         self,
         statements: Sequence[ast.stmt],
     ) -> tuple[ast.AST, int] | None:
-        trimmed = _trim_docstring_body(list(statements))
+        trimmed = statements_without_docstring(list(statements))
         if len(trimmed) != 1 or not isinstance(trimmed[0], ast.Return):
             return None
         value = trimmed[0].value
@@ -3436,7 +3436,7 @@ def _registered_catalog_projection_candidates_for_function(
     qualname: str,
     function: NamedFunctionNode,
 ) -> Iterable[RegisteredCatalogProjectionCandidate]:
-    body = _trim_docstring_body(list(function.body))
+    body = statements_without_docstring(list(function.body))
     if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
         return
     returned = body[0].value
@@ -3505,7 +3505,7 @@ def _guarded_return_cases_from_if(
 def _guarded_return_cases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_GuardedReturnCase, ...]:
-    body = _trim_docstring_body(function.body)
+    body = statements_without_docstring(function.body)
     if not body:
         return ()
     if len(body) == 1 and isinstance(body[0], ast.If):
@@ -4176,7 +4176,8 @@ def _selection_helper_shape(
     return (
         Maybe.of(
             as_ast(
-                single_return_value(_trim_docstring_body(function.body)), ast.DictComp
+                single_return_value(statements_without_docstring(function.body)),
+                ast.DictComp,
             )
         )
         .combine(
@@ -4238,7 +4239,7 @@ def _selection_lookup_shape(
 def _single_try_statement(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ast.Try | None:
-    return single_ast(_trim_docstring_body(function.body), ast.Try)
+    return single_ast(statements_without_docstring(function.body), ast.Try)
 
 
 def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool:
@@ -4519,7 +4520,7 @@ def _module_class_assigned_enum_axis_specs(
     module: ParsedModule,
 ) -> tuple[_ClassAssignedEnumAxisSpec, ...]:
     specs: list[_ClassAssignedEnumAxisSpec] = []
-    for statement in _trim_docstring_body(module.module.body):
+    for statement in statements_without_docstring(module.module.body):
         if not isinstance(statement, ast.ClassDef):
             continue
         assignments = CLASS_NODE_AUTHORITY.direct_assignments(statement)
@@ -5341,7 +5342,7 @@ _REGISTRY_PROJECTION_SURFACE_ANALYZER = _RegistryProjectionSurfaceAnalyzer()
 def _manual_record_registration_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ManualRecordRegistrationShape | None:
-    body = _trim_docstring_body(list(method.body))
+    body = statements_without_docstring(list(method.body))
     return (
         Maybe.of(body)
         .filter(lambda _body: _is_classmethod(method))
@@ -5678,7 +5679,7 @@ def _top_level_attribute_aliases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, str]:
     aliases: dict[str, str] = {}
-    for statement in _trim_docstring_body(list(function.body)):
+    for statement in statements_without_docstring(list(function.body)):
         if (
             not isinstance(statement, ast.Assign)
             or len(statement.targets) != 1
@@ -6122,7 +6123,7 @@ class GuardValidatorPipeline:
     def context(
         self, function: ast.FunctionDef | ast.AsyncFunctionDef, subject_param_name: str
     ) -> _GuardValidatorContext:
-        body = _trim_docstring_body(list(function.body))
+        body = statements_without_docstring(list(function.body))
         alias_name: str | None = None
         alias_source_attr: str | None = None
         if body:
@@ -6327,7 +6328,7 @@ def _validate_shape_guard_method_candidate(
         return None
     if not method.args.args or method.args.args[0].arg != "self":
         return None
-    body = _trim_docstring_body(list(method.body))
+    body = statements_without_docstring(list(method.body))
     guard_statements = tuple(
         (
             statement
@@ -7114,7 +7115,7 @@ class SupportProjectionAuthority:
     ) -> tuple[NamedValueBinding, ...]:
         return tuple(
             binding
-            for statement in _trim_docstring_body(module.module.body)
+            for statement in statements_without_docstring(module.module.body)
             if (binding := named_value_binding(statement)) is not None
         )
 
@@ -8577,7 +8578,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
         if not _is_frozen_dataclass(node):
             return None
         product_fields: list[tuple[str, str, str | None]] = []
-        for statement in _trim_docstring_body(node.body):
+        for statement in statements_without_docstring(node.body):
             if isinstance(statement, ast.Pass):
                 continue
             assignment = as_ast(statement, ast.AnnAssign)

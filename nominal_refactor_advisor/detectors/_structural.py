@@ -1160,7 +1160,7 @@ class _CatalogInstallingMixinShape:
             .filter(lambda function: function.name == "__init_subclass__")
             .project(
                 lambda function: ast_sequence(
-                    _trim_docstring_body(function.body), ast.Expr, ast.Expr
+                    statements_without_docstring(function.body), ast.Expr, ast.Expr
                 )
             )
             .project(
