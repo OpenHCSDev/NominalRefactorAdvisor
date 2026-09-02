@@ -5825,7 +5825,7 @@ def test_dispatch_to_polymorphism_rejects_unproved_class_families(
         )
     )
 
-    with pytest.raises(ValueError, match=error_fragment):
+    with pytest.raises(CodemodOperationPreflightError, match=error_fragment):
         recipe.simulate(
             source_index,
             {module_path.as_posix(): source},

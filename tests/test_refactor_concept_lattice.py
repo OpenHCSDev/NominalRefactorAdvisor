@@ -413,6 +413,31 @@ def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     assert not hasattr(codemod, "SharedRecipeIdSuffixRecipeReasonBase")
 
 
+def test_source_derived_synthesized_operations_share_one_reproof_contract() -> None:
+    operation_types = (
+        codemod.CollapseClosedParameterConveyorOperation,
+        codemod.ConvertManualRegistryToAutoregisterOperation,
+        codemod.DeleteInheritedAutoRegisterConfigurationOperation,
+        codemod.DeriveAutoregisterInstanceViewOperation,
+        codemod.DeriveAutoRegisterMroOrderingOperation,
+        codemod.DeriveClassFamilyCollectionOperation,
+        codemod.DeriveDataclassConstructorProjectionOperation,
+        codemod.DeriveDataclassFieldNameCollectionProjectionOperation,
+        codemod.DeriveDataclassKeyValueSequenceProjectionOperation,
+        codemod.DeriveDataclassPayloadProjectionOperation,
+        codemod.DeriveEnumSubsetOperation,
+        codemod.DeriveRepeatedBuilderAuthorityOperation,
+        codemod.DispatchToPolymorphismOperation,
+        codemod.FactorParallelMirroredLeafFamilyOperation,
+        codemod.PromoteExactLeafMethodsToAncestorOperation,
+    )
+
+    assert all(
+        issubclass(operation_type, codemod.SourceReprovedOperation)
+        for operation_type in operation_types
+    )
+
+
 def test_class_base_operations_own_the_base_name_payload() -> None:
     for operation_type in (
         codemod.AddClassBaseOperation,

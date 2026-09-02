@@ -194,6 +194,7 @@ SourceTargetIdentityValueT = TypeVar(
     str,
     str | None,
 )
+SourceReproofValueT = TypeVar("SourceReproofValueT")
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -4587,8 +4588,8 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        try:
-            snapshot = (
+        return self.required_reproof(
+            lambda: self.source_edits_from_snapshot(
                 CodemodSourceSnapshot.from_indexed_sources(
                     source_index,
                     source_by_path,
@@ -4596,11 +4597,36 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
                 if selector_context is None
                 else selector_context.execution_snapshot()
             )
-            return self.source_edits_from_snapshot(snapshot)
+        )
+
+    def required_reproof(
+        self,
+        derivation: Callable[[], SourceReproofValueT],
+    ) -> SourceReproofValueT:
+        """Evaluate one current-source derivation through the shared failure contract."""
+
+        try:
+            return derivation()
         except CodemodOperationPreflightError:
             raise
         except (TypeError, ValueError) as error:
             raise self.failed_preflight(str(error)) from error
+
+    def declared_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        return self.required_reproof(
+            lambda: self.current_source_authority_claims(context)
+        )
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        """Derive authority claims only from the current source snapshot."""
+
+        return super().declared_authority_claims(context)
 
     def preflight_reports(
         self,
@@ -10480,13 +10506,24 @@ class DispatchPolymorphismSource:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DispatchToPolymorphismOperation(
-    TargetNodeRecipeOperationMixin,
-    RefactorRecipeOperation,
-):
+class DispatchToPolymorphismOperation(SourceReprovedOperation):
     """Re-derive one function's closed dispatch as strategy subclasses."""
 
-    def declared_authority_claims(
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        target_identifier, target_digest, node = self.target_node_from_context(
+            snapshot
+        )
+        return self.source_edits_for_target_node(
+            snapshot,
+            target_identifier,
+            target_digest,
+            node,
+        )
+
+    def current_source_authority_claims(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[AuthorityClaim, ...]:
