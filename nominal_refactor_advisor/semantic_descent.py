@@ -2680,25 +2680,6 @@ class FindingBackedSemanticDescentGraphRequest:
     """Graph request for findings projected into semantic-descent certificates."""
 
     findings: tuple[RefactorFinding, ...]
-    authority_evidence_indices: tuple[tuple[str, int | None], ...] = ()
-
-    @classmethod
-    def from_inputs(
-        cls,
-        findings: tuple[RefactorFinding, ...],
-        *,
-        authority_evidence_index_by_detector_id: Mapping[str, int | None],
-    ) -> "FindingBackedSemanticDescentGraphRequest":
-        return cls(
-            findings=tuple(findings),
-            authority_evidence_indices=tuple(
-                sorted(authority_evidence_index_by_detector_id.items())
-            ),
-        )
-
-    @cached_property
-    def authority_evidence_index_by_detector_id(self) -> dict[str, int | None]:
-        return dict(self.authority_evidence_indices)
 
     def build_graph(self) -> SemanticDescentGraph:
         authorities: list[SemanticAuthority] = []
@@ -2706,10 +2687,7 @@ class FindingBackedSemanticDescentGraphRequest:
         projections: list[PresentationProjection] = []
         edges: list[MirrorEdge] = []
         for finding in self.findings:
-            authority = FindingBackedAuthorityProjection.authority(
-                finding,
-                self.authority_evidence_index_by_detector_id,
-            )
+            authority = FindingBackedAuthorityProjection.authority(finding)
             finding_facts = FindingBackedFactProjection.facts(finding, authority)
             projection = FindingBackedPresentationProjection.projection(finding)
             edge = FindingBackedMirrorEdgeProjection.edge(
@@ -2754,19 +2732,13 @@ class FindingBackedAuthorityProjection:
     def authority(
         cls,
         finding: RefactorFinding,
-        authority_evidence_index_by_detector_id: Mapping[str, int | None],
     ) -> SemanticAuthority:
-        authority_evidence = cls.authority_evidence(
-            finding,
-            authority_evidence_index_by_detector_id,
-        )
+        authority_evidence = cls.authority_evidence(finding)
         authority_id = semantic_descent_finding_authority_id(finding)
         authority_name = FindingBackedAuthorityNameProjection.authority_name(
             finding,
             authority_evidence.location,
-            prefer_metric_authority=(
-                authority_evidence_index_by_detector_id.get(finding.detector_id) is None
-            ),
+            prefer_metric_authority=finding.authority_evidence is None,
         )
         return SemanticAuthority(
             authority_id=authority_id,
@@ -2786,14 +2758,10 @@ class FindingBackedAuthorityProjection:
     def authority_evidence(
         cls,
         finding: RefactorFinding,
-        authority_evidence_index_by_detector_id: Mapping[str, int | None],
     ) -> FindingBackedAuthorityEvidence:
-        evidence_index = authority_evidence_index_by_detector_id.get(
-            finding.detector_id
-        )
-        if evidence_index is not None and evidence_index < len(finding.evidence):
+        if finding.authority_evidence is not None:
             return FindingBackedAuthorityEvidence(
-                location=finding.evidence[evidence_index],
+                location=finding.authority_evidence,
                 claim_provenance=(AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE),
             )
         return FindingBackedAuthorityEvidence(
@@ -2977,15 +2945,10 @@ class FindingBackedMirrorEdgeProjection:
 
 def build_finding_backed_semantic_descent_graph(
     findings: tuple[RefactorFinding, ...],
-    *,
-    authority_evidence_index_by_detector_id: Mapping[str, int | None],
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    request = FindingBackedSemanticDescentGraphRequest.from_inputs(
-        findings,
-        authority_evidence_index_by_detector_id=authority_evidence_index_by_detector_id,
-    )
+    request = FindingBackedSemanticDescentGraphRequest(findings)
     return _build_finding_backed_semantic_descent_graph_cached(request)
 
 

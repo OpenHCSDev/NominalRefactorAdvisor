@@ -99,7 +99,7 @@ from .codemod_workflow import (
     CodemodRefactorTrajectoryBudget,
     CodemodSimulationFindingProjection,
 )
-from .detectors import DetectorConfig, IssueDetector
+from .detectors import DetectorConfig
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
 from .economics import (
     EconomicsProofReport,
@@ -1161,9 +1161,6 @@ class JsonPayloadBuilder:
                     semantic_descent_source.repository_graph(),
                     finding_backed_graph=build_finding_backed_semantic_descent_graph(
                         ssot_authority_findings(finding_tuple),
-                        authority_evidence_index_by_detector_id=(
-                            IssueDetector.semantic_mirror_authority_evidence_indices()
-                        ),
                     ),
                 ).to_dict()
             )

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cache, cached_property
 import hashlib
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar, Self
 
 from .class_composition import CompositeClassSpec
 from .descriptor_algebra import AliasProperty, ConstantProperty
@@ -764,6 +764,7 @@ class RefactorFinding(FindingSemantics):
     detector_id: str
     summary: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
+    authority_evidence: SourceLocation | None = None
     scaffold: str | None = None
     codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
@@ -788,6 +789,45 @@ class RefactorFinding(FindingSemantics):
                 f"{self.detector_id!r} must contain SourceLocation records; "
                 f"got {invalid_types}."
             )
+        if self.authority_evidence is not None:
+            if not isinstance(self.authority_evidence, SourceLocation):
+                raise TypeError(
+                    f"{type(self).__name__}.authority_evidence for detector "
+                    f"{self.detector_id!r} must be a SourceLocation; got "
+                    f"{type(self.authority_evidence).__name__}."
+                )
+            if self.authority_evidence not in self.evidence:
+                raise ValueError(
+                    f"{type(self).__name__}.authority_evidence for detector "
+                    f"{self.detector_id!r} must also occur in evidence."
+                )
+
+    def map_evidence(
+        self,
+        transform: Callable[[SourceLocation], SourceLocation],
+    ) -> Self:
+        """Transform evidence and its authority witness as one semantic record."""
+
+        transformed_evidence = tuple(
+            (location, transform(location)) for location in self.evidence
+        )
+        evidence = tuple(transformed for _location, transformed in transformed_evidence)
+        authority_evidence = (
+            None
+            if self.authority_evidence is None
+            else next(
+                transformed
+                for location, transformed in transformed_evidence
+                if location == self.authority_evidence
+            )
+        )
+        if evidence == self.evidence and authority_evidence == self.authority_evidence:
+            return self
+        return replace(
+            self,
+            evidence=evidence,
+            authority_evidence=authority_evidence,
+        )
 
     @cached_property
     def stable_id(self) -> str:
@@ -830,6 +870,7 @@ class RefactorFinding(FindingSemantics):
         capability_gap: str | None = None,
         confidence: ConfidenceLevel | None = None,
         relation_context: str | None = None,
+        authority_evidence: SourceLocation | None = None,
         scaffold: str | None = None,
         codemod_patch: str | None = None,
         compression_certificate: CompressionCertificate | None = None,
@@ -848,6 +889,7 @@ class RefactorFinding(FindingSemantics):
             confidence=confidence or spec.confidence,
             relation_context=relation_context or spec.relation_context,
             evidence=evidence,
+            authority_evidence=authority_evidence,
             scaffold=scaffold,
             codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,
@@ -879,6 +921,7 @@ class FindingSpec(FindingSemantics):
         capability_gap: str | None = None,
         confidence: ConfidenceLevel | None = None,
         relation_context: str | None = None,
+        authority_evidence: SourceLocation | None = None,
         certification: CertificationLevel | None = None,
         capability_tags: tuple[CapabilityTag, ...] | None = None,
         observation_tags: tuple[ObservationTag, ...] | None = None,
@@ -893,6 +936,7 @@ class FindingSpec(FindingSemantics):
             capability_gap=capability_gap,
             confidence=confidence,
             relation_context=relation_context,
+            authority_evidence=authority_evidence,
             scaffold=scaffold,
             codemod_patch=codemod_patch,
             compression_certificate=compression_certificate,

@@ -17,6 +17,12 @@ no second detector-to-synthesiser registry.  Metric-driven inferred synthesis
 remains separate and fails closed unless exactly one inference declaration
 supports the finding.
 
+An authority-producing detector emits its exact source witness through
+``RefactorFinding.authority_evidence``.  The witness must also belong to the
+finding's evidence tuple, so finding-backed semantic-descent graphs are derived
+from the finding record itself.  Graph construction does not rejoin detector
+identities to a separate evidence-position table.
+
 
 Structural Hypothesis Substrate
 -------------------------------

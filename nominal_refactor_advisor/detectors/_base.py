@@ -519,16 +519,6 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             SemanticMirrorIssueDetector,
         )
 
-    @classmethod
-    def semantic_mirror_authority_evidence_indices(cls) -> dict[str, int | None]:
-        return {
-            detector_id: detector_type.semantic_mirror_authority_evidence_index
-            for detector_type in cls.registered_detector_types()
-            for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None
-            and issubclass(detector_type, SemanticMirrorIssueDetector)
-        }
-
     @staticmethod
     @lru_cache(maxsize=None)
     def _detector_ids_for_nominal_relation(
@@ -593,6 +583,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             capability_gap=context.capability_gap,
             confidence=context.confidence,
             relation_context=context.relation_context,
+            authority_evidence=context.authority_evidence,
             certification=context.certification,
             capability_tags=context.capability_tags,
             observation_tags=context.observation_tags,
@@ -611,8 +602,6 @@ class SsotAuthorityBoundaryDetector(IssueDetector):
 
 class SemanticMirrorIssueDetector(SsotAuthorityBoundaryDetector):
     """Detector base for semantic mirrors that need authority-boundary priority."""
-
-    semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
 
 
 class PerModuleIssueDetector(IssueDetector):
@@ -1153,6 +1142,7 @@ class FindingBuildContextKwargs(TypedDict, total=False):
     capability_gap: str | None
     confidence: ConfidenceLevel | None
     relation_context: str | None
+    authority_evidence: SourceLocation | None
     certification: CertificationLevel | None
     capability_tags: tuple[CapabilityTag, ...] | None
     observation_tags: tuple[ObservationTag, ...] | None
@@ -1171,6 +1161,7 @@ class FindingBuildContext:
     capability_gap: str | None = None
     confidence: ConfidenceLevel | None = None
     relation_context: str | None = None
+    authority_evidence: SourceLocation | None = None
     certification: CertificationLevel | None = None
     capability_tags: tuple[CapabilityTag, ...] | None = None
     observation_tags: tuple[ObservationTag, ...] | None = None

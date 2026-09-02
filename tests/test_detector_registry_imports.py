@@ -35,9 +35,6 @@ def test_authority_boundary_relations_are_inherited_by_detector_families() -> No
 
     semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
     ssot_authority_ids = IssueDetector.ssot_authority_detector_ids()
-    authority_evidence_indices = (
-        IssueDetector.semantic_mirror_authority_evidence_indices()
-    )
 
     assert issubclass(SsotAuthorityBoundaryDetector, IssueDetector)
     assert issubclass(SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
@@ -53,4 +50,4 @@ def test_authority_boundary_relations_are_inherited_by_detector_families() -> No
     )
     assert "repeated_builder_calls" in ssot_authority_ids
     assert "repeated_builder_calls" not in semantic_mirror_ids
-    assert authority_evidence_indices["semantic_mirror_without_descent"] == 1
+    assert not hasattr(IssueDetector, "semantic_mirror_authority_evidence_indices")

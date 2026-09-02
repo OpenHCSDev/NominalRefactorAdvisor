@@ -829,16 +829,14 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
         if item.detector_id == "semantic_mirror_without_descent"
     )
 
-    graph = build_finding_backed_semantic_descent_graph(
-        (finding,),
-        authority_evidence_index_by_detector_id={finding.detector_id: 1},
-    )
+    graph = build_finding_backed_semantic_descent_graph((finding,))
 
     authority = graph.authorities[0]
     projection = graph.projections[0]
     certificate = graph.missing_descent_certificates[0]
 
     assert authority.name == "Step"
+    assert finding.authority_evidence == finding.evidence[1]
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
     assert (
         authority.claim_provenance is AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
@@ -850,6 +848,21 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     assert certificate.edge.projection_id == projection.projection_id
     assert certificate.missing_derivation_path == finding.relation_context
     assert {fact.name for fact in graph.facts} == {"LoadStep", "SaveStep"}
+
+
+def test_finding_authority_evidence_must_belong_to_its_evidence() -> None:
+    with pytest.raises(ValueError, match="must also occur in evidence"):
+        RefactorFinding(
+            detector_id="authority_projection_test",
+            pattern_id=PatternId.NOMINAL_BOUNDARY,
+            title="Authority evidence",
+            summary="authority evidence is detached from the finding",
+            why="detached evidence cannot prove the finding's authority",
+            capability_gap="one self-contained authority witness",
+            relation_context="authority provenance must travel with the finding",
+            evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+            authority_evidence=SourceLocation("pkg/model.py", 3, "AxisRole"),
+        )
 
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
@@ -871,10 +884,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
         ),
     )
 
-    graph = build_finding_backed_semantic_descent_graph(
-        (finding,),
-        authority_evidence_index_by_detector_id={},
-    )
+    graph = build_finding_backed_semantic_descent_graph((finding,))
     authority = graph.authorities[0]
     certificate = graph.missing_descent_certificates[0]
 
@@ -908,10 +918,7 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
         ),
     )
 
-    graph = build_finding_backed_semantic_descent_graph(
-        (finding,),
-        authority_evidence_index_by_detector_id={},
-    )
+    graph = build_finding_backed_semantic_descent_graph((finding,))
 
     assert graph.authorities[0].name == "local_cases"
 
@@ -964,10 +971,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         ),
     )
 
-    graph = build_finding_backed_semantic_descent_graph(
-        (first, second),
-        authority_evidence_index_by_detector_id={},
-    )
+    graph = build_finding_backed_semantic_descent_graph((first, second))
 
     assert {authority.name for authority in graph.authorities} == {
         "CodemodSynthesizePlanCliCommand",
@@ -993,10 +997,7 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
             identity_field_names=("role",),
         ),
     )
-    graph = build_finding_backed_semantic_descent_graph(
-        (finding,),
-        authority_evidence_index_by_detector_id={},
-    )
+    graph = build_finding_backed_semantic_descent_graph((finding,))
 
     boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding_group(
         (finding,),
@@ -1724,15 +1725,11 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
         for item in findings
         if item.detector_id == "semantic_mirror_without_descent"
     )
-    absolute_finding = replace(
-        finding,
-        evidence=tuple(
-            replace(
-                location,
-                file_path=(tmp_path / location.file_path).resolve().as_posix(),
-            )
-            for location in finding.evidence
-        ),
+    absolute_finding = finding.map_evidence(
+        lambda location: replace(
+            location,
+            file_path=(tmp_path / location.file_path).resolve().as_posix(),
+        )
     )
 
     plan = codemod_plan_from_findings(
@@ -3883,15 +3880,11 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_mapping_name == "_ACTIONABLE_CONFIDENCE_LEVELS"
     )
-    absolute_finding = replace(
-        finding,
-        evidence=tuple(
-            replace(
-                location,
-                file_path=(tmp_path / location.file_path).resolve().as_posix(),
-            )
-            for location in finding.evidence
-        ),
+    absolute_finding = finding.map_evidence(
+        lambda location: replace(
+            location,
+            file_path=(tmp_path / location.file_path).resolve().as_posix(),
+        )
     )
 
     plan = codemod_plan_from_findings(

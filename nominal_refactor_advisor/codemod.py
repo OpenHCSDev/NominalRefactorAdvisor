@@ -12933,9 +12933,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         )
         graph = build_finding_backed_semantic_descent_graph(
             semantic_findings,
-            authority_evidence_index_by_detector_id=(
-                IssueDetector.semantic_mirror_authority_evidence_indices()
-            ),
         )
         certificates_by_projection_id = {
             certificate.edge.projection_id: certificate

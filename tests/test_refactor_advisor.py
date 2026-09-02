@@ -18784,13 +18784,15 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
         "single authority boundary",
         "same fact family has multiple writable surfaces",
     )
+    authority_location = SourceLocation("module.py", 3, "Handler")
     critical = spec.build(
         "semantic_mirror_without_descent",
         "`HANDLERS` mirrors `Handler` without a descent path.",
         (
             SourceLocation("module.py", 10, "HANDLERS"),
-            SourceLocation("module.py", 3, "Handler"),
+            authority_location,
         ),
+        authority_evidence=authority_location,
         title="`HANDLERS` mirrors `Handler`",
         relation_context=(
             "mapping_literal has semantic overlap with class_family `Handler`; "

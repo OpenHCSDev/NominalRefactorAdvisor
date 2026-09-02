@@ -1038,12 +1038,10 @@ def _rebase_findings(
 
     rebased_findings: list[RefactorFinding] = []
     for finding in findings:
-        rebased_evidence: list[SourceLocation] = []
-        evidence_changed = False
-        for location in finding.evidence:
+
+        def rebase_evidence(location: SourceLocation) -> SourceLocation:
             if not location.file_path:
-                rebased_evidence.append(location)
-                continue
+                return location
             if not source_roots or not target_roots:
                 raise CacheCheckoutPathError(
                     "cached finding has source evidence but no admitted roots"
@@ -1054,15 +1052,10 @@ def _rebase_findings(
                 target_roots,
             )
             if rebased_file_path == location.file_path:
-                rebased_evidence.append(location)
-                continue
-            evidence_changed = True
-            rebased_evidence.append(replace(location, file_path=rebased_file_path))
-        rebased_findings.append(
-            replace(finding, evidence=tuple(rebased_evidence))
-            if evidence_changed
-            else finding
-        )
+                return location
+            return replace(location, file_path=rebased_file_path)
+
+        rebased_findings.append(finding.map_evidence(rebase_evidence))
     return tuple(rebased_findings)
 
 

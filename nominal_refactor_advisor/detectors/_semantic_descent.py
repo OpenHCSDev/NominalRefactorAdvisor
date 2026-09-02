@@ -97,7 +97,6 @@ class SemanticMirrorWithoutDescentDetector(
     """Report presentation projections that mirror a nominal semantic authority."""
 
     compact_finding_chunk_size = 64
-    semantic_mirror_authority_evidence_index = 1
     module_projection_families = (
         CompactSemanticModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -298,6 +297,7 @@ class SemanticMirrorWithoutDescentDetector(
         return self.build_finding(
             summary,
             self._certificate_evidence(graph, certificate),
+            authority_evidence=authority.location,
             title=f"`{projection.label}` mirrors `{authority.name}`",
             why=(
                 f"The {projection.kind.value.replace('_', ' ')} at "

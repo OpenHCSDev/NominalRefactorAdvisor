@@ -933,6 +933,53 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
     assert rebased[0].evidence[0] is finding.evidence[0]
 
 
+def test_cross_checkout_finding_rebase_preserves_authority_evidence(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    source_root.mkdir()
+    target_root.mkdir()
+    projection = SourceLocation(
+        (source_root / "projection.py").as_posix(),
+        7,
+        "ROLE_TABLE",
+    )
+    authority = SourceLocation(
+        (source_root / "authority.py").as_posix(),
+        3,
+        "Role",
+    )
+    finding = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Authority witness",
+        why="authority witness",
+        capability_gap="authority witness",
+        relation_context="authority witness",
+    ).build(
+        "authority_cache_detector",
+        "authority-backed finding",
+        (projection, authority),
+        authority_evidence=authority,
+    )
+
+    (source_root / "projection.py").touch()
+    (source_root / "authority.py").touch()
+    rebased = analysis_cache_module._rebase_findings(
+        (finding,),
+        (source_root.as_posix(),),
+        (target_root.as_posix(),),
+    )[0]
+
+    assert rebased.evidence[0].file_path == (target_root / "projection.py").as_posix()
+    assert rebased.authority_evidence is not None
+    assert rebased.authority_evidence is rebased.evidence[1]
+    assert (
+        rebased.authority_evidence.file_path
+        == (target_root / "authority.py").as_posix()
+    )
+
+
 def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
     tmp_path: Path,
 ) -> None:
