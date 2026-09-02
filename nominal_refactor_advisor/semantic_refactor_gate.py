@@ -124,6 +124,17 @@ class DescentCertificateFindingAuthority:
             descent_path=self.descent_path_for_finding(finding),
         )
 
+    def finding_groups(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[tuple[RefactorFinding, ...], ...]:
+        groups: dict[SemanticRefactorFindingGroupKey, list[RefactorFinding]] = (
+            defaultdict(list)
+        )
+        for finding in findings:
+            groups[self.group_key_for_finding(finding)].append(finding)
+        return tuple(tuple(group) for group in groups.values())
+
     def matched_fact_count(
         self,
         certificates: tuple[DescentCertificate, ...],
@@ -166,23 +177,11 @@ class DescentCertificateFindingAuthority:
         self,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[AuthorityClaimResolution, ...]:
-        claims_by_key: dict[
-            tuple[str, str, str, str, str],
-            AuthorityClaimResolution,
-        ] = {}
+        resolutions_by_claim: dict[AuthorityClaim, AuthorityClaimResolution] = {}
         for finding in findings:
             resolution = self.authority_claim_for_finding(finding)
-            claim = resolution.claim
-            claims_by_key[
-                (
-                    claim.claimed_symbol,
-                    claim.authority_kind,
-                    claim.file_path,
-                    claim.qualname,
-                    claim.authority_id,
-                )
-            ] = resolution
-        return tuple(claims_by_key.values())
+            resolutions_by_claim[resolution.claim] = resolution
+        return tuple(resolutions_by_claim.values())
 
 
 @dataclass(frozen=True)
@@ -210,32 +209,6 @@ class SemanticRefactorFindingGroupKey:
 
 
 @dataclass(frozen=True)
-class SemanticRefactorFindingGroupAuthority:
-    """Group SSOT findings by descent-graph authority rather than detector title."""
-
-    finding_descent_graph: SemanticDescentGraph
-
-    def groups(
-        self,
-        findings: tuple[RefactorFinding, ...],
-        *,
-        certificate_authority: DescentCertificateFindingAuthority | None = None,
-    ) -> tuple[tuple[RefactorFinding, ...], ...]:
-        active_certificate_authority = (
-            certificate_authority
-            or DescentCertificateFindingAuthority(self.finding_descent_graph)
-        )
-        groups: dict[SemanticRefactorFindingGroupKey, list[RefactorFinding]] = (
-            defaultdict(list)
-        )
-        for finding in findings:
-            groups[active_certificate_authority.group_key_for_finding(finding)].append(
-                finding
-            )
-        return tuple(tuple(group) for group in groups.values())
-
-
-@dataclass(frozen=True)
 class SemanticRefactorBoundaryEvidence(SemanticRecord):
     """One graph-backed authority-boundary evidence group."""
 
@@ -258,11 +231,12 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
         cls,
         finding: RefactorFinding,
     ) -> "SemanticRefactorBoundaryEvidence":
+        certificate_authority = DescentCertificateFindingAuthority(
+            build_finding_backed_semantic_descent_graph((finding,))
+        )
         return cls.from_ssot_finding_group(
             (finding,),
-            finding_descent_graph=build_finding_backed_semantic_descent_graph(
-                (finding,),
-            ),
+            certificate_authority=certificate_authority,
         )
 
     @classmethod
@@ -270,16 +244,11 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
         cls,
         findings: tuple[RefactorFinding, ...],
         *,
-        finding_descent_graph: SemanticDescentGraph,
-        certificate_authority: DescentCertificateFindingAuthority | None = None,
+        certificate_authority: DescentCertificateFindingAuthority,
     ) -> "SemanticRefactorBoundaryEvidence":
         first_finding = findings[0]
-        active_certificate_authority = (
-            certificate_authority
-            or DescentCertificateFindingAuthority(finding_descent_graph)
-        )
         authority_candidates = _unique_strings(
-            active_certificate_authority.authority_label_for_finding(finding)
+            certificate_authority.authority_label_for_finding(finding)
             for finding in findings
         )
         evidence_symbols = _unique_strings(
@@ -291,8 +260,8 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
             )
         )
         detector_ids = _unique_strings(finding.detector_id for finding in findings)
-        certificates = active_certificate_authority.certificates_for_findings(findings)
-        group_key = active_certificate_authority.group_key_for_finding(first_finding)
+        certificates = certificate_authority.certificates_for_findings(findings)
+        group_key = certificate_authority.group_key_for_finding(first_finding)
         label = first_finding.title
         if len(findings) > 1:
             label = f"{label} ({len(findings)} raw signals)"
@@ -309,14 +278,10 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
                 finding_count=len(findings),
             ),
             certificate_count=len(certificates),
-            matched_fact_count=active_certificate_authority.matched_fact_count(
-                certificates
-            ),
-            authority_kinds=active_certificate_authority.authority_kinds(certificates),
-            projection_kinds=active_certificate_authority.projection_kinds(
-                certificates
-            ),
-            authority_claims=active_certificate_authority.authority_claims_for_findings(
+            matched_fact_count=certificate_authority.matched_fact_count(certificates),
+            authority_kinds=certificate_authority.authority_kinds(certificates),
+            projection_kinds=certificate_authority.projection_kinds(certificates),
+            authority_claims=certificate_authority.authority_claims_for_findings(
                 findings
             ),
             evidence_symbols=evidence_symbols,
@@ -560,22 +525,15 @@ class SemanticRefactorGateReport(SemanticRecord):
         ssot_findings: tuple[RefactorFinding, ...],
         finding_descent_graph: SemanticDescentGraph,
     ) -> tuple[SemanticRefactorBoundaryEvidence, ...]:
-        finding_group_authority = SemanticRefactorFindingGroupAuthority(
-            finding_descent_graph
-        )
         certificate_authority = DescentCertificateFindingAuthority(
             finding_descent_graph
         )
         items = tuple(
             SemanticRefactorBoundaryEvidence.from_ssot_finding_group(
                 group,
-                finding_descent_graph=finding_descent_graph,
                 certificate_authority=certificate_authority,
             )
-            for group in finding_group_authority.groups(
-                ssot_findings,
-                certificate_authority=certificate_authority,
-            )
+            for group in certificate_authority.finding_groups(ssot_findings)
         )
         return tuple(
             sorted(

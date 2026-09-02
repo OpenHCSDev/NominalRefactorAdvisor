@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
+import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
 )
@@ -882,6 +883,10 @@ def test_finding_certificate_authority_requires_exact_graph_membership() -> None
 
     with pytest.raises(ValueError, match="requires exactly one"):
         certificate_authority.certificate_for_finding(finding)
+    assert not hasattr(
+        semantic_refactor_gate_module,
+        "SemanticRefactorFindingGroupAuthority",
+    )
 
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
@@ -1018,9 +1023,10 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
     )
     graph = build_finding_backed_semantic_descent_graph((finding,))
 
+    certificate_authority = DescentCertificateFindingAuthority(graph)
     boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding_group(
         (finding,),
-        finding_descent_graph=graph,
+        certificate_authority=certificate_authority,
     )
 
     assert boundary.group_key.authority_label == "AxisRoleAuthority"
@@ -1032,6 +1038,10 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
     )
     assert boundary.projection_kinds == (PresentationProjectionKind.DETECTOR_FINDING,)
+    assert (
+        len(certificate_authority.authority_claims_for_findings((finding, finding)))
+        == 1
+    )
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
