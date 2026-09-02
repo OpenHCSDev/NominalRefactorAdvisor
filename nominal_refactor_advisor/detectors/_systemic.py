@@ -2478,55 +2478,6 @@ class EnumKeyedTableClassAxisShadowDetector(
         )
 
 
-class TransportShellTemplateMethodDetector(
-    ConfiguredModuleCollectorCandidateDetector[TransportShellTemplateCandidate]
-):
-    candidate_collector = _transport_shell_template_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Template-method family is a transport shell over a downstream authority",
-        "The docs say nominal families should have one authoritative owner. When an ABC template method only materializes an intermediate object from a class-level selector, delegates through one hook, and repackages through another hook, the extra family is usually a transport shell around an already authoritative boundary.",
-        "single authoritative materialization/execution family instead of a parallel transport shell",
-        "template family varies mostly by class-level selector and result adapter",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, shell_candidate: TransportShellTemplateCandidate
-    ) -> RefactorFinding:
-        selector_values = ", ".join(shell_candidate.selector_value_names)
-        kwargs_clause = (
-            f" plus `{shell_candidate.kwargs_helper_name}({shell_candidate.source_param_name})`"
-            if shell_candidate.kwargs_helper_name is not None
-            else ""
-        )
-        return self.build_finding(
-            (
-                f"`{shell_candidate.class_name}.{shell_candidate.driver_method_name}` materializes selector values "
-                f"{selector_values} from `{shell_candidate.selector_attr_name}` via `{shell_candidate.constructor_name}`"
-                f"{kwargs_clause} across {len(shell_candidate.concrete_class_names)} concrete leaves, then only delegates "
-                f"through `{shell_candidate.inner_hook_name}` and `{shell_candidate.outer_hook_name}`."
-            ),
-            (shell_candidate.evidence,),
-            scaffold=(
-                "@dataclass(frozen=True)\nclass MaterializationSpec:\n    selector: object\n    materializer: object\n    executor: object\n    packager: object\n# Dispatch once on the authoritative selector/spec family."
-            ),
-            codemod_patch=(
-                f"# Collapse `{shell_candidate.class_name}` onto the downstream selector/spec family.\n"
-                "# Keep one selection boundary and let that boundary own materialization, execution, and result packaging."
-            ),
-        )
-
-
 class ParallelRegistryProjectionFamilyDetector(
     ModuleCollectorCandidateDetector[ParallelRegistryProjectionFamilyCandidate]
 ):

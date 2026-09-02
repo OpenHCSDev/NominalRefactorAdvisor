@@ -9599,25 +9599,14 @@ def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
     assert "ShapeValidatedRecord" in (finding.scaffold or "")
 
 
-def test_detects_transport_shell_template_method(tmp_path: Path) -> None:
+def test_preserves_template_method_implementation_inheritance(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nfrom abc import ABC, abstractmethod\nfrom typing import Generic, TypeVar\n\n\nclass ArtifactBase:\n    pass\n\n\nclass AlphaArtifact(ArtifactBase):\n    pass\n\n\nclass BetaArtifact(ArtifactBase):\n    pass\n\n\nArtifactT = TypeVar("ArtifactT", bound=ArtifactBase)\nResultT = TypeVar("ResultT")\n\n\ndef materialize_artifact(artifact_cls, source, **kwargs):\n    del source, kwargs\n    return artifact_cls()\n\n\nclass ArtifactShell(ABC, Generic[ArtifactT, ResultT]):\n    artifact_cls: type[ArtifactT]\n\n    def execute(self, source):\n        artifact = materialize_artifact(\n            self.artifact_cls,\n            source,\n            **self.options(source),\n        )\n        return self.package(self.operate(artifact))\n\n    def options(self, source):\n        del source\n        return {}\n\n    @abstractmethod\n    def operate(self, artifact: ArtifactT) -> ResultT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def package(self, result: ResultT):\n        raise NotImplementedError\n\n\nclass AlphaShell(ArtifactShell[AlphaArtifact, AlphaArtifact]):\n    artifact_cls = AlphaArtifact\n\n    def operate(self, artifact: AlphaArtifact) -> AlphaArtifact:\n        return artifact\n\n    def package(self, result: AlphaArtifact):\n        return result\n\n\nclass BetaShell(ArtifactShell[BetaArtifact, BetaArtifact]):\n    artifact_cls = BetaArtifact\n\n    def operate(self, artifact: BetaArtifact) -> BetaArtifact:\n        return artifact\n\n    def package(self, result: BetaArtifact):\n        return result\n',
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "transport_shell_template_method"
-        )
-    )
-    assert "ArtifactShell.execute" in finding.summary
-    assert "AlphaArtifact" in finding.summary
-    assert "BetaArtifact" in finding.summary
-    assert "operate" in finding.summary
-    assert "package" in finding.summary
+    assert findings == []
 
 
 def test_detects_parallel_registry_projection_family(tmp_path: Path) -> None:
