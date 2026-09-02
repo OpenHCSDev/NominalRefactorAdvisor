@@ -1930,9 +1930,9 @@ class CodemodSelectorContext:
     _direct_class_declaration_indexes_by_file_path: dict[
         str, "ClassDirectDeclarationIndex"
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _class_reference_resolvers_by_file_path: dict[
-        str, ModuleClassReferenceResolver
-    ] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _class_reference_resolvers_by_file_path: dict[str, ModuleClassReferenceResolver] = (
+        field(default_factory=dict, init=False, repr=False, compare=False)
+    )
     _parsed_modules_by_file_path: dict[str, ParsedModule] = field(
         default_factory=dict,
         init=False,
@@ -4381,15 +4381,23 @@ class ClassBodyInsertionPoint:
     def member_source(self, members: tuple[str, ...]) -> str:
         """Render class members at this point with stable class-body spacing."""
 
-        prefix = self.source[: self.before_first_method_offset]
+        insertion_offset = self.before_first_method_offset
+        prefix = self.source[:insertion_offset]
+        suffix = self.source[insertion_offset:]
         if prefix.endswith("\n\n"):
             leading_separator = ""
         elif prefix.endswith("\n"):
             leading_separator = "\n"
         else:
             leading_separator = "\n\n"
+        if suffix.startswith("\n\n"):
+            trailing_separator = ""
+        elif suffix.startswith("\n"):
+            trailing_separator = "\n"
+        else:
+            trailing_separator = "\n\n"
         body = "\n\n".join(member.rstrip("\r\n") for member in members)
-        return f"{leading_separator}{body}\n\n"
+        return f"{leading_separator}{body}{trailing_separator}"
 
 
 @dataclass(frozen=True)
@@ -8515,9 +8523,7 @@ class ClassAuthorityReferenceProof:
             authority=authority,
             authority_symbol=authority_symbol,
             projection_module=projection_module,
-            resolver=context.class_reference_resolver_for_source_path(
-                projection_path
-            ),
+            resolver=context.class_reference_resolver_for_source_path(projection_path),
             symbol_table=ModuleSymbolTable(
                 file_path=projection_module.file_path,
                 source=projection_module.source,
@@ -13694,13 +13700,6 @@ class ClosedParameterConveyorFindingRecipeSynthesizer(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
-class RepeatedAuthorityTargetRewrite(SourceRewriteDelta):
-    """One target rewritten through a repeated-call authority."""
-
-    target: AstTargetDigest
-
-
 @dataclass(frozen=True)
 class RepeatedCallAuthorityParameter:
     """Shared generated parameter identity for repeated-call authorities."""
@@ -13816,19 +13815,16 @@ class RepeatedBuilderCallSite:
     """One matching constructor call together with its lexical owner."""
 
     call: ast.Call
-    function: ast.FunctionDef | ast.AsyncFunctionDef
+    participant: "ResolvedFunctionProjectionTarget"
 
-    def root_parameter_annotation(self, root_name: str) -> str | None:
+    def root_parameter(self, root_name: str) -> ast.arg | None:
         for parameter in (
-            *self.function.args.posonlyargs,
-            *self.function.args.args,
-            *self.function.args.kwonlyargs,
+            *self.participant.node.args.posonlyargs,
+            *self.participant.node.args.args,
+            *self.participant.node.args.kwonlyargs,
         ):
-            if parameter.arg != root_name or parameter.annotation is None:
-                continue
-            return NOMINAL_ANNOTATION_SOURCE_AUTHORITY.source_or_none(
-                parameter.annotation
-            )
+            if parameter.arg == root_name and parameter.annotation is not None:
+                return parameter
         return None
 
 
@@ -13838,6 +13834,7 @@ class RepeatedBuilderSourceProjectionTemplate:
 
     root_name: str
     source_annotation: str
+    source_symbol: str
     normalized_value_fingerprints: tuple[str, ...]
     value_sources_by_field: tuple[tuple[str, str], ...]
 
@@ -13852,49 +13849,24 @@ class RepeatedBuilderInvariantFieldPlan:
 
 
 @dataclass(frozen=True)
-class RepeatedAuthorityRecipeParts(AuthorityClaimCarrier):
-    """Executable rewrite sequence for one repeated-call authority extraction."""
+class RepeatedBuilderAuthorityRecipeParts(AuthorityClaimCarrier):
+    """Exact targets and source-derived operation for a builder extraction."""
 
-    rewrite_steps: tuple[RepeatedAuthorityTargetRewrite, ...]
-
-    def executable_declaration_type(
-        self,
-        synthesizer_type: type[object],
-    ) -> type[object]:
-        return synthesizer_type
-
-    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
-            reason=self.recipe_reason,
-        ).with_authority_claim(self.authority_claim)
-        for rewrite_step in self.rewrite_steps:
-            recipe = recipe.with_operation(
-                ReplaceTargetOperation(
-                    target=SourceRewriteTarget(target_id=rewrite_step.target.target_id),
-                    replacement_source=rewrite_step.replacement_source,
-                    rationale=rewrite_step.rationale,
-                )
-            )
-        return recipe
-
-
-@dataclass(frozen=True)
-class RepeatedBuilderAuthorityRecipeParts(RepeatedAuthorityRecipeParts):
-    """Executable facts for one repeated builder-call authority extraction."""
-
-    recipe_id_suffix = "extract-builder-authority"
-    recipe_reason = (
-        "Move repeated constructor field mapping behind an owned builder authority."
-    )
+    operation: "DeriveRepeatedBuilderAuthorityOperation"
     authority_method: RepeatedBuilderAuthorityMethod
 
-    def executable_declaration_type(
-        self,
-        synthesizer_type: type[object],
-    ) -> type[object]:
-        del synthesizer_type
-        return type(self.authority_method)
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-extract-builder-authority",
+                reason=(
+                    "Move repeated constructor field mapping behind an owned "
+                    "builder authority."
+                ),
+            )
+            .with_authority_claim(self.authority_claim)
+            .with_operation(self.operation)
+        )
 
 
 class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
@@ -13912,6 +13884,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 ),
                 executable_declaration_type=type(self),
             )
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
         parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
         if rejection_reason:
             return RejectedRecipeEvaluation(
@@ -13925,7 +13899,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             )
         return ExecutableRecipeEvaluation(
             executable_recipe=parts.recipe_for(finding),
-            executable_declaration_type=parts.executable_declaration_type(type(self)),
+            executable_declaration_type=type(parts.authority_method),
         )
 
     def recipe_parts_for_finding(
@@ -13933,111 +13907,98 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         finding: RefactorFinding,
         context: CodemodSelectorContext,
     ) -> tuple[RepeatedBuilderAuthorityRecipeParts | None, str]:
-        if not isinstance(finding.metrics, MappingMetrics):
-            return (
-                None,
-                "repeated-builder authority extraction requires mapping metrics",
+        try:
+            evidence_targets = tuple(
+                self.evidence_target(context, evidence) for evidence in finding.evidence
             )
-        metrics = finding.metrics
-        constructor_name = metrics.plan_mapping_name
-        if constructor_name is None:
-            return (
-                None,
-                "repeated-builder authority extraction requires a constructor name",
+            participant_target_ids = tuple(
+                dict.fromkeys(target.target_id for target, _call in evidence_targets)
             )
-        if "." in constructor_name:
-            return (
-                None,
-                "repeated-builder authority extraction only supports class constructors",
+            constructor_symbols = frozenset(
+                context.class_reference_resolver_for_source_path(
+                    target.file_path
+                ).symbol_for_reference(call.func)
+                for target, call in evidence_targets
             )
-        source_path = self.source_path(finding, context)
-        if source_path is None:
-            return (
-                None,
-                "repeated-builder authority extraction requires one source file",
+            if None in constructor_symbols or len(constructor_symbols) != 1:
+                raise ValueError(
+                    "Repeated-builder evidence must resolve one nominal constructor"
+                )
+            constructor_symbol = cast(str, next(iter(constructor_symbols)))
+            indexed_class = context.required_class_family_index.class_for(
+                constructor_symbol
             )
-        source = context.sources_by_file_path.get(source_path)
-        if source is None:
-            return None, "repeated-builder authority extraction requires source text"
-        constructor = self.constructor_target(context, source_path, constructor_name)
-        if constructor is None:
-            return (
-                None,
-                "repeated-builder authority extraction cannot resolve constructor class",
+            if indexed_class is None:
+                raise ValueError(
+                    "Repeated-builder constructor is absent from the class index"
+                )
+            authority_target_ids = SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.CLASS,),
+                file_paths=(indexed_class.file_path,),
+                qualnames=(indexed_class.qualname,),
+            ).target_ids(context)
+            if len(authority_target_ids) != 1:
+                raise ValueError(
+                    "Repeated-builder constructor must resolve to one exact class"
+                )
+            constructor_target = context.source_index.target_by_id[
+                authority_target_ids[0]
+            ]
+            operation = DeriveRepeatedBuilderAuthorityOperation(
+                target=SourceRewriteTarget(target_id=constructor_target.target_id),
+                participant_target_ids=participant_target_ids,
             )
-        constructor_target, constructor_node = constructor
-        field_names = metrics.plan_field_names
-        field_annotations = self.field_annotations_or_none(
-            context,
-            source_path,
-            constructor_node,
-            field_names,
-        )
-        if field_annotations is None:
-            return (
-                None,
-                "repeated-builder authority extraction requires typed constructor fields",
-            )
-        matching_call_sites = self.matching_call_sites(
-            context,
-            source_path=source_path,
-            constructor_name=constructor_name,
-            field_names=field_names,
-            evidence_symbols=tuple(evidence.symbol for evidence in finding.evidence),
-        )
-        method = self.authority_method_or_none(
-            metrics,
-            field_annotations,
-            matching_call_sites,
-        )
-        if method is None:
-            return (
-                None,
-                "repeated-builder authority extraction requires a source projection "
-                "or invariant selector axis",
-            )
-        if self.class_defines_method(constructor_node, method.method_name):
-            return (
-                None,
-                f"repeated-builder authority extraction will not overwrite {method.method_name}",
-            )
-        call_rewrites = self.call_rewrites(
-            context,
-            source_path=source_path,
-            source=source,
-            constructor_name=constructor_name,
-            method=method,
-            evidence_symbols=tuple(evidence.symbol for evidence in finding.evidence),
-        )
-        if not call_rewrites:
-            return (
-                None,
-                "repeated-builder authority extraction found no safe call sites",
-            )
+            derivation = operation.required_derivation(context)
+            derivation.required_source_edits(context)
+        except ValueError as error:
+            return None, str(error)
         return (
             RepeatedBuilderAuthorityRecipeParts(
-                rewrite_steps=(
-                    RepeatedAuthorityTargetRewrite(
-                        target=constructor_target,
-                        replacement_source=self.constructor_replacement_source(
-                            source,
-                            constructor_target,
-                            constructor_node,
-                            constructor_name=constructor_name,
-                            method=method,
-                        ),
-                        rationale=(
-                            "Insert owned builder authority for repeated constructor "
-                            "mapping."
-                        ),
-                    ),
-                    *call_rewrites,
+                authority_claim=AstTargetAuthorityClaim.from_target(
+                    constructor_target,
+                    authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
                 ),
-                authority_claim=AstTargetAuthorityClaim.from_target(constructor_target),
-                authority_method=method,
+                operation=operation,
+                authority_method=derivation.method,
             ),
             "",
         )
+
+    @staticmethod
+    def evidence_target(
+        context: CodemodSelectorContext,
+        evidence: SourceLocation,
+    ) -> tuple[AstTargetDigest, ast.Call]:
+        source_path = SourcePathResolutionAuthority.from_source_index(
+            evidence.file_path,
+            context.source_index,
+        ).required_path()
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path,
+            qualname=EvidenceSymbol(evidence.symbol).subject,
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            raise ValueError(
+                "Repeated-builder evidence must resolve one exact participant"
+            )
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            raise ValueError("Repeated-builder participant must be a function")
+        resolver = context.class_reference_resolver_for_source_path(source_path)
+        nominal_calls = tuple(
+            child
+            for child in walk_function_body_nodes(node)
+            if isinstance(child, ast.Call)
+            and child.lineno == evidence.line
+            and resolver.symbol_for_reference(child.func) is not None
+        )
+        if len(nominal_calls) != 1:
+            raise ValueError(
+                "Repeated-builder evidence line must identify one nominal "
+                "constructor call"
+            )
+        return target, nominal_calls[0]
 
     def action_keys_for_finding(
         self,
@@ -14058,130 +14019,33 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             sorted(subjects),
         )
 
-    @staticmethod
-    def source_path(
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-    ) -> str | None:
-        resolved_paths = context.resolve_source_paths(
-            evidence.file_path for evidence in finding.evidence
-        )
-        if len(resolved_paths) != 1:
-            return None
-        return next(iter(resolved_paths))
 
-    @staticmethod
-    def constructor_target(
-        context: CodemodSelectorContext,
-        source_path: str,
-        constructor_name: str,
-    ) -> tuple[AstTargetDigest, ast.ClassDef] | None:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(source_path,),
-            qualnames=(constructor_name,),
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target.target_id]
-        if not isinstance(node, ast.ClassDef):
-            return None
-        return target, node
-
-    @staticmethod
-    def field_annotations_or_none(
-        context: CodemodSelectorContext,
-        source_path: str,
-        class_node: ast.ClassDef,
-        field_names: tuple[str, ...],
-    ) -> tuple[tuple[str, str], ...] | None:
-        annotation_by_name = (
-            RepeatedBuilderCallFindingRecipeSynthesizer.class_annotation_map(
-                context,
-                source_path,
-                class_node,
-                visited_class_names=frozenset(),
-            )
-        )
-        if any(field_name not in annotation_by_name for field_name in field_names):
-            return None
-        return tuple(
-            (field_name, annotation_by_name[field_name]) for field_name in field_names
-        )
-
-    @staticmethod
-    def class_annotation_map(
-        context: CodemodSelectorContext,
-        source_path: str,
-        class_node: ast.ClassDef,
-        *,
-        visited_class_names: frozenset[str],
-    ) -> dict[str, str]:
-        if class_node.name in visited_class_names:
-            return {}
-        annotation_by_name: dict[str, str] = {}
-        for base in class_node.bases:
-            base_name = _terminal_name(base)
-            if base_name is None:
-                continue
-            base_target = (
-                RepeatedBuilderCallFindingRecipeSynthesizer.constructor_target(
-                    context,
-                    source_path,
-                    base_name,
-                )
-            )
-            if base_target is None:
-                continue
-            _target, base_node = base_target
-            annotation_by_name.update(
-                RepeatedBuilderCallFindingRecipeSynthesizer.class_annotation_map(
-                    context,
-                    source_path,
-                    base_node,
-                    visited_class_names=visited_class_names
-                    | frozenset({class_node.name}),
-                )
-            )
-        for statement in class_node.body:
-            if not isinstance(statement, ast.AnnAssign):
-                continue
-            if not isinstance(statement.target, ast.Name):
-                continue
-            annotation_by_name[statement.target.id] = ast.unparse(statement.annotation)
-        return annotation_by_name
-
-    @staticmethod
-    def class_defines_method(class_node: ast.ClassDef, method_name: str) -> bool:
-        return any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and statement.name == method_name
-            for statement in class_node.body
-        )
+class RepeatedBuilderAuthorityMethodDeriver(ABC):
+    """Derive one owned builder method from repeated constructor calls."""
 
     @classmethod
     def authority_method_or_none(
         cls,
-        metrics: MappingMetrics,
+        context: CodemodSelectorContext,
+        field_names: tuple[str, ...],
         field_annotations: tuple[tuple[str, str], ...],
         matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
-        matching_calls = tuple(site.call for site in matching_call_sites)
         return cls.source_projection_authority_method_or_none(
-            metrics,
+            context,
             field_annotations,
             matching_call_sites,
         ) or cls.invariant_selector_authority_method_or_none(
-            metrics,
+            context,
+            field_names,
             field_annotations,
-            matching_calls,
+            matching_call_sites,
         )
 
     @classmethod
     def source_projection_authority_method_or_none(
         cls,
-        metrics: MappingMetrics,
+        context: CodemodSelectorContext,
         field_annotations: tuple[tuple[str, str], ...],
         matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
@@ -14190,7 +14054,13 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return (
             Maybe.of(matching_call_sites)
             .filter(bool)
-            .project(lambda sites: cls.source_projection_templates(sites, field_names))
+            .project(
+                lambda sites: cls.source_projection_templates(
+                    context,
+                    sites,
+                    field_names,
+                )
+            )
             .filter(cls.source_projection_templates_share_shape)
             .combine(
                 lambda templates: cls.source_projection_anchor_field_name(
@@ -14199,7 +14069,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 ),
                 lambda templates, source_field_name: (
                     cls.source_projection_authority_method(
-                        metrics,
                         templates,
                         source_field_name,
                     )
@@ -14211,11 +14080,10 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def source_projection_authority_method(
         cls,
-        metrics: MappingMetrics,
         templates: tuple[RepeatedBuilderSourceProjectionTemplate, ...],
         source_field_name: str,
     ) -> RepeatedBuilderAuthorityMethod:
-        parameter_name = cls.source_projection_parameter_name(metrics)
+        parameter_name = "source"
         return RepeatedBuilderSourceProjectionAuthorityMethod(
             method_name=f"from_{parameter_name}",
             parameters=(
@@ -14238,11 +14106,12 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def source_projection_templates(
         cls,
+        context: CodemodSelectorContext,
         call_sites: tuple[RepeatedBuilderCallSite, ...],
         field_names: tuple[str, ...],
     ) -> tuple[RepeatedBuilderSourceProjectionTemplate, ...] | None:
         templates = tuple(
-            cls.source_projection_template_for_call(site, field_names)
+            cls.source_projection_template_for_call(context, site, field_names)
             for site in call_sites
         )
         if any(template is None for template in templates):
@@ -14256,39 +14125,45 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         template_fingerprints = tuple(
             template.normalized_value_fingerprints for template in templates
         )
-        source_annotations = tuple(template.source_annotation for template in templates)
-        return (
-            len(set(template_fingerprints)) == 1 and len(set(source_annotations)) == 1
-        )
+        source_symbols = tuple(template.source_symbol for template in templates)
+        return len(set(template_fingerprints)) == 1 and len(set(source_symbols)) == 1
 
     @classmethod
     def source_projection_template_for_call(
         cls,
+        context: CodemodSelectorContext,
         call_site: RepeatedBuilderCallSite,
         field_names: tuple[str, ...],
     ) -> RepeatedBuilderSourceProjectionTemplate | None:
-        return (
-            Maybe.of(cls.call_source_root_name(call_site.call))
-            .combine(
-                call_site.root_parameter_annotation,
-                lambda root_name, source_annotation: (
-                    root_name,
-                    source_annotation,
-                ),
-            )
-            .combine(
-                lambda _source: cls.call_keyword_values_by_field(
-                    call_site.call,
-                    field_names,
-                ),
-                lambda root_name, values_by_field: cls.source_projection_template(
-                    root_name[0],
-                    root_name[1],
-                    field_names,
-                    values_by_field,
-                ),
-            )
-            .unwrap_or_none()
+        root_name = cls.call_source_root_name(call_site.call)
+        if root_name is None:
+            return None
+        parameter = call_site.root_parameter(root_name)
+        values_by_field = cls.call_keyword_values_by_field(
+            call_site.call,
+            field_names,
+        )
+        if parameter is None or values_by_field is None:
+            return None
+        annotation_reference = DataclassAuthorityReferenceProof.annotation_reference(
+            parameter.annotation
+        )
+        if annotation_reference is None:
+            return None
+        source_symbol = context.class_reference_resolver_for_source_path(
+            call_site.participant.source_path
+        ).symbol_for_reference(annotation_reference)
+        source_annotation = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.deferred_source_or_none(
+            parameter.annotation
+        )
+        if source_symbol is None or source_annotation is None:
+            return None
+        return cls.source_projection_template(
+            root_name,
+            source_annotation,
+            source_symbol,
+            field_names,
+            values_by_field,
         )
 
     @classmethod
@@ -14296,6 +14171,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         cls,
         root_name: str,
         source_annotation: str,
+        source_symbol: str,
         field_names: tuple[str, ...],
         values_by_field: Mapping[str, ast.expr],
     ) -> RepeatedBuilderSourceProjectionTemplate:
@@ -14306,6 +14182,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return RepeatedBuilderSourceProjectionTemplate(
             root_name=root_name,
             source_annotation=source_annotation,
+            source_symbol=source_symbol,
             normalized_value_fingerprints=tuple(
                 ast.dump(value, include_attributes=False) for value in normalized_values
             ),
@@ -14374,11 +14251,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return None
 
     @staticmethod
-    def source_projection_parameter_name(metrics: MappingMetrics) -> str:
-        del metrics
-        return "source"
-
-    @staticmethod
     def source_value_with_root_name(
         value: ast.expr,
         old_root_name: str,
@@ -14401,11 +14273,15 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     @classmethod
     def invariant_selector_authority_method_or_none(
         cls,
-        metrics: MappingMetrics,
+        context: CodemodSelectorContext,
+        field_names: tuple[str, ...],
         field_annotations: tuple[tuple[str, str], ...],
-        matching_calls: tuple[ast.Call, ...],
+        matching_call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> RepeatedBuilderAuthorityMethod | None:
-        field_names = metrics.plan_field_names
+        matching_calls = tuple(site.call for site in matching_call_sites)
+        if not matching_call_sites:
+            return None
+        source_path = matching_call_sites[0].participant.source_path
         annotation_by_field = dict(field_annotations)
         return (
             Maybe.of(matching_calls)
@@ -14415,6 +14291,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                     field_names,
                     annotation_by_field,
                     calls,
+                    context=context,
+                    source_path=source_path,
                 )
             )
             .filter(cls.invariant_selector_plan_has_constant_and_parameter)
@@ -14432,6 +14310,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         field_names: tuple[str, ...],
         annotation_by_field: Mapping[str, str],
         matching_calls: tuple[ast.Call, ...],
+        *,
+        context: CodemodSelectorContext,
+        source_path: str,
     ) -> tuple[RepeatedBuilderInvariantFieldPlan, ...] | None:
         values_by_field = {
             field_name: tuple(
@@ -14448,6 +14329,8 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 annotation_by_field,
                 values_by_field[field_name],
                 call_count=len(matching_calls),
+                context=context,
+                source_path=source_path,
             )
             for field_name in field_names
         )
@@ -14463,13 +14346,18 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         values: tuple[ast.AST, ...],
         *,
         call_count: int,
+        context: CodemodSelectorContext,
+        source_path: str,
     ) -> RepeatedBuilderInvariantFieldPlan | None:
         return (
             Maybe.of(values)
             .filter(lambda field_values: len(field_values) == call_count)
             .project(
                 lambda field_values: cls.constant_invariant_field_plan(
-                    field_name, field_values
+                    field_name,
+                    field_values,
+                    context=context,
+                    source_path=source_path,
                 )
             )
             .unwrap_or_none()
@@ -14491,9 +14379,16 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         cls,
         field_name: str,
         values: tuple[ast.AST, ...],
+        *,
+        context: CodemodSelectorContext,
+        source_path: str,
     ) -> RepeatedBuilderInvariantFieldPlan | None:
         value_sources = tuple(ast.unparse(value) for value in values)
-        if len(set(value_sources)) != 1 or not cls.authority_constant_value(values[0]):
+        if len(set(value_sources)) != 1 or not cls.authority_constant_value(
+            context,
+            source_path,
+            values[0],
+        ):
             return None
         return RepeatedBuilderInvariantFieldPlan(
             constructor_argument=RepeatedBuilderConstructorArgument(
@@ -14513,6 +14408,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         tuple_items = tuple(cls.single_tuple_item(value) for value in values)
         if any(item is None for item in tuple_items):
             return None
+        parameter_annotation = cls.scalar_annotation(annotation_by_field[field_name])
+        if parameter_annotation is None:
+            return None
         parameter_name = cls.singular_field_name(field_name)
         return RepeatedBuilderInvariantFieldPlan(
             constructor_argument=RepeatedBuilderConstructorArgument(
@@ -14521,7 +14419,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             ),
             parameter=RepeatedBuilderAuthorityParameter(
                 name=parameter_name,
-                annotation=cls.scalar_annotation(annotation_by_field[field_name]),
+                annotation=parameter_annotation,
                 source_field_name=field_name,
                 unwrap_single_tuple=True,
             ),
@@ -14569,13 +14467,26 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         )
 
     @classmethod
-    def authority_constant_value(cls, value: ast.AST) -> bool:
+    def authority_constant_value(
+        cls,
+        context: CodemodSelectorContext,
+        source_path: str,
+        value: ast.AST,
+    ) -> bool:
         if isinstance(value, ast.Constant):
             return True
         if isinstance(value, ast.Attribute):
-            return True
+            return (
+                context.class_reference_resolver_for_source_path(
+                    source_path
+                ).symbol_for_reference(value.value)
+                is not None
+            )
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
-            return all(cls.authority_constant_value(item) for item in value.elts)
+            return all(
+                cls.authority_constant_value(context, source_path, item)
+                for item in value.elts
+            )
         return False
 
     @staticmethod
@@ -14595,11 +14506,25 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return field_name
 
     @staticmethod
-    def scalar_annotation(annotation: str) -> str:
-        if annotation.startswith("tuple[") and annotation.endswith("]"):
-            inner = annotation.removeprefix("tuple[").removesuffix("]")
-            return inner.split(",", 1)[0].strip()
-        return "str"
+    def scalar_annotation(annotation: str) -> str | None:
+        try:
+            annotation_node = ast.parse(annotation, mode="eval").body
+        except SyntaxError:
+            return None
+        annotation_node = DataclassAuthorityReferenceProof.annotation_reference(
+            annotation_node
+        )
+        if not isinstance(annotation_node, ast.Subscript) or _terminal_name(
+            annotation_node.value
+        ) not in {"tuple", "Tuple"}:
+            return None
+        slice_node = annotation_node.slice
+        if not isinstance(slice_node, ast.Tuple) or len(slice_node.elts) != 2:
+            return None
+        element_type, repetition = slice_node.elts
+        if not isinstance(repetition, ast.Constant) or repetition.value is not Ellipsis:
+            return None
+        return ast.unparse(element_type)
 
     @classmethod
     def invariant_selector_method_name(
@@ -14642,17 +14567,14 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             constructor_name=constructor_name,
             method=method,
         )
-        insertion_offset = ClassBodyInsertionPoint(
-            source,
-            node,
-        ).before_first_method_offset
+        insertion_point = ClassBodyInsertionPoint(source, node)
         return SourceTextGeometry(source).target_source_with_replacements(
             target,
             (
                 SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_offset,
-                    end_offset=insertion_offset,
-                    replacement_source=method_source,
+                    start_offset=insertion_point.before_first_method_offset,
+                    end_offset=insertion_point.before_first_method_offset,
+                    replacement_source=insertion_point.member_source((method_source,)),
                 ),
             ),
         )
@@ -14682,72 +14604,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             "        )\n\n"
         )
 
-    def call_rewrites(
-        self,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        source: str,
-        constructor_name: str,
-        method: RepeatedBuilderAuthorityMethod,
-        evidence_symbols: tuple[str, ...],
-    ) -> tuple[RepeatedAuthorityTargetRewrite, ...]:
-        geometry = SourceTextGeometry(source)
-        target_qualnames = sorted_tuple(
-            {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
-        )
-        rewrites = []
-        for target_qualname in target_qualnames:
-            target = self.function_target(context, source_path, target_qualname)
-            if target is None:
-                return ()
-            target_digest, target_node = target
-            replacements = tuple(
-                replacement
-                for call in ast.walk(target_node)
-                for replacement in (
-                    self.call_replacement(
-                        geometry,
-                        call,
-                        constructor_name=constructor_name,
-                        method=method,
-                    ),
-                )
-                if replacement is not None
-            )
-            if not replacements:
-                return ()
-            rewrites.append(
-                RepeatedAuthorityTargetRewrite(
-                    target=target_digest,
-                    replacement_source=geometry.target_source_with_replacements(
-                        target_digest,
-                        replacements,
-                    ),
-                    rationale=(
-                        "Rewrite repeated constructor call through builder authority."
-                    ),
-                )
-            )
-        return tuple(rewrites)
-
-    @staticmethod
-    def function_target(
-        context: CodemodSelectorContext,
-        source_path: str,
-        target_qualname: str,
-    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-        target_ids = SourceIndexTargetSelector.for_function_or_method(
-            file_path=source_path, qualname=target_qualname
-        ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        target = context.source_index.target_by_id[target_ids[0]]
-        node = context.ast_target_nodes_by_id[target.target_id]
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            return None
-        return target, node
-
     @classmethod
     def call_replacement(
         cls,
@@ -14759,12 +14615,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     ) -> SourceTextSpanReplacement | None:
         if not isinstance(node, ast.Call):
             return None
-        if not cls.constructor_call_matches(
+        if not RepeatedBuilderAuthorityDerivation.constructor_call_matches(
             node,
-            constructor_name=constructor_name,
-            field_names=tuple(
-                argument.field_name for argument in method.constructor_arguments
-            ),
+            tuple(argument.field_name for argument in method.constructor_arguments),
         ):
             return None
         argument_sources = {
@@ -14783,52 +14636,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 ")"
             ),
         )
-
-    @classmethod
-    def matching_call_sites(
-        cls,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        constructor_name: str,
-        field_names: tuple[str, ...],
-        evidence_symbols: tuple[str, ...],
-    ) -> tuple[RepeatedBuilderCallSite, ...]:
-        call_sites: list[RepeatedBuilderCallSite] = []
-        target_qualnames = sorted_tuple(
-            {EvidenceSymbol(symbol).subject for symbol in evidence_symbols}
-        )
-        for target_qualname in target_qualnames:
-            target = cls.function_target(context, source_path, target_qualname)
-            if target is None:
-                return ()
-            _target_digest, target_node = target
-            call_sites.extend(
-                RepeatedBuilderCallSite(call=call, function=target_node)
-                for call in walk_function_body_nodes(target_node)
-                if isinstance(call, ast.Call)
-                and cls.constructor_call_matches(
-                    call,
-                    constructor_name=constructor_name,
-                    field_names=field_names,
-                )
-            )
-        return tuple(call_sites)
-
-    @staticmethod
-    def constructor_call_matches(
-        node: ast.Call,
-        *,
-        constructor_name: str,
-        field_names: tuple[str, ...],
-    ) -> bool:
-        if _call_name(node.func) != constructor_name:
-            return False
-        if node.args:
-            return False
-        if any(keyword.arg is None for keyword in node.keywords):
-            return False
-        return tuple(keyword.arg for keyword in node.keywords) == field_names
 
     @classmethod
     def parameter_source(
@@ -14850,6 +14657,256 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             if value is None:
                 return None
         return parameter.value_projection.source_from(geometry, value)
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
+    """Current-source proof for one batched constructor-authority extraction."""
+
+    authority: "DataclassPayloadAuthorityTarget"
+    participants: tuple["ResolvedFunctionProjectionTarget", ...]
+    call_sites: tuple[RepeatedBuilderCallSite, ...]
+    method: RepeatedBuilderAuthorityMethod
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        participant_references: tuple[SourceRewriteTarget, ...],
+    ) -> "RepeatedBuilderAuthorityDerivation":
+        authority = DataclassPayloadAuthorityTarget.from_rewrite_target(
+            context,
+            authority_reference,
+        )
+        authority.require_complete_owned_schema(context)
+        participants = tuple(
+            ResolvedFunctionProjectionTarget.from_rewrite_target(context, reference)
+            for reference in participant_references
+        )
+        if len(participants) < 2 or len(
+            {participant.target.target_id for participant in participants}
+        ) != len(participants):
+            raise ValueError(
+                "Repeated-builder authority extraction requires at least two unique "
+                "participant functions"
+            )
+        if any(
+            participant.source_path != authority.source_path
+            or participant.function_qualname.startswith(f"{authority.target.qualname}.")
+            for participant in participants
+        ):
+            raise ValueError(
+                "Repeated-builder authority extraction requires peer functions in "
+                "the authority module"
+            )
+        call_sites = cls.required_call_sites(context, authority, participants)
+        method = cls.authority_method_or_none(
+            context,
+            authority.field_names,
+            authority.field_annotations,
+            call_sites,
+        )
+        if method is None:
+            raise ValueError(
+                "Repeated-builder authority extraction requires a source projection "
+                "or invariant selector axis"
+            )
+        if authority.family_defines_method(context, method.method_name):
+            raise ValueError(
+                "Repeated-builder authority extraction will not overwrite or shadow "
+                f"{method.method_name}"
+            )
+        return cls(
+            authority=authority,
+            participants=participants,
+            call_sites=call_sites,
+            method=method,
+        )
+
+    @classmethod
+    def required_call_sites(
+        cls,
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
+        participants: tuple["ResolvedFunctionProjectionTarget", ...],
+    ) -> tuple[RepeatedBuilderCallSite, ...]:
+        authority_symbol = authority.class_symbol(context)
+        if authority_symbol is None:
+            raise ValueError(
+                "Repeated-builder authority extraction requires nominal class identity"
+            )
+        resolver = context.class_reference_resolver_for_source_path(
+            authority.source_path
+        )
+        call_sites: list[RepeatedBuilderCallSite] = []
+        for participant in participants:
+            direct_calls = tuple(
+                node
+                for node in walk_function_body_nodes(participant.node)
+                if isinstance(node, ast.Call)
+                and resolver.symbol_for_reference(node.func) == authority_symbol
+            )
+            if not direct_calls or any(
+                not cls.constructor_call_matches(call, authority.field_names)
+                for call in direct_calls
+            ):
+                raise ValueError(
+                    "Each repeated-builder participant must contain only complete "
+                    "keyword construction of the exact authority"
+                )
+            call_sites.extend(
+                RepeatedBuilderCallSite(call=call, participant=participant)
+                for call in direct_calls
+            )
+        return tuple(call_sites)
+
+    @staticmethod
+    def constructor_call_matches(
+        call: ast.Call,
+        field_names: tuple[str, ...],
+    ) -> bool:
+        return bool(
+            not call.args
+            and all(keyword.arg is not None for keyword in call.keywords)
+            and len(call.keywords) == len(field_names)
+            and frozenset(keyword.arg for keyword in call.keywords)
+            == frozenset(field_names)
+        )
+
+    def required_source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        source = context.sources_by_file_path[self.authority.source_path]
+        geometry = SourceTextGeometry(source)
+        constructor_source = self.constructor_replacement_source(
+            source,
+            self.authority.target,
+            self.authority.node,
+            constructor_name=self.authority.class_name,
+            method=self.method,
+        )
+        edits: list[NominalSourceEdit] = [
+            SourceSpanReplacement(
+                file_path=self.authority.source_path,
+                start_line=self.authority.target.line,
+                end_line=self.authority.target.end_line,
+                replacement_lines=SourceTargetEditor.source_lines(constructor_source),
+                rationale=(
+                    "Insert the source-derived builder on its constructor authority."
+                ),
+            )
+        ]
+        for participant in self.participants:
+            replacements = tuple(
+                self.required_call_replacement(geometry, site.call)
+                for site in self.call_sites
+                if site.participant.target.target_id == participant.target.target_id
+            )
+            edits.append(
+                SourceSpanReplacement(
+                    file_path=participant.source_path,
+                    start_line=participant.target.line,
+                    end_line=participant.target.end_line,
+                    replacement_lines=SourceTargetEditor.source_lines(
+                        geometry.target_source_with_replacements(
+                            participant.target,
+                            replacements,
+                        )
+                    ),
+                    rationale=(
+                        "Rewrite repeated construction through its owned authority."
+                    ),
+                )
+            )
+        return tuple(edits)
+
+    def required_call_replacement(
+        self,
+        geometry: SourceTextGeometry,
+        call: ast.Call,
+    ) -> SourceTextSpanReplacement:
+        offsets = geometry.required_node_offsets(call)
+        span = SourceTextSpan.from_offsets(offsets)
+        if span.contains_comment(geometry.source):
+            raise ValueError(
+                "Repeated-builder authority extraction will not discard call comments"
+            )
+        replacement = self.call_replacement(
+            geometry,
+            call,
+            constructor_name=self.authority.class_name,
+            method=self.method,
+        )
+        if replacement is None:
+            raise ValueError(
+                "Repeated-builder call no longer satisfies its derived authority"
+            )
+        return replacement
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveRepeatedBuilderAuthorityOperation(RefactorRecipeOperation):
+    """Derive one batched builder extraction from exact current source targets."""
+
+    participant_target_ids: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+
+    def __post_init__(self) -> None:
+        if len(self.participant_target_ids) < 2 or len(
+            frozenset(self.participant_target_ids)
+        ) != len(self.participant_target_ids):
+            raise ValueError(
+                "derive_repeated_builder_authority requires at least two unique "
+                "participant_target_ids"
+            )
+
+    @property
+    def participant_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return tuple(
+            SourceRewriteTarget(target_id=target_id)
+            for target_id in self.participant_target_ids
+        )
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), *self.participant_targets)
+
+    def source_edits(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_with_context(source_index, source_by_path)
+
+    def required_derivation(
+        self,
+        context: CodemodSelectorContext,
+    ) -> RepeatedBuilderAuthorityDerivation:
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
+        return RepeatedBuilderAuthorityDerivation.from_context(
+            context,
+            self.target,
+            self.participant_targets,
+        )
+
+    def source_edits_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        context = self.operation_context(
+            source_index,
+            source_by_path,
+            selector_context,
+        )
+        if context.class_family_index is None:
+            context = context.execution_snapshot()
+        return self.required_derivation(context).required_source_edits(context)
 
 
 class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
@@ -16963,6 +17020,19 @@ class DataclassPayloadAuthorityTarget:
         return self.field_names_for_node(self.node)
 
     @property
+    def field_annotations(self) -> tuple[tuple[str, str], ...]:
+        """Project direct payload-field annotations in declaration order."""
+
+        selected_names = frozenset(self.field_names)
+        return tuple(
+            (statement.target.id, ast.unparse(statement.annotation))
+            for statement in self.node.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id in selected_names
+        )
+
+    @property
     def is_dataclass(self) -> bool:
         return self.node_is_dataclass(self.node)
 
@@ -16998,6 +17068,31 @@ class DataclassPayloadAuthorityTarget:
         return context.required_class_family_index.symbol_for(
             file_path=self.source_path,
             qualname=self.target.qualname,
+        )
+
+    def family_defines_method(
+        self,
+        context: CodemodSelectorContext,
+        method_name: str,
+    ) -> bool:
+        """Return whether this authority or an ancestor owns a method name."""
+
+        authority_symbol = self.class_symbol(context)
+        if authority_symbol is None:
+            return True
+        class_index = context.required_class_family_index
+        return any(
+            indexed_class is not None
+            and any(
+                isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                and statement.name == method_name
+                for statement in indexed_class.node.body
+            )
+            for symbol in (
+                authority_symbol,
+                *class_index.ancestor_symbols(authority_symbol),
+            )
+            for indexed_class in (class_index.class_for(symbol),)
         )
 
     def require_complete_owned_schema(
@@ -17052,7 +17147,8 @@ class DataclassPayloadAuthorityTarget:
             and statement.target.id in self.field_names
             and isinstance(statement.value, ast.Call)
             and _terminal_name(statement.value.func) == "field"
-            and self.call_keyword_bool(statement.value, "init", default=True) is not True
+            and self.call_keyword_bool(statement.value, "init", default=True)
+            is not True
             for statement in self.node.body
         ):
             raise ValueError(
@@ -18408,9 +18504,7 @@ class DeriveDataclassFieldNameCollectionProjectionOperation(
     def required_derivation(
         self,
         context: CodemodSelectorContext,
-    ) -> SourceDerivedDataclassProjection[
-        DataclassFieldNameCollectionProjectionTarget
-    ]:
+    ) -> SourceDerivedDataclassProjection[DataclassFieldNameCollectionProjectionTarget]:
         return DataclassFieldNameCollectionProjectionDerivation.from_context(
             context,
             self.target,
@@ -18420,18 +18514,14 @@ class DeriveDataclassFieldNameCollectionProjectionOperation(
 
 @dataclass(frozen=True, kw_only=True)
 class DeriveDataclassKeyValueSequenceProjectionOperation(
-    SourceDerivedDataclassProjectionOperation[
-        ReturnKeyValueSequenceProjectionTarget
-    ]
+    SourceDerivedDataclassProjectionOperation[ReturnKeyValueSequenceProjectionTarget]
 ):
     """Derive one exhaustive return-pair sequence from a dataclass authority."""
 
     def required_derivation(
         self,
         context: CodemodSelectorContext,
-    ) -> SourceDerivedDataclassProjection[
-        ReturnKeyValueSequenceProjectionTarget
-    ]:
+    ) -> SourceDerivedDataclassProjection[ReturnKeyValueSequenceProjectionTarget]:
         return DataclassKeyValueSequenceProjectionDerivation.from_context(
             context,
             self.target,
@@ -18561,9 +18651,7 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnDictProjectionTarget,
-    ) -> SourceDerivedDataclassProjectionRecipeParts[
-        ReturnDictProjectionTarget
-    ] | None:
+    ) -> SourceDerivedDataclassProjectionRecipeParts[ReturnDictProjectionTarget] | None:
         operation = DeriveDataclassPayloadProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
             projection_target_id=projection.target.target_id,
@@ -18647,9 +18735,12 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: DataclassFieldNameCollectionProjectionTarget,
-    ) -> SourceDerivedDataclassProjectionRecipeParts[
-        DataclassFieldNameCollectionProjectionTarget
-    ] | None:
+    ) -> (
+        SourceDerivedDataclassProjectionRecipeParts[
+            DataclassFieldNameCollectionProjectionTarget
+        ]
+        | None
+    ):
         operation = DeriveDataclassFieldNameCollectionProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
             projection_target_id=projection.target.target_id,
@@ -18742,9 +18833,12 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnKeyValueSequenceProjectionTarget,
-    ) -> SourceDerivedDataclassProjectionRecipeParts[
-        ReturnKeyValueSequenceProjectionTarget
-    ] | None:
+    ) -> (
+        SourceDerivedDataclassProjectionRecipeParts[
+            ReturnKeyValueSequenceProjectionTarget
+        ]
+        | None
+    ):
         operation = DeriveDataclassKeyValueSequenceProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
             projection_target_id=projection.target.target_id,
@@ -18772,9 +18866,7 @@ class NominalConstructorCall:
         scope: ast.FunctionDef | ast.AsyncFunctionDef,
         call_node: ast.Call,
     ) -> "NominalConstructorCall | None":
-        if call_node.args or any(
-            keyword.arg is None for keyword in call_node.keywords
-        ):
+        if call_node.args or any(keyword.arg is None for keyword in call_node.keywords):
             return None
         keyword_arguments = tuple(call_node.keywords)
         keyword_names = tuple(cast(str, keyword.arg) for keyword in keyword_arguments)
@@ -18803,11 +18895,7 @@ class NominalConstructorCall:
 
     def keyword_argument(self, name: str) -> ast.keyword | None:
         return next(
-            (
-                keyword
-                for keyword in self.keyword_arguments
-                if keyword.arg == name
-            ),
+            (keyword for keyword in self.keyword_arguments if keyword.arg == name),
             None,
         )
 
@@ -18913,10 +19001,9 @@ class DataclassConstructorProjectionMethod:
                 *method_node.args.kwonlyargs,
             )
         parameter_names = tuple(parameter.arg for parameter in keyword_parameters)
-        if (
-            len(frozenset(parameter_names)) != len(parameter_names)
-            or frozenset(parameter_names) != frozenset(remaining_keyword_names)
-        ):
+        if len(frozenset(parameter_names)) != len(parameter_names) or frozenset(
+            parameter_names
+        ) != frozenset(remaining_keyword_names):
             return None
         constructor = NominalConstructorCall.from_context(
             context,
@@ -19081,11 +19168,13 @@ class DataclassConstructorProjectionDerivation(
             remaining_keywords,
         ):
             return None
-        authority_methods = DataclassConstructorProjectionMethod.candidates_from_authority(
-            context,
-            boundary.authority,
-            constructor.constructor_symbol,
-            tuple(cast(str, keyword.arg) for keyword in remaining_keywords),
+        authority_methods = (
+            DataclassConstructorProjectionMethod.candidates_from_authority(
+                context,
+                boundary.authority,
+                constructor.constructor_symbol,
+                tuple(cast(str, keyword.arg) for keyword in remaining_keywords),
+            )
         )
         if len(authority_methods) != 1:
             return None
@@ -19262,9 +19351,12 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         self,
         authority: DataclassPayloadAuthorityTarget,
         projection: ResolvedFunctionProjectionTarget,
-    ) -> SourceDerivedDataclassProjectionRecipeParts[
-        DataclassConstructorProjectionTarget
-    ] | None:
+    ) -> (
+        SourceDerivedDataclassProjectionRecipeParts[
+            DataclassConstructorProjectionTarget
+        ]
+        | None
+    ):
         operation = DeriveDataclassConstructorProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
             projection_target_id=projection.target.target_id,

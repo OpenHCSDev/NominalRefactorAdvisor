@@ -11474,29 +11474,213 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
+    operation_payload = plan.document.recipes[0].operations[0].to_dict()
     simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    replay = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.records[0].executable_declaration_name == (
         "RepeatedBuilderSourceProjectionAuthorityMethod"
     )
     assert plan.records[0].refactor_concept == "constructor_kwarg_carrier_projection"
+    assert operation_payload["operation"] == "derive_repeated_builder_authority"
+    assert set(operation_payload) == {
+        "operation",
+        "target_id",
+        "participant_target_ids",
+        "rationale",
+    }
+    assert not {
+        "replacement_source",
+        "constructor_name",
+        "field_names",
+        "method_name",
+    }.intersection(operation_payload)
+    assert len(operation_payload["participant_target_ids"]) == 2
+    assert type(RefactorRecipeOperation.from_dict(operation_payload)).__name__ == (
+        "DeriveRepeatedBuilderAuthorityOperation"
+    )
     preflight = plan.document.preflight_snapshot(snapshot)
     assert preflight.preflight_failed is False
     resolution = preflight.reports[0].details["resolutions"][0]
     assert resolution["claim"]["claimed_symbol"] == "RuntimePlan"
     assert resolution["status"] == "resolved"
     assert "def from_source(" in rewritten
-    assert "source: PlanSource" in rewritten
+    assert 'source: "PlanSource"' in rewritten
     assert "theorem_handles=tuple(source.theorem_handles)" in rewritten
     assert "RuntimePlan.from_source(source=candidate)" in rewritten
     assert "RuntimePlan.from_source(source=entry)" in rewritten
+    assert replay.simulation.rewritten_sources[module_path.as_posix()] == rewritten
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
         for finding in analyze_modules(parse_python_modules(tmp_path))
     )
+
+
+def test_repeated_builder_replay_fails_closed_on_participant_drift(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION,
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    document_payload = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    ).document.to_dict()
+
+    current_source = (
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
+            "    theorem_handles: tuple[str, ...]\n\n\ndef alpha",
+            "    theorem_handles: tuple[str, ...]\n\n"
+            "    def normalized_handles(self):\n"
+            "        return tuple(self.theorem_handles)\n\n\ndef alpha",
+        )
+        .replace(
+            "tuple(candidate.theorem_handles)",
+            "candidate.normalized_handles()",
+        )
+        .replace(
+            "tuple(entry.theorem_handles)",
+            "entry.normalized_handles()",
+        )
+    )
+    _write_module(tmp_path, "pkg/mod.py", current_source)
+    current_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path)
+    )
+    with pytest.raises(ValueError, match="Source rewrite target did not resolve"):
+        CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
+            current_snapshot,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+
+def test_repeated_builder_resolves_existing_forward_reference_annotations(
+    tmp_path: Path,
+) -> None:
+    source = _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
+        ": PlanSource",
+        ': "PlanSource"',
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+
+    assert plan.records[0].status.value == "executable_candidate"
+    assert (
+        'source: "PlanSource"'
+        in simulation.simulation.rewritten_sources[module_path.as_posix()]
+    )
+
+
+def test_repeated_builder_rejects_same_named_distinct_source_types(
+    tmp_path: Path,
+) -> None:
+    for module_name in ("left", "right"):
+        _write_module(
+            tmp_path,
+            f"pkg/{module_name}.py",
+            "from dataclasses import dataclass\n\n"
+            "@dataclass(frozen=True)\n"
+            "class PlanSource:\n"
+            "    pose_id: str\n"
+            "    score: float\n"
+            "    theorem_handles: tuple[str, ...]\n",
+        )
+    source = (
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
+            "@dataclass(frozen=True)\nclass PlanSource:\n"
+            "    pose_id: str\n"
+            "    score: float\n"
+            "    theorem_handles: tuple[str, ...]\n\n\n",
+            "from pkg import left, right\n\n",
+        )
+        .replace(
+            "candidate: PlanSource",
+            "candidate: left.PlanSource",
+        )
+        .replace(
+            "entry: PlanSource",
+            "entry: right.PlanSource",
+        )
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "source projection or invariant selector axis" in plan.records[0].reason
+
+
+def test_repeated_builder_preserves_inherited_builder_implementation(
+    tmp_path: Path,
+) -> None:
+    source = _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
+        "@dataclass(frozen=True)\nclass RuntimePlan:",
+        "class RuntimePlanBase:\n"
+        "    @classmethod\n"
+        "    def from_source(cls, source):\n"
+        "        return cls(\n"
+        "            pose_id=source.pose_id,\n"
+        "            score=source.score,\n"
+        "            theorem_handles=tuple(source.theorem_handles),\n"
+        "        )\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class RuntimePlan(RuntimePlanBase):",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "will not overwrite or shadow from_source" in plan.records[0].reason
 
 
 @pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))
