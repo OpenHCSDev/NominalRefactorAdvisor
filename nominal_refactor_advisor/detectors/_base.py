@@ -8452,25 +8452,6 @@ class DerivedQueryIndexCandidate:
 
 
 @dataclass(frozen=True)
-class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
-    adapter_class_name: str
-    source_name: str
-    copied_field_names: tuple[str, ...]
-    resolver_field_names: tuple[str, ...]
-    resolver_table_names: tuple[str, ...]
-    selector_field_names: tuple[str, ...]
-    evidence_locations: tuple[SourceLocation, ...]
-    evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
-
-
-@dataclass(frozen=True)
-class KeywordBagAdapterCandidate(FunctionLineWitnessCandidate):
-    source_name: str
-    key_names: tuple[str, ...]
-    source_field_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class TransportShellTemplateCandidate(ClassLineWitnessCandidate):
     driver_method_name: str
     selector_attr_name: str

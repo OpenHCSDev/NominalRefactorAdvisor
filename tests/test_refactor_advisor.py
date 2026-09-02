@@ -9390,45 +9390,24 @@ def test_derived_query_index_keeps_cls_relative_authorities_distinct(
     )
 
 
-def test_detects_runtime_adapter_shell(tmp_path: Path) -> None:
+def test_preserves_runtime_materialization_boundary(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass StrategyId(Enum):\n    ALPHA = auto()\n\n\nclass ActionId(Enum):\n    DEFAULT = auto()\n\n\nclass AlphaStrategy:\n    pass\n\n\nclass DefaultAction:\n    pass\n\n\n@dataclass(frozen=True)\nclass BaseSpec:\n    priority: int\n    dependencies: tuple[str, ...] = ()\n    strategy_id: StrategyId | None = None\n    action_id: ActionId | None = None\n\n\n@dataclass(frozen=True)\nclass RuntimeSpec:\n    priority: int = 0\n    dependencies: tuple[str, ...] = ()\n    strategy: object | None = None\n    action: object | None = None\n\n\nSTRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}\nACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}\n\n\ndef runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:\n    if spec is None:\n        return RuntimeSpec()\n    return RuntimeSpec(\n        priority=spec.priority,\n        dependencies=spec.dependencies,\n        strategy=STRATEGY_BY_ID.get(spec.strategy_id)\n        if spec.strategy_id is not None\n        else None,\n        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,\n    )\n",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "runtime_adapter_shell"
-        )
-    )
-    assert "runtime_spec_for" in finding.summary
-    assert "RuntimeSpec" in finding.summary
-    assert "STRATEGY_BY_ID" in finding.summary
-    assert "ACTION_BY_ID" in finding.summary
-    assert "resolve_strategy" in (finding.scaffold or "")
+    assert findings == []
 
 
-def test_detects_keyword_bag_adapter_shell(tmp_path: Path) -> None:
+def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n    default: object | None = None\n    dest: str | None = None\n\n\ndef option_kwargs(spec: OptionSpec) -> dict[str, object]:\n    kwargs = {"help": spec.help}\n    if spec.action is not None:\n        kwargs["action"] = spec.action\n    if spec.default is not None:\n        kwargs["default"] = spec.default\n    if spec.dest is not None:\n        kwargs["dest"] = spec.dest\n    return kwargs\n',
+        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n    default: object | None = None\n    dest: str | None = None\n\n\ndef option_kwargs(spec: OptionSpec) -> dict[str, object]:\n    kwargs = {"help": spec.help}\n    if spec.action is not None:\n        kwargs["action"] = spec.action\n    if spec.default is not None:\n        kwargs["default"] = spec.default\n    if spec.dest is not None:\n        kwargs["dest"] = spec.dest\n    return kwargs\n\n\ndef add_option(parser, name: str, spec: OptionSpec):\n    parser.add_argument(name, **option_kwargs(spec))\n',
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "keyword_bag_adapter_shell"
-        )
-    )
-    assert "option_kwargs" in finding.summary
-    assert "help" in finding.summary
-    assert "action" in finding.summary
-    assert "as_kwargs" in (finding.scaffold or "")
+    assert findings == []
 
 
 def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:

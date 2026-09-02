@@ -15,7 +15,6 @@ from ._base import *
 from ._helpers import *
 from ._helpers import (
     _derived_query_index_candidates,
-    _keyword_bag_adapter_candidates,
 )
 from ._runtime import (
     _CompactConcreteFamilyDetectorBase,
@@ -304,94 +303,6 @@ declare_candidate_rule_detector(
     ),
     detector_name="ManualCompanionDataclassSurfaceDetector",
     candidate_collector=_manual_companion_dataclass_surface_candidates,
-)
-
-
-class RuntimeAdapterShellDetector(
-    ModuleCollectorCandidateDetector[RuntimeAdapterShellCandidate]
-):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Secondary runtime adapter shell should collapse into the authoritative spec",
-        "A function is rebuilding a local runtime/spec record by copying fields from one authoritative source record and resolving strategy ids through lookup tables. The docs treat that as secondary writable authority rather than a true abstraction boundary.",
-        "single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell",
-        "one function copies source-record fields into a second record and resolves runtime hooks through keyed tables",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, adapter_candidate: RuntimeAdapterShellCandidate
-    ) -> RefactorFinding:
-        copied_fields = ", ".join(adapter_candidate.copied_field_names[:4])
-        resolved_fields = ", ".join(adapter_candidate.resolver_field_names[:4])
-        return self.build_finding(
-            (
-                f"`{adapter_candidate.function_name}` rebuilds `{adapter_candidate.adapter_class_name}` from "
-                f"`{adapter_candidate.source_name}` by copying {copied_fields} and resolving "
-                f"{resolved_fields} through {adapter_candidate.resolver_table_names}."
-            ),
-            adapter_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\nclass AuthoritySpec:\n    priority: int\n    dependencies: tuple[object, ...] = ()\n    strategy_id: object | None = None\n\n    def resolve_strategy(self):\n        return STRATEGY_BY_ID.get(self.strategy_id)\n"
-            ),
-            codemod_patch=(
-                f"# Stop rehydrating `{adapter_candidate.adapter_class_name}` inside `{adapter_candidate.function_name}`.\n"
-                "# Keep one authoritative spec/record and either attach resolver methods to it or expose one materializer on that record.\n"
-                f"# Collapse copied fields {adapter_candidate.copied_field_names} and resolver selectors "
-                f"{adapter_candidate.selector_field_names} onto the source authority."
-            ),
-            metrics=MappingMetrics(
-                mapping_site_count=1,
-                field_count=(
-                    len(adapter_candidate.copied_field_names)
-                    + len(adapter_candidate.resolver_field_names)
-                ),
-                mapping_name=adapter_candidate.adapter_class_name,
-                field_names=(
-                    adapter_candidate.copied_field_names
-                    + adapter_candidate.resolver_field_names
-                ),
-                source_name=adapter_candidate.source_name,
-                identity_field_names=adapter_candidate.copied_field_names,
-            ),
-        )
-
-
-declare_candidate_rule_detector(
-    KeywordBagAdapterCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Record-to-kwargs adapter shell should collapse onto the record authority",
-        "A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.",
-        "single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
-        "one helper copies several fields from a source record into a transient kwargs dictionary",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-    ),
-    summary=lambda adapter_candidate: (
-        f"`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}."
-    ),
-    scaffold=lambda adapter_candidate: (
-        '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs'
-    ),
-    codemod_patch=lambda adapter_candidate: (
-        f"# Delete standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on `{adapter_candidate.source_name}` itself or make the downstream builder consume the record directly."
-    ),
-    metrics=lambda adapter_candidate: MappingMetrics.from_field_names(
-        mapping_site_count=1,
-        mapping_name=adapter_candidate.function_name,
-        field_names=adapter_candidate.key_names,
-        source_name=adapter_candidate.source_name,
-        identity_field_names=adapter_candidate.source_field_names,
-    ),
-    detector_name="KeywordBagAdapterShellDetector",
-    candidate_collector=_keyword_bag_adapter_candidates,
 )
 
 
