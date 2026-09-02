@@ -3022,7 +3022,7 @@ def _class_body_field_observation(
             ),
             is_dataclass_family=is_dataclass_family,
             value_fingerprint=(
-                _fingerprint_builder_value(binding.value)
+                root_agnostic_expression_fingerprint(binding.value)
                 if binding.value is not None
                 else None
             ),
@@ -3038,7 +3038,7 @@ def _class_body_field_observation(
             execution_level=StructuralExecutionLevel.CLASS_BODY,
             origin_kind=FieldOriginKind.CLASS_ASSIGNMENT,
             is_dataclass_family=is_dataclass_family,
-            value_fingerprint=_fingerprint_builder_value(binding.value),
+            value_fingerprint=root_agnostic_expression_fingerprint(binding.value),
         )
     return None
 
@@ -3096,7 +3096,9 @@ def _init_field_observations(
                 origin_kind=FieldOriginKind.INIT_ASSIGNMENT,
                 is_dataclass_family=is_dataclass_family,
                 value_fingerprint=(
-                    _fingerprint_builder_value(value) if value is not None else None
+                    root_agnostic_expression_fingerprint(value)
+                    if value is not None
+                    else None
                 ),
                 annotation_text=(
                     parameter_annotations[value.id][0]
@@ -3990,7 +3992,10 @@ def _builder_call_shape(
         return None
     field_names = tuple(name for name, _ in context.field_pairs)
     value_fingerprint = tuple(
-        (_fingerprint_builder_value(value) for _, value in context.field_pairs)
+        (
+            root_agnostic_expression_fingerprint(value)
+            for _, value in context.field_pairs
+        )
     )
     source_roots = set()
     for _, value in context.field_pairs:
@@ -4013,7 +4018,9 @@ def _builder_call_shape(
     )
 
 
-def _fingerprint_builder_value(node: ast.AST) -> str:
+def root_agnostic_expression_fingerprint(node: ast.AST) -> str:
+    """Return structural expression identity with local root names erased."""
+
     return _builder_value_key(node)
 
 
@@ -4051,7 +4058,7 @@ ROOT_NAME_PROJECTION = RootNameProjection()
 def _registration_key_fingerprint(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
-    return _fingerprint_builder_value(node.slice)
+    return root_agnostic_expression_fingerprint(node.slice)
 
 
 def _class_name_from_expr(

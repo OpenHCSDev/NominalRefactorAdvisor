@@ -64,7 +64,7 @@ from .ast_tools import (
     _config_dispatch_observations,
     _dynamic_method_injection_observations,
     _execution_level_for_scope,
-    _fingerprint_builder_value,
+    root_agnostic_expression_fingerprint,
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
     _iter_attribute_family_calls,
@@ -841,7 +841,7 @@ def _native_registration_shapes(
                     node,
                     registry_name,
                     class_name,
-                    _fingerprint_builder_value(key_source),
+                    root_agnostic_expression_fingerprint(key_source),
                 )
             )
 
@@ -879,7 +879,7 @@ def _native_registration_shapes(
                         statement,
                         decorator,
                         registry_name,
-                        _fingerprint_builder_value(key_expression),
+                        root_agnostic_expression_fingerprint(key_expression),
                     )
                 )
         return [*assignments, *calls, *decorators]
@@ -981,7 +981,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
             if class_name is None:
                 continue
             key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
-            key_fingerprint = _fingerprint_builder_value(key_source)
+            key_fingerprint = root_agnostic_expression_fingerprint(key_source)
             shapes.append(
                 RegistrationShape.from_registration_call(
                     parsed_module, node, registry_name, class_name, key_fingerprint
@@ -1012,7 +1012,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
                     node,
                     decorator,
                     registry_name,
-                    _fingerprint_builder_value(key_expr),
+                    root_agnostic_expression_fingerprint(key_expr),
                 )
             )
         return shapes

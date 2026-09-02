@@ -55,6 +55,7 @@ from .ast_tools import (
     SourceModule,
     SourceModuleBatchParser,
     python_module_name_is_importable,
+    root_agnostic_expression_fingerprint,
     statements_without_docstring,
     walk_function_body_nodes,
 )
@@ -13854,6 +13855,12 @@ class RepeatedBuilderAuthorityMethod(
 
     constructor_arguments: tuple[RepeatedBuilderConstructorArgument, ...]
 
+    @property
+    def minimum_call_site_count(self) -> int:
+        """Minimum repeated construction sites that prove this authority."""
+
+        return 3
+
 
 @dataclass(frozen=True)
 class RepeatedBuilderSourceProjectionAuthorityMethod(
@@ -13862,6 +13869,12 @@ class RepeatedBuilderSourceProjectionAuthorityMethod(
 ):
     """Builder method that derives constructor fields from one source object."""
 
+    @property
+    def minimum_call_site_count(self) -> int:
+        """Two peer projections are sufficient to prove a shared mapping."""
+
+        return 2
+
 
 @dataclass(frozen=True)
 class RepeatedBuilderCallSite:
@@ -13869,6 +13882,16 @@ class RepeatedBuilderCallSite:
 
     call: ast.Call
     participant: "ResolvedFunctionProjectionTarget"
+
+    @property
+    def source_identity(self) -> tuple[str, int, int]:
+        """Physical identity used only to relate evidence to current source."""
+
+        return (
+            self.participant.target.target_id,
+            self.call.lineno,
+            self.call.col_offset,
+        )
 
     def root_parameter(self, root_name: str) -> ast.arg | None:
         for parameter in (
@@ -13964,9 +13987,6 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             evidence_targets = tuple(
                 self.evidence_target(context, evidence) for evidence in finding.evidence
             )
-            participant_target_ids = tuple(
-                dict.fromkeys(target.target_id for target, _call in evidence_targets)
-            )
             constructor_symbols = frozenset(
                 context.class_reference_resolver_for_source_path(
                     target.file_path
@@ -13999,9 +14019,21 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             ]
             operation = DeriveRepeatedBuilderAuthorityOperation(
                 target=SourceRewriteTarget(target_id=constructor_target.target_id),
-                participant_target_ids=participant_target_ids,
             )
             derivation = operation.required_derivation(context)
+            evidence_source_identities = frozenset(
+                (target.target_id, call.lineno, call.col_offset)
+                for target, call in evidence_targets
+            )
+            if not evidence_source_identities.issubset(
+                frozenset(
+                    call_site.source_identity for call_site in derivation.call_sites
+                )
+            ):
+                raise ValueError(
+                    "Repeated-builder evidence does not belong to the unique "
+                    "current proven family"
+                )
             derivation.required_source_edits(context)
         except ValueError as error:
             return None, str(error)
@@ -14726,63 +14758,88 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
         cls,
         context: CodemodSelectorContext,
         authority_reference: SourceRewriteTarget,
-        participant_references: tuple[SourceRewriteTarget, ...],
     ) -> "RepeatedBuilderAuthorityDerivation":
         authority = DataclassPayloadAuthorityTarget.from_rewrite_target(
             context,
             authority_reference,
         )
         authority.require_complete_owned_schema(context)
-        participants = tuple(
-            ResolvedFunctionProjectionTarget.from_rewrite_target(context, reference)
-            for reference in participant_references
-        )
-        if len(participants) < 2 or len(
-            {participant.target.target_id for participant in participants}
-        ) != len(participants):
-            raise ValueError(
-                "Repeated-builder authority extraction requires at least two unique "
-                "participant functions"
-            )
-        if any(
-            participant.source_path != authority.source_path
-            or participant.function_qualname.startswith(f"{authority.target.qualname}.")
-            for participant in participants
-        ):
-            raise ValueError(
-                "Repeated-builder authority extraction requires peer functions in "
-                "the authority module"
-            )
-        call_sites = cls.required_call_sites(context, authority, participants)
-        method = cls.authority_method_or_none(
-            context,
-            authority.field_names,
-            authority.field_annotations,
-            call_sites,
-        )
-        if method is None:
+        derivations = cls.proven_derivations(context, authority)
+        if not derivations:
             raise ValueError(
                 "Repeated-builder authority extraction requires a source projection "
                 "or invariant selector axis"
             )
+        if len(derivations) > 1:
+            raise ValueError(
+                f"Authority {authority.target.qualname!r} has {len(derivations)} "
+                "current proven repeated-builder families"
+            )
+        derivation = derivations[0]
+        method = derivation.method
         if authority.family_defines_method(context, method.method_name):
             raise ValueError(
                 "Repeated-builder authority extraction will not overwrite or shadow "
                 f"{method.method_name}"
             )
-        return cls(
-            authority=authority,
-            participants=participants,
-            call_sites=call_sites,
-            method=method,
-        )
+        return derivation
 
     @classmethod
-    def required_call_sites(
+    def proven_derivations(
         cls,
         context: CodemodSelectorContext,
         authority: "DataclassPayloadAuthorityTarget",
-        participants: tuple["ResolvedFunctionProjectionTarget", ...],
+    ) -> tuple["RepeatedBuilderAuthorityDerivation", ...]:
+        grouped_call_sites: dict[tuple[str, ...], list[RepeatedBuilderCallSite]] = (
+            defaultdict(list)
+        )
+        for call_site in cls.peer_call_sites(context, authority):
+            fingerprint = cls.mapping_fingerprint(
+                call_site.call,
+                authority.field_names,
+            )
+            if fingerprint is not None:
+                grouped_call_sites[fingerprint].append(call_site)
+        derivations: list[RepeatedBuilderAuthorityDerivation] = []
+        for grouped_sites in grouped_call_sites.values():
+            call_sites = tuple(
+                sorted(
+                    grouped_sites,
+                    key=lambda site: (
+                        site.participant.source_path,
+                        site.call.lineno,
+                        site.call.col_offset,
+                    ),
+                )
+            )
+            participants = tuple(
+                dict.fromkeys(site.participant for site in call_sites)
+            )
+            if len(participants) < 2:
+                continue
+            method = cls.authority_method_or_none(
+                context,
+                authority.field_names,
+                authority.field_annotations,
+                call_sites,
+            )
+            if method is None or len(call_sites) < method.minimum_call_site_count:
+                continue
+            derivations.append(
+                cls(
+                    authority=authority,
+                    participants=participants,
+                    call_sites=call_sites,
+                    method=method,
+                )
+            )
+        return tuple(derivations)
+
+    @classmethod
+    def peer_call_sites(
+        cls,
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
     ) -> tuple[RepeatedBuilderCallSite, ...]:
         authority_symbol = authority.class_symbol(context)
         if authority_symbol is None:
@@ -14793,26 +14850,41 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
             authority.source_path
         )
         call_sites: list[RepeatedBuilderCallSite] = []
-        for participant in participants:
-            direct_calls = tuple(
-                node
+        for target in context.source_index.targets_by_file[authority.source_path]:
+            if (
+                not target.is_function_like
+                or target.qualname.startswith(f"{authority.target.qualname}.")
+            ):
+                continue
+            participant = ResolvedFunctionProjectionTarget.from_target(
+                context,
+                source_path=authority.source_path,
+                target=target,
+            )
+            if participant is None:
+                continue
+            call_sites.extend(
+                RepeatedBuilderCallSite(call=node, participant=participant)
                 for node in walk_function_body_nodes(participant.node)
                 if isinstance(node, ast.Call)
                 and resolver.symbol_for_reference(node.func) == authority_symbol
-            )
-            if not direct_calls or any(
-                not cls.constructor_call_matches(call, authority.field_names)
-                for call in direct_calls
-            ):
-                raise ValueError(
-                    "Each repeated-builder participant must contain only complete "
-                    "keyword construction of the exact authority"
-                )
-            call_sites.extend(
-                RepeatedBuilderCallSite(call=call, participant=participant)
-                for call in direct_calls
+                and cls.constructor_call_matches(node, authority.field_names)
             )
         return tuple(call_sites)
+
+    @classmethod
+    def mapping_fingerprint(
+        cls,
+        call: ast.Call,
+        field_names: tuple[str, ...],
+    ) -> tuple[str, ...] | None:
+        values_by_field = cls.call_keyword_values_by_field(call, field_names)
+        if values_by_field is None:
+            return None
+        return tuple(
+            root_agnostic_expression_fingerprint(values_by_field[field_name])
+            for field_name in field_names
+        )
 
     @staticmethod
     def constructor_call_matches(
@@ -14900,38 +14972,8 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveRepeatedBuilderAuthorityOperation(RefactorRecipeOperation):
-    """Derive one batched builder extraction from exact current source targets."""
-
-    participant_target_ids: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
-
-    def __post_init__(self) -> None:
-        if len(self.participant_target_ids) < 2 or len(
-            frozenset(self.participant_target_ids)
-        ) != len(self.participant_target_ids):
-            raise ValueError(
-                "derive_repeated_builder_authority requires at least two unique "
-                "participant_target_ids"
-            )
-
-    @property
-    def participant_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return tuple(
-            SourceRewriteTarget(target_id=target_id)
-            for target_id in self.participant_target_ids
-        )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), *self.participant_targets)
-
-    def source_edits(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.source_edits_with_context(source_index, source_by_path)
+class DeriveRepeatedBuilderAuthorityOperation(SourceReprovedOperation):
+    """Re-prove the unique maximal builder family from its constructor owner."""
 
     def required_derivation(
         self,
@@ -14942,24 +14984,13 @@ class DeriveRepeatedBuilderAuthorityOperation(RefactorRecipeOperation):
         return RepeatedBuilderAuthorityDerivation.from_context(
             context,
             self.target,
-            self.participant_targets,
         )
 
-    def source_edits_with_context(
+    def source_edits_from_snapshot(
         self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-        *,
-        selector_context: CodemodSelectorContext | None = None,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        context = self.operation_context(
-            source_index,
-            source_by_path,
-            selector_context,
-        )
-        if context.class_family_index is None:
-            context = context.execution_snapshot()
-        return self.required_derivation(context).required_source_edits(context)
+        return self.required_derivation(snapshot).required_source_edits(snapshot)
 
 
 class FindingEvidenceActionKeysMixin:

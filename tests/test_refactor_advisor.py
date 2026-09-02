@@ -11712,7 +11712,6 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     assert set(operation_payload) == {
         "operation",
         "target_id",
-        "participant_target_ids",
         "rationale",
     }
     assert not {
@@ -11721,7 +11720,6 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         "field_names",
         "method_name",
     }.intersection(operation_payload)
-    assert len(operation_payload["participant_target_ids"]) == 2
     assert type(RefactorRecipeOperation.from_dict(operation_payload)).__name__ == (
         "DeriveRepeatedBuilderAuthorityOperation"
     )
@@ -11743,7 +11741,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     )
 
 
-def test_repeated_builder_replay_fails_closed_on_participant_drift(
+def test_repeated_builder_replay_reproves_changed_participant_mapping(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -11783,11 +11781,105 @@ def test_repeated_builder_replay_fails_closed_on_participant_drift(
     current_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
     )
-    with pytest.raises(ValueError, match="Source rewrite target did not resolve"):
-        CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
-            current_snapshot,
-            backend=CodemodBackend.AST_SPAN,
-        )
+    replay = CodemodPlanDocument.from_json_value(document_payload).simulate_snapshot(
+        current_snapshot,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = replay.simulation.rewritten_sources[
+        (tmp_path / "pkg/mod.py").as_posix()
+    ]
+
+    assert "theorem_handles=source.normalized_handles()" in rewritten
+    assert "RuntimePlan.from_source(source=candidate)" in rewritten
+    assert "RuntimePlan.from_source(source=entry)" in rewritten
+
+
+def test_repeated_builder_rewrites_family_beyond_finding_evidence_limit(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    additional_participants = "\n".join(
+        f"""
+def build_{index}(source: PlanSource):
+    return RuntimePlan(
+        pose_id=source.pose_id,
+        score=source.score,
+        theorem_handles=tuple(source.theorem_handles),
+    )
+"""
+        for index in range(7)
+    )
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION + additional_participants,
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert len(findings[0].evidence) == 6
+    assert rewritten.count("RuntimePlan.from_source(source=") == 9
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
+def test_repeated_builder_rejects_multiple_families_for_one_authority(
+    tmp_path: Path,
+) -> None:
+    source = _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION + """
+
+def gamma(source: PlanSource):
+    return RuntimePlan(
+        pose_id=source.pose_id,
+        score=source.score * 2,
+        theorem_handles=tuple(source.theorem_handles),
+    )
+
+
+def delta(source: PlanSource):
+    return RuntimePlan(
+        pose_id=source.pose_id,
+        score=source.score * 2,
+        theorem_handles=tuple(source.theorem_handles),
+    )
+"""
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert len(findings) == 2
+    assert all(
+        record.status.value == "rejected_by_safety_check" for record in plan.records
+    )
+    assert all(
+        "has 2 current proven repeated-builder families" in record.reason
+        for record in plan.records
+    )
 
 
 def test_repeated_builder_resolves_existing_forward_reference_annotations(
