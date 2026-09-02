@@ -2445,26 +2445,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             backend=backend,
         )
 
-    def source_rewrite_batch_for_recipe(
-        self,
-        recipe: "RefactorRecipe",
-    ) -> tuple["PlannedSourceRewrite", ...]:
-        return recipe.source_rewrite_batch(
-            self.source_index,
-            self.sources_by_file_path,
-            selector_context=self,
-        )
-
-    def source_rewrite_batch_for_document(
-        self,
-        document: "CodemodPlanDocument",
-    ) -> tuple["PlannedSourceRewrite", ...]:
-        return tuple(
-            rewrite
-            for recipe in document.recipes
-            for rewrite in self.source_rewrite_batch_for_recipe(recipe)
-        )
-
     def preflight_document(
         self,
         document: "CodemodPlanDocument",
@@ -10964,32 +10944,64 @@ class _RecipeReplacementGroup:
 class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     """Compile declarative recipe operations into simulator-ready rewrites."""
 
-    def planned_rewrites(
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+    ) -> Self:
+        if isinstance(context, cls):
+            return context
+        return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            module_node_cache=context.module_node_cache,
+            ast_target_node_cache=context.ast_target_node_cache,
+            module_import_graph_cache=context.module_import_graph_cache,
+        )
+
+    def planned_rewrites_for_recipes(
         self,
-        recipe_id: str,
-        operations: Iterable[RefactorRecipeOperation],
+        recipes: Iterable["RefactorRecipe"],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        replacements = self.physical_edits(recipe_id, operations)
+        """Compile one document's recipes through one physical edit merge."""
+
+        return self._planned_rewrites_from_physical_edits(
+            self.physical_edits_for_recipes(recipes)
+        )
+
+    def _planned_rewrites_from_physical_edits(
+        self,
+        replacements: tuple[PhysicalSourceEdit, ...],
+    ) -> tuple[PlannedSourceRewrite, ...]:
         groups = self._merged_replacement_groups(replacements)
         return tuple(self._planned_rewrite(group) for group in groups)
 
-    def physical_edits(
+    def physical_edits_for_recipes(
         self,
-        recipe_id: str,
-        operations: Iterable[RefactorRecipeOperation],
+        recipes: Iterable["RefactorRecipe"],
     ) -> tuple[PhysicalSourceEdit, ...]:
-        """Resolve the operations directly to their owned physical edits."""
+        return self._resolved_physical_edits(
+            tuple(
+                edit
+                for recipe in recipes
+                for edit in self._originated_edits_for_recipe(recipe)
+            )
+        )
 
-        edits = tuple(
+    def _originated_edits_for_recipe(
+        self,
+        recipe: "RefactorRecipe",
+    ) -> tuple[NominalSourceEdit, ...]:
+        return tuple(
             edit
-            for plan_item_index, operation in enumerate(operations)
+            for plan_item_index, operation in enumerate(recipe.operations)
             for edit in self._originated_edits(
-                recipe_id,
+                recipe.recipe_id,
                 plan_item_index,
                 operation,
             )
         )
-        return self._resolved_physical_edits(edits)
 
     def _originated_edits(
         self,
@@ -11161,41 +11173,6 @@ class RefactorRecipe(CodemodPayloadRecord):
         default=(),
     )
 
-    @classmethod
-    def compose(
-        cls,
-        recipes: Iterable["RefactorRecipe"],
-        *,
-        recipe_id: str,
-        reason: str,
-    ) -> "RefactorRecipe":
-        """Compose recipes while preserving every declared batch invariant."""
-
-        recipe_tuple = tuple(recipes)
-        if not recipe_tuple:
-            raise ValueError("At least one recipe is required for composition")
-        return cls(
-            recipe_id=recipe_id,
-            operations=tuple(
-                operation for recipe in recipe_tuple for operation in recipe.operations
-            ),
-            guard_suite=ArchitectureGuardSuite().merge(
-                *(recipe.guard_suite for recipe in recipe_tuple)
-            ),
-            reason=reason,
-            authority_claims=cls.shared_authority_claims(recipe_tuple),
-        )
-
-    @staticmethod
-    def shared_authority_claims(
-        recipes: Iterable["RefactorRecipe"],
-    ) -> tuple[AuthorityClaim, ...]:
-        return tuple(
-            dict.fromkeys(
-                claim for recipe in recipes for claim in recipe.authority_claims
-            )
-        )
-
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
             target
@@ -11258,31 +11235,10 @@ class RefactorRecipe(CodemodPayloadRecord):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        if not self.operations:
-            return ()
-        if source_by_path is None:
-            raise ValueError("Recipe operations require source text")
-        return RefactorRecipeOperationCompiler(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
-            class_family_index=(
-                selector_context.class_family_index
-                if selector_context is not None
-                else None
-            ),
-            module_node_cache=(
-                selector_context.module_nodes_by_file_path
-                if selector_context is not None
-                else None
-            ),
-            ast_target_node_cache=(
-                selector_context.ast_target_nodes_by_id
-                if selector_context is not None
-                else None
-            ),
-        ).planned_rewrites(
-            self.recipe_id,
-            self.operations,
+        return CodemodPlanDocument(recipes=(self,)).source_rewrite_batch(
+            source_index,
+            source_by_path,
+            selector_context=selector_context,
         )
 
     def created_source_paths(
@@ -11556,22 +11512,28 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        return tuple(
-            rewrite
-            for recipe in self.recipes
-            for rewrite in recipe.source_rewrite_batch(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
-            )
+        if not any(recipe.operations for recipe in self.recipes):
+            return ()
+        if source_by_path is None:
+            raise ValueError("Recipe operations require source text")
+        context = selector_context or CodemodSelectorContext(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
         )
+        return RefactorRecipeOperationCompiler.from_context(
+            context
+        ).planned_rewrites_for_recipes(self.recipes)
 
     def source_rewrite_batch_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PlannedSourceRewrite, ...]:
         rewrite_snapshot = self.rewrite_snapshot(snapshot)
-        return rewrite_snapshot.source_rewrite_batch_for_document(self)
+        return self.source_rewrite_batch(
+            rewrite_snapshot.source_index,
+            rewrite_snapshot.sources_by_file_path,
+            selector_context=rewrite_snapshot,
+        )
 
     def preflight_snapshot(
         self,
@@ -11672,7 +11634,11 @@ class CodemodPlanDocumentPreflight:
     ) -> "CodemodPlanDocumentSimulation":
         self.report.require_clean()
         simulation = self.rewrite_snapshot.simulate_rewrites(
-            self.rewrite_snapshot.source_rewrite_batch_for_document(self.document),
+            self.document.source_rewrite_batch(
+                self.rewrite_snapshot.source_index,
+                self.rewrite_snapshot.sources_by_file_path,
+                selector_context=self.rewrite_snapshot,
+            ),
             backend=backend,
         ).with_base_snapshot(self.base_snapshot)
         after_snapshot_projection = CodemodAfterSnapshotProjection(
@@ -13427,17 +13393,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         recipes = tuple(
             recipe for record in records for recipe in record.candidate_recipes
         )
-        if not recipes:
-            return CodemodPlanDocument()
-        return CodemodPlanDocument(
-            recipes=(
-                RefactorRecipe.compose(
-                    recipes,
-                    recipe_id="finding-class-codemod-plan",
-                    reason="Batch one graph-clustered smell class into one executable plan.",
-                ),
-            )
-        )
+        return CodemodPlanDocument(recipes=recipes)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -20656,9 +20612,7 @@ class FindingRecipePlanBuilder:
             raise RuntimeError("recipe batch record projection lost position")
         return FindingRecipePlan(
             document=CodemodPlanDocument(
-                recipes=self.merged_recipes(
-                    list(batch_result.candidate_recipes),
-                ),
+                recipes=batch_result.candidate_recipes,
             ),
             trajectory_frontier=batch_result.trajectory_frontier,
             report=FindingRecipeSynthesisReport(synthesis_records),
@@ -20674,27 +20628,11 @@ class FindingRecipePlanBuilder:
         cached_edits = self.physical_edit_cache.get(recipe)
         if cached_edits is not None:
             return cached_edits
-        physical_edits = RefactorRecipeOperationCompiler(
-            source_index=selector_context.source_index,
-            sources_by_file_path=selector_context.sources_by_file_path,
-            class_family_index=selector_context.class_family_index,
-        ).physical_edits(recipe.recipe_id, recipe.operations)
+        physical_edits = RefactorRecipeOperationCompiler.from_context(
+            selector_context
+        ).physical_edits_for_recipes((recipe,))
         self.physical_edit_cache[recipe] = physical_edits
         return physical_edits
-
-    @staticmethod
-    def merged_recipes(
-        recipes: list[RefactorRecipe],
-    ) -> tuple[RefactorRecipe, ...]:
-        if not recipes:
-            return ()
-        return (
-            RefactorRecipe.compose(
-                recipes,
-                recipe_id="finding-backed-codemod-plan",
-                reason="Batch executable advisor findings into one source-merge pass.",
-            ),
-        )
 
     def scoped_findings(self) -> tuple[RefactorFinding, ...]:
         return tuple(
@@ -21205,16 +21143,12 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     reason="recipe-set simulation requires a source snapshot",
                 )
             )
-        recipes = [
+        recipes = tuple(
             self.candidates[index].record.evaluation.required_recipe
             for index in candidate_indices
-        ]
+        )
         try:
-            document = CodemodPlanDocument(
-                recipes=self.batch_projection.merged_recipes(
-                    recipes,
-                )
-            )
+            document = CodemodPlanDocument(recipes=recipes)
             simulation = document.simulate_snapshot(self.source_snapshot)
         except (
             PhysicalSourceEditConflictError,

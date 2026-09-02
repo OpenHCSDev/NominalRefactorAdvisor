@@ -1847,16 +1847,14 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
-    builder = FindingRecipePlanBuilder(())
     batch_evaluation = CurrentSnapshotRecipeBatchEvaluation(
         candidates=candidates,
         source_snapshot=snapshot,
-        batch_projection=builder,
+        batch_projection=FindingRecipePlanBuilder(()),
     )
-    records = batch_evaluation.solve().records
-    recipes = builder.merged_recipes(
-        [record.evaluation.required_recipe for record in records],
-    )
+    batch_result = batch_evaluation.solve()
+    records = batch_result.records
+    recipes = batch_result.candidate_recipes
 
     simulation = CodemodPlanDocument(recipes=recipes).simulate_snapshot(snapshot)
 
@@ -1868,14 +1866,25 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
     }
     assert batch_evaluation.interacting_candidate_pairs == ()
     assert batch_evaluation.pair_assessments == ()
-    assert recipes[0].recipe_id == "finding-backed-codemod-plan"
-    assert tuple(type(operation) for operation in recipes[0].operations) == (
+    assert tuple(recipe.recipe_id for recipe in recipes) == (
+        "disjoint_a-recipe",
+        "disjoint_b-recipe",
+    )
+    assert tuple(type(recipe.operations[0]) for recipe in recipes) == (
         ReplaceTextOperation,
         ReplaceTextOperation,
     )
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         "a = 2\nb = 2\n"
     )
+    assert {
+        contributor.recipe_id
+        for rewrite in simulation.simulation.rewrites
+        for contributor in rewrite.contributors
+    } == {
+        "disjoint_a-recipe",
+        "disjoint_b-recipe",
+    }
     assert batch_evaluation.trajectory_frontier.complete
     branches_by_candidate_indices = {
         frozenset(branch.candidate_indices): branch
@@ -2216,15 +2225,12 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     snapshot = CodemodSourceSnapshot.from_modules(modules, ())
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
-    builder = FindingRecipePlanBuilder(())
     plan = FindingRecipePlan(
         document=CodemodPlanDocument(
-            recipes=builder.merged_recipes(
-                [
-                    record.evaluation.required_recipe
-                    for record in records
-                    if record.candidate_recipes
-                ],
+            recipes=tuple(
+                record.evaluation.required_recipe
+                for record in records
+                if record.candidate_recipes
             )
         ),
         trajectory_frontier=batch_result.trajectory_frontier,
@@ -5041,6 +5047,57 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     assert "def _candidate_items(" not in rewritten
 
 
+def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Parser:\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("ensure-alpha-import").with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    import_source="from .alpha import Alpha\n",
+                )
+            ),
+            RefactorRecipe("ensure-beta-import").with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    import_source="from .beta import Beta\n",
+                )
+            ),
+        )
+    )
+
+    simulation = document.simulate_snapshot(
+        snapshot,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.simulation.applied_rewrite_count == 1
+    rewrite = simulation.simulation.rewrites[0]
+    assert rewrite.replacement_source == (
+        "from .alpha import Alpha\n"
+        "from .beta import Beta\n"
+        "\n"
+        "\n"
+        "class Parser:\n"
+        "    pass\n"
+    )
+    assert {
+        (contributor.recipe_id, contributor.plan_item_index)
+        for contributor in rewrite.contributors
+    } == {
+        ("ensure-alpha-import", 0),
+        ("ensure-beta-import", 0),
+    }
+
+
 def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
     tmp_path: Path,
 ) -> None:
@@ -5718,20 +5775,25 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
         new_source="Render one numeric mode.",
     )
 
-    (recipe,) = FindingRecipePlanBuilder.merged_recipes(
-        [
-            RefactorRecipe("dispatch").with_operation(dispatch_operation),
+    dispatch_recipe = RefactorRecipe("dispatch").with_operation(dispatch_operation)
+    document = CodemodPlanDocument(
+        recipes=(
+            dispatch_recipe,
             RefactorRecipe("docstring").with_operation(docstring_operation),
-        ]
+        )
     )
-    authority_report = recipe.authority_claim_preflight_report(snapshot)
-    simulation = recipe.simulate_snapshot(snapshot)
+    authority_report = dispatch_recipe.authority_claim_preflight_report(snapshot)
+    simulation = document.simulate_snapshot(snapshot)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert recipe.operations == (dispatch_operation, docstring_operation)
-    assert recipe.authority_claims == ()
+    assert tuple(recipe.recipe_id for recipe in document.recipes) == (
+        "dispatch",
+        "docstring",
+    )
+    assert dispatch_recipe.authority_claims == ()
     assert tuple(
-        claim.claimed_symbol for claim in recipe.declared_authority_claims(snapshot)
+        claim.claimed_symbol
+        for claim in dispatch_recipe.declared_authority_claims(snapshot)
     ) == ("RenderDispatchCase",)
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
@@ -15503,7 +15565,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
-        "finding-backed-codemod-plan"
+        "extract-alpha-semantic-fact"
     )
 
 
@@ -16701,7 +16763,9 @@ def test_module_cli_exports_only_proved_goal_replay_plan(
     assert payload["stages"][0]["applied"] is False
     assert plan_path.exists()
     assert payload["replay_sequence"]["stages"][0]["recipes"][0]["recipe_id"] == (
-        "finding-backed-codemod-plan"
+        payload["stages"][0]["class_plan_report"]["finding_recipe_plan"][
+            "document"
+        ]["recipes"][0]["recipe_id"]
     )
 
     incomplete_plan_path = tmp_path / "incomplete-goal-replay-plan.json"
@@ -17109,7 +17173,7 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     assert synthesis_record["executable_declaration"] == (
         "ManualClassRegistrationDetector"
     )
-    assert recipe["recipe_id"] == "finding-class-codemod-plan"
+    assert recipe["recipe_id"] == synthesis_record["recipe"]["recipe_id"]
     assert "target_shape" not in recipe
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
 

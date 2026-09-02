@@ -276,7 +276,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     assert "source_edits_by_state_id" not in operation_payload
 
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
     assert rewritten_source == _base_source().replace(
@@ -497,7 +497,7 @@ def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
@@ -534,7 +534,7 @@ def test_parameter_conveyor_rewrite_targets_multiple_calls_on_one_line_exactly()
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
 
     assert (
@@ -569,7 +569,7 @@ def test_parameter_conveyor_rewrite_preserves_a_private_method_receiver() -> Non
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
@@ -607,7 +607,7 @@ def test_parameter_conveyor_rewrite_preserves_cross_module_identity() -> None:
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
 
     assert tuple(simulation.rewritten_sources) == (worker_module.file_path,)
@@ -645,7 +645,7 @@ def test_parameter_conveyor_rewrite_avoids_existing_carrier_name_bindings() -> N
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
-        snapshot.source_rewrite_batch_for_document(plan.document)
+        plan.document.source_rewrite_batch_from_snapshot(snapshot)
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
