@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    ArchitectureGuardSuite,
     CollapseClosedParameterConveyorOperation,
     CodemodSourceSnapshot,
     FindingRecipeSynthesisStatus,
     RefactorRecipeOperation,
+    SemanticCarrierConcept,
     codemod_plan_from_findings,
+)
+from nominal_refactor_advisor.codemod_workflow import (
+    CodemodRefactorGoalRunner,
+    CodemodRefactorTrajectoryStatus,
+    CodemodWorkflowScan,
+    CodemodWorkflowStopReason,
 )
 from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
@@ -54,6 +65,13 @@ def _base_source(*, callee_body: str = "    return left, right\n") -> str:
         "    key = _CacheKey(left=left, right=right)\n"
         "    return _build(left, right)\n"
     )
+
+
+def _write_source(root: Path, relative_path: str, source: str) -> Path:
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return path
 
 
 @pytest.mark.parametrize(
@@ -290,6 +308,137 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
         )
         == []
     )
+
+
+def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
+    tmp_path: Path,
+) -> None:
+    source_path = _write_source(tmp_path, "pkg/complete.py", _base_source())
+    modules = parse_python_modules(tmp_path)
+    findings = ClosedParameterConveyorDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+    starting_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=SemanticCarrierConcept,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+    ).run()
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PROVED
+    assert report.trajectory_proof.visited_state_count == 2
+    assert report.trajectory_proof.transition_count == 1
+    assert len(report.trajectory_proof.terminals) == 1
+    assert report.final_target_finding_ids == ()
+    assert len(report.stages) == 1
+    assert report.stages[0].progress.achieved is True
+    replay_operation = report.replay_sequence.documents[0].recipes[0].operations[0]
+    assert isinstance(replay_operation, CollapseClosedParameterConveyorOperation)
+
+    replay = report.replay_sequence.simulate_snapshot(starting_snapshot)
+
+    assert replay.is_clean
+    assert replay.final_snapshot.sources_by_file_path[source_path.as_posix()] == (
+        _base_source()
+        .replace(
+            "def _build(left, right):\n    return left, right\n",
+            "def _build(*, cache_key):\n"
+            "    return cache_key.left, cache_key.right\n",
+        )
+        .replace(
+            "    return _build(left, right)\n",
+            "    return _build(cache_key=key)\n",
+        )
+    )
+    assert (
+        ClosedParameterConveyorDetector().detect(
+            replay.final_snapshot.parsed_modules,
+            DetectorConfig(),
+        )
+        == []
+    )
+
+
+def test_parameter_conveyor_cli_proves_exports_and_applies_the_goal(
+    tmp_path: Path,
+) -> None:
+    source_path = _write_source(tmp_path, "pkg/complete.py", _base_source())
+    replay_path = tmp_path / "replay.json"
+    repository_root = Path(__file__).resolve().parents[1]
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        tmp_path.as_posix(),
+        "--no-cache",
+        "--codemod-refactor-goal",
+        SemanticCarrierConcept.concept_key(),
+        "--json",
+    ]
+
+    preview = subprocess.run(
+        [*command, "--codemod-plan-out", replay_path.as_posix()],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    preview_payload = json.loads(preview.stdout)
+
+    assert preview.returncode == 0, preview.stderr
+    assert preview_payload["stop_reason"] == "achieved"
+    assert preview_payload["trajectory_proof"]["status"] == "proved"
+    assert preview_payload["stage_count"] == 1
+    assert replay_path.exists()
+    assert source_path.read_text(encoding="utf-8") == _base_source()
+
+    application = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-plan",
+            replay_path.as_posix(),
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    application_payload = json.loads(application.stdout)
+
+    assert application.returncode == 0, application.stderr
+    assert application_payload["applied"] is True
+    assert application_payload["applied_rewrite_count"] == 2
+    rewritten_source = source_path.read_text(encoding="utf-8")
+    assert "def _build(*, cache_key):" in rewritten_source
+    assert "return _build(cache_key=key)" in rewritten_source
+    compile(rewritten_source, source_path.as_posix(), "exec")
+
+    second_run = subprocess.run(
+        command,
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second_run_payload = json.loads(second_run.stdout)
+
+    assert second_run.returncode == 0, second_run.stderr
+    assert second_run_payload["stop_reason"] == "achieved"
+    assert second_run_payload["stage_count"] == 0
+    assert second_run_payload["trajectory_proof"]["status"] == "proved"
 
 
 def test_parameter_conveyor_recipe_reproves_current_source_before_rewriting() -> None:
