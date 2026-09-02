@@ -15270,7 +15270,10 @@ def test_trajectory_status_members_own_proof_classification() -> None:
     state = CodemodRefactorTrajectoryState(
         scan=CodemodWorkflowScan(modules=[], findings=[])
     )
-    terminal = CodemodRefactorTrajectoryTerminal(state=state)
+    terminal = CodemodRefactorTrajectoryTerminal(
+        state=state,
+        guard_report=ArchitectureGuardSuite().clean_report(),
+    )
     proof_fields = {
         "initial_source_state_id": "initial",
         "budget": CodemodRefactorTrajectoryBudget(),
@@ -16053,6 +16056,15 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     )
     monkeypatch.setattr(CodemodRefactorGoalRunner, "exact_scan", exact_scan)
 
+    def unexpected_sequence_replay(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("proved terminal guards must not replay source edits")
+
+    monkeypatch.setattr(
+        CodemodPlanSequence,
+        "simulate_snapshot",
+        unexpected_sequence_replay,
+    )
+
     def run_goal(
         initial_findings: tuple[RefactorFinding, ...],
     ):
@@ -16117,6 +16129,12 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         assert report.stages[0].simulation.document.guard_suite.is_empty
         assert report.stages[-1].simulation.document.guard_suite == (
             terminal_guard_suite
+        )
+        assert report.trajectory_proof.proved_terminal.guard_report.rules == (
+            terminal_guard_suite.rules
+        )
+        assert report.stages[-1].simulation.architecture_guard_report == (
+            report.trajectory_proof.proved_terminal.guard_report
         )
     assert rejected_report.stages == ()
     assert rejected_report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
@@ -16187,6 +16205,15 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
         return real_apply(report)
 
     monkeypatch.setattr(codemod_module, "apply_codemod_simulation", tracked_apply)
+    terminal_guard_suite = ArchitectureGuardSuite(
+        (
+            ArchitectureGuardRule(
+                rule_id="no-terminal-legacy-call",
+                forbidden_call_names=("legacy_call",),
+                file_path_suffixes=("pkg/mod.py",),
+            ),
+        )
+    )
 
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
@@ -16195,7 +16222,7 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
         dry_run=False,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
-        guard_suite=ArchitectureGuardSuite(),
+        guard_suite=terminal_guard_suite,
     ).run()
 
     final_source = module_path.read_text(encoding="utf-8")
@@ -16205,6 +16232,7 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
     assert len(applied_reports) == 1
     assert final_source != original_source
     assert report.trajectory_proof.status.proved is True
+    assert report.stages[-1].simulation.document.guard_suite == terminal_guard_suite
 
 
 def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(

@@ -12205,9 +12205,37 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     document: CodemodPlanDocument
     after_snapshot_projection: CodemodAfterSnapshotProjection
 
+    def __post_init__(self) -> None:
+        if self.architecture_guard_report.rules != (
+            self.document.combined_guard_suite.rules
+        ):
+            raise ValueError("document simulation guard evidence has different rules")
+
     @property
     def required_after_snapshot(self) -> CodemodSourceSnapshot:
         return self.after_snapshot_projection.snapshot
+
+    def with_additional_clean_guard_report(
+        self,
+        additional_report: ArchitectureGuardReport,
+    ) -> "CodemodPlanDocumentSimulation":
+        """Compose already-proved clean guards without replaying source edits."""
+
+        if not self.is_clean or not additional_report.is_clean:
+            raise ValueError("guard report composition requires clean evidence")
+        guarded_document = replace(
+            self.document,
+            guard_suite=self.document.guard_suite.merge(
+                ArchitectureGuardSuite(additional_report.rules)
+            ),
+        )
+        return replace(
+            self,
+            document=guarded_document,
+            architecture_guard_report=(
+                guarded_document.combined_guard_suite.clean_report()
+            ),
+        )
 
     def to_dict(self) -> JsonObject:
         return {

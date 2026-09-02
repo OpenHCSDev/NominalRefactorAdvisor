@@ -876,6 +876,11 @@ class CodemodRefactorTrajectoryTerminal:
     """One exact goal state reached by a completely explored trajectory graph."""
 
     state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    guard_report: ArchitectureGuardReport
+
+    def __post_init__(self) -> None:
+        if not self.guard_report.is_clean:
+            raise ValueError("proved trajectory terminal requires clean guard evidence")
 
     @property
     def source_state_id(self) -> str:
@@ -889,6 +894,7 @@ class CodemodRefactorTrajectoryTerminal:
         return {
             "source_state_id": self.source_state_id,
             "stage_count": len(self.stages),
+            "guard_report": self.guard_report.to_dict(),
         }
 
 
@@ -1620,6 +1626,7 @@ class CodemodRefactorGoalRunner:
             stages=terminal.stages,
             projected_scan=terminal.state.scan,
             starting_snapshot=starting_scan.source_snapshot,
+            terminal_guard_report=terminal.guard_report,
             trajectory_proof=trajectory_proof,
         )
 
@@ -1684,7 +1691,10 @@ class CodemodRefactorGoalRunner:
                         terminal_rejected = True
                     if not terminal_rejected:
                         terminals_by_source_state_id[state.source_state_id] = (
-                            CodemodRefactorTrajectoryTerminal(state)
+                            CodemodRefactorTrajectoryTerminal(
+                                state,
+                                terminal_guard_report,
+                            )
                         )
                     continue
 
@@ -1794,30 +1804,19 @@ class CodemodRefactorGoalRunner:
     def stages_with_terminal_guards(
         self,
         stages: tuple[CodemodRefactorGoalStage, ...],
-        starting_snapshot: CodemodSourceSnapshot,
-    ) -> tuple[CodemodRefactorGoalStage, ...] | None:
-        """Attach caller guards only to the final state and replay the path."""
+        terminal_guard_report: ArchitectureGuardReport,
+    ) -> tuple[CodemodRefactorGoalStage, ...]:
+        """Attach the proved caller guards only to the final stage."""
 
-        if self.guard_suite.is_empty:
+        if not terminal_guard_report.rules:
             return stages
-        documents = tuple(stage.simulation.document for stage in stages)
-        terminal_document = replace(
-            documents[-1],
-            guard_suite=documents[-1].guard_suite.merge(self.guard_suite),
+        guarded_terminal = replace(
+            stages[-1],
+            simulation=stages[-1].simulation.with_additional_clean_guard_report(
+                terminal_guard_report
+            ),
         )
-        sequence_simulation = CodemodPlanSequence(
-            documents=(*documents[:-1], terminal_document),
-        ).simulate_snapshot(starting_snapshot)
-        if not sequence_simulation.is_clean:
-            return None
-        return tuple(
-            replace(stage, simulation=stage_report.document_simulation)
-            for stage, stage_report in zip(
-                stages,
-                sequence_simulation.stage_reports,
-                strict=True,
-            )
-        )
+        return (*stages[:-1], guarded_terminal)
 
     def achieved_report(
         self,
@@ -1825,21 +1824,15 @@ class CodemodRefactorGoalRunner:
         stages: tuple[CodemodRefactorGoalStage, ...],
         projected_scan: CodemodWorkflowScan,
         starting_snapshot: CodemodSourceSnapshot,
+        terminal_guard_report: ArchitectureGuardReport,
         trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
         """Commit a fully proved migration sequence once, or return its dry run."""
 
         guarded_stages = self.stages_with_terminal_guards(
             stages,
-            starting_snapshot,
+            terminal_guard_report,
         )
-        if guarded_stages is None:
-            return self.report(
-                (),
-                projected_scan,
-                CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
-                trajectory_proof,
-            )
         projected_report = self.report(
             guarded_stages,
             projected_scan,
