@@ -15739,6 +15739,134 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     assert report.replay_sequence.documents == ()
 
 
+def test_goal_runner_analyzes_equivalent_branch_state_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_ids = (
+        "equivalent_trajectory_left_test",
+        "equivalent_trajectory_right_test",
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "value = 1\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    findings = tuple(
+        _finding_spec(
+            PatternId.NOMINAL_BOUNDARY,
+            f"{detector_id} fixture",
+            "Equivalent migrations should share one projected analysis.",
+            "one exact analysis per reachable source state",
+            "different recipe claims produce the same rewritten source",
+        ).build(
+            detector_id,
+            f"{detector_id} proposes the same migration.",
+            (SourceLocation(module_path.as_posix(), 1, "value"),),
+        )
+        for detector_id in detector_ids
+    )
+
+    class EquivalentMigrationSynthesizer(
+        FindingRecipeSynthesizer,
+        SemanticCarrierConcept,
+    ):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("equivalent-trajectory-recipe").with_operation(
+                    ReplaceTextOperation(
+                        target=SourceRewriteTarget(
+                            file_path=module_path.as_posix()
+                        ),
+                        old_source="value = 1",
+                        new_source="value = 2",
+                    )
+                )
+            )
+
+    projected_analysis_digests: list[str] = []
+
+    def projected_target_scan(
+        self: CodemodRefactorGoalRunner,
+        scan: CodemodWorkflowScan,
+        simulation: CodemodSimulationReport,
+        target_findings: tuple[RefactorFinding, ...],
+    ) -> CodemodWorkflowScan:
+        del target_findings
+        projected_analysis_digests.append(simulation.rewritten_source_digest)
+        projected_modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=self.roots,
+        ).modules_after_projection()
+        return CodemodWorkflowScan(
+            modules=list(projected_modules),
+            findings=[],
+            scan_mode=CodemodProjectedScanMode.EXACT,
+        )
+
+    previous_synthesizers = {
+        detector_id: _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+        for detector_id in detector_ids
+    }
+    _FINDING_RECIPE_TEST_REGISTRY.update(
+        dict.fromkeys(detector_ids, EquivalentMigrationSynthesizer)
+    )
+    monkeypatch.setattr(
+        CodemodRefactorGoalRunner,
+        "projected_target_scan",
+        projected_target_scan,
+    )
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            migration_type=SemanticCarrierConcept,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodWorkflowScan(
+                modules=parse_python_modules(tmp_path),
+                findings=list(findings),
+            ),
+        ).run()
+    finally:
+        for detector_id, previous in previous_synthesizers.items():
+            if previous is None:
+                _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
+            else:
+                _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PROVED
+    assert report.trajectory_proof.transition_count == 2
+    assert report.trajectory_proof.visited_state_count == 2
+    assert len(projected_analysis_digests) == 1
+    assert module_path.read_text(encoding="utf-8") == original_source
+
+
 def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

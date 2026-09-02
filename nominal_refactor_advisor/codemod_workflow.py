@@ -1727,12 +1727,17 @@ class CodemodRefactorGoalRunner:
                 continue
 
             valid_transition_count = 0
+            analyzed_rewritten_source_digests: set[str] = set()
             for branch in frontier.branches:
                 simulation = branch.document_simulation
                 if simulation.simulation.applied_rewrite_count == 0:
                     continue
                 valid_transition_count += 1
                 transition_count += 1
+                rewritten_source_digest = branch.assessment.rewritten_source_digest
+                if rewritten_source_digest in analyzed_rewritten_source_digests:
+                    continue
+                analyzed_rewritten_source_digests.add(rewritten_source_digest)
                 projected_scan = self.projected_target_scan(
                     active_scan,
                     simulation.simulation,
