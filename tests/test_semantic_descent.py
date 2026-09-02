@@ -18,6 +18,8 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
+    DeriveDataclassFieldNameCollectionProjectionOperation,
+    DeriveDataclassKeyValueSequenceProjectionOperation,
     DeriveDataclassPayloadProjectionOperation,
     DeriveEnumSubsetOperation,
     RefactorRecipe,
@@ -2522,6 +2524,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate_snapshot(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    recipe = plan.document.recipes[0]
 
     assert plan.records[0].status.value == "executable_candidate"
     assert (
@@ -2530,6 +2533,59 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     )
     assert plan.records[0].refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "derive_dataclass_field_name_collection_projection",
+    )
+    operation = recipe.operations[0]
+    assert isinstance(
+        operation,
+        DeriveDataclassFieldNameCollectionProjectionOperation,
+    )
+    assert set(operation.to_dict()) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "('run_id', 'seconds')",
+        "['run_id', 'seconds']",
+    )
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+    replay_simulation = (
+        RefactorRecipe("derive-current-field-name-collection")
+        .with_operation(replayed)
+        .simulate(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+    )
+    replayed_source = replay_simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
+    assert "[field.name for field in dataclasses.fields(PhaseRecord)]" in (
+        replayed_source
+    )
+    commented_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "('run_id', 'seconds')",
+        "(\n        'run_id',\n        # Preserve this explanation.\n"
+        "        'seconds',\n    )",
+    )
+    commented_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): commented_source},
+    )
+    with pytest.raises(ValueError, match="absent from current source"):
+        replayed.source_edits_with_context(
+            commented_snapshot.source_index,
+            commented_snapshot.sources_by_file_path,
+            selector_context=commented_snapshot,
+        )
     assert "import dataclasses" in rewritten_source
     assert (
         "tuple(field.name for field in dataclasses.fields(PhaseRecord))"
@@ -2667,11 +2723,46 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     record = plan.records[0]
     simulation = plan.simulate_snapshot(snapshot)
     rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    recipe = plan.document.recipes[0]
 
     assert record.status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
+    assert tuple(operation.operation_key() for operation in recipe.operations) == (
+        "derive_dataclass_key_value_sequence_projection",
+    )
+    operation = recipe.operations[0]
+    assert isinstance(operation, DeriveDataclassKeyValueSequenceProjectionOperation)
+    assert set(operation.to_dict()) == {
+        "operation",
+        "target_id",
+        "projection_target_id",
+        "rationale",
+    }
+    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
+        "    model: WorkflowModel",
+        "    record: WorkflowModel",
+    ).replace("self.model", "self.record")
+    changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
+        snapshot.source_index,
+        {module_path.as_posix(): changed_source},
+    )
+    replay_simulation = (
+        RefactorRecipe("derive-current-key-value-sequence")
+        .with_operation(replayed)
+        .simulate(
+            changed_snapshot.source_index,
+            changed_snapshot.sources_by_file_path,
+            selector_context=changed_snapshot,
+        )
+    )
+    replayed_source = replay_simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
+    assert "self.record" in replayed_source
+    assert "self.model" not in replayed_source
     assert "import dataclasses" in rewritten_source
     assert "for field in dataclasses.fields(" in rewritten_source
     assert "getattr(\n                        self.model," in rewritten_source

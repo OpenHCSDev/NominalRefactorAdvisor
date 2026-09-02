@@ -99,19 +99,21 @@ Exact byte spans distinguish multiple calls on the same line.  Source forms
 that cannot be edited without losing comments or lexical-scope semantics remain
 rejected; field mappings are never copied into the recipe payload.
 
-Class-family, enum, and exhaustive dataclass return-dict projection recipes
-follow the same source-derived contract.
+Class-family, enum, and exhaustive dataclass projection recipes follow the same
+source-derived contract.  Dataclass return dictionaries, field-name
+collections, and returned key/value sequences each persist only the exact
+authority and containing-function targets.
 ``DeriveClassFamilyCollectionOperation``, ``DeriveEnumSubsetOperation``, and
-``DeriveDataclassPayloadProjectionOperation`` serialise only the exact
-authority and projection targets.  On every simulation or application, each
-operation re-resolves those targets, proves one unambiguous projection against
-the current declarations, derives the required imports and replacement source,
-and rejects shadowed builtins, name collisions, or changed relations.
+the corresponding ``DeriveDataclass*ProjectionOperation`` declarations
+re-resolve those targets on every simulation or application, prove one
+unambiguous projection against the current declarations, derive the required
+imports and replacement source, and reject shadowed builtins, name collisions,
+or changed relations.
 Collection members, dataclass fields, assignment names, generated source, and
 finding metrics are not copied into the persisted plan.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------
