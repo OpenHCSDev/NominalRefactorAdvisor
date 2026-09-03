@@ -29,6 +29,12 @@ Run tests inside the worktree:
    pip install -e ".[dev]"
    python -m pytest tests/
 
+The project test configuration distributes the suite over the available CPUs,
+with an eight-worker cap to avoid oversubscribing larger development and CI
+hosts.  ``pytest-cov`` combines coverage from those workers, so the same default
+applies to ordinary and coverage runs.  Pass ``-n 0`` only when a serial run is
+needed for debugging.
+
 Shared-Venv Caution
 -------------------
 
