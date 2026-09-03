@@ -59,6 +59,9 @@ source target, while a source-reproved operation that establishes a new boundary
 declares that claim from its current source proof.  The evaluation gate validates
 both forms without guessing authority names from finding text or copying
 participant rosters into the recipe.
+Caller-authored authority source operations likewise fail closed unless their
+typed claim names the destination and the supplied source contains exactly that
+one top-level class declaration.
 ``AuthorityClaim`` carries ``SemanticAuthorityKind`` directly and matches exact
 target identity, name, and any declared location coordinates.  A declaration
 missing a coordinate required by the claim does not prove it.

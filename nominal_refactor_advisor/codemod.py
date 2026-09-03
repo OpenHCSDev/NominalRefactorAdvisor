@@ -7348,10 +7348,73 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AuthoritySourceOperation(RefactorRecipeOperation, ABC):
+class AuthoritySourceOperation(
+    SourceReprovedOperation,
+    AuthorityClaimCarrier,
+    ABC,
+):
     """Codemod operation carrying source for a declared authority boundary."""
 
+    authority_claim: AuthorityClaim = codemod_payload_field(
+        PayloadRecordValueCodec(AuthorityClaim)
+    )
     authority_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        self.required_authority_source_path(context)
+        return (self.authority_claim,)
+
+    def required_authority_source_path(
+        self,
+        context: CodemodSelectorContext,
+    ) -> str:
+        _target_identifier, target = self.target_digest(context)
+        source_path = target.file_path
+        claim = self.authority_claim
+        if claim.authority_id:
+            raise ValueError("New authority source cannot claim an existing target ID")
+        if claim.authority_kind is None:
+            raise ValueError("New authority source requires a typed authority claim")
+        if claim.file_path != source_path:
+            raise ValueError("Authority source and claim must identify the same file")
+        if (
+            not claim.qualname
+            or "." in claim.qualname
+            or claim.claimed_symbol != claim.qualname
+        ):
+            raise ValueError(
+                "Authority source claim must name one exact top-level declaration"
+            )
+        try:
+            authority_module = ast.parse(
+                self.authority_source,
+                filename=f"<{self.operation_key()}-authority>",
+            )
+        except SyntaxError as error:
+            raise ValueError(
+                f"Authority source is not valid Python: {error}"
+            ) from error
+        declarations = tuple(
+            statement
+            for statement in authority_module.body
+            if isinstance(statement, ast.ClassDef)
+        )
+        if len(declarations) != 1 or declarations[0].name != claim.qualname:
+            raise ValueError(
+                "Authority source must declare exactly one top-level class named "
+                f"{claim.qualname!r}"
+            )
+        bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            context.module_nodes_by_file_path[source_path].body
+        )
+        if claim.qualname in bound_names and target.name != claim.qualname:
+            raise ValueError(
+                f"Authority source name {claim.qualname!r} is already bound"
+            )
+        return source_path
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7373,12 +7436,13 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
             ),
         )
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        context: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         target_identifier = self.target.required_target_id(context.source_index)
         target_digest = context.source_index.target_by_id[target_identifier]
+        self.required_authority_source_path(context)
         return (
             SourceInsertion(
                 file_path=target_digest.file_path,
@@ -7403,28 +7467,14 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeclareAuthorityOperation(
-    AuthoritySourceOperation,
-    AuthorityClaimCarrier,
-):
+class DeclareAuthorityOperation(AuthoritySourceOperation):
     """Insert a declared authority boundary and bind it to an AuthorityClaim."""
 
-    authority_claim: AuthorityClaim = codemod_payload_field(
-        PayloadRecordValueCodec(AuthorityClaim)
-    )
-
-    def declared_authority_claims(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
-    ) -> tuple[AuthorityClaim, ...]:
-        del context
-        return (self.authority_claim,)
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
+        context: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        source_path = self.required_source_path(context, "declare_authority")
+        source_path = self.required_authority_source_path(context)
         source = context.sources_by_file_path[source_path]
         insertion_line = ModuleImportInsertionPoint(
             source,
