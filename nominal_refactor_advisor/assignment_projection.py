@@ -79,6 +79,15 @@ class SingleAssignmentAndValueNameProjection:
         return pair[0]
 
     @property
+    def required_name(self) -> str:
+        """Return the direct assignment name or reject an invalid projection."""
+
+        name = self.name
+        if name is None:
+            raise ValueError("Statement is not a single direct-name assignment")
+        return name
+
+    @property
     def value(self) -> ast.AST | None:
         pair = self.pair
         if pair is None:

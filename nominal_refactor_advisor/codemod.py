@@ -19083,10 +19083,16 @@ class EnumStringAuthority:
 class EnumSubsetProjection:
     """One literal enum-value subset to derive from its enum authority."""
 
-    assignment_name: str
     statement: ast.Assign | ast.AnnAssign
-    accessor_name: str
     members: tuple[EnumStringMemberDeclaration, ...]
+
+    @property
+    def assignment_name(self) -> str:
+        return SingleAssignmentAndValueNameProjection(self.statement).required_name
+
+    @property
+    def accessor_name(self) -> str:
+        return self.accessor_name_for_assignment(self.assignment_name)
 
     @classmethod
     def from_statement(
@@ -19098,7 +19104,7 @@ class EnumSubsetProjection:
         pair = SingleAssignmentAndValueNameProjection(statement).pair
         if pair is None or pair[0] == "__all__":
             return None
-        assignment_name, value = pair
+        _assignment_name, value = pair
         values = cls.frozenset_values(value, reference.unavailable_builtin_names)
         if values is None:
             return None
@@ -19106,9 +19112,7 @@ class EnumSubsetProjection:
         if members is None:
             return None
         return cls(
-            assignment_name=assignment_name,
             statement=cast(ast.Assign | ast.AnnAssign, statement),
-            accessor_name=cls.accessor_name_for_assignment(assignment_name),
             members=members,
         )
 
@@ -22599,10 +22603,13 @@ class ContextualSemanticMirrorRecipeBuilder(
 class ClassFamilyCollectionCandidate:
     """One source projection proven equal to a complete nominal class family."""
 
-    assignment_name: str
     statement: ast.Assign | ast.AnnAssign
     collection: ClassFamilyCollectionProjection
     membership: ClassFamilyCollectionMembershipProjection
+
+    @property
+    def assignment_name(self) -> str:
+        return SingleAssignmentAndValueNameProjection(self.statement).required_name
 
 
 @dataclass(frozen=True)
@@ -22634,7 +22641,6 @@ class ClassFamilyCollectionAuthorityProof:
                 )
                 if (
                     candidate := self.candidate_for_projection(
-                        assignment_name,
                         cast(ast.Assign | ast.AnnAssign, statement),
                         collection,
                     )
@@ -22645,7 +22651,6 @@ class ClassFamilyCollectionAuthorityProof:
 
     def candidate_for_projection(
         self,
-        assignment_name: str,
         statement: ast.Assign | ast.AnnAssign,
         collection: ClassFamilyCollectionProjection,
     ) -> ClassFamilyCollectionCandidate | None:
@@ -22674,7 +22679,6 @@ class ClassFamilyCollectionAuthorityProof:
         ):
             return None
         return ClassFamilyCollectionCandidate(
-            assignment_name=assignment_name,
             statement=statement,
             collection=collection,
             membership=membership,
