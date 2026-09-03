@@ -212,11 +212,14 @@ the document's rewrite snapshot before any operation is compiled.  Imports,
 symbol moves, preflight proofs, and parse validation therefore resolve against
 the same source that will be written; an empty placeholder is never a second
 authority for the new module.
-``ExtractSymbolsToNewModuleOperation`` validates an explicitly complete symbol
-set.  ``ExtractSymbolClosureToNewModuleOperation`` instead accepts semantic root
-declarations and derives their transitive movable source-local dependencies.
-Both operations derive dependency imports, source re-exports, insertion
-geometry, and the new-file revision contract from the current source snapshot.
+``MoveSymbolsToModuleOperation`` and ``ExtractSymbolsToNewModuleOperation``
+validate an explicitly complete symbol set.  ``MoveSymbolClosureToModuleOperation``
+and ``ExtractSymbolClosureToNewModuleOperation`` instead accept semantic root
+declarations and derive their transitive movable source-local dependencies.
+The ``Move*`` operations target an indexed module; the ``Extract*`` operations
+create their destination atomically.  All four derive dependency imports,
+source re-exports, and insertion geometry from the current source snapshot.
+The extraction variants also derive the new-file revision contract.
 An import binding used only by moved declarations is removed from the source
 module; bindings with any remaining static name or string reference are
 retained.  A source-local dependency that is not one unambiguous movable class
@@ -230,7 +233,7 @@ reexports remain as an external compatibility boundary.
    :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, ArchitectureGuardViolationKind, CodemodPreflightStatus
 
 .. automodule:: nominal_refactor_advisor.codemod_imports
-   :members: ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource
+   :members: ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource, ModuleImportInsertionPoint, ImportNameRemoval, ModuleImportMutation
 
 .. automodule:: nominal_refactor_advisor.codemod_import_graph
    :members: SourceModuleImportGraph
@@ -242,7 +245,7 @@ reexports remain as an external compatibility boundary.
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, MoveSymbolsToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
    :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof

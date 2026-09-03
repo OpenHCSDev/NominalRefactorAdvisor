@@ -13,21 +13,27 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     CreateFileOperation,
     EnsureImportOperation,
-    ImportNameRemoval,
-    ImportFromModuleName,
-    ModuleImportMutation,
-    NominalSourceEdit,
-    PhysicalSourceEdit,
     RefactorRecipe,
     RefactorRecipeOperationCompiler,
     ReplaceFieldsWithCarrierOperation,
-    SourceEditOrigin,
     SourceFileCreation,
-    SourceInsertion,
+    SourceRewriteTarget,
+)
+from nominal_refactor_advisor.codemod_imports import (
+    ImportFromModuleName,
+    ImportNameRemoval,
+    ModuleImportMutation,
+)
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
+)
+from nominal_refactor_advisor.codemod_source_edits import (
+    NominalSourceEdit,
+    PhysicalSourceEdit,
+    SourceEditOrigin,
+    SourceInsertion,
     SourceSpanReplacement,
-    SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
 

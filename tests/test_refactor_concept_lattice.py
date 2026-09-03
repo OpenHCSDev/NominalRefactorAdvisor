@@ -31,6 +31,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
     }
 )
 
+
 EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
@@ -465,6 +466,7 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
 def test_module_symbol_move_derives_its_source_reexport() -> None:
     for operation_type in (
         codemod.MoveSymbolsToModuleOperation,
+        codemod.MoveSymbolClosureToModuleOperation,
         codemod.ExtractSymbolsToNewModuleOperation,
         codemod.ExtractSymbolClosureToNewModuleOperation,
     ):
@@ -480,6 +482,15 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         binding.field_name
         for binding in codemod.MoveSymbolsToModuleOperation.payload_bindings()
     ) == ("target", "rationale", "destination_path", "symbol_qualnames")
+    assert tuple(
+        binding.field_name
+        for binding in codemod.MoveSymbolClosureToModuleOperation.payload_bindings()
+    ) == (
+        "target",
+        "rationale",
+        "destination_path",
+        "root_symbol_qualnames",
+    )
     assert tuple(
         binding.field_name
         for binding in codemod.ExtractSymbolsToNewModuleOperation.payload_bindings()
@@ -502,7 +513,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
     )
     assert (
         "source_edits_from_snapshot"
-        in codemod.MoveSymbolsToModuleOperation.__dict__
+        in codemod.ExistingModuleSymbolMoveOperationABC.__dict__
     )
     assert (
         "source_edits_from_snapshot"
