@@ -18733,9 +18733,8 @@ class SemanticMirrorOperationTargets:
     authority: ResolvedClassTarget
     projection_module: AstTargetDigest
 
-    @classmethod
+    @staticmethod
     def from_finding(
-        cls,
         context: CodemodSelectorContext,
         finding: RefactorFinding,
     ) -> "SemanticMirrorOperationTargets | None":
@@ -18773,10 +18772,14 @@ class SemanticMirrorOperationTargets:
         projection_module = context.source_index.target_by_id[projection_target_id]
         if not projection_module.is_module:
             return None
-        return cls(
+        return SemanticMirrorOperationTargets(
             authority=ResolvedClassTarget(authority_target, authority_node),
             projection_module=projection_module,
         )
+
+    @property
+    def projection_path(self) -> str:
+        return self.projection_module.file_path
 
 
 class SemanticMirrorEndpointRole(StrEnum):
@@ -22671,17 +22674,11 @@ class ClassFamilyCollectionAuthorityProof:
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionDerivation:
+class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
     """Exact source proof for deriving one collection from its class authority."""
 
-    authority: ResolvedClassTarget
-    projection_module: AstTargetDigest
     candidate: ClassFamilyCollectionCandidate
     import_source: str | None
-
-    @property
-    def projection_path(self) -> str:
-        return self.projection_module.file_path
 
     @classmethod
     def from_context(
