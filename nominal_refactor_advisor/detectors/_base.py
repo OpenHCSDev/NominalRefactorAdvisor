@@ -1452,41 +1452,25 @@ DetectorCollector: TypeAlias = (
 
 
 class CandidateCollectorScope(StrEnum):
-    """Traversal scope and its source-level forwarding contract."""
+    """Traversal scope and its collector-input contract."""
 
-    MODULE = ("module", "CandidateFindingDetector", "module")
-    FLATTENED_MODULE = ("flattened_module", None, "module")
-    CROSS_MODULE = ("cross_module", "CrossModuleCandidateDetector", "modules")
+    MODULE = ("module", "module")
+    FLATTENED_MODULE = ("flattened_module", "module")
+    CROSS_MODULE = ("cross_module", "modules")
 
     def __new__(
         cls,
         value: str,
-        forwarding_base_name: str | None,
         collector_argument_name: str,
     ) -> "CandidateCollectorScope":
         member = str.__new__(cls, value)
         member._value_ = value
-        member._forwarding_base_name = forwarding_base_name
         member._collector_argument_name = collector_argument_name
         return member
 
     @property
-    def forwarding_base_name(self) -> str | None:
-        return self._forwarding_base_name
-
-    @property
     def collector_argument_name(self) -> str:
         return self._collector_argument_name
-
-    @classmethod
-    def from_forwarding_base_name(
-        cls,
-        base_name: str,
-    ) -> "CandidateCollectorScope | None":
-        return next(
-            (scope for scope in cls if scope.forwarding_base_name == base_name),
-            None,
-        )
 
 
 @dataclass(frozen=True)
@@ -1571,6 +1555,59 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         shape: CandidateCollectorBaseShape,
     ) -> str:
         return cls.collector_base_types_by_shape()[shape].__name__
+
+    @classmethod
+    def forwarding_detector_type(
+        cls,
+    ) -> type[IssueDetector]:
+        detector_types = tuple(
+            base
+            for base in cls.__bases__
+            if isinstance(base, type) and issubclass(base, IssueDetector)
+        )
+        if len(detector_types) != 1:
+            raise TypeError(
+                f"{cls.__name__} has {len(detector_types)} direct detector bases"
+            )
+        return detector_types[0]
+
+    @classmethod
+    def forwarding_detector_types_by_scope(
+        cls,
+    ) -> dict[CandidateCollectorScope, type[IssueDetector]]:
+        types_by_scope: dict[
+            CandidateCollectorScope,
+            set[type[IssueDetector]],
+        ] = defaultdict(set)
+        for shape, collector_base in cls.collector_base_types_by_shape().items():
+            types_by_scope[shape.scope].add(collector_base.forwarding_detector_type())
+        ambiguous_scopes = tuple(
+            scope
+            for scope, detector_types in types_by_scope.items()
+            if len(detector_types) != 1
+        )
+        if ambiguous_scopes:
+            raise TypeError(
+                "Candidate collector scopes resolve multiple forwarding bases: "
+                f"{tuple(scope.value for scope in ambiguous_scopes)!r}"
+            )
+        return {
+            scope: next(iter(detector_types))
+            for scope, detector_types in types_by_scope.items()
+        }
+
+    @classmethod
+    def scopes_for_forwarding_base_name(
+        cls,
+        base_name: str,
+    ) -> tuple[CandidateCollectorScope, ...]:
+        return tuple(
+            scope
+            for scope, forwarding_detector_type in (
+                cls.forwarding_detector_types_by_scope().items()
+            )
+            if forwarding_detector_type.__name__ == base_name
+        )
 
 
 class ModuleCollectorCandidateDetector(
@@ -8524,7 +8561,7 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
         detector_shape = cls.detector_shape(node)
         if detector_shape is None:
             return ()
-        collector_scope, candidate_type_source = detector_shape
+        forwarding_base_name, candidate_type_source = detector_shape
         method = next(
             (
                 statement
@@ -8536,9 +8573,19 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
         )
         if method is None:
             return ()
-        collector_call = cls.collector_call(method, collector_scope)
-        if collector_call is None:
+        collector_calls = tuple(
+            (collector_scope, collector_call)
+            for collector_scope in (
+                DerivedCandidateCollectorMixin.scopes_for_forwarding_base_name(
+                    forwarding_base_name
+                )
+            )
+            for collector_call in (cls.collector_call(method, collector_scope),)
+            if collector_call is not None
+        )
+        if len(collector_calls) != 1:
             return ()
+        collector_scope, collector_call = collector_calls[0]
         collector_name, uses_config = collector_call
         collector_base_name = (
             DerivedCandidateCollectorMixin.collector_base_name_for_shape(
@@ -8563,16 +8610,15 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
     @staticmethod
     def detector_shape(
         node: ast.ClassDef,
-    ) -> tuple[CandidateCollectorScope, str] | None:
+    ) -> tuple[str, str] | None:
         for base in node.bases:
             parameterized_base = ParameterizedBaseSource.from_node(base)
             if parameterized_base is None:
                 continue
-            collector_scope = CandidateCollectorScope.from_forwarding_base_name(
+            if DerivedCandidateCollectorMixin.scopes_for_forwarding_base_name(
                 parameterized_base.base_name
-            )
-            if collector_scope is not None:
-                return collector_scope, parameterized_base.parameter_source
+            ):
+                return parameterized_base.base_name, parameterized_base.parameter_source
         return None
 
     @staticmethod
@@ -8616,12 +8662,11 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
 
     @property
     def replaced_base_name(self) -> str:
-        base_name = self.collector_scope.forwarding_base_name
-        if base_name is None:
-            raise TypeError(
-                f"{self.collector_scope.value} has no direct forwarding base"
-            )
-        return base_name
+        return (
+            DerivedCandidateCollectorMixin.forwarding_detector_types_by_scope()[
+                self.collector_scope
+            ].__name__
+        )
 
     @property
     def recommended_base_name(self) -> str:

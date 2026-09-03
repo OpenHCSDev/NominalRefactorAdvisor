@@ -4960,6 +4960,34 @@ def test_candidate_collector_base_name_is_derived_from_unique_shape_declaration(
     )
 
 
+@pytest.mark.parametrize(
+    ("scope", "expected_base_type"),
+    (
+        (
+            base_detectors.CandidateCollectorScope.MODULE,
+            base_detectors.CandidateFindingDetector,
+        ),
+        (
+            base_detectors.CandidateCollectorScope.FLATTENED_MODULE,
+            base_detectors.CrossModuleCandidateDetector,
+        ),
+        (
+            base_detectors.CandidateCollectorScope.CROSS_MODULE,
+            base_detectors.CrossModuleCandidateDetector,
+        ),
+    ),
+)
+def test_candidate_collector_forwarding_base_is_derived_from_collector_mro(
+    scope: base_detectors.CandidateCollectorScope,
+    expected_base_type: type[base_detectors.IssueDetector],
+) -> None:
+    forwarding_types = (
+        base_detectors.DerivedCandidateCollectorMixin
+        .forwarding_detector_types_by_scope()
+    )
+    assert forwarding_types[scope] is expected_base_type
+
+
 def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:
     geometry = SourceTextGeometry("alpha beta gamma")
     replacement = SourceTextSpanReplacement.from_offsets(
