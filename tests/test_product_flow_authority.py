@@ -11,7 +11,10 @@ from nominal_refactor_advisor.class_index import (
     CompactProductAuthorityViolation,
     OpenCompactProductAuthority,
 )
-from nominal_refactor_advisor.product_flow import compact_product_flow_projection
+from nominal_refactor_advisor.product_flow import (
+    LexicalValueReference,
+    compact_product_flow_projection,
+)
 from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionTargetResolutionViolation,
     CompactOpenFunctionCall,
@@ -122,6 +125,43 @@ def test_repository_resolves_imported_and_qualified_function_authorities() -> No
         edge.context.owner_symbol
         for edge in repository.incoming_calls_for("pkg.sink.consume")
     } == {"pkg.worker.imported", "pkg.worker.qualified"}
+
+
+def test_repository_resolves_callee_declared_return_class() -> None:
+    repository = _repository(
+        _module(
+            "pkg.models",
+            "class Carrier:\n"
+            "    @classmethod\n"
+            "    def merge(cls, value) -> 'Carrier':\n"
+            "        return cls(value)\n",
+        ),
+        _module(
+            "pkg.worker",
+            "from pkg.models import Carrier\n"
+            "\n"
+            "def consume(carrier):\n"
+            "    return carrier\n"
+            "\n"
+            "def prepare(value):\n"
+            "    carrier = Carrier.merge(value)\n"
+            "    return consume(carrier)\n",
+        ),
+    )
+    call = repository.incoming_calls_for("pkg.models.Carrier.merge")[0]
+    prepare = repository.flow_contexts_by_owner_symbol["pkg.worker.prepare"]
+    consume_call = next(
+        projected_call
+        for projected_call in prepare.flow.calls
+        if projected_call.target.terminal_name == "consume"
+    )
+
+    assert repository.declared_return_class_symbol_for(call) == "pkg.models.Carrier"
+    assert repository.declared_bound_value_class_symbol(
+        prepare,
+        LexicalValueReference("carrier"),
+        consume_call.position,
+    ) == "pkg.models.Carrier"
 
 
 def test_repository_does_not_resolve_a_rebound_import_as_a_product_constructor() -> (

@@ -56,19 +56,62 @@ class NominalAnnotationSourceAuthority:
         source = self.source_or_none(annotation)
         return f'"{source}"' if source is not None else None
 
-    @staticmethod
-    def reference_or_none(annotation: ast.AST) -> ast.Name | ast.Attribute | None:
+    @classmethod
+    def reference_or_none(
+        cls,
+        annotation: ast.AST,
+    ) -> ast.Name | ast.Attribute | None:
         if isinstance(annotation, ast.Name | ast.Attribute):
-            return annotation
-        if not (
-            isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
+            reference = annotation
+        elif isinstance(annotation, ast.Constant) and isinstance(
+            annotation.value,
+            str,
         ):
+            try:
+                reference = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return None
+        else:
             return None
+        return (
+            reference
+            if isinstance(reference, ast.Name | ast.Attribute)
+            and cls.reference_parts(reference) is not None
+            else None
+        )
+
+    def reference_parts_or_none(
+        self,
+        annotation: ast.AST,
+    ) -> tuple[str, ...] | None:
+        reference = self.reference_or_none(annotation)
+        if reference is None or self.terminal_name(reference) in self.erased_type_names:
+            return None
+        return self.reference_parts(reference)
+
+    def reference_parts_from_source(
+        self,
+        annotation_source: str,
+    ) -> tuple[str, ...] | None:
         try:
-            reference = ast.parse(annotation.value, mode="eval").body
+            annotation = ast.parse(annotation_source, mode="eval").body
         except SyntaxError:
             return None
-        return reference if isinstance(reference, ast.Name | ast.Attribute) else None
+        return self.reference_parts_or_none(annotation)
+
+    @classmethod
+    def reference_parts(
+        cls,
+        reference: ast.Name | ast.Attribute,
+    ) -> tuple[str, ...] | None:
+        if isinstance(reference, ast.Name):
+            return (reference.id,)
+        parent = (
+            cls.reference_parts(reference.value)
+            if isinstance(reference.value, ast.Name | ast.Attribute)
+            else None
+        )
+        return None if parent is None else (*parent, reference.attr)
 
     @staticmethod
     def terminal_name(annotation: ast.Name | ast.Attribute) -> str:

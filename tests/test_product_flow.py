@@ -111,6 +111,47 @@ def test_function_signature_owns_full_python_argument_binding() -> None:
     assert binding.argument_for("d") is None
 
 
+def test_function_projection_retains_nominal_annotation_declarations() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def build(item: pkg.models.Item, values: list[int]) -> 'pkg.Result':\n"
+            "    return pkg.Result(item, values)\n"
+        )
+    )
+    declaration = projection.function_declarations[0]
+    item, values = declaration.signature.parameters
+
+    assert item.annotation_expression == "pkg.models.Item"
+    assert item.annotation_reference_parts == ("pkg", "models", "Item")
+    assert item.has_annotation
+    assert not item.is_plain_required
+    assert values.annotation_expression == "list[int]"
+    assert values.annotation_reference_parts is None
+    assert declaration.return_annotation_expression == "'pkg.Result'"
+    assert declaration.return_annotation_reference_parts == ("pkg", "Result")
+
+
+def test_function_flow_proves_unchanged_bound_call_result() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def caller(value, replacement):\n"
+            "    result = make(value)\n"
+            "    consume(result)\n"
+            "    result = replacement\n"
+            "    consume(result)\n"
+        )
+    )
+    flow = next(item for item in projection.flows if item.owner.qualname == "caller")
+    make_call = next(call for call in flow.calls if call.target.terminal_name == "make")
+    first_consume, second_consume = tuple(
+        call for call in flow.calls if call.target.terminal_name == "consume"
+    )
+    result = LexicalValueReference("result")
+
+    assert flow.bound_call_result_for(result, first_consume.position) == make_call
+    assert flow.bound_call_result_for(result, second_consume.position) is None
+
+
 def test_function_signature_rejects_every_non_exact_binding_boundary() -> None:
     signature = _signature("def target(a, *, b):\n    pass\n")
 

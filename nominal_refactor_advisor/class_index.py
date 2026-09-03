@@ -23,7 +23,10 @@ from functools import cached_property, lru_cache
 from heapq import merge
 from typing import Callable, ClassVar, Iterable, NamedTuple, Self, TypeAlias
 
-from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from .annotation_semantics import (
+    CLASSVAR_ANNOTATION_AUTHORITY,
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+)
 from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     CompactModuleIdentity,
@@ -202,12 +205,7 @@ class CompactClassMemberDeclaration(NamedTuple):
             CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
         ):
             annotation = annotation.slice
-        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-            try:
-                annotation = ast.parse(annotation.value, mode="eval").body
-            except SyntaxError:
-                return None
-        return ATTRIBUTE_CHAIN_AUTHORITY.project(annotation)
+        return NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(annotation)
 
 
 class CompactProductAuthorityViolation(StrEnum):

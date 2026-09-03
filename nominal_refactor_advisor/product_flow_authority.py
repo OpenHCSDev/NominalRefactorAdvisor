@@ -764,6 +764,39 @@ class CompactProductFlowRepository:
             if edge.callee.identity.symbol == function_symbol
         )
 
+    def declared_return_class_symbol_for(
+        self,
+        call: CompactResolvedFunctionCall,
+    ) -> str | None:
+        """Resolve one callee-owned nominal return annotation as a class."""
+
+        reference_parts = call.callee.return_annotation_reference_parts
+        if reference_parts is None:
+            return None
+        return self.class_resolver.symbol_for(
+            module_name=call.callee.identity.module_name,
+            reference_parts=reference_parts,
+            allow_unique_unqualified=False,
+        )
+
+    def declared_bound_value_class_symbol(
+        self,
+        context: CompactProductFlowContext,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition,
+    ) -> str | None:
+        """Resolve the declared class of one unchanged bound call result."""
+
+        call = context.flow.bound_call_result_for(reference, use_position)
+        if call is None:
+            return None
+        resolved_call = self.resolve_function_call(context, call).resolved_call
+        return (
+            None
+            if resolved_call is None
+            else self.declared_return_class_symbol_for(resolved_call)
+        )
+
     def callable_escapes_for(
         self,
         function_symbol: str,

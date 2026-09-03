@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Self, TypeAlias
 
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import CollectedFamily, CompactModuleIdentity, ParsedModule
 from .source_geometry import SourceByteSpan
 
@@ -378,7 +379,40 @@ class CompactFunctionParameter:
     name: str
     kind: CompactParameterKind
     has_default: bool = False
-    has_annotation: bool = False
+    annotation_expression: str | None = None
+
+    @classmethod
+    def from_argument(
+        cls,
+        argument: ast.arg,
+        kind: CompactParameterKind,
+        *,
+        has_default: bool = False,
+    ) -> Self:
+        return cls(
+            name=argument.arg,
+            kind=kind,
+            has_default=has_default,
+            annotation_expression=(
+                None
+                if argument.annotation is None
+                else ast.unparse(argument.annotation)
+            ),
+        )
+
+    @property
+    def has_annotation(self) -> bool:
+        return self.annotation_expression is not None
+
+    @property
+    def annotation_reference_parts(self) -> tuple[str, ...] | None:
+        return (
+            None
+            if self.annotation_expression is None
+            else NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_from_source(
+                self.annotation_expression
+            )
+        )
 
     @property
     def required(self) -> bool:
@@ -471,32 +505,29 @@ class CompactFunctionSignature:
         positional = (*arguments.posonlyargs, *arguments.args)
         positional_default_start = len(positional) - len(arguments.defaults)
         parameters = [
-            CompactFunctionParameter(
-                argument.arg,
+            CompactFunctionParameter.from_argument(
+                argument,
                 (
                     CompactParameterKind.POSITIONAL_ONLY
                     if index < len(arguments.posonlyargs)
                     else CompactParameterKind.POSITIONAL_OR_KEYWORD
                 ),
                 has_default=index >= positional_default_start,
-                has_annotation=argument.annotation is not None,
             )
             for index, argument in enumerate(positional)
         ]
         if arguments.vararg is not None:
             parameters.append(
-                CompactFunctionParameter(
-                    arguments.vararg.arg,
+                CompactFunctionParameter.from_argument(
+                    arguments.vararg,
                     CompactParameterKind.VAR_POSITIONAL,
-                    has_annotation=arguments.vararg.annotation is not None,
                 )
             )
         parameters.extend(
-            CompactFunctionParameter(
-                argument.arg,
+            CompactFunctionParameter.from_argument(
+                argument,
                 CompactParameterKind.KEYWORD_ONLY,
                 has_default=default is not None,
-                has_annotation=argument.annotation is not None,
             )
             for argument, default in zip(
                 arguments.kwonlyargs,
@@ -506,10 +537,9 @@ class CompactFunctionSignature:
         )
         if arguments.kwarg is not None:
             parameters.append(
-                CompactFunctionParameter(
-                    arguments.kwarg.arg,
+                CompactFunctionParameter.from_argument(
+                    arguments.kwarg,
                     CompactParameterKind.VAR_KEYWORD,
-                    has_annotation=arguments.kwarg.annotation is not None,
                 )
             )
         return cls(tuple(parameters))
@@ -1087,6 +1117,17 @@ class CompactFunctionDeclaration:
     owner_class_qualname: str | None
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
+    return_annotation_expression: str | None = None
+
+    @property
+    def return_annotation_reference_parts(self) -> tuple[str, ...] | None:
+        return (
+            None
+            if self.return_annotation_expression is None
+            else NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_from_source(
+                self.return_annotation_expression
+            )
+        )
 
     @property
     def binding_kind(self) -> CompactFunctionBindingKind:
@@ -1176,6 +1217,45 @@ class CompactFunctionFlow:
         self,
     ) -> dict[CompactLexicalMutation, CompactExactValueAlias]:
         return {alias.binding_mutation: alias for alias in self.exact_value_aliases}
+
+    def bound_call_result_for(
+        self,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition,
+    ) -> CompactFunctionCall | None:
+        """Return the unique call whose unchanged result reaches one use."""
+
+        matching_calls = []
+        mutations = tuple(
+            mutation
+            for mutation in self.mutations
+            if mutation.reference == reference
+        )
+        for call in self.calls:
+            if (
+                call.result.binding != reference
+                or not call.position.dominates(use_position)
+            ):
+                continue
+            binding_mutations = tuple(
+                mutation
+                for mutation in mutations
+                if mutation.kind is CompactMutationKind.ASSIGNMENT
+                and mutation.position.branch_path == call.position.branch_path
+                and mutation.position.statement_index == call.position.statement_index
+                and call.position.dominates(mutation.position)
+            )
+            if len(binding_mutations) != 1:
+                continue
+            binding_position = binding_mutations[0].position
+            if any(
+                binding_position.dominates(mutation.position)
+                and mutation.position.dominates(use_position)
+                for mutation in mutations
+            ):
+                continue
+            matching_calls.append(call)
+        return matching_calls[0] if len(matching_calls) == 1 else None
 
     def value_origin_for(
         self,
@@ -1368,6 +1448,9 @@ class _DeclarationCollector(ast.NodeVisitor):
             ),
             signature=CompactFunctionSignature.from_arguments(node.args),
             decorators=decorators,
+            return_annotation_expression=(
+                None if node.returns is None else ast.unparse(node.returns)
+            ),
         )
         lexical_scopes = _unique_strings(
             (qualname, *reversed(self.function_qualnames), "")
