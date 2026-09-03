@@ -41,6 +41,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
+from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .native_syntax import NativePythonSyntaxIndex
 from .source_identity import resolved_source_path_text
@@ -4316,16 +4317,13 @@ def _class_direct_string_member_assignments(
 def _module_string_enum_member_assignments(
     parsed_module: ParsedModule,
 ) -> dict[tuple[str, str], str]:
-    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
     members: dict[tuple[str, str], str] = {}
     for statement in parsed_module.module.body:
         if not isinstance(statement, ast.ClassDef):
             continue
-        if not enum_base_names & {
-            terminal_name
-            for base in statement.bases
-            if (terminal_name := _terminal_reference_name(base)) is not None
-        }:
+        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(
+            _terminal_reference_name(base) for base in statement.bases
+        ):
             continue
         for member_name, string_value in _class_direct_string_member_assignments(
             statement

@@ -70,6 +70,7 @@ from .codemod_payload import (
     codemod_payload_field,
 )
 from .deadline import scan_deadline_checkpoint
+from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
 from .models import (
@@ -100,8 +101,6 @@ _CLASS_SUFFIXES = (
     "Record",
     "Spec",
 )
-_ENUM_BASE_NAMES = frozenset(("Enum", "IntEnum", "StrEnum"))
-
 SemanticClassFamilyIndex: TypeAlias = ClassFamilyIndex | CompactClassFamilyIndex
 IndexedClassDeclarationT = TypeVar(
     "IndexedClassDeclarationT",
@@ -3669,9 +3668,8 @@ class SemanticAuthorityDeclaration:
 
     @property
     def is_enum(self) -> bool:
-        return any(
-            base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
-            for base_name in self.indexed_class.declared_base_names
+        return PYTHON_ENUM_BASE_AUTHORITY.matches_any(
+            self.indexed_class.declared_base_names
         )
 
 

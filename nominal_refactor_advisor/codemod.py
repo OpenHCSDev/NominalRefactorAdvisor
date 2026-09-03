@@ -103,6 +103,7 @@ from .detectors._base import (
     IssueDetector,
 )
 from .descriptor_algebra import ConstantProperty
+from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
@@ -7729,9 +7730,8 @@ class ClassDeclarationPromotionClass:
 
     @property
     def is_enum_class(self) -> bool:
-        return any(
-            base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
-            for base_name in _class_base_source_names(self.node)
+        return PYTHON_ENUM_BASE_AUTHORITY.matches_any(
+            _class_base_source_names(self.node)
         )
 
 
@@ -8083,9 +8083,6 @@ class ExtractMethodsToClassOperation(
         if class_would_be_empty and deletion_index == 0:
             return ("    pass\n",)
         return ()
-
-
-_ENUM_BASE_NAMES = frozenset(("Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"))
 
 
 @dataclass(frozen=True)
@@ -17372,9 +17369,8 @@ class AutoRegisterMroOrderingDerivation:
             (class_name, target.node)
             for class_name, target in class_nodes_by_name.items()
             if class_name in annotation_names
-            and any(
-                _terminal_name(base) in {"Enum", "StrEnum"}
-                for base in target.node.bases
+            and PYTHON_ENUM_BASE_AUTHORITY.matches_any(
+                _terminal_name(base) for base in target.node.bases
             )
         )
         return enum_declarations[0] if len(enum_declarations) == 1 else None

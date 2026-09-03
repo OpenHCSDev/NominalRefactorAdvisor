@@ -48,6 +48,7 @@ from ..constructor_algebra import (
     ConstructorVariantSpec,
 )
 from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
+from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from ..observation_shapes import LineSymbolObservationMixin
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
@@ -2750,11 +2751,12 @@ def _suffix_axis_surface_candidates(
 
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
     enum_members: dict[str, tuple[str, ...]] = {}
-    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        if not set(CLASS_NODE_AUTHORITY.declared_base_names(node)) & enum_base_names:
+        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(
+            CLASS_NODE_AUTHORITY.declared_base_names(node)
+        ):
             continue
         members: list[str] = []
         for statement in node.body:
