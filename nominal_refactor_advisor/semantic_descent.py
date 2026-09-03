@@ -2319,9 +2319,15 @@ class SemanticDerivationCertificate(SemanticDescentCertificate):
 
 
 @dataclass(frozen=True)
-class SemanticDescentGraphSpace:
+class SemanticAuthorityInventory:
+    """Authorities and their facts as one construction result."""
+
     authorities: tuple[SemanticAuthority, ...]
     facts: tuple[SemanticFact, ...]
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphSpace(SemanticAuthorityInventory):
     projections: tuple[PresentationProjection, ...]
 
     @cached_property
@@ -3461,14 +3467,6 @@ def _build_semantic_descent_graph_cached(
         resolution,
         class_index=class_index,
     )
-
-
-@dataclass(frozen=True)
-class SemanticAuthorityInventory:
-    """Authorities and their facts as one construction result."""
-
-    authorities: tuple[SemanticAuthority, ...]
-    facts: tuple[SemanticFact, ...]
 
 
 @dataclass(frozen=True)

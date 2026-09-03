@@ -6256,6 +6256,40 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
 
 
 @dataclass(frozen=True)
+class ClassBaseAdditionReplacementPlan:
+    """Add one nominal base to a resolved class cohort."""
+
+    base_name: str
+    rationale: str
+
+    def source_edits(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        replacements = []
+        for class_target in targets.targets:
+            if self.base_name in _class_base_source_names(class_target.node):
+                continue
+            header_authority = ClassHeaderSpanSourceAuthority(
+                node=class_target.node,
+                source=targets.source_for(class_target.file_path),
+            )
+            replacements.append(
+                SourceSpanReplacement(
+                    file_path=class_target.file_path,
+                    start_line=header_authority.start_line,
+                    end_line=header_authority.end_line,
+                    replacement_lines=header_authority.with_prepended_base(
+                        self.base_name
+                    ),
+                    rationale=self.rationale
+                    or f"Add base {self.base_name!r} to {class_target.qualname!r}.",
+                )
+            )
+        return tuple(replacements)
+
+
+@dataclass(frozen=True)
 class ClassMemberPromotionReplacementPlanABC(ClassMemberPromotionSpec, ABC):
     """Shared rewrites for promoting class members into one nominal base."""
 
@@ -6283,7 +6317,10 @@ class ClassMemberPromotionReplacementPlanABC(ClassMemberPromotionSpec, ABC):
     ) -> tuple[PhysicalSourceEdit, ...]:
         return (
             self.base_insertion_replacement(targets),
-            *self.base_addition_replacements(targets),
+            *ClassBaseAdditionReplacementPlan(
+                base_name=self.base_name,
+                rationale=self.rationale,
+            ).source_edits(targets),
             *ClassMemberDeletionReplacementPlan(
                 member_names=self.member_names,
                 statement_type=self.statement_type,
@@ -6304,32 +6341,6 @@ class ClassMemberPromotionReplacementPlanABC(ClassMemberPromotionSpec, ABC):
             rationale=self.rationale
             or f"Insert promoted-member base {self.base_name!r}.",
         )
-
-    def base_addition_replacements(
-        self,
-        targets: ClassMemberPromotionTargets,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        replacements = []
-        for class_target in targets.targets:
-            if self.base_name in _class_base_source_names(class_target.node):
-                continue
-            header_authority = ClassHeaderSpanSourceAuthority(
-                node=class_target.node,
-                source=targets.source_for(class_target.file_path),
-            )
-            replacements.append(
-                SourceSpanReplacement(
-                    file_path=class_target.file_path,
-                    start_line=header_authority.start_line,
-                    end_line=header_authority.end_line,
-                    replacement_lines=header_authority.with_prepended_base(
-                        self.base_name
-                    ),
-                    rationale=self.rationale
-                    or f"Add base {self.base_name!r} to {class_target.qualname!r}.",
-                )
-            )
-        return tuple(replacements)
 
 
 @dataclass(frozen=True)
@@ -6451,6 +6462,34 @@ class NamedClassMemberAuthoritySourceRewriteABC(ABC):
 
 
 @dataclass(frozen=True)
+class ExactDataclassFieldEvidence:
+    """One source anchor that re-proves an exact repeated-field component."""
+
+    field_name: str
+
+    def __post_init__(self) -> None:
+        if not self.field_name.isidentifier() or keyword_module.iskeyword(
+            self.field_name
+        ):
+            raise ValueError("Evidence field name must be an identifier")
+
+    def required_component(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        target: AstTargetDigest,
+    ) -> ExactDataclassFieldAuthorityComponent:
+        if target.node_kind is not AstTargetNodeKind.CLASS:
+            raise ValueError("Exact dataclass field factoring requires a class target")
+        return (
+            snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
+                file_path=target.file_path,
+                class_qualname=target.qualname,
+                field_name=self.field_name,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class _ExactDataclassFieldAuthoritySourceRewrite(
     NamedClassMemberAuthoritySourceRewriteABC
 ):
@@ -6530,10 +6569,7 @@ class FactorExactDataclassFieldAuthorityOperation(
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if not self.evidence_field_name.isidentifier() or keyword_module.iskeyword(
-            self.evidence_field_name
-        ):
-            raise ValueError("Evidence field name must be an identifier")
+        ExactDataclassFieldEvidence(self.evidence_field_name)
 
     def _source_rewrite(
         self,
@@ -6552,14 +6588,221 @@ class FactorExactDataclassFieldAuthorityOperation(
         snapshot: CodemodSourceSnapshot,
     ) -> ExactDataclassFieldAuthorityComponent:
         _target_id, target, _node = self.target_node_from_context(snapshot)
-        if target.node_kind is not AstTargetNodeKind.CLASS:
-            raise ValueError("Exact dataclass field factoring requires a class target")
-        return (
-            snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
-                file_path=target.file_path,
-                class_qualname=target.qualname,
-                field_name=self.evidence_field_name,
+        return ExactDataclassFieldEvidence(
+            self.evidence_field_name
+        ).required_component(
+            snapshot,
+            target,
+        )
+
+
+@dataclass(frozen=True)
+class ExistingDataclassFieldAuthorityTargets:
+    """A behavior-free field owner and every class that should descend from it."""
+
+    component: ExactDataclassFieldAuthorityComponent
+    authority: ResolvedClassTarget
+    participants: ClassMemberPromotionTargets
+
+    @classmethod
+    def required(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        component: ExactDataclassFieldAuthorityComponent,
+        authority: ResolvedClassTarget,
+    ) -> "ExistingDataclassFieldAuthorityTargets":
+        authority_participants = tuple(
+            participant
+            for participant in component.participants
+            if participant.indexed_class.qualname == authority.qualname
+        )
+        if len(authority_participants) != 1:
+            raise ValueError(
+                "Existing field authority must belong to the proved component"
             )
+        if authority_participants[0].fields != component.fields:
+            raise ValueError(
+                "Existing field authority must own exactly the repeated fields"
+            )
+        executable_body = tuple(statements_without_docstring(authority.node.body))
+        if tuple(
+            ClassDeclarationPromotionStatement(statement).name
+            for statement in executable_body
+        ) != component.field_names:
+            raise ValueError(
+                "Existing field authority must be behavior-free outside its fields"
+            )
+
+        resolved = ClassMemberPromotionTargets.resolve(
+            snapshot,
+            source_path=component.file_path,
+            class_names=component.participant_class_names,
+        )
+        resolved_authorities = tuple(
+            target
+            for target in resolved.targets
+            if target.target.target_id == authority.target.target_id
+        )
+        if len(resolved_authorities) != 1:
+            raise ValueError("Existing field authority source target is ambiguous")
+        participants = replace(
+            resolved,
+            targets=tuple(
+                target
+                for target in resolved.targets
+                if target.target.target_id != authority.target.target_id
+            ),
+        )
+        if not participants.targets:
+            raise ValueError("Existing field authority has no participating classes")
+        if not participants.supports_base_rewrites():
+            raise ValueError("Existing field authority requires lossless class headers")
+        targets = cls(component, resolved_authorities[0], participants)
+        targets.require_safe_relocation(snapshot)
+        return targets
+
+    @property
+    def authority_name(self) -> str:
+        return self.authority.node.name
+
+    @property
+    def authority_span(self) -> SourceNodeSpan:
+        return SourceNodeSpan(
+            self.authority.node,
+            SourceNodeDecoratorPolicy.INCLUDE,
+        )
+
+    @property
+    def requires_relocation(self) -> bool:
+        return self.authority_span.start_line > self.participants.insertion_line
+
+    def require_safe_relocation(self, snapshot: CodemodSourceSnapshot) -> None:
+        if not self.requires_relocation:
+            return
+        source = self.participants.source_for(self.authority.file_path)
+        source_lines = source.splitlines()
+        preceding_separator = source_lines[
+            self.authority_span.start_line - 3 : self.authority_span.start_line - 1
+        ]
+        if len(preceding_separator) != 2 or any(
+            line.strip() for line in preceding_separator
+        ):
+            raise ValueError(
+                "Existing field authority relocation requires a complete "
+                "top-level separator"
+            )
+        module = snapshot.module_nodes_by_file_path[self.authority.file_path]
+        intervening_statements = tuple(
+            statement
+            for statement in module.body
+            if self.participants.insertion_line <= statement.lineno
+            < self.authority_span.start_line
+        )
+        if any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == self.authority_name
+            for statement in intervening_statements
+            for node in ast.walk(statement)
+        ):
+            raise ValueError(
+                "Existing field authority is referenced before its current declaration"
+            )
+        preceding_statements = tuple(
+            statement
+            for statement in module.body
+            if statement.lineno < self.participants.insertion_line
+        )
+        if self.authority_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            preceding_statements
+        ):
+            raise ValueError(
+                "Existing field authority name is already bound before relocation"
+            )
+
+    def relocation_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        if not self.requires_relocation:
+            return ()
+        source = self.participants.source_for(self.authority.file_path)
+        authority_source = self.authority_span.line_span.source_from(source)
+        rationale = f"Move field authority {self.authority_name!r} before its users."
+        return (
+            SourceInsertion(
+                file_path=self.authority.file_path,
+                insertion_line=self.participants.insertion_line,
+                inserted_lines=(
+                    *SourceTargetEditor.source_lines(authority_source),
+                    "\n",
+                    "\n",
+                ),
+                rationale=rationale,
+            ),
+            SourceSpanReplacement(
+                file_path=self.authority.file_path,
+                start_line=self.authority_span.start_line - 2,
+                end_line=self.authority_span.end_line,
+                replacement_lines=(),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _ExistingDataclassFieldAuthoritySourceRewrite:
+    """Physical rewrite descending a field cohort from its existing owner."""
+
+    targets: ExistingDataclassFieldAuthorityTargets
+    rationale: str
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return (
+            *self.targets.relocation_edits(),
+            *ClassBaseAdditionReplacementPlan(
+                base_name=self.targets.authority_name,
+                rationale=self.rationale,
+            ).source_edits(self.targets.participants),
+            *ClassMemberDeletionReplacementPlan(
+                member_names=self.targets.component.field_names,
+                statement_type=ClassDeclarationPromotionStatement,
+                rationale=self.rationale,
+            ).source_edits(self.targets.participants),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteExactDataclassFieldsToExistingAuthorityOperation(
+    RepositorySourceReprovedOperation
+):
+    """Re-prove repeated fields and descend their cohort from an existing owner."""
+
+    evidence_field_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        ExactDataclassFieldEvidence(self.evidence_field_name)
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self._source_rewrite(snapshot).source_edits()
+
+    def _source_rewrite(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _ExistingDataclassFieldAuthoritySourceRewrite:
+        _target_id, target, node = self.target_node_from_context(snapshot)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError("Existing field authority target must be a class")
+        component = ExactDataclassFieldEvidence(
+            self.evidence_field_name
+        ).required_component(snapshot, target)
+        return _ExistingDataclassFieldAuthoritySourceRewrite(
+            targets=ExistingDataclassFieldAuthorityTargets.required(
+                snapshot,
+                component,
+                ResolvedClassTarget(target, node),
+            ),
+            rationale=self.rationale,
         )
 
 

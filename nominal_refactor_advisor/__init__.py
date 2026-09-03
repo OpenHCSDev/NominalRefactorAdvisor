@@ -45,6 +45,7 @@ from .codemod import (
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
+    PromoteExactDataclassFieldsToExistingAuthorityOperation,
     NominalBoundaryConcept,
     RefactorConcept,
     RefactorRecipe,
