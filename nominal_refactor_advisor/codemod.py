@@ -53,6 +53,7 @@ from .ast_tools import (
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
+    PythonModulePathAuthority,
     SourceModule,
     SourceModuleBatchParser,
     python_module_name_is_importable,
@@ -74,6 +75,7 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     build_compact_class_family_index,
     build_class_family_index,
+    declared_nominal_base_count,
 )
 from .codemod_payload import (
     BooleanPayloadValueCodec,
@@ -220,6 +222,41 @@ class RewriteOperation(StrEnum):
     """Supported source-index anchored rewrite operations."""
 
     REPLACE_TARGET = "replace_target"
+
+
+class CodemodSourceDependencyScope(StrEnum):
+    """Source coverage required to prove one operation's physical edits."""
+
+    EXPLICIT_TARGETS = ("explicit_targets", True)
+    REPOSITORY = ("repository", False)
+
+    def __new__(
+        cls,
+        value: str,
+        permits_fast_snapshot: bool,
+    ) -> "CodemodSourceDependencyScope":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._permits_fast_snapshot = permits_fast_snapshot
+        return member
+
+    @property
+    def permits_fast_snapshot(self) -> bool:
+        """Return whether explicit targets are a complete proof source."""
+
+        return self._permits_fast_snapshot
+
+    @classmethod
+    def compose(
+        cls,
+        scopes: Iterable["CodemodSourceDependencyScope"],
+    ) -> "CodemodSourceDependencyScope":
+        """Return the first scope that forbids narrowing, if one exists."""
+
+        return next(
+            (scope for scope in scopes if not scope.permits_fast_snapshot),
+            cls.EXPLICIT_TARGETS,
+        )
 
 
 def _validate_ast_span_source(source: str, file_path: str) -> None:
@@ -1721,9 +1758,15 @@ class CodemodSourceContext:
 
 def _parsed_modules_from_source_mapping(
     source_by_path: Mapping[str, str],
+    *,
+    analysis_roots: Iterable[Path] = (),
 ) -> tuple[ParsedModule, ...]:
+    module_path_authority = PythonModulePathAuthority.from_parsed_modules(
+        (),
+        analysis_roots=analysis_roots,
+    )
     return tuple(
-        SourceModule.from_source_path(Path(file_path), source).parse()
+        module_path_authority.source_module(Path(file_path), source).parse()
         for file_path, source in sorted(source_by_path.items())
     )
 
@@ -2162,6 +2205,20 @@ class ResolvedClassTarget:
     def line(self) -> int:
         return self.target.line
 
+    def symbol(self, context: CodemodSelectorContext) -> str | None:
+        """Project this resolved source class into the repository class graph."""
+
+        return context.required_class_family_index.symbol_for(
+            file_path=self.file_path,
+            qualname=self.qualname,
+        )
+
+    def required_symbol(self, context: CodemodSelectorContext) -> str:
+        symbol = self.symbol(context)
+        if symbol is None:
+            raise ValueError(f"Class {self.qualname!r} is absent from the family index")
+        return symbol
+
     @property
     def dataclass_argument_sources(self) -> tuple[str, ...] | None:
         for decorator in self.node.decorator_list:
@@ -2340,9 +2397,14 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def from_source_mapping(
         cls,
         source_by_path: Mapping[str, str],
+        *,
+        analysis_roots: Iterable[Path] = (),
     ) -> "CodemodSourceSnapshot":
         canonical_sources = canonical_source_mapping(source_by_path)
-        modules = tuple(_parsed_modules_from_source_mapping(canonical_sources))
+        modules = _parsed_modules_from_source_mapping(
+            canonical_sources,
+            analysis_roots=analysis_roots,
+        )
         return cls.from_modules(modules)
 
     @classmethod
@@ -4485,6 +4547,9 @@ class RefactorRecipeOperation(
     operation_key_value: ClassVar[str]
     discriminator_field_name: ClassVar[str] = "operation"
     omit_none_payload_values: ClassVar[bool] = True
+    source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
+        CodemodSourceDependencyScope.EXPLICIT_TARGETS
+    )
 
     @classmethod
     def operation_key(cls) -> str:
@@ -4646,7 +4711,19 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceDerivedAuthorityProjectionOperation(SourceReprovedOperation, ABC):
+class RepositorySourceReprovedOperation(SourceReprovedOperation, ABC):
+    """Source-reproved operation whose proof requires repository-wide context."""
+
+    source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
+        CodemodSourceDependencyScope.REPOSITORY
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceDerivedAuthorityProjectionOperation(
+    RepositorySourceReprovedOperation,
+    ABC,
+):
     """Exact authority/projection pair whose edits derive from current source."""
 
     projection_target: SourceRewriteTarget = codemod_payload_field(
@@ -5227,7 +5304,7 @@ class _ClosedParameterConveyorSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseClosedParameterConveyorOperation(SourceReprovedOperation):
+class CollapseClosedParameterConveyorOperation(RepositorySourceReprovedOperation):
     """Re-prove and atomically collapse one authority-wide parameter conveyor."""
 
     def source_edits_from_snapshot(
@@ -5367,7 +5444,9 @@ class DeleteClassAssignmentsOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteInheritedAutoRegisterConfigurationOperation(SourceReprovedOperation):
+class DeleteInheritedAutoRegisterConfigurationOperation(
+    RepositorySourceReprovedOperation
+):
     """Delete only configuration currently proved identical to an inherited value."""
 
     def source_edits_from_snapshot(
@@ -5485,7 +5564,7 @@ class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClassMemberPromotionOperation(SourceReprovedOperation, ABC):
+class ClassMemberPromotionOperation(RepositorySourceReprovedOperation, ABC):
     """Recipe operation that promotes repeated class members to a shared base."""
 
     base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -5857,16 +5936,7 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
 
     @cached_property
     def required_class_symbols(self) -> tuple[str, ...]:
-        symbols = tuple(
-            self.required_class_family_index.symbol_for(
-                file_path=target.file_path,
-                qualname=target.qualname,
-            )
-            for target in self.targets
-        )
-        if any(symbol is None for symbol in symbols):
-            raise ValueError("Method promotion requires resolved class-family targets")
-        return tuple(symbol for symbol in symbols if symbol is not None)
+        return tuple(target.required_symbol(self) for target in self.targets)
 
     @cached_property
     def indexed_classes(self) -> tuple[IndexedClass, ...]:
@@ -6355,7 +6425,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class FactorExactMethodRoleOperation(SourceReprovedOperation):
+class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
     """Re-prove one exact-method cohort and give it a named MI authority."""
 
     base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -6418,7 +6488,7 @@ class FactorExactMethodRoleOperation(SourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PromoteExactLeafMethodsToAncestorOperation(SourceReprovedOperation):
+class PromoteExactLeafMethodsToAncestorOperation(RepositorySourceReprovedOperation):
     """Re-prove and promote one authority-wide exact leaf-method component."""
 
     def source_edits_from_snapshot(
@@ -6480,7 +6550,7 @@ class _ParallelMirroredLeafFamilySourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class FactorParallelMirroredLeafFamilyOperation(SourceReprovedOperation):
+class FactorParallelMirroredLeafFamilyOperation(RepositorySourceReprovedOperation):
     """Re-prove and factor parallel leaf behavior into MI role authorities."""
 
     def source_edits_from_snapshot(
@@ -7612,7 +7682,7 @@ class _TypeKeyedBehaviorSourceDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DescendTypeKeyedBehaviorProjectionOperation(SourceReprovedOperation):
+class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperation):
     """Re-prove and descend external type-keyed behavior onto nominal types."""
 
     def source_edits_from_snapshot(
@@ -8052,7 +8122,7 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DescendEnumKeyedDerivedMapFacadeOperation(SourceReprovedOperation):
+class DescendEnumKeyedDerivedMapFacadeOperation(RepositorySourceReprovedOperation):
     """Re-prove and move derived-map queries onto their nominal enum key."""
 
     def source_edits_from_snapshot(
@@ -8188,6 +8258,29 @@ class ClassHeaderSpanSourceAuthority:
     def without_base(self, base_name: str) -> tuple[str, ...]:
         return self.with_base_items(
             tuple(base for base in self.base_items if base != base_name)
+        )
+
+    def with_replaced_base(
+        self,
+        old_base_name: str,
+        new_base_name: str,
+    ) -> tuple[str, ...]:
+        matching_indexes = tuple(
+            index
+            for index, base_name in enumerate(self.base_items)
+            if base_name == old_base_name
+        )
+        if len(matching_indexes) != 1:
+            raise ValueError(
+                f"Class header requires one base {old_base_name!r}; "
+                f"found {len(matching_indexes)}"
+            )
+        replacement_index = matching_indexes[0]
+        return self.with_base_items(
+            tuple(
+                new_base_name if index == replacement_index else base_name
+                for index, base_name in enumerate(self.base_items)
+            )
         )
 
     @property
@@ -10203,12 +10296,7 @@ class ClassAuthorityReferenceProof:
         projection_path: str,
     ) -> "ClassAuthorityReferenceProof":
         projection_module = context.parsed_module_for_source_path(projection_path)
-        authority_symbol = context.required_class_family_index.symbol_for(
-            file_path=authority.file_path,
-            qualname=authority.qualname,
-        )
-        if authority_symbol is None:
-            raise ValueError("Class authority reference source is unavailable")
+        authority_symbol = authority.required_symbol(context)
         return cls(
             authority=authority,
             authority_symbol=authority_symbol,
@@ -10812,6 +10900,169 @@ class RemoveClassBaseOperation(
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ReplaceDirectClassBaseOperation(RepositorySourceReprovedOperation):
+    """Replace one class authority across its complete direct-child cohort."""
+
+    replacement_base: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), self.replacement_base)
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        replaced = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
+        replacement = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            self.replacement_base,
+        )
+        replaced_symbol = replaced.required_symbol(snapshot)
+        replacement_symbol = replacement.required_symbol(snapshot)
+        if replaced_symbol == replacement_symbol:
+            raise ValueError("Direct class-base replacement requires distinct classes")
+        if "." in replacement.qualname:
+            raise ValueError("Replacement class base must be a top-level declaration")
+        child_symbols = snapshot.required_class_family_index.children_by_symbol.get(
+            replaced_symbol,
+            (),
+        )
+        if not child_symbols:
+            raise ValueError("Replaced class base has no direct children")
+        child_target_ids = ClassFamilyTargetSelector.target_ids_for_symbols(
+            snapshot.source_index,
+            snapshot.required_class_family_index,
+            child_symbols,
+        )
+        if len(child_target_ids) != len(child_symbols):
+            raise ValueError("Direct-child class targets are incomplete")
+        return tuple(
+            edit
+            for child_target_id in child_target_ids
+            for edit in self.child_source_edits(
+                snapshot,
+                replaced_symbol,
+                replacement_symbol,
+                replacement,
+                child_target_id,
+            )
+        )
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        snapshot = context.execution_snapshot()
+        self.source_edits_from_snapshot(snapshot)
+        replacement = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            self.replacement_base,
+        )
+        return (
+            AstTargetAuthorityClaim.from_target(
+                replacement.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+    def child_source_edits(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        replaced_symbol: str,
+        replacement_symbol: str,
+        replacement: ResolvedClassTarget,
+        child_target_id: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        child_target = snapshot.source_index.target_by_id[child_target_id]
+        child_node = snapshot.ast_target_nodes_by_id[child_target_id]
+        if not isinstance(child_node, ast.ClassDef):
+            raise ValueError("Direct-child source target is not a class")
+        indexed_child = snapshot.required_class_family_index.class_for(
+            snapshot.source_index.symbol_for_target(child_target)
+        )
+        if indexed_child is None:
+            raise ValueError("Direct-child class is absent from the family index")
+        if len(indexed_child.resolved_base_symbols) != declared_nominal_base_count(
+            indexed_child
+        ):
+            raise ValueError(
+                f"Direct child {child_target.qualname!r} has unresolved nominal bases"
+            )
+        replacement_relatives = frozenset(
+            (
+                replacement_symbol,
+                *snapshot.required_class_family_index.ancestor_symbols(
+                    replacement_symbol
+                ),
+                *snapshot.required_class_family_index.descendant_symbols(
+                    replacement_symbol
+                ),
+            )
+        )
+        if (
+            frozenset(indexed_child.resolved_base_symbols) - {replaced_symbol}
+        ) & replacement_relatives:
+            raise ValueError(
+                f"Direct child {child_target.qualname!r} has a replacement-related "
+                "sibling base"
+            )
+        resolver = snapshot.class_reference_resolver_for_source_path(
+            child_target.file_path
+        )
+        replaced_bases = tuple(
+            base
+            for base in child_node.bases
+            if resolver.symbol_for_reference(base) == replaced_symbol
+        )
+        if len(replaced_bases) != 1:
+            raise ValueError(
+                f"Direct child {child_target.qualname!r} has {len(replaced_bases)} "
+                "source-resolved replaced bases"
+            )
+        header = ClassHeaderSpanSourceAuthority(
+            child_node,
+            snapshot.sources_by_file_path[child_target.file_path],
+        )
+        if not header.can_rewrite:
+            raise ValueError(
+                f"Class header for {child_target.qualname!r} is not reconstructible"
+            )
+        import_source = ClassAuthorityReferenceProof.from_context(
+            snapshot,
+            replacement,
+            child_target.file_path,
+        ).required_import_source(snapshot)
+        import_edits = (
+            ()
+            if import_source is None
+            else self.required_import_mutations(
+                snapshot,
+                child_target.file_path,
+                import_source=import_source,
+                default_rationale="Import the replacement class authority.",
+            )
+        )
+        return (
+            *import_edits,
+            SourceSpanReplacement(
+                file_path=child_target.file_path,
+                start_line=header.start_line,
+                end_line=header.end_line,
+                replacement_lines=header.with_replaced_base(
+                    ast.unparse(replaced_bases[0]),
+                    replacement.target.name,
+                ),
+                rationale=self.rationale_text(
+                    f"Replace direct base {ast.unparse(replaced_bases[0])!r} with "
+                    f"{replacement.target.name!r}."
+                ),
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class CandidateCollectorMigration:
     """One source-proved detector collector migration."""
@@ -10952,7 +11203,7 @@ class CandidateCollectorMigration:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveCandidateCollectorOperation(SourceReprovedOperation):
+class DeriveCandidateCollectorOperation(RepositorySourceReprovedOperation):
     """Replace one proved forwarding method with its collector declaration."""
 
     def source_edits_from_snapshot(
@@ -13350,9 +13601,21 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
         )
 
     @property
-    def has_unresolved_source_dependencies(self) -> bool:
+    def source_dependency_scope(self) -> CodemodSourceDependencyScope:
+        """Derive aggregate proof coverage from operation declarations."""
+
+        return CodemodSourceDependencyScope.compose(
+            operation.source_dependency_scope
+            for document in self.documents
+            for recipe in document.recipes
+            for operation in recipe.operations
+        )
+
+    @property
+    def requires_complete_source_snapshot(self) -> bool:
         return (
             self.has_architecture_guards
+            or not self.source_dependency_scope.permits_fast_snapshot
             or any(
                 target.file_path is None for target in self.referenced_source_targets()
             )
@@ -18086,7 +18349,7 @@ class AutoRegisterMroOrderingDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveAutoRegisterMroOrderingOperation(SourceReprovedOperation):
+class DeriveAutoRegisterMroOrderingOperation(RepositorySourceReprovedOperation):
     """Re-prove one registered family and derive its ordering from current source."""
 
     def current_source_authority_claims(

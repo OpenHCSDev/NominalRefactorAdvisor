@@ -2754,12 +2754,15 @@ class CodemodRecipePlanFastSourceSnapshot:
     cwd: Path
 
     def optional_snapshot(self) -> CodemodSourceSnapshot | None:
-        if self.sequence.has_unresolved_source_dependencies:
+        if self.sequence.requires_complete_source_snapshot:
             return None
         source_by_path = self.source_mapping()
         if source_by_path is None:
             return None
-        return CodemodSourceSnapshot.from_source_mapping(source_by_path)
+        return CodemodSourceSnapshot.from_source_mapping(
+            source_by_path,
+            analysis_roots=self.roots,
+        )
 
     def source_mapping(self) -> dict[str, str] | None:
         entries = tuple(self.source_mapping_entries())

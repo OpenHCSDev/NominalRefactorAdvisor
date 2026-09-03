@@ -6639,11 +6639,15 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
         helper_path.as_posix(),
         parser_path.as_posix(),
     )
-    assert sequence.has_unresolved_source_dependencies is False
+    assert sequence.requires_complete_source_snapshot is False
     assert snapshot is not None
     assert set(snapshot.sources_by_file_path) == {
         helper_path.as_posix(),
         parser_path.as_posix(),
+    }
+    assert {module.module_name for module in snapshot.parsed_modules} == {
+        "pkg.helpers",
+        "pkg.parser",
     }
     assert {target.qualname for target in snapshot.source_index.ast_targets} >= {
         "old_helper",
@@ -6684,7 +6688,7 @@ def test_exact_recipe_fast_snapshot_includes_authority_claim_source(
     ).optional_snapshot()
 
     assert sequence.explicit_source_paths() == (module_path.as_posix(),)
-    assert sequence.has_unresolved_source_dependencies is False
+    assert sequence.requires_complete_source_snapshot is False
     assert snapshot is not None
     report = sequence.preflight_snapshot(snapshot)
     assert report.is_clean is True
@@ -6719,7 +6723,7 @@ def test_exact_recipe_fast_snapshot_rejects_unbounded_proof_dependencies(
     )
 
     for sequence in (unlocated_claim_sequence, guarded_sequence):
-        assert sequence.has_unresolved_source_dependencies is True
+        assert sequence.requires_complete_source_snapshot is True
         assert (
             CodemodRecipePlanFastSourceSnapshot(
                 sequence=sequence,
@@ -6811,6 +6815,10 @@ def test_exact_recipe_fast_snapshot_preserves_declared_relative_path_identity(
     assert set(snapshot.sources_by_file_path) == {
         "pkg/source.py",
         "pkg/destination.py",
+    }
+    assert {module.module_name for module in snapshot.parsed_modules} == {
+        "pkg.source",
+        "pkg.destination",
     }
 
 

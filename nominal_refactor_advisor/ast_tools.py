@@ -1003,6 +1003,8 @@ class PythonModulePathAuthority:
         known_identity = self.identities_by_resolved_path.get(path.resolve())
         if known_identity is not None:
             return known_identity
+        if not path.is_absolute():
+            return PythonModulePathIdentity.from_source_path(path)
         import_root = self.closest_containing_root(self.import_roots, path)
         if import_root is not None:
             return PythonModulePathIdentity.from_import_root(path, import_root)
