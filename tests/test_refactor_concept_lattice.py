@@ -458,6 +458,19 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
     assert "authority_claim" not in codemod.AuthoritySourceOperation.__dataclass_fields__
 
 
+def test_module_symbol_move_derives_its_source_reexport() -> None:
+    assert issubclass(
+        codemod.MoveSymbolsToModuleOperation,
+        codemod.RepositorySourceReprovedOperation,
+    )
+    assert tuple(
+        binding.field_name
+        for binding in codemod.MoveSymbolsToModuleOperation.payload_bindings()
+    ) == ("target", "rationale", "destination_path", "symbol_qualnames")
+    assert not hasattr(codemod, "MovedSymbolImportPolicy")
+    assert not hasattr(codemod, "ReplacementImportPayloadValueCodec")
+
+
 def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
     for operation_type, field_name in (
         (codemod.EnsureImportOperation, "import_source"),

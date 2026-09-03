@@ -73,6 +73,9 @@ Exact method and dataclass-field factoring operations re-prove their complete
 cohorts from one current-source witness and an explicit authority name.  Their
 generated claims and physical edits therefore do not serialize participant or
 member rosters.
+Module-symbol moves likewise derive canonical source-module re-exports from the
+destination module and moved declarations.  They reject import cycles rather
+than accepting caller-authored import text that can disagree with the move.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.

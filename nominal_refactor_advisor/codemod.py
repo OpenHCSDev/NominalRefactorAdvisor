@@ -1578,6 +1578,35 @@ class SourceModuleImportGraph:
         )
         return f"from {module_reference} import {imported_name}\n"
 
+    def required_import_source(
+        self,
+        *,
+        importing_file_path: str,
+        imported_file_path: str,
+        imported_name: str,
+    ) -> str:
+        """Return one canonical acyclic import or fail closed."""
+
+        if self.import_would_create_cycle(
+            importing_file_path=importing_file_path,
+            imported_file_path=imported_file_path,
+        ):
+            raise ValueError(
+                f"Importing {imported_name!r} from {imported_file_path!r} into "
+                f"{importing_file_path!r} would create a module cycle"
+            )
+        import_source = self.import_source(
+            importing_file_path=importing_file_path,
+            imported_file_path=imported_file_path,
+            imported_name=imported_name,
+        )
+        if import_source is None:
+            raise ValueError(
+                f"No canonical import exists for {imported_name!r} from "
+                f"{imported_file_path!r} into {importing_file_path!r}"
+            )
+        return import_source
+
     def relative_module_reference(
         self,
         importing_file: SourceFileDigest,
@@ -2858,26 +2887,6 @@ class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectati
         if value.is_empty:
             return None
         return value.to_dict()
-
-
-@dataclass(frozen=True)
-class ReplacementImportPayloadValueCodec(PayloadValueCodec["MovedSymbolImportPolicy"]):
-    """Optional source-module import policy for a symbol move."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> "MovedSymbolImportPolicy":
-        source = OptionalStringPayloadValueCodec().read(payload, field_name)
-        return MovedSymbolImportPolicy.from_source(source)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, MovedSymbolImportPolicy):
-            raise TypeError(
-                "replacement-import payload codec requires MovedSymbolImportPolicy"
-            )
-        return value.import_source
 
 
 @dataclass(frozen=True)
@@ -10169,17 +10178,6 @@ def _is_movable_module_symbol_kind(node_kind: AstTargetNodeKind) -> bool:
     return node_kind.is_class or node_kind is AstTargetNodeKind.FUNCTION
 
 
-@dataclass(frozen=True)
-class MovedSymbolImportPolicy:
-    """Optional source-module import left behind after a symbol move."""
-
-    import_source: str | None = None
-
-    @classmethod
-    def from_source(cls, import_source: str | None) -> "MovedSymbolImportPolicy":
-        return cls(import_source=import_source)
-
-
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
     (
         "__builtins__",
@@ -10274,7 +10272,6 @@ class SourceTopLevelSymbolClosureMoveCarrier:
 
     source_path: str
     destination_path: str
-    replacement_import: str | None = None
     rationale: str = ""
 
 
@@ -10441,19 +10438,11 @@ class ClassAuthorityReferenceProof:
                 f"Class authority name {authority_name!r} is imported from another "
                 "declaration"
             )
-        if context.module_import_graph.import_would_create_cycle(
-            importing_file_path=self.projection_module.file_path,
-            imported_file_path=self.authority.file_path,
-        ):
-            raise ValueError("Class authority import would create a module cycle")
-        import_source = context.module_import_graph.import_source(
+        return context.module_import_graph.required_import_source(
             importing_file_path=self.projection_module.file_path,
             imported_file_path=self.authority.file_path,
             imported_name=authority_name,
         )
-        if import_source is None:
-            raise ValueError("Class authority has no cycle-safe canonical import")
-        return import_source
 
 
 class _LoadedAndBoundNameVisitor(ast.NodeVisitor):
@@ -10546,6 +10535,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
     source_blocks: tuple[MovedTopLevelSymbolSource, ...]
     dependency_report: ModuleMoveDependencyReport
+    source_reexport_import_sources: tuple[str, ...]
 
     @classmethod
     def from_request(
@@ -10595,6 +10585,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             targets,
             target_nodes,
         )
+        source_reexport_import_sources = cls._source_reexport_import_sources(
+            context,
+            source_path=request.source_path,
+            destination_path=request.destination_path,
+            moved_symbol_names=tuple(target.name for target in targets),
+        )
         return cls(
             source_path=request.source_path,
             destination_path=request.destination_path,
@@ -10602,8 +10598,26 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 sorted(source_blocks, key=lambda block: block.source_start_line)
             ),
             dependency_report=report,
-            replacement_import=request.replacement_import,
+            source_reexport_import_sources=source_reexport_import_sources,
             rationale=request.rationale,
+        )
+
+    @staticmethod
+    def _source_reexport_import_sources(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        import_graph = context.module_import_graph
+        return tuple(
+            import_graph.required_import_source(
+                importing_file_path=source_path,
+                imported_file_path=destination_path,
+                imported_name=symbol_name,
+            )
+            for symbol_name in moved_symbol_names
         )
 
     @staticmethod
@@ -10743,9 +10757,18 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 for import_source in self.dependency_report.import_sources
             ),
         ]
-        source_import = self.source_replacement_import()
-        if source_import is not None:
-            edits.append(source_import)
+        edits.extend(
+            ModuleImportMutation.from_source(
+                file_path=self.source_path,
+                import_source=import_source,
+                rationale=self.rationale
+                or (
+                    "Preserve source bindings for moved symbols "
+                    f"{self.dependency_report.moved_symbol_names!r}."
+                ),
+            )
+            for import_source in self.source_reexport_import_sources
+        )
         return tuple(edits)
 
     def destination_insertion(
@@ -10782,29 +10805,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         return f"{spacing.leading_separator}{moved_source}{spacing.trailing_separator}"
 
-    def source_replacement_import(self) -> ModuleImportMutation | None:
-        if not self.replacement_import:
-            return None
-        return ModuleImportMutation.from_source(
-            file_path=self.source_path,
-            import_source=self.replacement_import,
-            rationale=self.rationale
-            or (
-                "Ensure source module imports moved symbols "
-                f"{self.dependency_report.moved_symbol_names!r}."
-            ),
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
-class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
-    """Shared destination/import contract for module-symbol move operations."""
+class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
+    """Repository-proved destination contract for module-symbol moves."""
 
     destination_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    replacement_import: MovedSymbolImportPolicy = codemod_payload_field(
-        ReplacementImportPayloadValueCodec(),
-        default_factory=MovedSymbolImportPolicy,
-    )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (
@@ -10831,7 +10837,12 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        dependency_report = self.dependency_report(context)
+        try:
+            dependency_report = self.required_reproof(
+                lambda: self.dependency_report(context)
+            )
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
         if dependency_report.is_clean:
             status = CodemodPreflightStatus.PASSED
             message = "move_symbols_to_module dependency closure is clean"
@@ -10865,15 +10876,14 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
                 source_path=source_path,
                 destination_path=destination_path,
                 symbol_qualnames=self.symbol_qualnames,
-                replacement_import=self.replacement_import.import_source,
                 rationale=self.rationale,
             ),
             context=context,
         )
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        context: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         return self.move_plan(context).source_edits(context)
 

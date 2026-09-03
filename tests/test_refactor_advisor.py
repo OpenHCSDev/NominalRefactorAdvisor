@@ -178,7 +178,6 @@ from nominal_refactor_advisor.codemod import (
     InsertAfterTargetOperation,
     InsertBeforeTargetOperation,
     MoveSymbolsToModuleOperation,
-    MovedSymbolImportPolicy,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
@@ -6248,6 +6247,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
     destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(
         tmp_path,
         "pkg/source.py",
@@ -6279,9 +6279,6 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
             target=SourceRewriteTarget(file_path=source_path.as_posix()),
             symbol_qualnames=("Helper",),
             destination_path=destination_path.as_posix(),
-            replacement_import=MovedSymbolImportPolicy.from_source(
-                "from pkg.destination import Helper\n"
-            ),
         )
     )
     operation = recipe.operations[0].to_dict()
@@ -6299,10 +6296,20 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     ):
         RefactorRecipeOperation.from_dict({"operation": "move_symbol_to_module"})
     assert operation["destination_path"] == destination_path.as_posix()
-    assert operation["replacement_import"] == "from pkg.destination import Helper\n"
+    assert "replacement_import" not in operation
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported MoveSymbolsToModuleOperation payload field\(s\)",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **operation,
+                "replacement_import": "from pkg.destination import Helper\n",
+            }
+        )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
-    assert "+from pkg.destination import Helper" in diff
+    assert "+from .destination import Helper" in diff
     assert "-class Helper:" in diff
     assert "+class Helper:" in diff
     assert set(simulation.apply()) == {
@@ -6312,7 +6319,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from pkg.destination import Helper" in rewritten_source
+    assert "from .destination import Helper" in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "@dataclass\nclass Helper" in rewritten_destination
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
@@ -6357,9 +6364,6 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
             target=SourceRewriteTarget(file_path=source_path.as_posix()),
             symbol_qualnames=("LocalBase", "Helper"),
             destination_path=destination_path.as_posix(),
-            replacement_import=MovedSymbolImportPolicy.from_source(
-                "from pkg.destination import Helper\n"
-            ),
         )
     )
     operation = recipe.operations[0]
@@ -6390,7 +6394,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from pkg.destination import Helper" in rewritten_source
+    assert "from pkg.destination import Helper, LocalBase" in rewritten_source
     assert "class LocalBase" not in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "from dataclasses import dataclass" in rewritten_destination
@@ -6446,6 +6450,38 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
     assert report.source_local_dependency_names == ("LocalBase",)
     assert report.unresolved_dependency_names == ()
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_refactor_recipe_rejects_moved_symbol_reexport_cycle(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "SOURCE_MARKER = object()\n\n\nclass Helper:\n    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from .source import SOURCE_MARKER\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="would create a module cycle",
+    ):
+        RefactorRecipe("cyclic-source-reexport").with_operation(operation).simulate(
+            snapshot
+        )
 
 
 def test_refactor_recipe_extracts_authority(
@@ -6817,12 +6853,19 @@ def test_exact_recipe_fast_snapshot_preserves_declared_relative_path_identity(
     sequence = CodemodPlanSequence.from_document(
         CodemodPlanDocument(
             recipes=(
-                RefactorRecipe(recipe_id="relative-path-authority").with_operation(
-                    MoveSymbolsToModuleOperation(
+                RefactorRecipe(recipe_id="relative-path-authority")
+                .with_operation(
+                    ReplaceTextOperation(
                         target=SourceRewriteTarget(file_path="pkg/source.py"),
-                        symbol_qualnames=("Source",),
-                        destination_path="pkg/destination.py",
-                    ),
+                        old_source="pass",
+                        new_source="pass",
+                    )
+                )
+                .with_operation(
+                    InsertAfterImportsOperation(
+                        target=SourceRewriteTarget(file_path="pkg/destination.py"),
+                        source="# destination\n",
+                    )
                 ),
             ),
         )
@@ -14393,7 +14436,6 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
                         "file_path": "pkg/source.py",
                         "symbol_qualnames": ["LocalBase", "Helper"],
                         "destination_path": "pkg/destination.py",
-                        "replacement_import": "from pkg.destination import Helper\n",
                     }
                 ],
             }
@@ -14422,8 +14464,9 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 2
     assert payload["parse_validation"]["parse_valid"] is True
-    assert "+++ b/pkg/source.py" in payload["unified_diff"]
-    assert "+++ b/pkg/destination.py" in payload["unified_diff"]
+    assert "pkg/source.py" in payload["unified_diff"]
+    assert "pkg/destination.py" in payload["unified_diff"]
+    assert "from pkg.destination import Helper, LocalBase" in payload["unified_diff"]
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
     assert "+class Helper(LocalBase):" in payload["unified_diff"]
     assert "class Helper" in source_path.read_text()
@@ -14454,7 +14497,6 @@ def test_module_cli_preflights_relative_multi_symbol_move_plan_from_stdin(
                         "file_path": "pkg/source.py",
                         "symbol_qualnames": ["LocalBase", "Helper"],
                         "destination_path": "pkg/destination.py",
-                        "replacement_import": "from pkg.destination import Helper\n",
                     }
                 ],
             }
@@ -14524,7 +14566,6 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
                         "file_path": "pkg/source.py",
                         "symbol_qualnames": ["LocalBase", "Helper"],
                         "destination_path": "pkg/destination.py",
-                        "replacement_import": "from pkg.destination import Helper\n",
                     },
                 ],
             }
@@ -14603,7 +14644,7 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
 
     assert apply_result.returncode == 0, apply_result.stderr
     assert "Codemod apply complete" in apply_result.stdout
-    assert "from pkg.destination import Helper" in source_path.read_text()
+    assert "from pkg.destination import Helper, LocalBase" in source_path.read_text()
     assert "class Helper" not in source_path.read_text()
     assert "@dataclass\nclass Helper(LocalBase):" in destination_path.read_text()
 

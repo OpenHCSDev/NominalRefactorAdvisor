@@ -7,12 +7,10 @@ import pytest
 from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     CodemodTargetSelector,
-    MovedSymbolImportPolicy,
     NodeKindArrayPayloadValueCodec,
     RecipeCallReplacement,
     RefactorRecipe,
     RefactorRecipeOperation,
-    ReplacementImportPayloadValueCodec,
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
     SourceIndexTargetSelector,
@@ -93,7 +91,6 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
     )
     rewrite_target = SourceRewriteTarget(target_id="alpha-run-target")
     selection_count = SelectionCountExpectation(minimum=1, maximum=3)
-    replacement_import = MovedSymbolImportPolicy("from pkg.owner import AlphaAuthority")
     cases = (
         (RequiredStringPayloadValueCodec(), "Alpha.run"),
         (DefaultedStringPayloadValueCodec("default"), "Alpha.run"),
@@ -122,7 +119,6 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         ),
         (PayloadRecordValueCodec(AuthorityClaim), authority_claim),
         (SelectionCountPayloadValueCodec(), selection_count),
-        (ReplacementImportPayloadValueCodec(), replacement_import),
     )
 
     for codec, value in cases:
@@ -162,8 +158,6 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
             "authority_kind",
         )
     assert IntegerPayloadValueCodec().serialize(None) is None
-    with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
-        ReplacementImportPayloadValueCodec().serialize("from pkg import value")
     with pytest.raises(ValueError, match="Unsupported 'authority_kind'"):
         OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind).read(
             {"authority_kind": "invented_kind"},
