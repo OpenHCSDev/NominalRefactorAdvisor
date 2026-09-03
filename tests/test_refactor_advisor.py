@@ -4981,11 +4981,7 @@ def test_candidate_collector_forwarding_base_is_derived_from_collector_mro(
     scope: base_detectors.CandidateCollectorScope,
     expected_base_type: type[base_detectors.IssueDetector],
 ) -> None:
-    forwarding_types = (
-        base_detectors.DerivedCandidateCollectorMixin
-        .forwarding_detector_types_by_scope()
-    )
-    assert forwarding_types[scope] is expected_base_type
+    assert scope.forwarding_detector_type is expected_base_type
 
 
 def test_source_text_geometry_coalesces_identical_offset_replacements() -> None:

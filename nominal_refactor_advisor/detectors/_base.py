@@ -1472,6 +1472,21 @@ class CandidateCollectorScope(StrEnum):
     def collector_argument_name(self) -> str:
         return self._collector_argument_name
 
+    @property
+    def forwarding_detector_type(self) -> type[IssueDetector]:
+        return DerivedCandidateCollectorMixin.forwarding_detector_type_for_scope(self)
+
+    @classmethod
+    def for_forwarding_base_name(
+        cls,
+        base_name: str,
+    ) -> tuple["CandidateCollectorScope", ...]:
+        return tuple(
+            scope
+            for scope in cls
+            if scope.forwarding_detector_type.__name__ == base_name
+        )
+
 
 @dataclass(frozen=True)
 class CandidateCollectorBaseShape:
@@ -1572,42 +1587,21 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         return detector_types[0]
 
     @classmethod
-    def forwarding_detector_types_by_scope(
+    def forwarding_detector_type_for_scope(
         cls,
-    ) -> dict[CandidateCollectorScope, type[IssueDetector]]:
-        types_by_scope: dict[
-            CandidateCollectorScope,
-            set[type[IssueDetector]],
-        ] = defaultdict(set)
-        for shape, collector_base in cls.collector_base_types_by_shape().items():
-            types_by_scope[shape.scope].add(collector_base.forwarding_detector_type())
-        ambiguous_scopes = tuple(
-            scope
-            for scope, detector_types in types_by_scope.items()
-            if len(detector_types) != 1
+        scope: CandidateCollectorScope,
+    ) -> type[IssueDetector]:
+        detector_types = frozenset(
+            collector_base.forwarding_detector_type()
+            for shape, collector_base in cls.collector_base_types_by_shape().items()
+            if shape.scope is scope
         )
-        if ambiguous_scopes:
+        if len(detector_types) != 1:
             raise TypeError(
-                "Candidate collector scopes resolve multiple forwarding bases: "
-                f"{tuple(scope.value for scope in ambiguous_scopes)!r}"
+                f"Candidate collector scope {scope.value!r} resolves "
+                f"{len(detector_types)} forwarding detector types"
             )
-        return {
-            scope: next(iter(detector_types))
-            for scope, detector_types in types_by_scope.items()
-        }
-
-    @classmethod
-    def scopes_for_forwarding_base_name(
-        cls,
-        base_name: str,
-    ) -> tuple[CandidateCollectorScope, ...]:
-        return tuple(
-            scope
-            for scope, forwarding_detector_type in (
-                cls.forwarding_detector_types_by_scope().items()
-            )
-            if forwarding_detector_type.__name__ == base_name
-        )
+        return next(iter(detector_types))
 
 
 class ModuleCollectorCandidateDetector(
@@ -8575,10 +8569,8 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
             return ()
         collector_calls = tuple(
             (collector_scope, collector_call)
-            for collector_scope in (
-                DerivedCandidateCollectorMixin.scopes_for_forwarding_base_name(
-                    forwarding_base_name
-                )
+            for collector_scope in CandidateCollectorScope.for_forwarding_base_name(
+                forwarding_base_name
             )
             for collector_call in (cls.collector_call(method, collector_scope),)
             if collector_call is not None
@@ -8615,7 +8607,7 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
             parameterized_base = ParameterizedBaseSource.from_node(base)
             if parameterized_base is None:
                 continue
-            if DerivedCandidateCollectorMixin.scopes_for_forwarding_base_name(
+            if CandidateCollectorScope.for_forwarding_base_name(
                 parameterized_base.base_name
             ):
                 return parameterized_base.base_name, parameterized_base.parameter_source
@@ -8662,11 +8654,7 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
 
     @property
     def replaced_base_name(self) -> str:
-        return (
-            DerivedCandidateCollectorMixin.forwarding_detector_types_by_scope()[
-                self.collector_scope
-            ].__name__
-        )
+        return self.collector_scope.forwarding_detector_type.__name__
 
     @property
     def recommended_base_name(self) -> str:
