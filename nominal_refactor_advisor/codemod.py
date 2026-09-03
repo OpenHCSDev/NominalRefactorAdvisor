@@ -2189,7 +2189,7 @@ class ResolvedClassTarget:
         cls,
         context: CodemodSelectorContext,
         target_reference: SourceRewriteTarget,
-    ) -> "ResolvedClassTarget":
+    ) -> Self:
         """Resolve one exact class identity from a recipe target."""
 
         _target_id, target, node = context.target_node_for_rewrite_target(
@@ -2206,6 +2206,10 @@ class ResolvedClassTarget:
     @property
     def qualname(self) -> str:
         return self.target.qualname
+
+    @property
+    def name(self) -> str:
+        return self.target.name
 
     @property
     def line(self) -> int:
@@ -5080,7 +5084,7 @@ class _ClosedCarrierCollapseSourceRewrite:
                             for _field_name, parameter_name in field_mapping
                         ),
                     ),
-                    carrier_annotation_source=self.authority_target.target.name,
+                    carrier_annotation_source=self.authority_target.name,
                 )
             )
         return tuple(rewrites)
@@ -10333,7 +10337,7 @@ class ClassAuthorityReferenceProof:
         self,
         context: CodemodSelectorContext,
     ) -> str | None:
-        authority_name = self.authority.target.name
+        authority_name = self.authority.name
         declaration_bindings = self.symbol_table.binding_statements(authority_name)
         import_binding = self.symbol_table.import_sources_by_name.get(authority_name)
         if self.projection_module.file_path == self.authority.file_path:
@@ -15989,7 +15993,7 @@ class ConsumerFamilyBuilderAuthorityCandidate:
         participant_nodes = frozenset(
             call_site.participant.node for call_site in call_sites
         )
-        authority_symbol = authority.class_symbol(context)
+        authority_symbol = authority.symbol(context)
         if authority_symbol is None or not call_sites:
             return ()
         field_names = call_sites[0].field_names
@@ -17551,16 +17555,14 @@ class RepeatedBuilderAuthorityDerivation(
         context: CodemodSelectorContext,
         authority: "DataclassPayloadAuthorityTarget",
     ) -> tuple[RepeatedBuilderCallSite, ...]:
-        authority_symbol = authority.class_symbol(context)
+        authority_symbol = authority.symbol(context)
         if authority_symbol is None:
             raise ValueError(
                 "Repeated-builder authority extraction requires nominal class identity"
             )
-        resolver = context.class_reference_resolver_for_source_path(
-            authority.source_path
-        )
+        resolver = context.class_reference_resolver_for_source_path(authority.file_path)
         call_sites: list[RepeatedBuilderCallSite] = []
-        for target in context.source_index.targets_by_file[authority.source_path]:
+        for target in context.source_index.targets_by_file[authority.file_path]:
             if (
                 not target.is_function_like
                 or target.qualname.startswith(f"{authority.target.qualname}.")
@@ -17568,7 +17570,7 @@ class RepeatedBuilderAuthorityDerivation(
                 continue
             participant = ResolvedFunctionProjectionTarget.from_target(
                 context,
-                source_path=authority.source_path,
+                source_path=authority.file_path,
                 target=target,
             )
             if participant is None:
@@ -17615,17 +17617,17 @@ class RepeatedBuilderAuthorityDerivation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        source = context.sources_by_file_path[self.authority.source_path]
+        source = context.sources_by_file_path[self.authority.file_path]
         constructor_source = self.constructor_replacement_source(
             source,
             self.authority.target,
             self.authority.node,
-            constructor_name=self.authority.class_name,
+            constructor_name=self.authority.name,
             method=self.method,
         )
         return (
             SourceSpanReplacement(
-                file_path=self.authority.source_path,
+                file_path=self.authority.file_path,
                 start_line=self.authority.target.line,
                 end_line=self.authority.target.end_line,
                 replacement_lines=SourceTargetEditor.source_lines(constructor_source),
@@ -17650,7 +17652,7 @@ class RepeatedBuilderAuthorityDerivation(
         replacement = self.call_replacement(
             geometry,
             call,
-            constructor_name=self.authority.class_name,
+            constructor_name=self.authority.name,
             method=self.method,
         )
         if replacement is None:
@@ -19254,7 +19256,7 @@ class EnumSubsetDerivation:
     def assignment_source(self) -> str:
         projection = self.projection
         value_source = (
-            f"{self.authority.target.target.name}.{projection.accessor_name}()"
+            f"{self.authority.target.name}.{projection.accessor_name}()"
         )
         if isinstance(projection.statement, ast.AnnAssign):
             return (
@@ -19287,7 +19289,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
                 ),
                 rationale=self.rationale_text(
                     f"Declare {derivation.projection.accessor_name!r} on "
-                    f"{authority_target.target.name!r}."
+                    f"{authority_target.name!r}."
                 ),
             )
         ]
@@ -19311,7 +19313,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
                 ),
                 rationale=self.rationale_text(
                     f"Derive {derivation.projection.assignment_name!r} from "
-                    f"{authority_target.target.name!r}."
+                    f"{authority_target.name!r}."
                 ),
             )
         )
@@ -19807,39 +19809,23 @@ class ReturnKeyValueSequenceProjectionTargetAuthority:
 
 
 @dataclass(frozen=True)
-class DataclassPayloadAuthorityTarget:
+class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
     """Dataclass authority that owns projected payload field names."""
-
-    target: AstTargetDigest
-    node: ast.ClassDef
 
     @classmethod
     def from_rewrite_target(
         cls,
         context: CodemodSelectorContext,
         target_reference: SourceRewriteTarget,
-    ) -> "DataclassPayloadAuthorityTarget":
-        _target_id, target, node = context.target_node_for_rewrite_target(
-            target_reference
-        )
-        if not target.is_class or not isinstance(node, ast.ClassDef):
-            raise ValueError("Dataclass projection authority must target a class")
-        if "." in target.qualname:
+    ) -> Self:
+        authority = super().from_rewrite_target(context, target_reference)
+        if "." in authority.qualname:
             raise ValueError("Dataclass projection authority must be top level")
-        authority = cls(target=target, node=node)
         if not authority.is_dataclass:
             raise ValueError("Dataclass projection authority must be a dataclass")
         if not authority.field_names:
             raise ValueError("Dataclass projection authority has no direct fields")
         return authority
-
-    @property
-    def source_path(self) -> str:
-        return self.target.file_path
-
-    @property
-    def class_name(self) -> str:
-        return self.target.name
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -19890,12 +19876,6 @@ class DataclassPayloadAuthorityTarget:
             )
         )
 
-    def class_symbol(self, context: CodemodSelectorContext) -> str | None:
-        return context.required_class_family_index.symbol_for(
-            file_path=self.source_path,
-            qualname=self.target.qualname,
-        )
-
     def family_defines_method(
         self,
         context: CodemodSelectorContext,
@@ -19903,7 +19883,7 @@ class DataclassPayloadAuthorityTarget:
     ) -> bool:
         """Return whether this authority or an ancestor owns a method name."""
 
-        authority_symbol = self.class_symbol(context)
+        authority_symbol = self.symbol(context)
         if authority_symbol is None:
             return True
         class_index = context.required_class_family_index
@@ -19925,7 +19905,7 @@ class DataclassPayloadAuthorityTarget:
         self,
         context: CodemodSelectorContext,
     ) -> None:
-        authority_symbol = self.class_symbol(context)
+        authority_symbol = self.symbol(context)
         if authority_symbol is None:
             raise ValueError("Dataclass projection authority has no nominal identity")
         class_index = context.required_class_family_index
@@ -20023,7 +20003,7 @@ class DataclassAuthorityReferenceProof:
 
     @property
     def target_name(self) -> str:
-        return self.reference.authority.target.name
+        return self.reference.authority.name
 
     @property
     def target_symbol(self) -> str:
@@ -20048,7 +20028,7 @@ class DataclassAuthorityReferenceProof:
         try:
             reference = ClassAuthorityReferenceProof.from_context(
                 context,
-                ResolvedClassTarget(target.target, target.node),
+                target,
                 source_path,
             )
         except ValueError:
@@ -20087,12 +20067,12 @@ class DataclassAuthorityReferenceProof:
         source_path: str,
         target: DataclassPayloadAuthorityTarget,
     ) -> bool:
-        bindings = symbol_table.binding_statements(target.class_name)
+        bindings = symbol_table.binding_statements(target.name)
         return bool(
-            source_path == target.source_path
+            source_path == target.file_path
             and len(bindings) == 1
             and isinstance(bindings[0], ast.ClassDef)
-            and bindings[0].name == target.class_name
+            and bindings[0].name == target.name
         )
 
     def annotation_resolves(self, annotation: ast.expr) -> bool:
@@ -20293,7 +20273,7 @@ class DataclassInstanceFieldProjection:
     ) -> frozenset[str]:
         proof = DataclassAuthorityReferenceProof.from_target(
             context,
-            authority.source_path,
+            authority.file_path,
             authority,
             None,
         )
@@ -20328,7 +20308,7 @@ class DataclassInstanceFieldProjection:
             file_path=projection.source_path,
             qualname=projection.owner_qualname,
         )
-        return class_symbol is not None and class_symbol == authority.class_symbol(
+        return class_symbol is not None and class_symbol == authority.symbol(
             context
         )
 
@@ -20568,7 +20548,7 @@ class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTar
     ) -> str:
         field_projection = (
             f"field.name for field in {dataclasses_reference.expression}.fields("
-            f"{authority.class_name})"
+            f"{authority.name})"
         )
         if isinstance(self.collection_node, ast.Tuple):
             return f"tuple({field_projection})"
@@ -20801,7 +20781,7 @@ class DataclassProjectionBoundary:
         )
         reference = ClassAuthorityReferenceProof.from_context(
             context,
-            ResolvedClassTarget(authority.target, authority.node),
+            authority,
             function.source_path,
         )
         return cls(
@@ -20976,7 +20956,7 @@ class DataclassPayloadProjectionDerivation(
             f"{continuation_indentation})\n"
             f"{continuation_indentation}for field in "
             f"{dataclasses_reference.expression}.fields(\n"
-            f"{nested_indentation}{authority.class_name}\n"
+            f"{nested_indentation}{authority.name}\n"
             f"{continuation_indentation})\n"
             f"{indentation}}}"
         )
@@ -21232,7 +21212,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
             f"{continuation_indentation})\n"
             f"{continuation_indentation}for field in "
             f"{dataclasses_reference.expression}.fields(\n"
-            f"{nested_indentation}{authority.class_name}\n"
+            f"{nested_indentation}{authority.name}\n"
             f"{continuation_indentation})\n"
             f"{indentation})"
             f"{'' if has_trailing_comma else ','}"
@@ -21818,7 +21798,7 @@ class DataclassConstructorProjectionMethod:
             return None
         constructor = NominalConstructorCall.from_context(
             context,
-            authority.source_path,
+            authority.file_path,
             method_node,
             body[0].value,
         )
@@ -22043,7 +22023,7 @@ class DataclassConstructorProjectionDerivation(
         if replacement_span.contains_comment(source):
             return None
         authority_instance = ast.Call(
-            func=ast.Name(id=authority.class_name, ctx=ast.Load()),
+            func=ast.Name(id=authority.name, ctx=ast.Load()),
             args=[],
             keywords=[
                 ast.keyword(
@@ -22764,7 +22744,7 @@ class ClassFamilyCollectionDerivation:
     def replacement_source(self) -> str:
         candidate = self.candidate
         value_source = candidate.collection.value_source(
-            self.authority.target.name,
+            self.authority.name,
             candidate.membership,
         )
         if isinstance(candidate.statement, ast.AnnAssign):
@@ -22805,7 +22785,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
                 ),
                 rationale=self.rationale_text(
                     f"Derive {derivation.candidate.assignment_name!r} from "
-                    f"{derivation.authority.target.name!r}."
+                    f"{derivation.authority.name!r}."
                 ),
             )
         )
