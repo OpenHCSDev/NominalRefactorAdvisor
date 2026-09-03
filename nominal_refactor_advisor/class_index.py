@@ -2695,6 +2695,19 @@ class ModuleNominalBindingAuthority:
             return None
         return ".".join((root_binding.qualified_name, *parts[1:]))
 
+    def nominal_annotation_name_at(
+        self,
+        annotation: ast.AST,
+        *,
+        line: int,
+    ) -> str | None:
+        """Resolve a single nominal annotation through its declaration-time binding."""
+
+        reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(annotation)
+        if reference is None:
+            return None
+        return self.qualified_name_at(reference, line=line)
+
     def _direct_nominal_bindings(
         self,
         statement: ast.stmt,
@@ -2750,6 +2763,44 @@ class ModuleNominalBindingAuthority:
                 kind=root_binding.kind,
             )
         }
+
+
+@dataclass(frozen=True)
+class FunctionNominalParameterBindingAuthority:
+    """Resolve stable parameter types from one nominal function declaration."""
+
+    module_bindings: ModuleNominalBindingAuthority
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+
+    @cached_property
+    def stable_type_names_by_parameter(self) -> dict[str, str]:
+        """Project nominal parameter types whose bindings remain unchanged."""
+
+        rebound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            self.function.body
+        )
+        return {
+            parameter.arg: type_name
+            for parameter in (
+                *self.function.args.posonlyargs,
+                *self.function.args.args,
+                *self.function.args.kwonlyargs,
+            )
+            if parameter.arg not in rebound_names
+            if parameter.annotation is not None
+            if (
+                type_name := self.module_bindings.nominal_annotation_name_at(
+                    parameter.annotation,
+                    line=self.function.lineno,
+                )
+            )
+            is not None
+        }
+
+    def type_name_for_reference(self, parameter_name: str) -> str | None:
+        """Return the declared nominal type unless the parameter is rebound."""
+
+        return self.stable_type_names_by_parameter.get(parameter_name)
 
 
 def nominal_reference_root_name(reference: ast.AST) -> str | None:

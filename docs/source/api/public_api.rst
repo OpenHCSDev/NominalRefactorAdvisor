@@ -173,6 +173,9 @@ finding metrics are not copied into the persisted plan.
 Manual carrier-collapse recipes likewise identify the affected class through
 their exact source target.  Each unavoidable field mapping is a nominal
 ``CarrierFieldProjection`` payload record rather than an encoded string pair.
+Constructor rewrites resolve that target's nominal class identity from the
+current source.  Attribute projections resolve stable nominal parameter types.
+Neither constructor nor attribute-owner spellings are persisted in the plan.
 
 .. automodule:: nominal_refactor_advisor.codemod
    :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals

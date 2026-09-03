@@ -4,10 +4,13 @@ import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
+    FunctionNominalParameterBindingAuthority,
+    ModuleNominalBindingAuthority,
+)
 from nominal_refactor_advisor.exact_field_authority import (
     ExactDataclassFieldAuthorityComponentBuilder,
 )
-from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 
 
 def _module(source: str) -> ParsedModule:
@@ -152,3 +155,27 @@ def test_module_binding_authority_resolves_many_positions_in_one_projection() ->
 
     assert snapshots[3].binding_for("Value").qualified_name == "first.Value"
     assert snapshots[8].binding_for("Value").qualified_name == "second.Value"
+
+
+def test_function_parameter_binding_authority_requires_stable_nominal_types() -> None:
+    module = _module(
+        "class Target:\n"
+        "    pass\n\n\n"
+        "TargetAlias = Target\n\n\n"
+        "def consume(stable: TargetAlias, rebound: Target, untyped):\n"
+        "    rebound = untyped\n"
+        "    return stable, rebound\n"
+    )
+    function = next(
+        node for node in module.module.body if isinstance(node, ast.FunctionDef)
+    )
+    authority = FunctionNominalParameterBindingAuthority(
+        ModuleNominalBindingAuthority(module),
+        function,
+    )
+
+    assert authority.stable_type_names_by_parameter == {
+        "stable": "pkg.models.Target"
+    }
+    assert authority.type_name_for_reference("rebound") is None
+    assert authority.type_name_for_reference("untyped") is None

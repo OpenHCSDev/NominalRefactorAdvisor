@@ -893,6 +893,21 @@ class AstParentIndex:
             ancestors.append(node)
         return tuple(ancestors)
 
+    def enclosing_function(
+        self,
+        node: ast.AST,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """Return the nearest lexical function containing a node."""
+
+        return next(
+            (
+                ancestor
+                for ancestor in self.ancestors(node)
+                if isinstance(ancestor, ast.FunctionDef | ast.AsyncFunctionDef)
+            ),
+            None,
+        )
+
 
 @dataclass(frozen=True)
 class SourceModule(SourceFileIdentity):

@@ -78,6 +78,7 @@ from .class_index import (
     ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
+    FunctionNominalParameterBindingAuthority,
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
@@ -9019,29 +9020,12 @@ class CarrierFieldProjection(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CarrierProjectionOperationBase(SourceReprovedOperation, ABC):
-    """Shared payload surface for field-to-carrier projection operations."""
+class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
+    """Replace projected primitive fields with one existing carrier field."""
 
     field_projections: tuple[CarrierFieldProjection, ...] = codemod_payload_field(
         PayloadRecordArrayValueCodec(CarrierFieldProjection)
     )
-    constructor_names: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    attribute_owner_expressions: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-
-    def resolved_constructor_names(self, class_name: str) -> tuple[str, ...]:
-        return self.constructor_names or (class_name,)
-
-
-@dataclass(frozen=True, kw_only=True)
-class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
-    """Replace projected primitive fields with one existing carrier field."""
-
     carrier_field_declaration: str = codemod_payload_field(
         RequiredStringPayloadValueCodec()
     )
@@ -9081,6 +9065,8 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         _target_identifier, target, class_node = self.target_node_from_context(context)
         if not isinstance(class_node, ast.ClassDef):
             raise ValueError("Field carrier replacement requires a class target")
+        target_class = ResolvedClassTarget(target, class_node)
+        target_symbol = target_class.required_symbol(context)
         source_path = target.file_path
         source = context.sources_by_file_path[source_path]
         geometry = SourceTextGeometry(source)
@@ -9088,9 +9074,11 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         replacements = [
             *self.class_field_replacements(class_node, geometry),
             *self.constructor_projection_replacements(
+                context,
+                source_path,
                 root,
                 geometry,
-                class_name=class_node.name,
+                constructor_symbol=target_symbol,
             ),
         ]
         covered_lines = tuple(
@@ -9099,8 +9087,11 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         )
         replacements.extend(
             self.attribute_projection_replacements(
+                context,
+                source_path,
                 root,
                 geometry,
+                target_symbol=target_symbol,
                 covered_lines=covered_lines,
             )
         )
@@ -9155,16 +9146,26 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     def constructor_projection_replacements(
         self,
+        context: CodemodSelectorContext,
+        source_path: str,
         root: ast.Module,
         geometry: SourceTextGeometry,
         *,
-        class_name: str,
+        constructor_symbol: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         replacements: list[SourceTextSpanReplacement] = []
-        constructor_names = frozenset(self.resolved_constructor_names(class_name))
+        parent_index = AstParentIndex(root)
         for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
-            call_name = self.call_name(call)
-            if call_name not in constructor_names:
+            nominal_call = NominalConstructorCall.from_context(
+                context,
+                source_path,
+                parent_index.enclosing_function(call),
+                call,
+            )
+            if (
+                nominal_call is None
+                or nominal_call.constructor_symbol != constructor_symbol
+            ):
                 continue
             projected_keywords = tuple(
                 keyword
@@ -9222,17 +9223,25 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     def attribute_projection_replacements(
         self,
+        context: CodemodSelectorContext,
+        source_path: str,
         root: ast.Module,
         geometry: SourceTextGeometry,
         *,
+        target_symbol: str,
         covered_lines: tuple["SourceLineSpan", ...],
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        if not self.attribute_owner_expressions:
-            return ()
         replacements: list[SourceTextSpanReplacement] = []
         projection_map = self.field_projection_map
         carrier_field_name = self.carrier_field_name
-        allowed_owner_sources = frozenset(self.attribute_owner_expressions)
+        parent_index = AstParentIndex(root)
+        module_bindings = ModuleNominalBindingAuthority(
+            context.parsed_module_for_source_path(source_path)
+        )
+        parameter_bindings_by_function: dict[
+            ast.FunctionDef | ast.AsyncFunctionDef,
+            FunctionNominalParameterBindingAuthority,
+        ] = {}
         for attribute in (
             node for node in ast.walk(root) if isinstance(node, ast.Attribute)
         ):
@@ -9241,10 +9250,23 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                 continue
             if SourceNodeSpan(attribute).line_span.overlaps_any(covered_lines):
                 continue
+            function_scope = parent_index.enclosing_function(attribute.value)
+            if not isinstance(attribute.value, ast.Name) or function_scope is None:
+                continue
+            parameter_bindings = parameter_bindings_by_function.setdefault(
+                function_scope,
+                FunctionNominalParameterBindingAuthority(
+                    module_bindings,
+                    function_scope,
+                ),
+            )
+            owner_symbol = parameter_bindings.type_name_for_reference(
+                attribute.value.id
+            )
+            if owner_symbol != target_symbol:
+                continue
             value_source = geometry.segment_for_node(attribute.value)
             if value_source is None:
-                continue
-            if value_source not in allowed_owner_sources:
                 continue
             start_offset, end_offset = geometry.required_node_offsets(attribute)
             replacements.append(
@@ -9265,14 +9287,6 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         if not isinstance(statement.target, ast.Name):
             return None
         return statement.target.id
-
-    @staticmethod
-    def call_name(call: ast.Call) -> str | None:
-        if isinstance(call.func, ast.Name):
-            return call.func.id
-        if isinstance(call.func, ast.Attribute):
-            return call.func.attr
-        return None
 
     @staticmethod
     def line_span_replacement(
@@ -21662,7 +21676,7 @@ class NominalConstructorCall:
         cls,
         context: CodemodSelectorContext,
         source_path: str,
-        scope: ast.FunctionDef | ast.AsyncFunctionDef,
+        scope: ast.FunctionDef | ast.AsyncFunctionDef | None,
         call_node: ast.Call,
     ) -> "NominalConstructorCall | None":
         if call_node.args or any(keyword.arg is None for keyword in call_node.keywords):
@@ -21671,15 +21685,19 @@ class NominalConstructorCall:
         keyword_names = tuple(cast(str, keyword.arg) for keyword in keyword_arguments)
         if len(frozenset(keyword_names)) != len(keyword_names):
             return None
-        bound_names = _LoadedAndBoundNameVisitor()
-        bound_names.visit(scope)
-        if not ROOT_NAME_PROJECTION.root_names(call_node.func).isdisjoint(
-            bound_names.bound_names
-        ):
-            return None
-        constructor_symbol = context.class_reference_resolver_for_source_path(
-            source_path
-        ).symbol_for_reference(call_node.func)
+        if scope is not None:
+            bound_names = _LoadedAndBoundNameVisitor()
+            bound_names.visit(scope)
+            if not ROOT_NAME_PROJECTION.root_names(call_node.func).isdisjoint(
+                bound_names.bound_names
+            ):
+                return None
+        constructor_symbol = ModuleNominalBindingAuthority(
+            context.parsed_module_for_source_path(source_path)
+        ).qualified_name_at(
+            call_node.func,
+            line=call_node.lineno,
+        )
         if constructor_symbol is None:
             return None
         return cls(

@@ -3013,6 +3013,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         "    static_payload_line_count: int\n"
         "    marker_kinds: tuple[str, ...]\n"
         "    sink_kinds: tuple[str, ...]\n\n\n"
+        "EmbeddedCandidateAlias = EmbeddedStaticPayloadCandidate\n\n\n"
         "def build_candidate(stats: StaticPayloadStats):\n"
         "    return EmbeddedStaticPayloadCandidate(\n"
         "        function_name='emit',\n"
@@ -3021,9 +3022,28 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         "        marker_kinds=stats.marker_kinds,\n"
         "        sink_kinds=('write',),\n"
         "    )\n\n\n"
-        "def describe(payload_candidate: EmbeddedStaticPayloadCandidate, other):\n"
+        "def build_aliased_candidate(stats: StaticPayloadStats):\n"
+        "    return EmbeddedCandidateAlias(\n"
+        "        function_name='alias',\n"
+        "        line_count=20,\n"
+        "        static_payload_line_count=stats.payload_line_count,\n"
+        "        marker_kinds=stats.marker_kinds,\n"
+        "        sink_kinds=('alias',),\n"
+        "    )\n\n\n"
+        "def describe(payload_candidate: EmbeddedCandidateAlias, other):\n"
         "    untouched = other.static_payload_line_count\n"
-        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}:{untouched}'\n",
+        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}:{untouched}'\n\n\n"
+        "def untyped_owner(payload_candidate):\n"
+        "    return payload_candidate.static_payload_line_count\n\n\n"
+        "def rebound_owner(payload_candidate: EmbeddedStaticPayloadCandidate, other):\n"
+        "    payload_candidate = other\n"
+        "    return payload_candidate.static_payload_line_count\n\n\n"
+        "def shadowed(EmbeddedStaticPayloadCandidate, stats):\n"
+        "    return EmbeddedStaticPayloadCandidate(\n"
+        "        static_payload_line_count=stats.payload_line_count,\n"
+        "        marker_kinds=stats.marker_kinds,\n"
+        "        sink_kinds=(),\n"
+        "    )\n",
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
@@ -3043,7 +3063,6 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
                 carrier_attribute="marker_kinds",
             ),
         ),
-        attribute_owner_expressions=("payload_candidate",),
     )
     recipe = RefactorRecipe(
         recipe_id="reuse-static-payload-stats",
@@ -3052,6 +3071,8 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
 
     payload = operation.to_dict()
     assert "class_name" not in payload
+    assert "constructor_names" not in payload
+    assert "attribute_owner_expressions" not in payload
     assert "field_projection_pairs" not in payload
     assert payload["field_projections"] == (
         {
@@ -3064,6 +3085,16 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         },
     )
     assert RefactorRecipeOperation.from_dict(payload) == operation
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Unsupported ReplaceFieldsWithCarrierOperation payload field\(s\): "
+            r"'constructor_names'"
+        ),
+    ):
+        RefactorRecipeOperation.from_dict(
+            {**payload, "constructor_names": ("EmbeddedStaticPayloadCandidate",)}
+        )
 
     simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
         _indexed_snapshot(source_index, source_by_path),
@@ -3088,10 +3119,30 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     assert "static_payload_line_count: int" not in rewritten
     assert "marker_kinds: tuple[str, ...]" in rewritten
     assert rewritten.count("marker_kinds: tuple[str, ...]") == 1
-    assert "static_payload_stats=stats" in rewritten
+    assert rewritten.count("static_payload_stats=stats") == 2
+    assert (
+        "return EmbeddedCandidateAlias(\n"
+        "        function_name='alias',\n"
+        "        line_count=20,\n"
+        "        static_payload_stats=stats,\n"
+        "        sink_kinds=('alias',),\n"
+        "    )"
+    ) in rewritten
     assert "payload_candidate.static_payload_stats.payload_line_count" in rewritten
     assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
     assert "other.static_payload_line_count" in rewritten
+    assert "return payload_candidate.static_payload_line_count" in rewritten
+    assert (
+        "payload_candidate = other\n"
+        "    return payload_candidate.static_payload_line_count"
+    ) in rewritten
+    assert (
+        "return EmbeddedStaticPayloadCandidate(\n"
+        "        static_payload_line_count=stats.payload_line_count,\n"
+        "        marker_kinds=stats.marker_kinds,\n"
+        "        sink_kinds=(),\n"
+        "    )"
+    ) in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
 
 
