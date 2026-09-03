@@ -165,6 +165,7 @@ from .semantic_descent import (
     semantic_descent_finding_projection_id,
 )
 from .semantic_match import (
+    AstNameTemplateMatch,
     Maybe,
     loaded_concrete_nominal_descendants,
     loaded_nominal_descendants,
@@ -1732,6 +1733,12 @@ class SourceRewriteTarget(
         OptionalStringPayloadValueCodec(),
         default=None,
     )
+
+    @classmethod
+    def from_semantic_target(cls, target: AstTargetDigest) -> Self:
+        """Address a declaration by stable source path and nominal identity."""
+
+        return cls(file_path=target.file_path, qualname=target.qualname)
 
     def optional_file_path(self, source_index: SourceIndex) -> str | None:
         if self.file_path is None:
@@ -13888,6 +13895,26 @@ class RepeatedBuilderCallSite:
             self.call.col_offset,
         )
 
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        """Return the exact keyword schema observed at this constructor call."""
+
+        if self.call.args or any(keyword.arg is None for keyword in self.call.keywords):
+            return ()
+        return tuple(cast(str, keyword.arg) for keyword in self.call.keywords)
+
+    @property
+    def mapping_key(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return root-agnostic identity for this observed constructor mapping."""
+
+        return (
+            self.field_names,
+            tuple(
+                root_agnostic_expression_fingerprint(keyword.value)
+                for keyword in self.call.keywords
+            ),
+        )
+
     def root_parameter(self, root_name: str) -> ast.arg | None:
         for parameter in (
             *self.participant.node.args.posonlyargs,
@@ -13943,23 +13970,31 @@ class ConsumerFamilyBuilderAuthorityCandidate:
             for symbol in owner_symbols
             if symbol is not None
         )
-        shared_symbols = frozenset.intersection(*nominal_families)
+        family_symbols = frozenset().union(*nominal_families)
         participant_nodes = frozenset(
             call_site.participant.node for call_site in call_sites
         )
         authority_symbol = authority.class_symbol(context)
-        if authority_symbol is None:
+        if authority_symbol is None or not call_sites:
             return ()
+        field_names = call_sites[0].field_names
         return tuple(
             candidate
-            for symbol in sorted(shared_symbols)
+            for symbol in sorted(family_symbols)
             for declaration in (class_index.class_for(symbol),)
             if declaration is not None
             for method in declaration.node.body
             if isinstance(method, ast.FunctionDef)
             and (
                 method not in participant_nodes
-                or any(owner_symbol != symbol for owner_symbol in owner_symbols)
+                or any(
+                    owner_symbol != symbol and symbol in nominal_family
+                    for owner_symbol, nominal_family in zip(
+                        owner_symbols,
+                        nominal_families,
+                        strict=True,
+                    )
+                )
             )
             for candidate in (
                 cls.from_method(
@@ -13967,7 +14002,7 @@ class ConsumerFamilyBuilderAuthorityCandidate:
                     declaration,
                     method,
                     authority_symbol,
-                    authority.field_names,
+                    field_names,
                 ),
             )
             if candidate is not None
@@ -14010,6 +14045,497 @@ class ConsumerFamilyBuilderAuthorityCandidate:
             constructor=constructor,
         )
 
+    def invocation_signature(
+        self,
+    ) -> "ConsumerFamilyBuilderInvocationSignature | None":
+        arguments = self.method.args
+        if (
+            self.method.decorator_list
+            or arguments.posonlyargs
+            or arguments.vararg is not None
+            or arguments.kwonlyargs
+            or arguments.kwarg is not None
+            or arguments.defaults
+            or arguments.kw_defaults
+            or not arguments.args
+        ):
+            return None
+        receiver_name = arguments.args[0].arg
+        parameter_names = tuple(argument.arg for argument in arguments.args[1:])
+        parameter_occurrences = tuple(
+            node.id
+            for keyword in self.constructor.keyword_arguments
+            for node in ast.walk(keyword.value)
+            if isinstance(node, ast.Name) and node.id in parameter_names
+        )
+        if parameter_occurrences != parameter_names:
+            return None
+        if any(
+            not self._field_expression_is_relocatable(
+                keyword.value,
+                receiver_name,
+                frozenset(parameter_names),
+            )
+            for keyword in self.constructor.keyword_arguments
+        ):
+            return None
+        return ConsumerFamilyBuilderInvocationSignature(
+            receiver_name=receiver_name,
+            parameter_names=parameter_names,
+        )
+
+    @staticmethod
+    def _field_expression_is_relocatable(
+        expression: ast.expr,
+        receiver_name: str,
+        parameter_names: frozenset[str],
+    ) -> bool:
+        referenced_parameters = frozenset(
+            node.id
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Name) and node.id in parameter_names
+        )
+        if referenced_parameters:
+            return len(referenced_parameters) == 1
+        return bool(
+            isinstance(expression, ast.Constant)
+            or (
+                isinstance(expression, ast.Name)
+                and expression.id == receiver_name
+            )
+            or (
+                isinstance(expression, ast.Call)
+                and isinstance(expression.func, ast.Name)
+                and expression.func.id == "type"
+                and len(expression.args) == 1
+                and isinstance(expression.args[0], ast.Name)
+                and expression.args[0].id == receiver_name
+                and not expression.keywords
+            )
+        )
+
+    def required_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=self.declaration.file_path,
+            qualname=f"{self.declaration.qualname}.{self.method.name}",
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            raise ValueError(
+                f"Consumer-family authority {self.symbol!r} is not one exact method"
+            )
+        return context.source_index.target_by_id[target_ids[0]]
+
+    def is_inherited_by(
+        self,
+        context: CodemodSelectorContext,
+        call_site: RepeatedBuilderCallSite,
+    ) -> bool:
+        owner_symbol = call_site.owner_class_symbol(context)
+        return bool(
+            owner_symbol is not None
+            and self.declaration.symbol
+            in (
+                owner_symbol,
+                *context.required_class_family_index.ancestor_symbols(owner_symbol),
+            )
+        )
+
+    def is_unique_method_authority_for(
+        self,
+        context: CodemodSelectorContext,
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+    ) -> bool:
+        """Prove no participant MRO has a competing repository declaration."""
+
+        class_index = context.required_class_family_index
+        owner_symbols = tuple(
+            call_site.owner_class_symbol(context) for call_site in call_sites
+        )
+        if any(symbol is None for symbol in owner_symbols):
+            return False
+        return all(
+            frozenset(
+                symbol
+                for symbol in (
+                    owner_symbol,
+                    *class_index.ancestor_symbols(owner_symbol),
+                )
+                for declaration in (class_index.class_for(symbol),)
+                if declaration is not None
+                if any(
+                    isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and statement.name == self.method.name
+                    for statement in declaration.node.body
+                )
+            )
+            == frozenset((self.declaration.symbol,))
+            for owner_symbol in owner_symbols
+            if owner_symbol is not None
+        )
+
+
+@dataclass(frozen=True)
+class ConsumerFamilyBuilderInvocationSignature:
+    """Exact instance-method signature available to inherited call sites."""
+
+    receiver_name: str
+    parameter_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConsumerFamilyBuilderCallProjection:
+    """One direct constructor call proven equal to an inherited builder call."""
+
+    call_site: RepeatedBuilderCallSite
+    receiver_name: str
+    parameter_names: tuple[str, ...]
+    match: AstNameTemplateMatch
+
+    @classmethod
+    def from_candidate(
+        cls,
+        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        signature: ConsumerFamilyBuilderInvocationSignature,
+        call_site: RepeatedBuilderCallSite,
+    ) -> Self | None:
+        receiver_name = ClassMethodReceiverRequirements.receiver_name(
+            call_site.participant.node
+        )
+        call_keyword_names = tuple(
+            keyword.arg for keyword in call_site.call.keywords
+        )
+        if (
+            receiver_name is None
+            or candidate.constructor.keyword_names != call_keyword_names
+        ):
+            return None
+        match = AstNameTemplateMatch.from_expression_pairs(
+            tuple(
+                candidate.constructor.required_keyword_argument(field_name).value
+                for field_name in candidate.constructor.keyword_names
+            ),
+            tuple(keyword.value for keyword in call_site.call.keywords),
+            (signature.receiver_name, *signature.parameter_names),
+        )
+        if match is None or any(
+            match.value_for(parameter_name) is None
+            for parameter_name in signature.parameter_names
+        ):
+            return None
+        matched_receiver = match.value_for(signature.receiver_name)
+        if matched_receiver is not None and not (
+            isinstance(matched_receiver, ast.Name)
+            and matched_receiver.id == receiver_name
+        ):
+            return None
+        return cls(
+            call_site=call_site,
+            receiver_name=receiver_name,
+            parameter_names=signature.parameter_names,
+            match=match,
+        )
+
+    def required_replacement(
+        self,
+        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        geometry: SourceTextGeometry,
+    ) -> SourceTextSpanReplacement:
+        offsets = geometry.required_node_offsets(self.call_site.call)
+        span = SourceTextSpan.from_offsets(offsets)
+        if span.contains_comment(geometry.source):
+            raise ValueError(
+                "Inherited builder descent will not discard constructor comments"
+            )
+        parameter_values = tuple(
+            (parameter_name, self.match.required_value_for(parameter_name))
+            for parameter_name in self.parameter_names
+        )
+        replacement_call = ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id=self.receiver_name, ctx=ast.Load()),
+                attr=candidate.method.name,
+                ctx=ast.Load(),
+            ),
+            args=[],
+            keywords=[
+                ast.keyword(arg=name, value=copy.deepcopy(value))
+                for name, value in parameter_values
+            ],
+        )
+        replacement_source = PythonExpressionSourceFormatter().replacement_source(
+            ast.fix_missing_locations(replacement_call),
+            line_prefix=geometry.line_indent(span.start_offset),
+        )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source=replacement_source,
+        )
+
+
+class RepeatedBuilderSourceDerivation(ABC):
+    """Source-reproved execution route for one repeated constructor family."""
+
+    authority: "DataclassPayloadAuthorityTarget"
+    call_sites: tuple[RepeatedBuilderCallSite, ...]
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> "RepeatedBuilderSourceDerivation":
+        authority = DataclassPayloadAuthorityTarget.from_rewrite_target(
+            context,
+            authority_reference,
+        )
+        call_sites = cls.anchored_call_sites(
+            context,
+            authority,
+            projection_reference,
+        )
+        candidates = ConsumerFamilyBuilderAuthorityCandidate.from_context(
+            context,
+            authority,
+            call_sites,
+        )
+        descents = tuple(
+            descent
+            for candidate in candidates
+            if (
+                descent := InheritedConsumerBuilderAuthorityDescent.from_candidate(
+                    context,
+                    authority,
+                    candidate,
+                    call_sites,
+                )
+            )
+            is not None
+        )
+        if len(descents) > 1:
+            raise ValueError(
+                "Repeated-builder descent found multiple executable consumer-family "
+                "constructor authorities: "
+                + ", ".join(descent.candidate.symbol for descent in descents)
+            )
+        if descents:
+            return descents[0]
+        if candidates:
+            raise ValueError(
+                "Existing consumer-family constructor authorities lack one "
+                "complete exact parameter substitution: "
+                + ", ".join(candidate.symbol for candidate in candidates)
+            )
+        return RepeatedBuilderAuthorityDerivation.from_authority(
+            context,
+            authority,
+        )
+
+    @staticmethod
+    def anchored_call_sites(
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
+        projection_reference: SourceRewriteTarget,
+    ) -> tuple[RepeatedBuilderCallSite, ...]:
+        participant = ResolvedFunctionProjectionTarget.from_rewrite_target(
+            context,
+            projection_reference,
+        )
+        call_sites = RepeatedBuilderAuthorityDerivation.constructor_call_sites(
+            context,
+            authority,
+        )
+        anchor_sites = tuple(
+            call_site
+            for call_site in call_sites
+            if call_site.participant.target.target_id == participant.target.target_id
+        )
+        if len(anchor_sites) != 1:
+            raise ValueError(
+                "Repeated-builder participant must contain one nominal constructor "
+                f"call; found {len(anchor_sites)}"
+            )
+        anchor_key = anchor_sites[0].mapping_key
+        return tuple(
+            call_site
+            for call_site in call_sites
+            if call_site.mapping_key == anchor_key
+        )
+
+    @property
+    @abstractmethod
+    def executable_declaration_type(self) -> type[RefactorConcept]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def authority_kind(self) -> SemanticAuthorityKind:
+        raise NotImplementedError
+
+    @abstractmethod
+    def authority_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def rewrite_call_sites(self) -> tuple[RepeatedBuilderCallSite, ...]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def call_rewrite_rationale(self) -> str:
+        raise NotImplementedError
+
+    def authority_source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        return ()
+
+    @abstractmethod
+    def required_call_replacement(
+        self,
+        geometry: SourceTextGeometry,
+        call_site: RepeatedBuilderCallSite,
+    ) -> SourceTextSpanReplacement:
+        raise NotImplementedError
+
+    def required_source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        participants = tuple(
+            dict.fromkeys(call_site.participant for call_site in self.rewrite_call_sites)
+        )
+        edits = list(self.authority_source_edits(context))
+        for participant in participants:
+            geometry = SourceTextGeometry(
+                context.sources_by_file_path[participant.source_path]
+            )
+            replacements = tuple(
+                self.required_call_replacement(geometry, call_site)
+                for call_site in self.rewrite_call_sites
+                if call_site.participant.target.target_id
+                == participant.target.target_id
+            )
+            edits.append(
+                SourceSpanReplacement(
+                    file_path=participant.source_path,
+                    start_line=participant.target.line,
+                    end_line=participant.target.end_line,
+                    replacement_lines=SourceTargetEditor.source_lines(
+                        geometry.target_source_with_replacements(
+                            participant.target,
+                            replacements,
+                        )
+                    ),
+                    rationale=self.call_rewrite_rationale,
+                )
+            )
+        return tuple(edits)
+
+
+@dataclass(frozen=True)
+class InheritedConsumerBuilderAuthorityDescent(
+    RepeatedBuilderSourceDerivation,
+    ConstructorKwargCollapseConcept,
+):
+    """Route duplicated construction through one existing inherited method."""
+
+    authority: "DataclassPayloadAuthorityTarget"
+    candidate: ConsumerFamilyBuilderAuthorityCandidate
+    call_sites: tuple[RepeatedBuilderCallSite, ...]
+    projections: tuple[ConsumerFamilyBuilderCallProjection, ...]
+
+    @classmethod
+    def from_candidate(
+        cls,
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
+        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+    ) -> Self | None:
+        signature = candidate.invocation_signature()
+        if signature is None:
+            return None
+        family_call_sites = tuple(
+            call_site
+            for call_site in call_sites
+            if candidate.is_inherited_by(context, call_site)
+        )
+        if not candidate.is_unique_method_authority_for(
+            context,
+            family_call_sites,
+        ):
+            return None
+        consumer_call_sites = tuple(
+            call_site
+            for call_site in family_call_sites
+            if call_site.participant.node is not candidate.method
+        )
+        projections = tuple(
+            projection
+            for call_site in consumer_call_sites
+            if (
+                projection := ConsumerFamilyBuilderCallProjection.from_candidate(
+                    candidate,
+                    signature,
+                    call_site,
+                )
+            )
+            is not None
+        )
+        if len(consumer_call_sites) < 2 or len(projections) != len(
+            consumer_call_sites
+        ):
+            return None
+        return cls(
+            authority=authority,
+            candidate=candidate,
+            call_sites=call_sites,
+            projections=projections,
+        )
+
+    @property
+    def executable_declaration_type(self) -> type[RefactorConcept]:
+        return type(self)
+
+    @property
+    def authority_kind(self) -> SemanticAuthorityKind:
+        return SemanticAuthorityKind.CLASS_FAMILY
+
+    def authority_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
+        return self.candidate.required_target(context)
+
+    @property
+    def rewrite_call_sites(self) -> tuple[RepeatedBuilderCallSite, ...]:
+        return tuple(projection.call_site for projection in self.projections)
+
+    @property
+    def call_rewrite_rationale(self) -> str:
+        return (
+            "Route repeated construction through its inherited consumer-family "
+            "authority."
+        )
+
+    def required_call_replacement(
+        self,
+        geometry: SourceTextGeometry,
+        call_site: RepeatedBuilderCallSite,
+    ) -> SourceTextSpanReplacement:
+        projection = single_item(
+            tuple(
+                projection
+                for projection in self.projections
+                if projection.call_site.source_identity == call_site.source_identity
+            )
+        )
+        if projection is None:
+            raise ValueError("Inherited builder descent lost one call projection")
+        return projection.required_replacement(self.candidate, geometry)
+
 
 @dataclass(frozen=True)
 class RepeatedBuilderSourceProjectionTemplate:
@@ -14036,7 +14562,7 @@ class RepeatedBuilderAuthorityRecipeParts(AuthorityClaimCarrier):
     """Exact targets and source-derived operation for a builder extraction."""
 
     operation: "DeriveRepeatedBuilderAuthorityOperation"
-    authority_method: RepeatedBuilderAuthorityMethod
+    derivation: RepeatedBuilderSourceDerivation
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         return (
@@ -14075,7 +14601,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             )
         return ExecutableRecipeEvaluation(
             executable_recipe=parts.recipe_for(finding),
-            executable_declaration_type=type(parts.authority_method),
+            executable_declaration_type=parts.derivation.executable_declaration_type,
         )
 
     def recipe_parts_for_finding(
@@ -14117,8 +14643,16 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             constructor_target = context.source_index.target_by_id[
                 authority_target_ids[0]
             ]
+            projection_target = self.unique_constructor_participant(
+                context,
+                evidence_targets,
+                constructor_symbol,
+            )
             operation = DeriveRepeatedBuilderAuthorityOperation(
                 target=SourceRewriteTarget(target_id=constructor_target.target_id),
+                projection_target=SourceRewriteTarget.from_semantic_target(
+                    projection_target
+                ),
             )
             derivation = operation.required_derivation(context)
             evidence_source_identities = frozenset(
@@ -14140,11 +14674,11 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         return (
             RepeatedBuilderAuthorityRecipeParts(
                 authority_claim=AstTargetAuthorityClaim.from_target(
-                    constructor_target,
-                    authority_kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
+                    derivation.authority_target(context),
+                    authority_kind=derivation.authority_kind,
                 ),
                 operation=operation,
-                authority_method=derivation.method,
+                derivation=derivation,
             ),
             "",
         )
@@ -14184,6 +14718,36 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
                 "constructor call"
             )
         return target, nominal_calls[0]
+
+    @staticmethod
+    def unique_constructor_participant(
+        context: CodemodSelectorContext,
+        evidence_targets: tuple[tuple[AstTargetDigest, ast.Call], ...],
+        constructor_symbol: str,
+    ) -> AstTargetDigest:
+        participants = tuple(dict.fromkeys(target for target, _call in evidence_targets))
+        candidates = tuple(
+            target
+            for target in participants
+            for node in (context.ast_target_nodes_by_id.get(target.target_id),)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            if sum(
+                1
+                for call in walk_function_body_nodes(node)
+                if isinstance(call, ast.Call)
+                and context.class_reference_resolver_for_source_path(
+                    target.file_path
+                ).symbol_for_reference(call.func)
+                == constructor_symbol
+            )
+            == 1
+        )
+        if not candidates:
+            raise ValueError(
+                "Repeated-builder evidence has no participant with one nominal "
+                "constructor call"
+            )
+        return candidates[0]
 
     def action_keys_for_finding(
         self,
@@ -14845,7 +15409,10 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
 
 
 @dataclass(frozen=True)
-class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
+class RepeatedBuilderAuthorityDerivation(
+    RepeatedBuilderSourceDerivation,
+    RepeatedBuilderAuthorityMethodDeriver,
+):
     """Current-source proof for one batched constructor-authority extraction."""
 
     authority: "DataclassPayloadAuthorityTarget"
@@ -14854,30 +15421,12 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
     method: RepeatedBuilderAuthorityMethod
 
     @classmethod
-    def from_context(
+    def from_authority(
         cls,
         context: CodemodSelectorContext,
-        authority_reference: SourceRewriteTarget,
+        authority: "DataclassPayloadAuthorityTarget",
     ) -> "RepeatedBuilderAuthorityDerivation":
-        authority = DataclassPayloadAuthorityTarget.from_rewrite_target(
-            context,
-            authority_reference,
-        )
         authority.require_complete_owned_schema(context)
-        call_sites = cls.peer_call_sites(context, authority)
-        consumer_authorities = ConsumerFamilyBuilderAuthorityCandidate.from_context(
-            context,
-            authority,
-            call_sites,
-        )
-        if consumer_authorities:
-            raise ValueError(
-                "Repeated-builder generation found existing consumer-family "
-                "constructor authority: "
-                + ", ".join(
-                    candidate.symbol for candidate in consumer_authorities
-                )
-            )
         derivations = cls.proven_derivations(context, authority)
         if not derivations:
             raise ValueError(
@@ -14897,6 +15446,26 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
                 f"{method.method_name}"
             )
         return derivation
+
+    @property
+    def executable_declaration_type(self) -> type[RefactorConcept]:
+        return type(self.method)
+
+    @property
+    def authority_kind(self) -> SemanticAuthorityKind:
+        return SemanticAuthorityKind.DATACLASS_SCHEMA
+
+    def authority_target(self, context: CodemodSelectorContext) -> AstTargetDigest:
+        del context
+        return self.authority.target
+
+    @property
+    def rewrite_call_sites(self) -> tuple[RepeatedBuilderCallSite, ...]:
+        return self.call_sites
+
+    @property
+    def call_rewrite_rationale(self) -> str:
+        return "Rewrite repeated construction through its owned authority."
 
     @classmethod
     def proven_derivations(
@@ -14955,6 +15524,18 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
         context: CodemodSelectorContext,
         authority: "DataclassPayloadAuthorityTarget",
     ) -> tuple[RepeatedBuilderCallSite, ...]:
+        return tuple(
+            call_site
+            for call_site in cls.constructor_call_sites(context, authority)
+            if cls.constructor_call_matches(call_site.call, authority.field_names)
+        )
+
+    @classmethod
+    def constructor_call_sites(
+        cls,
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
+    ) -> tuple[RepeatedBuilderCallSite, ...]:
         authority_symbol = authority.class_symbol(context)
         if authority_symbol is None:
             raise ValueError(
@@ -14982,7 +15563,9 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
                 for node in walk_function_body_nodes(participant.node)
                 if isinstance(node, ast.Call)
                 and resolver.symbol_for_reference(node.func) == authority_symbol
-                and cls.constructor_call_matches(node, authority.field_names)
+                and not node.args
+                and bool(node.keywords)
+                and all(keyword.arg is not None for keyword in node.keywords)
             )
         return tuple(call_sites)
 
@@ -15013,12 +15596,11 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
             == frozenset(field_names)
         )
 
-    def required_source_edits(
+    def authority_source_edits(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         source = context.sources_by_file_path[self.authority.source_path]
-        geometry = SourceTextGeometry(source)
         constructor_source = self.constructor_replacement_source(
             source,
             self.authority.target,
@@ -15026,7 +15608,7 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
             constructor_name=self.authority.class_name,
             method=self.method,
         )
-        edits: list[NominalSourceEdit] = [
+        return (
             SourceSpanReplacement(
                 file_path=self.authority.source_path,
                 start_line=self.authority.target.line,
@@ -15035,37 +15617,15 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
                 rationale=(
                     "Insert the source-derived builder on its constructor authority."
                 ),
-            )
-        ]
-        for participant in self.participants:
-            replacements = tuple(
-                self.required_call_replacement(geometry, site.call)
-                for site in self.call_sites
-                if site.participant.target.target_id == participant.target.target_id
-            )
-            edits.append(
-                SourceSpanReplacement(
-                    file_path=participant.source_path,
-                    start_line=participant.target.line,
-                    end_line=participant.target.end_line,
-                    replacement_lines=SourceTargetEditor.source_lines(
-                        geometry.target_source_with_replacements(
-                            participant.target,
-                            replacements,
-                        )
-                    ),
-                    rationale=(
-                        "Rewrite repeated construction through its owned authority."
-                    ),
-                )
-            )
-        return tuple(edits)
+            ),
+        )
 
     def required_call_replacement(
         self,
         geometry: SourceTextGeometry,
-        call: ast.Call,
+        call_site: RepeatedBuilderCallSite,
     ) -> SourceTextSpanReplacement:
+        call = call_site.call
         offsets = geometry.required_node_offsets(call)
         span = SourceTextSpan.from_offsets(offsets)
         if span.contains_comment(geometry.source):
@@ -15086,18 +15646,21 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeriveRepeatedBuilderAuthorityOperation(SourceReprovedOperation):
+class DeriveRepeatedBuilderAuthorityOperation(
+    SourceDerivedAuthorityProjectionOperation
+):
     """Re-prove the unique maximal builder family from its constructor owner."""
 
     def required_derivation(
         self,
         context: CodemodSelectorContext,
-    ) -> RepeatedBuilderAuthorityDerivation:
+    ) -> RepeatedBuilderSourceDerivation:
         if context.class_family_index is None:
             context = context.execution_snapshot()
-        return RepeatedBuilderAuthorityDerivation.from_context(
+        return RepeatedBuilderSourceDerivation.from_context(
             context,
             self.target,
+            self.projection_target,
         )
 
     def source_edits_from_snapshot(

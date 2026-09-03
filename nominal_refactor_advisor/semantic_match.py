@@ -215,6 +215,132 @@ class NamedValueBinding:
 
 
 @dataclass(frozen=True)
+class AstTemplateNameBinding:
+    """One expression bound to a declared name in an AST template."""
+
+    name: str
+    value: ast.expr
+
+
+@dataclass(frozen=True)
+class AstNameTemplateMatch:
+    """Exact AST-shape match with typed bindings for declared template names."""
+
+    bindings: tuple[AstTemplateNameBinding, ...]
+
+    @classmethod
+    def from_expression_pairs(
+        cls,
+        template_expressions: Sequence[ast.expr],
+        candidate_expressions: Sequence[ast.expr],
+        bindable_names: Sequence[str],
+    ) -> "AstNameTemplateMatch | None":
+        if len(template_expressions) != len(candidate_expressions):
+            return None
+        ordered_names = tuple(dict.fromkeys(bindable_names))
+        bindings_by_name: dict[str, ast.expr] = {}
+        if not all(
+            cls._matches_value(
+                template,
+                candidate,
+                frozenset(ordered_names),
+                bindings_by_name,
+            )
+            for template, candidate in zip(
+                template_expressions,
+                candidate_expressions,
+                strict=True,
+            )
+        ):
+            return None
+        return cls(
+            tuple(
+                AstTemplateNameBinding(name, bindings_by_name[name])
+                for name in ordered_names
+                if name in bindings_by_name
+            )
+        )
+
+    def value_for(self, name: str) -> ast.expr | None:
+        return next(
+            (binding.value for binding in self.bindings if binding.name == name),
+            None,
+        )
+
+    def required_value_for(self, name: str) -> ast.expr:
+        value = self.value_for(name)
+        if value is None:
+            raise ValueError(f"AST template match has no binding for {name!r}")
+        return value
+
+    @classmethod
+    def _matches_value(
+        cls,
+        template: object,
+        candidate: object,
+        bindable_names: frozenset[str],
+        bindings_by_name: dict[str, ast.expr],
+    ) -> bool:
+        if isinstance(template, ast.Name) and template.id in bindable_names:
+            if not isinstance(candidate, ast.expr):
+                return False
+            bound = bindings_by_name.get(template.id)
+            if bound is None:
+                bindings_by_name[template.id] = candidate
+                return True
+            return ast.dump(bound, include_attributes=False) == ast.dump(
+                candidate,
+                include_attributes=False,
+            )
+        if isinstance(template, ast.AST):
+            if not isinstance(candidate, type(template)):
+                return False
+            template_fields = tuple(ast.iter_fields(template))
+            candidate_fields = tuple(ast.iter_fields(candidate))
+            if tuple(name for name, _value in template_fields) != tuple(
+                name for name, _value in candidate_fields
+            ):
+                return False
+            return bool(
+                all(
+                    cls._matches_value(
+                        template_value,
+                        candidate_value,
+                        bindable_names,
+                        bindings_by_name,
+                    )
+                    for (_template_field, template_value), (
+                        _candidate_field,
+                        candidate_value,
+                    ) in zip(
+                        template_fields,
+                        candidate_fields,
+                        strict=True,
+                    )
+                )
+            )
+        if isinstance(template, list):
+            return bool(
+                isinstance(candidate, list)
+                and len(template) == len(candidate)
+                and all(
+                    cls._matches_value(
+                        template_item,
+                        candidate_item,
+                        bindable_names,
+                        bindings_by_name,
+                    )
+                    for template_item, candidate_item in zip(
+                        template,
+                        candidate,
+                        strict=True,
+                    )
+                )
+            )
+        return template == candidate
+
+
+@dataclass(frozen=True)
 class CollectionLiteral:
     node: ast.Tuple | ast.List | ast.Set
     elements: tuple[ast.AST, ...]

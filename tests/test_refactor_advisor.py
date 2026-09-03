@@ -266,6 +266,7 @@ from nominal_refactor_advisor.scan_prediction import (
     build_scan_prediction_report,
 )
 from nominal_refactor_advisor.semantic_match import (
+    AstNameTemplateMatch,
     EffectStep,
     Maybe,
 )
@@ -427,6 +428,42 @@ def _object_family_certificate(
             per_axis_objects=per_axis_objects,
         ),
         semantic_axes=semantic_axes,
+    )
+
+
+def test_ast_name_template_match_binds_declared_expression_holes() -> None:
+    template = ast.parse(
+        "Evaluation(reason=reason, declaration_type=type(self))",
+        mode="eval",
+    ).body
+    candidate = ast.parse(
+        "Evaluation(reason=error, declaration_type=type(worker))",
+        mode="eval",
+    ).body
+
+    match = AstNameTemplateMatch.from_expression_pairs(
+        (template,),
+        (candidate,),
+        ("self", "reason", "unused"),
+    )
+
+    assert match is not None
+    assert ast.unparse(match.value_for("self")) == "worker"
+    assert ast.unparse(match.value_for("reason")) == "error"
+    assert match.value_for("unused") is None
+
+
+def test_ast_name_template_match_rejects_inconsistent_repeated_binding() -> None:
+    template = ast.parse("pair(value, value)", mode="eval").body
+    candidate = ast.parse("pair(left, right)", mode="eval").body
+
+    assert (
+        AstNameTemplateMatch.from_expression_pairs(
+            (template,),
+            (candidate,),
+            ("value",),
+        )
+        is None
     )
 
 
@@ -3961,7 +3998,6 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
     rewritten = simulation.simulation.rewritten_sources[
         (tmp_path / "pkg/mod.py").as_posix()
     ]
-
     def mro_names(source_text: str) -> tuple[tuple[str, ...], ...]:
         namespace: dict[str, object] = {}
         exec(compile(source_text, "<closed-family-mi>", "exec"), namespace)
@@ -12177,6 +12213,12 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         "operation",
         "target_id",
         "rationale",
+        "projection_target",
+    }
+    assert operation_payload["projection_target"] == {
+        "target_id": None,
+        "file_path": module_path.as_posix(),
+        "target_qualname": "alpha",
     }
     assert not {
         "replacement_source",
@@ -12461,10 +12503,7 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     assert "will not overwrite or shadow from_source" in plan.records[0].reason
 
 
-def test_repeated_builder_rejects_existing_consumer_family_authority(
-    tmp_path: Path,
-) -> None:
-    source = """
+_REPEATED_CONSUMER_BUILDER_SOURCE = """
 from dataclasses import dataclass
 
 
@@ -12510,6 +12549,65 @@ class Gamma(Synthesizer):
             retryable=False,
         )
 """
+
+
+def test_repeated_builder_descends_through_existing_consumer_family_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", _REPEATED_CONSUMER_BUILDER_SOURCE)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[
+        (tmp_path / "pkg/mod.py").as_posix()
+    ]
+    replay = CodemodPlanDocument.from_json_value(
+        plan.document.to_dict()
+    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
+    assert len(findings) == 1
+    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.records[0].executable_declaration_name == (
+        "InheritedConsumerBuilderAuthorityDescent"
+    )
+    assert plan.records[0].refactor_concept == "constructor_kwarg_collapse"
+    assert rewritten.count("return self.rejected(reason=reason)") == 3
+    assert rewritten.count("return Evaluation(") == 1
+    assert (
+        replay.simulation.rewritten_sources[(tmp_path / "pkg/mod.py").as_posix()]
+        == rewritten
+    )
+    preflight = plan.document.preflight_snapshot(snapshot)
+    resolution = preflight.reports[0].details["resolutions"][0]
+    assert resolution["claim"]["claimed_symbol"] == "rejected"
+    assert resolution["status"] == "resolved"
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
+def test_repeated_builder_rejects_shadowed_consumer_family_authority(
+    tmp_path: Path,
+) -> None:
+    source = _REPEATED_CONSUMER_BUILDER_SOURCE.replace(
+        "class Beta(Synthesizer):\n    def evaluate",
+        "class Beta(Synthesizer):\n"
+        "    def rejected(self, reason):\n"
+        "        return None\n\n"
+        "    def evaluate",
+    )
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -12526,7 +12624,117 @@ class Gamma(Synthesizer):
 
     assert len(findings) == 1
     assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "pkg.mod.Synthesizer.rejected" in plan.records[0].reason
+    assert "complete exact parameter substitution" in plan.records[0].reason
+
+
+def test_repeated_builder_descends_only_the_inheriting_consumer_subset(
+    tmp_path: Path,
+) -> None:
+    source = _REPEATED_CONSUMER_BUILDER_SOURCE + """
+
+
+class External:
+    def evaluate(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+"""
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "executable_candidate"
+    assert rewritten.count("return self.rejected(reason=reason)") == 3
+    assert rewritten.count("return Evaluation(") == 2
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+    )
+
+
+def test_repeated_builder_inherited_descent_reproves_authority_mapping(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", _REPEATED_CONSUMER_BUILDER_SOURCE)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    document = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    ).document
+
+    changed_source = _REPEATED_CONSUMER_BUILDER_SOURCE.replace(
+        "            retryable=False,",
+        "            retryable=True,",
+        1,
+    )
+    _write_module(tmp_path, "pkg/mod.py", changed_source)
+    current_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        findings,
+    )
+
+    preflight = document.preflight_snapshot(current_snapshot)
+
+    assert preflight.preflight_failed is True
+    assert "complete exact parameter substitution" in str(preflight.to_dict())
+
+
+def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
+    tmp_path: Path,
+) -> None:
+    additional_authority = """
+    def also_rejected(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+"""
+    source = _REPEATED_CONSUMER_BUILDER_SOURCE.replace(
+        "\n\n\nclass Alpha(Synthesizer):",
+        f"\n{additional_authority}\n\nclass Alpha(Synthesizer):",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "multiple executable consumer-family constructor authorities" in (
+        plan.records[0].reason
+    )
 
 
 @pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))
