@@ -45,6 +45,7 @@ from .assignment_projection import (
 )
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
+    DeclarationAnnotationProjection,
     EagerNameLoadCollector,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
@@ -6534,7 +6535,7 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
         )
         cls._require_class_boundaries(component, map_owner, enum_class)
         cls._require_stable_module_bindings(module, map_owner, enum_class)
-        cls._require_deferred_annotations(module)
+        cls._require_postponed_annotations(module)
         direct_consumers = cls._direct_consumers(module, component)
         reverse_call_receivers = cls._reverse_call_receivers(
             snapshot,
@@ -6611,13 +6612,12 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
                 )
 
     @staticmethod
-    def _require_deferred_annotations(module: ParsedModule) -> None:
-        if (
-            ModuleAnnotationEvaluationMode.from_module(module.module)
-            is not ModuleAnnotationEvaluationMode.DEFERRED
-        ):
+    def _require_postponed_annotations(module: ParsedModule) -> None:
+        if ModuleAnnotationEvaluationMode.from_module(
+            module.module
+        ).annotations_execute_at_declaration:
             raise ValueError(
-                "enum-keyed method movement requires deferred annotation semantics"
+                "enum-keyed method movement requires postponed annotation semantics"
             )
 
     @staticmethod
@@ -8074,6 +8074,9 @@ class ModuleMoveDependencyReport:
     source_import_removal_names: tuple[str, ...]
     destination_dependency_names: tuple[str, ...]
     destination_insertion_line: int
+    source_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
+    destination_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
+    moved_annotation_count: int
     source_local_dependency_names: tuple[str, ...]
     unresolved_dependency_names: tuple[str, ...]
 
@@ -8082,6 +8085,15 @@ class ModuleMoveDependencyReport:
         return (
             not self.source_local_dependency_names
             and not self.unresolved_dependency_names
+            and self.annotation_evaluation_is_preserved
+        )
+
+    @property
+    def annotation_evaluation_is_preserved(self) -> bool:
+        return (
+            self.moved_annotation_count == 0
+            or self.source_annotation_evaluation_mode
+            is self.destination_annotation_evaluation_mode
         )
 
     def require_clean(self) -> None:
@@ -8106,6 +8118,12 @@ class ModuleMoveDependencyReport:
             parts.append(
                 f"unresolved dependencies={self.unresolved_dependency_names!r}"
             )
+        if not self.annotation_evaluation_is_preserved:
+            parts.append(
+                "annotation evaluation mode changes "
+                f"from {self.source_annotation_evaluation_mode.value!r} "
+                f"to {self.destination_annotation_evaluation_mode.value!r}"
+            )
         return "; ".join(parts)
 
     def to_dict(self) -> JsonObject:
@@ -8118,6 +8136,16 @@ class ModuleMoveDependencyReport:
             "source_import_removal_names": self.source_import_removal_names,
             "destination_dependency_names": self.destination_dependency_names,
             "destination_insertion_line": self.destination_insertion_line,
+            "source_annotation_evaluation_mode": (
+                self.source_annotation_evaluation_mode.value
+            ),
+            "destination_annotation_evaluation_mode": (
+                self.destination_annotation_evaluation_mode.value
+            ),
+            "moved_annotation_count": self.moved_annotation_count,
+            "annotation_evaluation_is_preserved": (
+                self.annotation_evaluation_is_preserved
+            ),
             "source_local_dependency_names": self.source_local_dependency_names,
             "unresolved_dependency_names": self.unresolved_dependency_names,
             "is_clean": self.is_clean,
@@ -8763,6 +8791,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             moved_names,
             source_dependency_import_names,
         )
+        moved_annotations = DeclarationAnnotationProjection.from_declarations(
+            target_nodes[target.target_id] for target in targets
+        )
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
             destination_path=destination_table.file_path,
@@ -8783,6 +8814,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_insertion_line=destination_table.insertion_line_after_bindings(
                 destination_dependency_names
             ),
+            source_annotation_evaluation_mode=ModuleAnnotationEvaluationMode.from_module(
+                source_table.module
+            ),
+            destination_annotation_evaluation_mode=(
+                ModuleAnnotationEvaluationMode.from_module(destination_table.module)
+            ),
+            moved_annotation_count=len(moved_annotations.expressions),
             source_local_dependency_names=source_local_names,
             unresolved_dependency_names=unresolved_names,
         )

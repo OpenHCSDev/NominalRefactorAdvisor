@@ -220,6 +220,9 @@ The ``Move*`` operations target an indexed module; the ``Extract*`` operations
 create their destination atomically.  All four derive dependency imports,
 source re-exports, and insertion geometry from the current source snapshot.
 The extraction variants also derive the new-file revision contract.
+Annotated declarations require matching source and destination annotation
+evaluation modes.  A mismatch appears in the dependency report and fails
+preflight before source edits are compiled.
 An import binding used only by moved declarations is removed from the source
 module; bindings with any remaining static name or string reference are
 retained.  A source-local dependency that is not one unambiguous movable class

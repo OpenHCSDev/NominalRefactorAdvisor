@@ -121,7 +121,7 @@ class ExactDataclassFieldSemantics:
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines
         ):
             raise ValueError("Promoted dataclass fields must not carry comments")
-        if annotation_mode is not ModuleAnnotationEvaluationMode.DEFERRED:
+        if annotation_mode.annotations_execute_at_declaration:
             raise ValueError(
                 "Field authority factoring requires postponed annotation evaluation"
             )

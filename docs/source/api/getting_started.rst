@@ -96,6 +96,11 @@ source re-exports, repository-local consumer imports, and the new-file revision
 contract.  A non-movable or unresolved dependency fails preflight without
 writing either module.
 
+Source and destination modules must use the same annotation evaluation policy
+when moved declarations contain annotations.  Align their
+``from __future__ import annotations`` usage before applying the move; NRA
+fails preflight instead of changing annotation semantics.
+
 To prove a goal across reachable source states, run:
 
 .. code-block:: bash

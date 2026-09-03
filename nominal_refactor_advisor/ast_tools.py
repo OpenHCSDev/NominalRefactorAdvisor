@@ -1321,11 +1321,18 @@ class LexicalScopeBindingAuthority:
 LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()
 
 
-class ModuleAnnotationEvaluationMode(Enum):
-    """Whether annotations in one module execute with their declarations."""
+class ModuleAnnotationEvaluationMode(StrEnum):
+    """Runtime representation policy for annotations declared by one module."""
 
-    EAGER = True
-    DEFERRED = False
+    EAGER = "eager"
+    LAZY = "lazy"
+    STRINGIZED = "stringized"
+
+    @classmethod
+    def runtime_default(cls) -> "ModuleAnnotationEvaluationMode":
+        """Return the annotation policy of the running Python language version."""
+
+        return cls.LAZY if sys.version_info >= (3, 14) else cls.EAGER
 
     @classmethod
     def from_module(cls, module: ast.Module) -> "ModuleAnnotationEvaluationMode":
@@ -1335,12 +1342,82 @@ class ModuleAnnotationEvaluationMode(Enum):
             and any(alias.name == "annotations" for alias in statement.names)
             for statement in module.body
         ):
-            return cls.DEFERRED
-        return cls.EAGER
+            return cls.STRINGIZED
+        return cls.runtime_default()
 
     @property
     def annotations_execute_at_declaration(self) -> bool:
-        return bool(self.value)
+        return self is self.EAGER
+
+
+@dataclass(frozen=True)
+class DeclarationAnnotationProjection:
+    """Annotation expressions contained by moved declarations."""
+
+    expressions: tuple[ast.expr, ...]
+
+    @classmethod
+    def from_declarations(
+        cls,
+        declarations: Iterable[
+            ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ],
+    ) -> "DeclarationAnnotationProjection":
+        collector = _DeclarationAnnotationCollector()
+        for declaration in declarations:
+            collector.visit(declaration)
+        return cls(tuple(collector.expressions))
+
+
+class _DeclarationAnnotationCollector(ast.NodeVisitor):
+    """Collect annotations whose representation follows the module policy."""
+
+    def __init__(self) -> None:
+        self.expressions: list[ast.expr] = []
+        self.scopes: list[
+            ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scopes.append(node)
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.expressions.extend(self.function_annotations(node))
+        self.scopes.append(node)
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if self.scopes and isinstance(self.scopes[-1], ast.ClassDef):
+            self.expressions.append(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+    @staticmethod
+    def function_annotations(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[ast.expr, ...]:
+        arguments = (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            *((node.args.vararg,) if node.args.vararg is not None else ()),
+            *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+        )
+        return (
+            *(
+                argument.annotation
+                for argument in arguments
+                if argument.annotation is not None
+            ),
+            *((node.returns,) if node.returns is not None else ()),
+        )
 
 
 class EagerNameLoadCollector(ast.NodeVisitor):

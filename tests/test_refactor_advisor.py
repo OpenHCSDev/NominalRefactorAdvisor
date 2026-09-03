@@ -54,6 +54,7 @@ from nominal_refactor_advisor.ast_tools import (
     FieldObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
     LiteralKind,
+    ModuleAnnotationEvaluationMode,
     NumericLiteralDispatchObservationFamily,
     ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
@@ -6805,6 +6806,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
     _write_module(
         tmp_path,
         "pkg/source.py",
+        "from __future__ import annotations\n\n"
         "import dataclasses as dc\n\n\n"
         "class LocalBase:\n"
         "    pass\n\n\n"
@@ -6880,6 +6882,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     _write_module(
         tmp_path,
         "pkg/source.py",
+        "from __future__ import annotations\n\n\n"
         "class Base:\n"
         "    pass\n\n\n"
         "class Helper(Base):\n"
@@ -6940,6 +6943,97 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    ("source_future", "destination_future"),
+    ((False, True), (True, False)),
+)
+def test_module_move_rejects_annotation_evaluation_mode_changes(
+    tmp_path: Path,
+    source_future: bool,
+    destination_future: bool,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    future_source = "from __future__ import annotations\n\n\n"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        (future_source if source_future else "")
+        + "class Helper:\n"
+        "    value: int\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        (future_source if destination_future else "") + "DESTINATION_VALUE = 1\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    expected_source_mode = (
+        ModuleAnnotationEvaluationMode.STRINGIZED
+        if source_future
+        else ModuleAnnotationEvaluationMode.runtime_default()
+    )
+    expected_destination_mode = (
+        ModuleAnnotationEvaluationMode.STRINGIZED
+        if destination_future
+        else ModuleAnnotationEvaluationMode.runtime_default()
+    )
+
+    assert report.moved_annotation_count == 1
+    assert report.source_annotation_evaluation_mode is expected_source_mode
+    assert report.destination_annotation_evaluation_mode is expected_destination_mode
+    assert report.annotation_evaluation_is_preserved is False
+    assert report.to_dict()["source_annotation_evaluation_mode"] == (
+        expected_source_mode.value
+    )
+    assert report.to_dict()["destination_annotation_evaluation_mode"] == (
+        expected_destination_mode.value
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
+        RefactorRecipe("reject-annotation-mode-change").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
+def test_module_move_allows_annotation_policy_difference_without_annotations(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/source.py", "class Helper:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n\n\nDESTINATION_VALUE = 1\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-unannotated-symbol").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.moved_annotation_count == 0
+    assert report.annotation_evaluation_is_preserved is True
+    assert "class Helper" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
 
 
 def test_existing_module_closure_move_derives_transitive_local_dependencies(
@@ -15330,6 +15424,7 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     _write_module(
         tmp_path,
         "pkg/source.py",
+        "from __future__ import annotations\n\n"
         "from dataclasses import dataclass\n\n\n"
         "class LocalBase:\n"
         "    pass\n\n\n"
