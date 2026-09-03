@@ -1656,11 +1656,17 @@ class SourceModuleImportGraph:
 
 
 @dataclass(frozen=True)
-class CodemodSourceContext:
-    """Cached global semantic source context for focused codemod planning."""
+class IndexedSourceAuthority:
+    """One source index paired with the exact source texts it indexes."""
 
     source_index: SourceIndex
     sources_by_file_path: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class CodemodSourceContext(IndexedSourceAuthority):
+    """Cached global semantic source context for focused codemod planning."""
+
     class_family_index: ClassFamilyIndex
     imported_modules_by_module: Mapping[str, frozenset[str]]
 
@@ -1952,11 +1958,9 @@ class SourceRewriteTargetReference:
 
 
 @dataclass(frozen=True)
-class CodemodSelectorContext:
+class CodemodSelectorContext(IndexedSourceAuthority):
     """Shared semantic selection context for recipe synthesis."""
 
-    source_index: SourceIndex
-    sources_by_file_path: Mapping[str, str] = field(default_factory=dict)
     class_family_index: ClassFamilyIndex | None = None
     module_node_cache: Mapping[str, ast.Module] | None = field(
         default=None,
@@ -24335,11 +24339,9 @@ class ResolvedSourceRewrite:
 
 
 @dataclass(frozen=True)
-class SourceRewriteSimulationAuthority:
+class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
     """Validate and simulate source-index anchored rewrite batches."""
 
-    source_index: SourceIndex
-    source_by_path: Mapping[str, str]
     backend: CodemodBackend
 
     def simulate(
@@ -24350,12 +24352,12 @@ class SourceRewriteSimulationAuthority:
             self.source_index
         ).resolved_rewrites(rewrites)
         for item in resolved:
-            if item.target.file_path not in self.source_by_path:
+            if item.target.file_path not in self.sources_by_file_path:
                 raise KeyError(f"Missing source text for {item.target.file_path!r}")
             for contributor in item.rewrite.contributors:
-                contributor.require_source(self.source_by_path)
+                contributor.require_source(self.sources_by_file_path)
 
-        sources = dict(self.source_by_path)
+        sources = dict(self.sources_by_file_path)
         simulated: list[SimulatedSourceRewrite] = []
         for file_path in sorted({item.target.file_path for item in resolved}):
             file_rewrites = tuple(
@@ -24394,7 +24396,7 @@ class SourceRewriteSimulationAuthority:
             base_revisions=tuple(
                 CodemodSourceRevision.from_sources(
                     file_path,
-                    self.source_by_path,
+                    self.sources_by_file_path,
                 )
                 for file_path in sorted(changed_sources)
             ),
@@ -24446,7 +24448,7 @@ def simulate_planned_rewrites(
 
     return SourceRewriteSimulationAuthority(
         source_index=source_index,
-        source_by_path=source_by_path,
+        sources_by_file_path=source_by_path,
         backend=backend or select_codemod_backend(),
     ).simulate(rewrites)
 
@@ -24720,11 +24722,8 @@ class AstTargetNodeGeometryIndex:
 
 
 @dataclass(frozen=True)
-class AstTargetNodeIndex:
+class AstTargetNodeIndex(IndexedSourceAuthority):
     """Source-index target ids mapped to parsed AST nodes."""
-
-    source_index: SourceIndex
-    source_by_path: Mapping[str, str]
 
     def nodes_by_target_identifier(self) -> dict[str, _TargetNode]:
         return AstTargetNodeIndexCache.nodes_by_target_identifier(self)
@@ -24768,7 +24767,9 @@ class AstTargetNodeIndex:
     def nodes_by_file_geometry(
         self,
     ) -> AstTargetNodeGeometryIndex:
-        return AstTargetNodeGeometryIndex.from_source_mapping(self.source_by_path)
+        return AstTargetNodeGeometryIndex.from_source_mapping(
+            self.sources_by_file_path
+        )
 
 
 @dataclass(frozen=True)
@@ -24784,9 +24785,9 @@ class AstTargetNodeIndexCacheKey:
     def from_index(cls, index: AstTargetNodeIndex) -> "AstTargetNodeIndexCacheKey":
         return cls(
             source_index_reference=index.source_index,
-            source_mapping_reference=index.source_by_path,
+            source_mapping_reference=index.sources_by_file_path,
             source_index_identity=id(index.source_index),
-            source_mapping_identity=id(index.source_by_path),
+            source_mapping_identity=id(index.sources_by_file_path),
         )
 
 
