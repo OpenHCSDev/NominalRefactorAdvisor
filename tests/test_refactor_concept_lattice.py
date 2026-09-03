@@ -432,16 +432,20 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
     )
 
 
-def test_class_base_operations_own_the_base_name_payload() -> None:
+def test_class_base_operations_share_source_proof_and_own_leaf_mutation() -> None:
     for operation_type in (
         codemod.AddClassBaseOperation,
         codemod.RemoveClassBaseOperation,
     ):
-        assert issubclass(operation_type, codemod.BaseNamePayloadOperation)
+        assert issubclass(operation_type, codemod.ClassBaseMutationOperationABC)
+        assert issubclass(operation_type, codemod.SourceReprovedOperation)
+        assert "source_edits_from_snapshot" not in operation_type.__dict__
+        assert "replacement_header_lines" in operation_type.__dict__
         assert "payload_value" not in operation_type.__dataclass_fields__
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
         ) == ("target", "rationale", "base_name")
+    assert not hasattr(codemod, "BaseNamePayloadOperation")
 
 
 def test_legacy_mirrored_method_extraction_payload_is_absent() -> None:

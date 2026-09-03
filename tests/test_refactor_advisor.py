@@ -3122,6 +3122,57 @@ def test_refactor_recipe_rewrites_multiline_class_base_headers(
     assert "class WorkerRemove(ExistingBase):" in rewritten
 
 
+def test_class_base_mutations_preserve_no_ops_and_reprove_class_target(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class ExistingBase:\n"
+        "    pass\n\n\n"
+        "class Worker(\n"
+        "    ExistingBase,\n"
+        "):\n"
+        "    pass\n\n\n"
+        "def run():\n"
+        "    return None\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    assert (
+        AddClassBaseOperation(
+            target=SourceRewriteTarget(
+                qualname="Worker",
+                file_path=module_path.as_posix(),
+            ),
+            base_name="ExistingBase",
+        ).source_edits(snapshot)
+        == ()
+    )
+    assert (
+        RemoveClassBaseOperation(
+            target=SourceRewriteTarget(
+                qualname="Worker",
+                file_path=module_path.as_posix(),
+            ),
+            base_name="AbsentBase",
+        ).source_edits(snapshot)
+        == ()
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="Target 'run' is not a class definition",
+    ):
+        AddClassBaseOperation(
+            target=SourceRewriteTarget(
+                qualname="run",
+                file_path=module_path.as_posix(),
+            ),
+            base_name="ExistingBase",
+        ).source_edits(snapshot)
+
+
 def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     tmp_path: Path,
 ) -> None:

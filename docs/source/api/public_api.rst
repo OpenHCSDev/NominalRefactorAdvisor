@@ -83,6 +83,9 @@ the targeted declaration supplies its function name and sync or async kind.
 Whole-target replacements parse exactly one class or function declaration and
 re-prove its concrete declaration kind and name against the current indexed
 target before producing a physical edit.
+Direct class-base mutations share one current-source proof and edit shell; the
+nominal add and remove operation leaves own only their respective header
+transformation.  Semantic no-ops preserve the original header source.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.

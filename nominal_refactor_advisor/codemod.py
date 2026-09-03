@@ -4901,10 +4901,44 @@ class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
-    """Recipe operation whose JSON payload declares a generated base class."""
+class ClassBaseMutationOperationABC(SourceReprovedOperation, ABC):
+    """Source-proved mutation of one class declaration's direct bases."""
 
     base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _target_identifier, target, node = self.target_node_from_context(snapshot)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(f"Target {target.qualname!r} is not a class definition")
+        header_authority = ClassHeaderSpanSourceAuthority(
+            node=node,
+            source=snapshot.sources_by_file_path[target.file_path],
+        )
+        replacement_lines = self.replacement_header_lines(header_authority)
+        if replacement_lines == header_authority.current_header_lines:
+            return ()
+        return (
+            SourceSpanReplacement(
+                file_path=target.file_path,
+                start_line=header_authority.start_line,
+                end_line=header_authority.end_line,
+                replacement_lines=replacement_lines,
+                rationale=self.rationale
+                or f"Update direct bases of {target.qualname!r}.",
+            ),
+        )
+
+    @abstractmethod
+    def replacement_header_lines(
+        self,
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> tuple[str, ...]:
+        """Return the leaf operation's complete replacement class header."""
+
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -8767,6 +8801,8 @@ class ClassHeaderSpanSourceAuthority:
         return self.with_base_items((base_name, *self.base_items))
 
     def without_base(self, base_name: str) -> tuple[str, ...]:
+        if base_name not in self.base_items:
+            return self.current_header_lines
         return self.with_base_items(
             tuple(base for base in self.base_items if base != base_name)
         )
@@ -10938,77 +10974,25 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AddClassBaseOperation(
-    TargetNodeRecipeOperationMixin,
-    BaseNamePayloadOperation,
-):
+class AddClassBaseOperation(ClassBaseMutationOperationABC):
     """Add one base class to a class declaration."""
 
-    def source_edits_for_target_node(
+    def replacement_header_lines(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
-        if not isinstance(node, ast.ClassDef):
-            raise ValueError(
-                f"Target {target_digest.qualname!r} is not a class definition"
-            )
-        if self.base_name in _class_base_source_names(node):
-            return ()
-        header_authority = ClassHeaderSpanSourceAuthority(
-            node=node,
-            source=context.sources_by_file_path[target_digest.file_path],
-        )
-        return (
-            SourceSpanReplacement(
-                file_path=target_digest.file_path,
-                start_line=header_authority.start_line,
-                end_line=header_authority.end_line,
-                replacement_lines=header_authority.with_added_base(self.base_name),
-                rationale=self.rationale
-                or f"Add base {self.base_name!r} to {target_digest.qualname!r}.",
-            ),
-        )
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> tuple[str, ...]:
+        return header_authority.with_added_base(self.base_name)
 
 
 @dataclass(frozen=True, kw_only=True)
-class RemoveClassBaseOperation(
-    TargetNodeRecipeOperationMixin,
-    BaseNamePayloadOperation,
-):
+class RemoveClassBaseOperation(ClassBaseMutationOperationABC):
     """Remove one base class from a class declaration."""
 
-    def source_edits_for_target_node(
+    def replacement_header_lines(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
-        if not isinstance(node, ast.ClassDef):
-            raise ValueError(
-                f"Target {target_digest.qualname!r} is not a class definition"
-            )
-        if self.base_name not in _class_base_source_names(node):
-            return ()
-        header_authority = ClassHeaderSpanSourceAuthority(
-            node=node,
-            source=context.sources_by_file_path[target_digest.file_path],
-        )
-        return (
-            SourceSpanReplacement(
-                file_path=target_digest.file_path,
-                start_line=header_authority.start_line,
-                end_line=header_authority.end_line,
-                replacement_lines=header_authority.without_base(self.base_name),
-                rationale=self.rationale
-                or f"Remove base {self.base_name!r} from {target_digest.qualname!r}.",
-            ),
-        )
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> tuple[str, ...]:
+        return header_authority.without_base(self.base_name)
 
 
 @dataclass(frozen=True, kw_only=True)
