@@ -49,6 +49,7 @@ from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
+    AstParentIndex,
     BuiltinCallName,
     ImportBoundNameProjection,
     ParsedModule,
@@ -104,6 +105,10 @@ from .detectors._base import (
 )
 from .descriptor_algebra import ConstantProperty
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from .enum_keyed_query import (
+    EnumKeyedDerivedMapFacadeComponent,
+    EnumKeyedDerivedMapFacadeComponentBuilder,
+)
 from .exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
@@ -2094,17 +2099,30 @@ class CodemodSelectorContext:
     ) -> AstTargetDigest:
         """Resolve a class authority by declaration identity, not stale geometry."""
 
+        return self.required_target_for_evidence(
+            evidence,
+            node_kind=AstTargetNodeKind.CLASS,
+        )
+
+    def required_target_for_evidence(
+        self,
+        evidence: SourceLocation,
+        *,
+        node_kind: AstTargetNodeKind,
+    ) -> AstTargetDigest:
+        """Resolve one exact source target from repository-symbol evidence."""
+
         source_paths = self.resolve_source_paths((evidence.file_path,))
         targets = tuple(
             target
             for target in self.source_index.targets_matching_repository_symbol(
                 evidence.symbol
             )
-            if target.is_class and target.file_path in source_paths
+            if target.node_kind is node_kind and target.file_path in source_paths
         )
         if len(targets) != 1:
             raise ValueError(
-                f"Class authority evidence {evidence.symbol!r} resolves to "
+                f"{node_kind.value} evidence {evidence.symbol!r} resolves to "
                 f"{len(targets)} source targets"
             )
         return targets[0]
@@ -3594,6 +3612,103 @@ class SourceInsertion(PhysicalSourceEdit):
         )
 
 
+@dataclass(frozen=True)
+class ClassMemberSource:
+    """One named class member together with its exact indented source."""
+
+    name: str
+    source: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClassMemberInsertion(NominalSourceEdit):
+    """Coalescible semantic insertion owned by one exact class declaration."""
+
+    target_id: str
+    members: tuple[ClassMemberSource, ...]
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        insertions_by_target: dict[str, list[ClassMemberInsertion]] = defaultdict(list)
+        for peer in peers:
+            insertion = cast(ClassMemberInsertion, peer)
+            insertions_by_target[insertion.target_id].append(insertion)
+        return tuple(
+            self._coalesced_same_target(tuple(insertions_by_target[target_id]))
+            for target_id in sorted(insertions_by_target)
+        )
+
+    @classmethod
+    def _coalesced_same_target(
+        cls,
+        insertions: tuple["ClassMemberInsertion", ...],
+    ) -> "ClassMemberInsertion":
+        first = insertions[0]
+        members_by_name: dict[str, ClassMemberSource] = {}
+        for insertion in insertions:
+            for member in insertion.members:
+                existing = members_by_name.get(member.name)
+                if existing is not None and existing.source != member.source:
+                    raise PhysicalSourceEditConflictError(
+                        f"Class member {member.name!r} has competing derived sources"
+                    )
+                members_by_name.setdefault(member.name, member)
+        return replace(
+            first,
+            members=sorted_tuple(
+                members_by_name.values(),
+                key=lambda member: member.name,
+            ),
+            rationale=_joined_rationales(
+                insertion.rationale for insertion in insertions
+            ),
+            contributors=NominalSourceEdit.merged_contributors(insertions),
+            origins=NominalSourceEdit.merged_origins(insertions),
+        )
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        target = context.source_index.target_by_id.get(self.target_id)
+        node = context.ast_target_nodes_by_id.get(self.target_id)
+        if target is None or not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Class member insertion target {self.target_id!r} is unavailable"
+            )
+        existing_member_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        collisions = existing_member_names.intersection(
+            member.name for member in self.members
+        )
+        if collisions:
+            raise ValueError(
+                f"Class {target.qualname!r} already binds members "
+                f"{tuple(sorted(collisions))!r}"
+            )
+        source = context.sources_by_file_path[target.file_path]
+        insertion_point = ClassBodyInsertionPoint(source, node)
+        return (
+            SourceInsertion(
+                file_path=target.file_path,
+                insertion_line=SourceTextGeometry(source).line_number_for_offset(
+                    insertion_point.before_first_method_offset
+                ),
+                inserted_lines=SourceTargetEditor.source_lines(
+                    insertion_point.member_source(
+                        tuple(member.source for member in self.members)
+                    )
+                ),
+                rationale=self.rationale,
+                contributors=self.contributors,
+                origins=self.origins,
+            ),
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class SourceFileCreation(NominalSourceEdit):
     """Create one source path with an explicit initial source."""
@@ -3931,8 +4046,8 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                     )
                 )
                 continue
-            start_line = self._line_number_for_offset(replacement.start_offset)
-            end_line = self._line_number_for_offset(
+            start_line = self.line_number_for_offset(replacement.start_offset)
+            end_line = self.line_number_for_offset(
                 max(replacement.start_offset, replacement.end_offset - 1)
             )
             if line_windows and start_line <= line_windows[-1][1]:
@@ -3975,7 +4090,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             return len(self.lines) + 1
         return None
 
-    def _line_number_for_offset(self, offset: int) -> int:
+    def line_number_for_offset(self, offset: int) -> int:
         line_number = 1
         for candidate_line, line_offset in enumerate(self.line_offsets, start=1):
             if line_offset > offset:
@@ -7531,6 +7646,448 @@ class DescendTypeKeyedBehaviorProjectionOperation(SourceReprovedOperation):
             snapshot,
             snapshot.source_index.symbol_for_target(target),
             rationale=self.rationale,
+        )
+
+
+@dataclass(frozen=True)
+class _EnumKeyedDerivedMapFacadeSourceDerivation:
+    """Current-source proof and edit geometry for one enum-keyed query facade."""
+
+    snapshot: CodemodSourceSnapshot
+    component: EnumKeyedDerivedMapFacadeComponent
+    module: ParsedModule
+    map_owner: IndexedClass
+    enum_class: IndexedClass
+    map_method: ast.FunctionDef
+    reverse_method: ast.FunctionDef
+    direct_consumers: tuple[ast.Subscript, ...]
+    reverse_call_receivers: tuple[ast.expr, ...]
+
+    @classmethod
+    def required(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        reverse_method_symbol: str,
+    ) -> "_EnumKeyedDerivedMapFacadeSourceDerivation":
+        map_owner_symbol, separator, _method_name = reverse_method_symbol.rpartition(
+            "."
+        )
+        if not separator:
+            raise ValueError("enum-keyed facade method lacks a nominal owner symbol")
+        map_owner = snapshot.required_class_family_index.class_for(map_owner_symbol)
+        if map_owner is None:
+            raise ValueError("enum-keyed facade lost its map-owner declaration")
+        module = snapshot.parsed_module_for_source_path(map_owner.file_path)
+        components = tuple(
+            component
+            for component in EnumKeyedDerivedMapFacadeComponentBuilder(
+                module,
+                snapshot.parsed_modules,
+            ).proven_components()
+            if component.reverse_method_symbol == reverse_method_symbol
+        )
+        if len(components) != 1:
+            raise ValueError(
+                f"map owner {map_owner_symbol!r} resolves {len(components)} "
+                "facades for the targeted reverse query"
+            )
+        component = components[0]
+        enum_class = snapshot.required_class_family_index.class_for(
+            component.enum_symbol
+        )
+        if enum_class is None:
+            raise ValueError("enum-keyed facade lost its enum declaration")
+        if (
+            enum_class.file_path != map_owner.file_path
+            or enum_class.node.col_offset != map_owner.node.col_offset
+        ):
+            raise ValueError(
+                "enum-keyed facade movement requires co-located peer class bodies"
+            )
+        map_method = cls._required_method(
+            map_owner,
+            component.map_method_name,
+            component.map_method_line,
+        )
+        reverse_method = cls._required_method(
+            map_owner,
+            component.reverse_method_name,
+            component.reverse_method_line,
+        )
+        cls._require_class_boundaries(component, map_owner, enum_class)
+        cls._require_stable_module_bindings(module, map_owner, enum_class)
+        cls._require_deferred_annotations(module)
+        direct_consumers = cls._direct_consumers(module, component)
+        reverse_call_receivers = cls._reverse_call_receivers(
+            snapshot,
+            component,
+            map_owner,
+            enum_class,
+        )
+        return cls(
+            snapshot=snapshot,
+            component=component,
+            module=module,
+            map_owner=map_owner,
+            enum_class=enum_class,
+            map_method=map_method,
+            reverse_method=reverse_method,
+            direct_consumers=direct_consumers,
+            reverse_call_receivers=reverse_call_receivers,
+        )
+
+    @staticmethod
+    def _required_method(
+        owner: IndexedClass,
+        method_name: str,
+        method_line: int,
+    ) -> ast.FunctionDef:
+        methods = tuple(
+            statement
+            for statement in owner.node.body
+            if isinstance(statement, ast.FunctionDef)
+            if statement.name == method_name and statement.lineno == method_line
+        )
+        if len(methods) != 1:
+            raise ValueError(
+                f"{owner.simple_name}.{method_name} no longer has one declaration"
+            )
+        return methods[0]
+
+    @staticmethod
+    def _require_class_boundaries(
+        component: EnumKeyedDerivedMapFacadeComponent,
+        map_owner: IndexedClass,
+        enum_class: IndexedClass,
+    ) -> None:
+        bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(enum_class.node.body)
+        collisions = bound_names.intersection(
+            (component.property_name, component.reverse_method_name)
+        )
+        if collisions:
+            raise ValueError(
+                f"enum authority already binds query members {tuple(sorted(collisions))!r}"
+            )
+        if any(
+            declaration.node.decorator_list or declaration.node.keywords
+            for declaration in (map_owner, enum_class)
+        ):
+            raise ValueError(
+                "enum-keyed facade movement will not cross decorated or metaclass "
+                "class boundaries"
+            )
+
+    @staticmethod
+    def _require_stable_module_bindings(
+        module: ParsedModule,
+        map_owner: IndexedClass,
+        enum_class: IndexedClass,
+    ) -> None:
+        final_bindings = ModuleNominalBindingAuthority(module).snapshot_before()
+        for declaration in (map_owner, enum_class):
+            binding = final_bindings.binding_for(declaration.simple_name)
+            if binding is None or binding.qualified_name != declaration.symbol:
+                raise ValueError(
+                    f"module does not retain {declaration.simple_name!r} as its "
+                    "nominal declaration"
+                )
+
+    @staticmethod
+    def _require_deferred_annotations(module: ParsedModule) -> None:
+        if not any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in module.module.body
+        ):
+            raise ValueError(
+                "enum-keyed method movement requires deferred annotation semantics"
+            )
+
+    @staticmethod
+    def _direct_consumers(
+        module: ParsedModule,
+        component: EnumKeyedDerivedMapFacadeComponent,
+    ) -> tuple[ast.Subscript, ...]:
+        consumers_by_location = {
+            (consumer.line, consumer.column): consumer
+            for consumer in component.consumers
+        }
+        nodes_by_location: dict[tuple[int, int], list[ast.Subscript]] = defaultdict(
+            list
+        )
+        for node in ast.walk(module.module):
+            if isinstance(node, ast.Subscript):
+                nodes_by_location[node.lineno, node.col_offset].append(node)
+        nodes = []
+        for location in consumers_by_location:
+            matches = nodes_by_location.get(location, ())
+            if len(matches) != 1:
+                raise ValueError(
+                    f"enum-keyed direct consumer at {location!r} is no longer unique"
+                )
+            nodes.append(matches[0])
+        return tuple(nodes)
+
+    @classmethod
+    def _reverse_call_receivers(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        component: EnumKeyedDerivedMapFacadeComponent,
+        map_owner: IndexedClass,
+        enum_class: IndexedClass,
+    ) -> tuple[ast.expr, ...]:
+        receivers = []
+        family_index = snapshot.required_class_family_index
+        for module in snapshot.parsed_modules:
+            resolver = ModuleClassReferenceResolver(module, family_index)
+            parent_index = AstParentIndex(module.module)
+            for node in ast.walk(module.module):
+                if (
+                    isinstance(node, ast.Constant)
+                    and node.value == component.reverse_method_name
+                ):
+                    raise ValueError(
+                        "enum-keyed reverse query has a dynamic string reference"
+                    )
+                if not (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == component.reverse_method_name
+                ):
+                    continue
+                receiver_symbol = resolver.symbol_for_reference(node.value)
+                if receiver_symbol != map_owner.symbol:
+                    if receiver_symbol is not None and map_owner.symbol in (
+                        family_index.ancestor_symbols(receiver_symbol)
+                    ):
+                        raise ValueError(
+                            "enum-keyed reverse query is called through a derived "
+                            "map-owner type"
+                        )
+                    continue
+                parent = parent_index.parent_by_node.get(node)
+                if not (
+                    isinstance(parent, ast.Call)
+                    and parent.func is node
+                    and module.file_path == component.file_path
+                    and cls._enum_reference_is_unshadowed(
+                        node,
+                        enum_class=enum_class,
+                        parent_index=parent_index,
+                    )
+                ):
+                    raise ValueError(
+                        "enum-keyed reverse query has a reference that cannot be "
+                        "rewritten nominally"
+                    )
+                receivers.append(node.value)
+        return tuple(receivers)
+
+    @staticmethod
+    def _enum_reference_is_unshadowed(
+        node: ast.AST,
+        *,
+        enum_class: IndexedClass,
+        parent_index: AstParentIndex,
+    ) -> bool:
+        for current in parent_index.ancestors(node):
+            if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef):
+                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(current.body)
+                argument_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(current)
+            elif isinstance(current, ast.Lambda):
+                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                    (current.body,)
+                )
+                argument_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(current)
+            elif isinstance(current, ast.ClassDef):
+                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(current.body)
+                argument_names = frozenset()
+            else:
+                continue
+            if enum_class.simple_name in bound_names | argument_names:
+                return False
+        return True
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        replacements_by_path: dict[str, list[SourceTextSpanReplacement]] = defaultdict(
+            list
+        )
+        class_member_insertion = self._authority_and_displaced_method_replacements(
+            replacements_by_path,
+            rationale=rationale,
+        )
+        self._direct_consumer_replacements(replacements_by_path)
+        self._reverse_call_replacements(replacements_by_path)
+        physical_edits = tuple(
+            edit
+            for file_path, replacements in sorted(replacements_by_path.items())
+            for edit in SourceTextGeometry(
+                self.snapshot.sources_by_file_path[file_path]
+            ).physical_edits(
+                file_path=file_path,
+                replacements=replacements,
+                rationale=rationale
+                or "Move enum-keyed query behavior onto its nominal key authority.",
+            )
+        )
+        return (class_member_insertion, *physical_edits)
+
+    def _authority_and_displaced_method_replacements(
+        self,
+        replacements_by_path: dict[str, list[SourceTextSpanReplacement]],
+        *,
+        rationale: str,
+    ) -> ClassMemberInsertion:
+        source = self.module.source
+        geometry = SourceTextGeometry(source)
+        reverse_span = SourceNodeSpan(
+            self.reverse_method,
+            SourceNodeDecoratorPolicy.INCLUDE,
+        )
+        reverse_offsets = geometry.node_span_offsets(reverse_span)
+        map_receivers = tuple(
+            node.func.value
+            for node in ast.walk(self.reverse_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == self.component.map_method_name
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "cls"
+        )
+        if len(map_receivers) != 1:
+            raise ValueError(
+                "enum-keyed reverse query lost its unique map-owner receiver"
+            )
+        receiver_offsets = geometry.required_node_offsets(map_receivers[0])
+        moved_method_source = geometry.source_with_replacements_in_span(
+            *reverse_offsets,
+            (
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=receiver_offsets[0],
+                    end_offset=receiver_offsets[1],
+                    replacement_source=self.map_owner.simple_name,
+                ),
+            ),
+        )
+        method_indent = " " * self.reverse_method.col_offset
+        property_source = (
+            f"{method_indent}@property\n"
+            f"{method_indent}def {self.component.property_name}(self) -> "
+            f"{self.component.value_annotation_source}:\n"
+            f"{method_indent}    return {self.map_owner.simple_name}."
+            f"{self.component.map_method_name}()[self]\n"
+        )
+        replacements = replacements_by_path[self.component.file_path]
+        replacements.append(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=reverse_offsets[0],
+                end_offset=reverse_offsets[1],
+                replacement_source="",
+            )
+        )
+        enum_targets = tuple(
+            target
+            for target in self.snapshot.source_index.targets_matching_repository_symbol(
+                self.enum_class.symbol
+            )
+            if target.is_class
+        )
+        if len(enum_targets) != 1:
+            raise ValueError("enum-keyed authority does not have one source target")
+        return ClassMemberInsertion(
+            target_id=enum_targets[0].target_id,
+            members=(
+                ClassMemberSource(self.component.property_name, property_source),
+                ClassMemberSource(
+                    self.component.reverse_method_name,
+                    moved_method_source,
+                ),
+            ),
+            rationale=rationale
+            or "Move enum-keyed query members onto their nominal key authority.",
+        )
+
+    def _direct_consumer_replacements(
+        self,
+        replacements_by_path: dict[str, list[SourceTextSpanReplacement]],
+    ) -> None:
+        geometry = SourceTextGeometry(self.module.source)
+        for consumer in self.direct_consumers:
+            offsets = geometry.required_node_offsets(consumer)
+            span = SourceTextSpan.from_offsets(offsets)
+            if span.contains_comment(self.module.source):
+                raise ValueError(
+                    "enum-keyed direct consumer contains comments inside its query"
+                )
+            replacement_node = ast.Attribute(
+                value=copy.deepcopy(consumer.slice),
+                attr=self.component.property_name,
+                ctx=ast.Load(),
+            )
+            replacements_by_path[self.module.file_path].append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=offsets[0],
+                    end_offset=offsets[1],
+                    replacement_source=PythonExpressionSourceFormatter().replacement_source(
+                        replacement_node,
+                        line_prefix=geometry.line_prefix(offsets[0]),
+                    ),
+                )
+            )
+
+    def _reverse_call_replacements(
+        self,
+        replacements_by_path: dict[str, list[SourceTextSpanReplacement]],
+    ) -> None:
+        geometry = SourceTextGeometry(self.module.source)
+        for receiver in self.reverse_call_receivers:
+            offsets = geometry.required_node_offsets(receiver)
+            replacements_by_path[self.module.file_path].append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=offsets[0],
+                    end_offset=offsets[1],
+                    replacement_source=self.enum_class.simple_name,
+                )
+            )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DescendEnumKeyedDerivedMapFacadeOperation(SourceReprovedOperation):
+    """Re-prove and move derived-map queries onto their nominal enum key."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.required_derivation(snapshot).source_edits(self.rationale)
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        derivation = self.required_derivation(context.execution_snapshot())
+        component = derivation.component
+        return (
+            AuthorityClaim(
+                claimed_symbol=component.enum_symbol.rsplit(".", maxsplit=1)[-1],
+                authority_kind=SemanticAuthorityKind.ENUM,
+                file_path=component.file_path,
+                qualname=derivation.enum_class.qualname,
+            ),
+        )
+
+    def required_derivation(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _EnumKeyedDerivedMapFacadeSourceDerivation:
+        _target_identifier, target, _node = self.target_node_from_context(snapshot)
+        if target.node_kind is not AstTargetNodeKind.METHOD:
+            raise ValueError(
+                "enum-keyed facade target must be its reverse-query method"
+            )
+        return _EnumKeyedDerivedMapFacadeSourceDerivation.required(
+            snapshot,
+            snapshot.source_index.symbol_for_target(target),
         )
 
 
@@ -16976,6 +17533,58 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
             .with_operation(operation)
         )
         return self.executable_evaluation(recipe)
+
+
+class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    FindingRecipeSynthesizer,
+):
+    """Move source-proved key-facing queries to their enum declaration."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "enum-keyed facade descent requires source context"
+            )
+        if not finding.evidence:
+            return self.rejected_evaluation(
+                "enum-keyed facade finding lacks map-owner evidence"
+            )
+        authority_location = finding.authority_evidence
+        if authority_location is None:
+            return self.rejected_evaluation(
+                "enum-keyed facade finding lacks enum authority evidence"
+            )
+        try:
+            reverse_method_target = context.required_target_for_evidence(
+                finding.evidence[0],
+                node_kind=AstTargetNodeKind.METHOD,
+            )
+            enum_target = context.required_class_target_for_authority_evidence(
+                authority_location
+            )
+            operation = DescendEnumKeyedDerivedMapFacadeOperation(
+                target=SourceRewriteTarget(target_id=reverse_method_target.target_id),
+                rationale="",
+            )
+            operation.source_edits_from_snapshot(context.execution_snapshot())
+        except (CodemodOperationPreflightError, ValueError) as error:
+            return self.rejected_evaluation(str(error))
+        return self.executable_evaluation(
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-descend-enum-keyed-facade",
+                reason=(
+                    "Move key-facing map queries onto the enum that owns the "
+                    "queried identity."
+                ),
+            )
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(enum_target))
+            .with_operation(operation)
+        )
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(

@@ -16,7 +16,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
-from typing import Callable, Generic, TypeAlias, TypeVar
+from typing import Callable, Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
@@ -39,6 +39,7 @@ from ..class_index import (
     CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
+    CompactRepositoryPublicExposureIndex,
     LatentRosterMatch,
     LatentRosterObservation,
     build_compact_class_family_index,
@@ -47,10 +48,16 @@ from ..exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,
 )
+from ..enum_keyed_query import (
+    EnumKeyedDerivedMapFacadeComponent,
+    EnumKeyedDerivedMapFacadeModuleProjection,
+    EnumKeyedDerivedMapFacadeModuleProjectionFamily,
+)
 from ..codemod import (
     AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
     CancelableCompositionSignal,
     CancelableCompositionSignalTargetAuthority,
+    EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
@@ -2620,6 +2627,40 @@ def _type_keyed_behavior_projection_components(
     return builder.proven_components()
 
 
+def _enum_keyed_derived_map_facade_components(
+    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
+    facade_projections = cast(
+        tuple[EnumKeyedDerivedMapFacadeModuleProjection, ...],
+        projections_by_family[EnumKeyedDerivedMapFacadeModuleProjectionFamily],
+    )
+    class_projections = cast(
+        tuple[CompactModuleClassProjection, ...],
+        projections_by_family[CompactModuleClassProjectionFamily],
+    )
+    exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
+    return sorted_tuple(
+        (
+            component
+            for projection in facade_projections
+            for component in projection.components
+            if all(
+                exposure_authority.star_imports_exclude(
+                    projection.module_name,
+                    binding_name,
+                )
+                for binding_name in component.star_import_exclusion_names
+            )
+        ),
+        key=lambda component: (
+            component.file_path,
+            component.enum_symbol,
+            component.map_owner_symbol,
+            component.map_method_name,
+        ),
+    )
+
+
 def _compact_family_has_registration_authority(
     class_index: CompactClassFamilyIndex,
     indexed_class: CompactIndexedClass,
@@ -3142,6 +3183,57 @@ class TypeKeyedBehaviorProjectionDetector(
                 f"registered leaves onto `{component.target_root.simple_name}` and its "
                 f"descendants while repeating {method_names}; the mapped type hierarchy "
                 "already supplies the behavior dispatch relation."
+            ),
+            component.evidence_locations,
+            authority_evidence=component.authority_evidence,
+        )
+
+
+class EnumKeyedDerivedMapFacadeDetector(
+    CompactMultiProjectionCandidateDetector[EnumKeyedDerivedMapFacadeComponent],
+    SsotAuthorityBoundaryDetector,
+    EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
+):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Enum-keyed query facade should descend to its nominal key",
+        "A class-owned derived map exposes lookup behavior keyed by an enum while callers and a reverse query interpret the enum identity externally.",
+        "key-facing query behavior owned by the enum and backed by the existing derived map",
+        "a typed derived map, reverse query, and direct indexed consumer prove the displaced query surface",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_TYPE_NAMESPACE,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
+    )
+    module_projection_families = (
+        EnumKeyedDerivedMapFacadeModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
+
+    def _candidates_from_compact_projection_groups(
+        self,
+        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        config: DetectorConfig,
+    ) -> Sequence[EnumKeyedDerivedMapFacadeComponent]:
+        del config
+        return _enum_keyed_derived_map_facade_components(projections_by_family)
+
+    def _finding_for_candidate(
+        self,
+        component: EnumKeyedDerivedMapFacadeComponent,
+    ) -> RefactorFinding:
+        enum_name = component.enum_symbol.rsplit(".", maxsplit=1)[-1]
+        owner_name = component.map_owner_symbol.rsplit(".", maxsplit=1)[-1]
+        return self.build_finding(
+            (
+                f"`{owner_name}.{component.map_method_name}` is keyed by "
+                f"`{enum_name}` while `{component.reverse_method_name}` and "
+                f"{len(component.consumers)} direct consumer(s) interpret that "
+                "enum identity outside its declaration."
             ),
             component.evidence_locations,
             authority_evidence=component.authority_evidence,

@@ -1053,6 +1053,18 @@ class JsonScanStatus:
     omitted_detector_count: int
     reason: str
 
+    @classmethod
+    def exact_compact_global(cls, detector_count: int) -> "JsonScanStatus":
+        """Build the complete compact-scan contract for one detector roster."""
+
+        return cls(
+            complete=True,
+            mode="exact_compact_global",
+            analyzed_detector_count=detector_count,
+            omitted_detector_count=0,
+            reason="all_context_detectors_use_compact_global_projections",
+        )
+
     def to_dict(self) -> JsonObject:
         return {
             "complete": self.complete,
@@ -1077,6 +1089,10 @@ class JsonLoopCachePayloadBuilder:
             section_policy=JsonPayloadProfile.loop.sections,
             finding_payload=[],
         ).to_dict()
+        payload["scan_status"] = JsonScanStatus.exact_compact_global(
+            len(default_detector_types_for_analysis())
+        ).to_dict()
+        payload["active_finding_surface"] = "raw_findings"
         payload["timing"] = self.timing.to_dict()
         payload["payload_timing"] = JsonPayloadBuildTiming(
             total_seconds=round(perf_counter() - payload_started, 3),
@@ -3708,12 +3724,8 @@ def _main_without_deadline() -> int:
             analysis_cache_status = compact_result.cache_status
             analysis_cache_identity = compact_result.cache_identity
             detector_types = default_detector_types_for_analysis()
-            scan_status = JsonScanStatus(
-                complete=True,
-                mode="exact_compact_global",
-                analyzed_detector_count=len(detector_types),
-                omitted_detector_count=0,
-                reason="all_context_detectors_use_compact_global_projections",
+            scan_status = JsonScanStatus.exact_compact_global(
+                len(detector_types),
             )
         else:
             started = perf_counter()

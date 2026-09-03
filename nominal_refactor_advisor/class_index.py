@@ -748,6 +748,39 @@ class CompactModuleStarImportOrigin:
         return self.module_name is not None
 
 
+class RepositoryPublicExposureAuthority(ABC):
+    """Repository-owned proof that star imports preserve one local binding."""
+
+    @abstractmethod
+    def contains_module(self, module_name: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def exposure_for(
+        self,
+        module_name: str,
+        binding_name: str,
+    ) -> CompactPublicNameExposure:
+        raise NotImplementedError
+
+    @abstractmethod
+    def star_import_origins_for(
+        self,
+        module_name: str,
+    ) -> tuple[CompactModuleStarImportOrigin, ...]:
+        raise NotImplementedError
+
+    def star_imports_exclude(self, module_name: str, binding_name: str) -> bool:
+        """Prove every star-import origin excludes the queried binding."""
+
+        return self.contains_module(module_name) and all(
+            origin.module_name is not None
+            and self.exposure_for(origin.module_name, binding_name)
+            is CompactPublicNameExposure.PRIVATE
+            for origin in self.star_import_origins_for(module_name)
+        )
+
+
 @dataclass(frozen=True)
 class CompactModuleClassHeader(CompactModuleIdentity):
     """Module namespace and class surface required by the compact family index."""
@@ -759,7 +792,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
 
 
 @dataclass(frozen=True)
-class CompactRepositoryPublicExposureIndex:
+class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
     """Derive transitive public exposure from module-owned namespace contracts."""
 
     module_projections: tuple[CompactModuleClassHeader, ...]
@@ -776,6 +809,9 @@ class CompactRepositoryPublicExposureIndex:
     @cached_property
     def projections_by_module_name(self) -> dict[str, CompactModuleClassHeader]:
         return self.module_projection_multiplicity.unambiguous_declarations_by_handle
+
+    def contains_module(self, module_name: str) -> bool:
+        return module_name in self.projections_by_module_name
 
     @cached_property
     def named_reexports_by_target_symbol(
@@ -829,6 +865,13 @@ class CompactRepositoryPublicExposureIndex:
             if unresolved
             else CompactPublicNameExposure.PRIVATE
         )
+
+    def star_import_origins_for(
+        self,
+        module_name: str,
+    ) -> tuple[CompactModuleStarImportOrigin, ...]:
+        projection = self.projections_by_module_name.get(module_name)
+        return () if projection is None else projection.star_import_origins
 
 
 @dataclass(frozen=True)
@@ -2454,7 +2497,7 @@ def _literal_public_export_names(value: ast.expr) -> tuple[str, ...] | None:
     return sorted_tuple({element.value for element in value.elts})
 
 
-def _compact_module_public_export_contract(
+def module_public_export_contract(
     parsed_module: ParsedModule,
 ) -> CompactModulePublicExportContract:
     module = parsed_module.module
@@ -2563,18 +2606,25 @@ class ModuleNominalBindingAuthority:
     parsed_module: ParsedModule
 
     def snapshot_before(
-        self, line: int | None = None
+        self,
+        line: int | None = None,
+        *,
+        policy: ModuleNominalBindingSnapshotPolicy = (
+            ModuleNominalBindingSnapshotPolicy.EXACT
+        ),
     ) -> ModuleNominalBindingSnapshot:
         if line is None:
             return _module_nominal_binding_snapshots(
                 self.parsed_module,
                 (),
                 include_final=True,
+                policy=policy,
             )[None]
         return _module_nominal_binding_snapshots(
             self.parsed_module,
             (line,),
             include_final=False,
+            policy=policy,
         )[line]
 
     def qualified_name_at(
@@ -2582,13 +2632,16 @@ class ModuleNominalBindingAuthority:
         reference: ast.AST,
         *,
         line: int,
+        policy: ModuleNominalBindingSnapshotPolicy = (
+            ModuleNominalBindingSnapshotPolicy.EXACT
+        ),
     ) -> str | None:
         parts = ATTRIBUTE_CHAIN_AUTHORITY.project(
             ClassSymbolResolutionAuthority.reference_node(reference)
         )
         if parts is None:
             return None
-        root_binding = self.snapshot_before(line).binding_for(parts[0])
+        root_binding = self.snapshot_before(line, policy=policy).binding_for(parts[0])
         if root_binding is None:
             return None
         return ".".join((root_binding.qualified_name, *parts[1:]))
@@ -2648,6 +2701,201 @@ class ModuleNominalBindingAuthority:
                 kind=root_binding.kind,
             )
         }
+
+
+def nominal_reference_root_name(reference: ast.AST) -> str | None:
+    """Return the lexical root whose binding owns a nominal reference."""
+
+    while isinstance(reference, ast.Attribute):
+        reference = reference.value
+    return reference.id if isinstance(reference, ast.Name) else None
+
+
+class ModuleNominalBindingView(ABC):
+    """Representation-independent nominal bindings at one module position."""
+
+    @abstractmethod
+    def unshadowed_builtin_witness(
+        self,
+        module: ParsedModule,
+        name: str,
+        *,
+        line: int,
+        preceding_class_bound_names: frozenset[str],
+    ) -> "ModuleNominalBindingWitness | None":
+        raise NotImplementedError
+
+    @abstractmethod
+    def reference_witness_at(
+        self,
+        module: ParsedModule,
+        reference: ast.expr,
+        *,
+        line: int,
+    ) -> "ModuleNominalBindingWitness | None":
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ModuleNominalBindingWitness:
+    """One resolved declaration and the lexical root requiring star exclusion."""
+
+    qualified_name: str
+    root_name: str
+
+
+@dataclass(frozen=True)
+class RepositoryModuleBindingProof(
+    RepositoryPublicExposureAuthority,
+    ModuleNominalBindingView,
+):
+    """Resolve names past star imports only when source export contracts close them."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @cached_property
+    def public_export_contract_by_module_name(
+        self,
+    ) -> dict[str, CompactModulePublicExportContract]:
+        return {
+            module.module_name: module_public_export_contract(module)
+            for module in self.modules
+        }
+
+    @cached_property
+    def module_name_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for module in self.modules:
+            counts[module.module_name] += 1
+        return counts
+
+    def contains_module(self, module_name: str) -> bool:
+        return self.module_name_counts.get(module_name) == 1
+
+    @cached_property
+    def star_import_origins_by_module_name(
+        self,
+    ) -> dict[str, tuple[CompactModuleStarImportOrigin, ...]]:
+        return {
+            module.module_name: module_star_import_origins(module)
+            for module in self.modules
+        }
+
+    def exposure_for(
+        self,
+        module_name: str,
+        binding_name: str,
+    ) -> CompactPublicNameExposure:
+        contract = (
+            self.public_export_contract_by_module_name.get(module_name)
+            if self.contains_module(module_name)
+            else None
+        )
+        return (
+            CompactPublicNameExposure.UNRESOLVED
+            if contract is None
+            else contract.exposure_for(binding_name)
+        )
+
+    def star_import_origins_for(
+        self,
+        module_name: str,
+    ) -> tuple[CompactModuleStarImportOrigin, ...]:
+        return self.star_import_origins_by_module_name.get(module_name, ())
+
+    def unshadowed_builtin_witness(
+        self,
+        module: ParsedModule,
+        name: str,
+        *,
+        line: int,
+        preceding_class_bound_names: frozenset[str],
+    ) -> ModuleNominalBindingWitness | None:
+        if not (
+            self.star_imports_exclude(module.module_name, name)
+            and ModuleNominalBindingAuthority(module)
+            .snapshot_before(
+                line,
+                policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+            )
+            .resolves_unshadowed_builtin(
+                name,
+                preceding_class_bound_names=preceding_class_bound_names,
+            )
+        ):
+            return None
+        return ModuleNominalBindingWitness(f"builtins.{name}", name)
+
+    def reference_witness_at(
+        self,
+        module: ParsedModule,
+        reference: ast.expr,
+        *,
+        line: int,
+    ) -> ModuleNominalBindingWitness | None:
+        root_name = nominal_reference_root_name(reference)
+        if root_name is None or not self.star_imports_exclude(
+            module.module_name,
+            root_name,
+        ):
+            return None
+        qualified_name = ModuleNominalBindingAuthority(module).qualified_name_at(
+            reference,
+            line=line,
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )
+        if qualified_name is None:
+            return None
+        return ModuleNominalBindingWitness(qualified_name, root_name)
+
+
+@dataclass(frozen=True)
+class NamedImportModuleBindingProjection(ModuleNominalBindingView):
+    """Module-local binding view whose star-import obligations remain explicit."""
+
+    def unshadowed_builtin_witness(
+        self,
+        module: ParsedModule,
+        name: str,
+        *,
+        line: int,
+        preceding_class_bound_names: frozenset[str],
+    ) -> ModuleNominalBindingWitness | None:
+        is_unshadowed = (
+            ModuleNominalBindingAuthority(module)
+            .snapshot_before(
+                line,
+                policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+            )
+            .resolves_unshadowed_builtin(
+                name,
+                preceding_class_bound_names=preceding_class_bound_names,
+            )
+        )
+        return (
+            ModuleNominalBindingWitness(f"builtins.{name}", name)
+            if is_unshadowed
+            else None
+        )
+
+    def reference_witness_at(
+        self,
+        module: ParsedModule,
+        reference: ast.expr,
+        *,
+        line: int,
+    ) -> ModuleNominalBindingWitness | None:
+        root_name = nominal_reference_root_name(reference)
+        if root_name is None:
+            return None
+        qualified_name = ModuleNominalBindingAuthority(module).qualified_name_at(
+            reference,
+            line=line,
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )
+        if qualified_name is None:
+            return None
+        return ModuleNominalBindingWitness(qualified_name, root_name)
 
 
 def _direct_binding_target_names(target: ast.AST) -> tuple[str, ...]:
@@ -2771,7 +3019,7 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     }
 
 
-def _module_star_import_origins(
+def module_star_import_origins(
     parsed_module: ParsedModule,
 ) -> tuple[CompactModuleStarImportOrigin, ...]:
     origins: list[CompactModuleStarImportOrigin] = []
@@ -3184,10 +3432,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
-                public_export_contract=_compact_module_public_export_contract(
+                public_export_contract=module_public_export_contract(
                     parsed_module
                 ),
-                star_import_origins=_module_star_import_origins(parsed_module),
+                star_import_origins=module_star_import_origins(parsed_module),
                 classes=_compact_indexed_classes(
                     parsed_module,
                     indexed_class_nodes,
@@ -3228,10 +3476,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
-                public_export_contract=_compact_module_public_export_contract(
+                public_export_contract=module_public_export_contract(
                     parsed_module
                 ),
-                star_import_origins=_module_star_import_origins(parsed_module),
+                star_import_origins=module_star_import_origins(parsed_module),
                 classes=classes,
                 sorted_key_calls=_compact_sorted_key_calls(parsed_module),
                 keyed_table_axes=_compact_keyed_table_axes(parsed_module),

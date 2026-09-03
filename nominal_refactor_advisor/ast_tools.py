@@ -873,6 +873,28 @@ class ParsedModule(SourceFileIdentity):
 
 
 @dataclass(frozen=True)
+class AstParentIndex:
+    """One AST's derived parent relation and ordered ancestor queries."""
+
+    root: ast.AST
+
+    @cached_property
+    def parent_by_node(self) -> dict[ast.AST, ast.AST]:
+        return {
+            child: parent
+            for parent in ast.walk(self.root)
+            for child in ast.iter_child_nodes(parent)
+        }
+
+    def ancestors(self, node: ast.AST) -> tuple[ast.AST, ...]:
+        ancestors = []
+        while node in self.parent_by_node:
+            node = self.parent_by_node[node]
+            ancestors.append(node)
+        return tuple(ancestors)
+
+
+@dataclass(frozen=True)
 class SourceModule(SourceFileIdentity):
     """Source-only module identity available before Python AST construction."""
 

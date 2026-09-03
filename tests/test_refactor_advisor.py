@@ -20532,6 +20532,55 @@ def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
     assert payload["execution_plan"]["edge_payload_mode"] == "count_only"
 
 
+def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        "--json",
+        "--json-payload",
+        "loop",
+        "--no-structural-overlap",
+        "--cache-dir",
+        cache_dir.as_posix(),
+        (tmp_path / "pkg").as_posix(),
+    ]
+
+    first_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(second_result.stdout)
+    scan_status = cast(dict[str, object], payload["scan_status"])
+
+    assert first_result.returncode == 0, first_result.stderr
+    assert second_result.returncode == 0, second_result.stderr
+    assert payload["timing"]["analysis_cache_status"] == "hit"
+    assert scan_status["complete"] is True
+    assert scan_status["mode"] == "exact_compact_global"
+    assert scan_status["omitted_detector_count"] == 0
+    assert payload["active_finding_surface"] == "raw_findings"
+
+
 def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
