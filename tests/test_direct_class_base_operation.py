@@ -149,6 +149,41 @@ def test_rejects_replacement_related_sibling_base(tmp_path: Path) -> None:
         ).simulate(snapshot)
 
 
+def test_rejects_replacement_descending_from_displaced_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/records.py",
+        "class LegacyRecord:\n"
+        "    pass\n\n"
+        "class SemanticRecord(LegacyRecord):\n"
+        "    pass\n\n"
+        "class Alpha(LegacyRecord):\n"
+        "    pass\n",
+    )
+    operation = ReplaceDirectClassBaseOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/records.py").as_posix(),
+            qualname="LegacyRecord",
+        ),
+        replacement_base=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/records.py").as_posix(),
+            qualname="SemanticRecord",
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="cannot use a related class authority",
+    ):
+        RefactorRecipe(recipe_id="related-authorities").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
 def test_rejects_incomplete_nominal_base_graph(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(

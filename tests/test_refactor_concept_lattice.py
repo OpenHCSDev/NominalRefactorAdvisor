@@ -409,6 +409,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
     operation_types = (
         codemod.CollapseClosedParameterConveyorOperation,
         codemod.CollapseDeclaredCarrierExpansionOperation,
+        codemod.CollapseRedundantClassAuthorityOperation,
         codemod.ConvertManualRegistryToAutoregisterOperation,
         codemod.DeleteInheritedAutoRegisterConfigurationOperation,
         codemod.DeriveAutoregisterInstanceViewOperation,

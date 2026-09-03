@@ -114,6 +114,19 @@ aliased bases, canonical imports, import-cycle safety, and replacement-relative
 MRO conflicts from the current repository before rewriting any class header.
 The operation rejects incomplete nominal base graphs rather than serialising a
 caller-maintained child roster.
+``CollapseRedundantClassAuthorityOperation`` strengthens that contract for a
+closed repository-local authority.  It additionally proves that the displaced
+and replacement classes are standalone, that their complete method syntax and
+global bindings are behaviorally equivalent, and that every reference to the
+displaced authority is one of the rewritten direct-base edges.  One operation
+then redirects the source-derived child cohort, removes imports used only by the
+deleted declaration, and deletes the redundant class.  Class-creation policy,
+resolved non-base or exact string references, imported exposure, star-import
+boundaries, and open inheritance remain explicit proof failures rather than
+inferred cleanup permissions.
+The operation is authored with both class targets because source equivalence
+cannot decide which semantic name is canonical; no detector guesses that
+direction.
 
 The ``closed_parameter_conveyor`` detector exposes a recipe only for a complete
 private call component that transports every field of one existing dataclass
@@ -151,7 +164,10 @@ their exact source target.  Each unavoidable field mapping is a nominal
 ``CarrierFieldProjection`` payload record rather than an encoded string pair.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+
+.. automodule:: nominal_refactor_advisor.class_authority_collapse
+   :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof
 
 Goal Trajectory Surface
 -----------------------

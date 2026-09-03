@@ -67,6 +67,7 @@ from .carrier_collapse import (
     ClosedCarrierCollapseComponent,
 )
 from .carrier_expansion import DeclaredCarrierExpansionBuilder
+from .class_authority_collapse import RedundantClassAuthorityCollapseProof
 from .class_index import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
@@ -10699,8 +10700,11 @@ class RemoveClassBaseOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceDirectClassBaseOperation(RepositorySourceReprovedOperation):
-    """Replace one class authority across its complete direct-child cohort."""
+class DirectClassBaseReplacementOperationABC(
+    RepositorySourceReprovedOperation,
+    ABC,
+):
+    """Shared source proof for replacing one complete direct-child cohort."""
 
     replacement_base: SourceRewriteTarget = codemod_payload_field(
         PayloadRecordValueCodec(SourceRewriteTarget)
@@ -10709,7 +10713,14 @@ class ReplaceDirectClassBaseOperation(RepositorySourceReprovedOperation):
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (*super().referenced_source_targets(), self.replacement_base)
 
+    @abstractmethod
     def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        raise NotImplementedError
+
+    def direct_class_base_source_edits(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
@@ -10724,6 +10735,17 @@ class ReplaceDirectClassBaseOperation(RepositorySourceReprovedOperation):
             raise ValueError("Direct class-base replacement requires distinct classes")
         if "." in replacement.qualname:
             raise ValueError("Replacement class base must be a top-level declaration")
+        if replacement_symbol in frozenset(
+            (
+                *snapshot.required_class_family_index.ancestor_symbols(replaced_symbol),
+                *snapshot.required_class_family_index.descendant_symbols(
+                    replaced_symbol
+                ),
+            )
+        ):
+            raise ValueError(
+                "Direct class-base replacement cannot use a related class authority"
+            )
         child_symbols = snapshot.required_class_family_index.children_by_symbol.get(
             replaced_symbol,
             (),
@@ -10858,6 +10880,58 @@ class ReplaceDirectClassBaseOperation(RepositorySourceReprovedOperation):
                     f"{replacement.target.name!r}."
                 ),
             ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceDirectClassBaseOperation(DirectClassBaseReplacementOperationABC):
+    """Replace one class authority across its complete direct-child cohort."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.direct_class_base_source_edits(snapshot)
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseRedundantClassAuthorityOperation(DirectClassBaseReplacementOperationABC):
+    """Replace and delete one behaviorally redundant local class authority."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        displaced = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
+        replacement = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            self.replacement_base,
+        )
+        proof = RedundantClassAuthorityCollapseProof.require(
+            snapshot.parsed_modules,
+            snapshot.required_class_family_index,
+            displaced_symbol=displaced.required_symbol(snapshot),
+            replacement_symbol=replacement.required_symbol(snapshot),
+        )
+        return (
+            *self.direct_class_base_source_edits(snapshot),
+            *(
+                ModuleImportMutation.remove_names(
+                    file_path=displaced.file_path,
+                    module_name=obsolete_import.module_name,
+                    names=(obsolete_import.imported_name,),
+                    rationale=self.rationale_text(
+                        "Remove an import used only by the displaced class authority."
+                    ),
+                )
+                for obsolete_import in proof.obsolete_imports
+            ),
+            *DeleteTargetOperation(
+                target=self.target,
+                rationale=self.rationale_text(
+                    "Delete the displaced redundant class authority."
+                ),
+            ).source_edits(snapshot),
         )
 
 
