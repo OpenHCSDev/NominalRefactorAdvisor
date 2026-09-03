@@ -362,14 +362,13 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             "." in indexed_class.qualname
             or node.bases
             or node.keywords
-            or self.class_index.descendant_symbols(indexed_class.symbol)
             or declaration is None
             or declaration.runtime_declaration
             is not DataclassRuntimeDeclaration.DATACLASS
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
         ):
-            raise ValueError("Dataclass is not a standalone promotion participant")
+            raise ValueError("Dataclass is not a base-free promotion participant")
         if any(
             isinstance(child, ast.Name)
             and isinstance(child.ctx, ast.Load)

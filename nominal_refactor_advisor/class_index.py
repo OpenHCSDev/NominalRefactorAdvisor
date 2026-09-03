@@ -1606,11 +1606,17 @@ class CompactNamedProjectionSurface:
 
 
 @dataclass(frozen=True)
-class CompactManualFamilyRosterObservation:
-    """Top-level local class roster before its shared base is resolved."""
+class CompactSourceLocation:
+    """Source position shared by compact structural observations."""
 
     file_path: str
     line: int
+
+
+@dataclass(frozen=True)
+class CompactManualFamilyRosterObservation(CompactSourceLocation):
+    """Top-level local class roster before its shared base is resolved."""
+
     owner_name: str
     member_names: tuple[str, ...]
     constructor_style: str
@@ -1797,9 +1803,7 @@ class RegistryLookupShape:
 
 
 @dataclass(frozen=True)
-class CompactRepeatedKeyedFamilyRoot:
-    file_path: str
-    line: int
+class CompactRepeatedKeyedFamilyRoot(CompactSourceLocation):
     class_name: str
     family_base_name: str
     registry_key_attr_name: str
@@ -1810,21 +1814,17 @@ class CompactRepeatedKeyedFamilyRoot:
 
 
 @dataclass(frozen=True)
-class CompactSortedKeyCall:
+class CompactSortedKeyCall(CompactSourceLocation):
     """One sorted call and the semantic attributes used by its key."""
 
-    file_path: str
-    line: int
     registry_owner_names: tuple[str, ...]
     key_attribute_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class CompactKeyedTableAxis:
+class CompactKeyedTableAxis(CompactSourceLocation):
     """AST-free module-level dictionary keyed by one enum-like axis."""
 
-    file_path: str
-    line: int
     table_name: str
     key_type_name: str
     case_names: tuple[str, ...]
@@ -1839,17 +1839,19 @@ class CompactClosedAxisBranchFact:
 
 
 @dataclass(frozen=True)
-class CompactClosedAxisBranchFunction:
-    file_path: str
-    line: int
+class CompactQualifiedSourceLocation(CompactSourceLocation):
+    """Qualified source position shared by compact structural observations."""
+
     qualname: str
+
+
+@dataclass(frozen=True)
+class CompactClosedAxisBranchFunction(CompactQualifiedSourceLocation):
     axes: tuple[CompactClosedAxisBranchFact, ...]
 
 
 @dataclass(frozen=True)
-class CompactManualSelectorAxis:
-    file_path: str
-    line: int
+class CompactManualSelectorAxis(CompactSourceLocation):
     family_name: str
     selector_method_name: str
     key_type_name: str
@@ -1857,10 +1859,7 @@ class CompactManualSelectorAxis:
 
 
 @dataclass(frozen=True)
-class CompactExactTypeGuard:
-    file_path: str
-    line: int
-    qualname: str
+class CompactExactTypeGuard(CompactQualifiedSourceLocation):
     subject_expression: str
     type_reference_expression: str
     type_reference_parts: tuple[str, ...]
