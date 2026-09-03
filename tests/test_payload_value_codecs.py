@@ -90,6 +90,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         file_path="pkg/example.py",
         qualname="AlphaAuthority",
     )
+    rewrite_target = SourceRewriteTarget(target_id="alpha-run-target")
     selection_count = SelectionCountExpectation(minimum=1, maximum=3)
     replacement_import = MovedSymbolImportPolicy("from pkg.owner import AlphaAuthority")
     cases = (
@@ -107,6 +108,7 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (RequiredIntegerPayloadValueCodec(), 3),
         (ObjectPayloadValueCodec(), {"owner": "AlphaAuthority"}),
         (NodeKindArrayPayloadValueCodec(), (AstTargetNodeKind.FUNCTION,)),
+        (PayloadRecordValueCodec(SourceRewriteTarget), rewrite_target),
         (PayloadRecordValueCodec(CodemodTargetSelector), selector),
         (PayloadRecordArrayValueCodec(CodemodTargetSelector), (selector,)),
         (
@@ -156,6 +158,19 @@ def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
         OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind).read(
             {"authority_kind": "invented_kind"},
             "authority_kind",
+        )
+    with pytest.raises(
+        ValueError,
+        match="Unsupported SourceRewriteTarget payload field",
+    ):
+        PayloadRecordValueCodec(SourceRewriteTarget).read(
+            {
+                "target": {
+                    "target_id": "alpha-run-target",
+                    "legacy_target": "Alpha.run",
+                }
+            },
+            "target",
         )
 
 

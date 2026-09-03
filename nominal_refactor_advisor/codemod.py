@@ -1715,7 +1715,7 @@ def _parsed_modules_from_source_mapping(
 @dataclass(frozen=True)
 class SourceRewriteTarget(
     SourceTargetIdentity[str | None],
-    DataclassPayloadProjection,
+    CodemodPayloadRecord,
 ):
     """Source-index target selector for a planned rewrite."""
 
@@ -4517,11 +4517,9 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
 class SourceDerivedAuthorityProjectionOperation(SourceReprovedOperation, ABC):
     """Exact authority/projection pair whose edits derive from current source."""
 
-    projection_target_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    @property
-    def projection_target(self) -> SourceRewriteTarget:
-        return SourceRewriteTarget(target_id=self.projection_target_id)
+    projection_target: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (*super().referenced_source_targets(), self.projection_target)
@@ -16553,7 +16551,9 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
             target=SourceRewriteTarget(
                 target_id=self.targets.authority.target.target_id
             ),
-            projection_target_id=self.targets.projection_module.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=self.targets.projection_module.target_id
+            ),
         )
 
     def is_applicable(self) -> bool:
@@ -18646,7 +18646,9 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     ) -> SourceDerivedDataclassProjectionRecipeParts[ReturnDictProjectionTarget] | None:
         operation = DeriveDataclassPayloadProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
-            projection_target_id=projection.target.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=projection.target.target_id
+            ),
         )
         return SourceDerivedDataclassProjectionRecipeParts.from_proven_operation(
             self,
@@ -18735,7 +18737,9 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
     ):
         operation = DeriveDataclassFieldNameCollectionProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
-            projection_target_id=projection.target.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=projection.target.target_id
+            ),
         )
         return SourceDerivedDataclassProjectionRecipeParts.from_proven_operation(
             self,
@@ -18833,7 +18837,9 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
     ):
         operation = DeriveDataclassKeyValueSequenceProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
-            projection_target_id=projection.target.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=projection.target.target_id
+            ),
         )
         return SourceDerivedDataclassProjectionRecipeParts.from_proven_operation(
             self,
@@ -19351,7 +19357,9 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     ):
         operation = DeriveDataclassConstructorProjectionOperation(
             target=SourceRewriteTarget(target_id=authority.target.target_id),
-            projection_target_id=projection.target.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=projection.target.target_id
+            ),
         )
         return SourceDerivedDataclassProjectionRecipeParts.from_proven_operation(
             self,
@@ -20020,7 +20028,9 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
             target=SourceRewriteTarget(
                 target_id=self.targets.authority.target.target_id
             ),
-            projection_target_id=self.targets.projection_module.target_id,
+            projection_target=SourceRewriteTarget(
+                target_id=self.targets.projection_module.target_id
+            ),
         )
 
     @cached_property

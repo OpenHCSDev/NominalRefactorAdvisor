@@ -2426,7 +2426,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert set(operation_payload) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     assert RefactorRecipeOperation.from_dict(operation_payload) == operation
@@ -2479,7 +2479,7 @@ def _dataclass_payload_projection_operation(
     )
     return DeriveDataclassPayloadProjectionOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
-        projection_target_id=projection_target.target_id,
+        projection_target=SourceRewriteTarget(target_id=projection_target.target_id),
     )
 
 
@@ -2682,7 +2682,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     assert set(operation.to_dict()) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
@@ -2870,7 +2870,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     assert set(operation.to_dict()) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
@@ -3392,7 +3392,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     assert set(operation.to_dict()) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
@@ -3662,7 +3662,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     assert set(operation) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
@@ -3715,7 +3715,7 @@ def _enum_subset_operation(
     )
     return DeriveEnumSubsetOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
-        projection_target_id=projection_target.target_id,
+        projection_target=SourceRewriteTarget(target_id=projection_target.target_id),
     )
 
 
@@ -4039,7 +4039,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     assert set(operation) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     assert "source" not in operation
@@ -4151,7 +4151,7 @@ def _class_family_collection_operation(
     )
     return DeriveClassFamilyCollectionOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
-        projection_target_id=projection_target.target_id,
+        projection_target=SourceRewriteTarget(target_id=projection_target.target_id),
     )
 
 
@@ -4192,7 +4192,7 @@ def test_class_family_collection_operation_rederives_current_source(
     assert set(payload) == {
         "operation",
         "target_id",
-        "projection_target_id",
+        "projection_target",
         "rationale",
     }
     assert replayed == operation
@@ -4928,7 +4928,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     assert plan.records[0].status.value == "executable_candidate"
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, DeriveEnumSubsetOperation)
-    assert operation.to_dict()["projection_target_id"] == next(
+    assert operation.to_dict()["projection_target"]["target_id"] == next(
         target.target_id
         for target in snapshot.source_index.ast_targets
         if target.is_module and target.file_path == "pkg/codemod.py"
