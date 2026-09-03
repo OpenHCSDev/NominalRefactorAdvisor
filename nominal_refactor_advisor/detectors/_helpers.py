@@ -1913,9 +1913,6 @@ def _concrete_config_field_probe_candidates(
     )
 
 
-_DECLARATIVE_FAMILY_ASSIGNMENT_NAMES = frozenset(
-    {"item_type", "spec", "spec_root", "literal_kind"}
-)
 _DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES = frozenset(
     {
         "SingleShapeFamilyDefinition",
@@ -2071,91 +2068,12 @@ def _repeated_base_bundle_candidates(
     return tuple(candidates)
 
 
-def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int, str]]:
-    aliases: dict[str, tuple[str, int, str]] = {}
-    for statement in statements_without_docstring(module.module.body):
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target = statement.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        value = statement.value
-        if not (
-            isinstance(value, ast.Attribute)
-            and value.attr == "family_type"
-            and isinstance(value.value, ast.Name)
-        ):
-            continue
-        aliases[target.id] = (value.value.id, statement.lineno, value.attr)
-    return aliases
-
-
 def _is_simple_classvar_value(node: ast.AST) -> bool:
     if isinstance(node, (ast.Name, ast.Attribute, ast.Constant)):
         return True
     if isinstance(node, ast.Tuple):
         return all((_is_simple_classvar_value(item) for item in node.elts))
     return False
-
-
-def _type_indexed_definition_boilerplate_groups(
-    module: ParsedModule,
-) -> tuple[TypeIndexedDefinitionBoilerplateGroup, ...]:
-    alias_assignments = _module_alias_assignments(module)
-    grouped: dict[
-        (tuple[tuple[str, ...], tuple[str, ...]], list[tuple[str, str, int]])
-    ] = defaultdict(list)
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef) or not node.name.endswith("Definition"):
-            continue
-        base_names = tuple(
-            (
-                name
-                for name in CLASS_NODE_AUTHORITY.declared_base_names(node)
-                if name not in _IGNORED_ANCESTOR_NAMES
-            )
-        )
-        if not base_names or not any(
-            (name.endswith("Definition") for name in base_names)
-        ):
-            continue
-        assigned_names = HELPER_SYNTAX_PROJECTION_AUTHORITY.classvar_assignment_names(
-            node
-        )
-        if assigned_names is None:
-            continue
-        if not set(assigned_names) & _DECLARATIVE_FAMILY_ASSIGNMENT_NAMES:
-            continue
-        alias_name = next(
-            (
-                alias_name
-                for alias_name, (
-                    definition_name,
-                    _,
-                    attr_name,
-                ) in alias_assignments.items()
-                if definition_name == node.name and attr_name == "family_type"
-            ),
-            None,
-        )
-        if alias_name is None:
-            continue
-        grouped[base_names, assigned_names].append((node.name, alias_name, node.lineno))
-    return tuple(
-        (
-            TypeIndexedDefinitionBoilerplateGroup(
-                file_path=module.file_path,
-                base_names=base_names,
-                definition_class_names=tuple((item[0] for item in ordered)),
-                alias_names=tuple((item[1] for item in ordered)),
-                line_numbers=tuple((item[2] for item in ordered)),
-                assigned_names=assigned_names,
-            )
-            for (base_names, assigned_names), items in sorted(grouped.items())
-            if len(items) >= 3
-            for ordered in [sorted_tuple(items, key=lambda item: (item[2], item[0]))]
-        )
-    )
 
 
 def _dict_key_kind(value: ast.AST) -> str | None:

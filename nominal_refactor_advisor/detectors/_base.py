@@ -7690,16 +7690,6 @@ class RepeatedBaseBundleCandidate(ClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class TypeIndexedDefinitionBoilerplateGroup:
-    file_path: str
-    base_names: tuple[str, ...]
-    definition_class_names: tuple[str, ...]
-    alias_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    assigned_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ExportSurfaceCandidate(LineWitnessCandidate):
     export_symbol: str
     exported_names: tuple[str, ...]

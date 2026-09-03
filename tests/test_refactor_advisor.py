@@ -22590,22 +22590,21 @@ def test_detects_repeated_base_bundle(tmp_path: Path) -> None:
     assert "RoleMixin" in finding.summary
 
 
-def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
+def test_nominal_definition_family_does_not_imply_parallel_table_authority(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\nfrom abc import ABC\n\n\nclass CollectedFamily(ABC):\n    pass\n\n\nclass RegisteredObservationFamilyDefinition(ABC):\n    pass\n\n\nclass AlphaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Alpha\n    spec_root = AlphaSpec\n\n\nAlphaFamily = AlphaFamilyDefinition.family_type\n\n\nclass BetaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Beta\n    spec_root = BetaSpec\n\n\nBetaFamily = BetaFamilyDefinition.family_type\n\n\nclass GammaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Gamma\n    spec_root = GammaSpec\n\n\nGammaFamily = GammaFamilyDefinition.family_type\n",
     )
+
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "type_indexed_definition_boilerplate"
-        )
+
+    assert not any(
+        finding.detector_id == "type_indexed_definition_boilerplate"
+        for finding in findings
     )
-    assert "AlphaFamilyDefinition" in finding.summary
-    assert "AlphaFamily" in finding.summary
 
 
 def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:

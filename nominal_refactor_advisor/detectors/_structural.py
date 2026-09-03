@@ -667,48 +667,6 @@ declare_candidate_rule_detector(
 )
 
 
-class TypeIndexedDefinitionBoilerplateDetector(
-    ModuleCollectorCandidateDetector[TypeIndexedDefinitionBoilerplateGroup]
-):
-    candidate_collector = _type_indexed_definition_boilerplate_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Type-indexed family definitions should derive from one typed declaration table",
-        "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. That metadata should live once in a typed declaration table and definition-time materializer.",
-        "one authoritative typed declaration table for family generation and export derivation",
-        "same type-indexed family definition and alias boilerplate repeats across sibling declarations",
-        (
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, group: TypeIndexedDefinitionBoilerplateGroup
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(group.file_path, line, class_name)
-                for class_name, line in zip(
-                    group.definition_class_names, group.line_numbers, strict=True
-                )
-            )
-        )
-        return self.build_finding(
-            (
-                f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
-            ),
-            evidence,
-            metrics=RegistrationMetrics.from_class_names(
-                registration_site_count=len(group.definition_class_names),
-                registry_name=group.base_names[0],
-                class_names=group.definition_class_names,
-                class_key_pairs=group.assigned_names,
-            ),
-        )
-
-
 def _native_export_policy_predicate_candidates(
     source_module: SourceModule,
     syntax_index: NativePythonSyntaxIndex,
