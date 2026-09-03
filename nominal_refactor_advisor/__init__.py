@@ -23,6 +23,7 @@ from .codemod import (
     AstTargetNodeIndex,
     CancelableCompositionKind,
     CancelableCompositionSignal,
+    CarrierFieldProjection,
     CodemodBackend,
     CodemodPlanDocument,
     CodemodPlanRoot,

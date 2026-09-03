@@ -6,6 +6,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    CarrierFieldProjection,
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
@@ -287,10 +288,12 @@ def test_compiler_unions_imports_and_carrier_projection_stays_granular(
         )
         .with_operation(
             ReplaceFieldsWithCarrierOperation(
-                target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                class_name="Candidate",
+                target=SourceRewriteTarget(
+                    file_path=module_path.as_posix(),
+                    qualname="Candidate",
+                ),
                 carrier_field_declaration="stats: Stats",
-                field_projection_pairs=("count=count",),
+                field_projections=(CarrierFieldProjection("count", "count"),),
             )
         )
     )

@@ -6999,13 +6999,33 @@ class CarrierFieldDeclaration:
         )
 
 
+@dataclass(frozen=True)
+class CarrierFieldProjection(CodemodPayloadRecord):
+    """One explicit primitive-field to carrier-attribute relation."""
+
+    source_field: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    carrier_attribute: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
+
+    def __post_init__(self) -> None:
+        if not self.source_field.isidentifier():
+            raise ValueError(
+                f"Carrier source field must be an identifier: {self.source_field!r}"
+            )
+        if not self.carrier_attribute.isidentifier():
+            raise ValueError(
+                "Carrier projection attribute must be an identifier: "
+                f"{self.carrier_attribute!r}"
+            )
+
+
 @dataclass(frozen=True, kw_only=True)
-class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
+class CarrierProjectionOperationBase(SourceReprovedOperation, ABC):
     """Shared payload surface for field-to-carrier projection operations."""
 
-    class_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    field_projection_pairs: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
+    field_projections: tuple[CarrierFieldProjection, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CarrierFieldProjection)
     )
     constructor_names: tuple[str, ...] = codemod_payload_field(
         OptionalStringArrayPayloadValueCodec(),
@@ -7016,9 +7036,8 @@ class CarrierProjectionOperationBase(RefactorRecipeOperation, ABC):
         default=(),
     )
 
-    @property
-    def resolved_constructor_names(self) -> tuple[str, ...]:
-        return self.constructor_names or (self.class_name,)
+    def resolved_constructor_names(self, class_name: str) -> tuple[str, ...]:
+        return self.constructor_names or (class_name,)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7039,39 +7058,42 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
 
     @property
     def field_projection_map(self) -> Mapping[str, str]:
-        pairs: dict[str, str] = {}
-        for pair in self.field_projection_pairs:
-            source_field, separator, carrier_attribute = pair.partition("=")
-            if separator != "=":
-                raise ValueError(
-                    "Field projection pairs must be written as "
-                    f"'source_field=carrier_attribute'; got {pair!r}"
-                )
-            source_field = source_field.strip()
-            carrier_attribute = carrier_attribute.strip()
-            if not source_field.isidentifier() or not carrier_attribute.isidentifier():
-                raise ValueError(
-                    f"Field projection pairs must use simple identifiers; got {pair!r}"
-                )
-            pairs[source_field] = carrier_attribute
-        if not pairs:
-            raise ValueError("Field carrier replacement requires projection pairs")
-        return pairs
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        source_path = self.required_source_path(
-            context,
-            self.operation_key(),
+        if not self.field_projections:
+            raise ValueError("Field carrier replacement requires field projections")
+        projections = UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+            self.field_projections,
+            lambda projection: projection.source_field,
         )
+        if projections.ambiguous_handles:
+            raise ValueError(
+                "Carrier source fields have multiple projections: "
+                f"{tuple(sorted(projections.ambiguous_handles))!r}"
+            )
+        return {
+            source_field: projection.carrier_attribute
+            for source_field, projection in (
+                projections.unambiguous_declarations_by_handle.items()
+            )
+        }
+
+    def source_edits_from_snapshot(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _target_identifier, target, class_node = self.target_node_from_context(context)
+        if not isinstance(class_node, ast.ClassDef):
+            raise ValueError("Field carrier replacement requires a class target")
+        source_path = target.file_path
         source = context.sources_by_file_path[source_path]
         geometry = SourceTextGeometry(source)
         root = context.module_nodes_by_file_path[source_path]
         replacements = [
-            *self.class_field_replacements(root, geometry),
-            *self.constructor_projection_replacements(root, geometry),
+            *self.class_field_replacements(class_node, geometry),
+            *self.constructor_projection_replacements(
+                root,
+                geometry,
+                class_name=class_node.name,
+            ),
         ]
         covered_lines = tuple(
             SourceLineSpan.from_offsets(geometry, item.start_offset, item.end_offset)
@@ -7093,17 +7115,16 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
             replacements=replacements,
             rationale=self.rationale
             or (
-                f"Replace projected fields on {self.class_name!r} with carrier "
+                f"Replace projected fields on {target.qualname!r} with carrier "
                 f"field {self.carrier_field_name!r}."
             ),
         )
 
     def class_field_replacements(
         self,
-        root: ast.Module,
+        class_node: ast.ClassDef,
         geometry: SourceTextGeometry,
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        class_node = self.required_class_node(root)
         field_lines = tuple(
             statement
             for statement in class_node.body
@@ -7138,9 +7159,11 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
         self,
         root: ast.Module,
         geometry: SourceTextGeometry,
+        *,
+        class_name: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         replacements: list[SourceTextSpanReplacement] = []
-        constructor_names = frozenset(self.resolved_constructor_names)
+        constructor_names = frozenset(self.resolved_constructor_names(class_name))
         for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
             call_name = self.call_name(call)
             if call_name not in constructor_names:
@@ -7236,18 +7259,6 @@ class ReplaceFieldsWithCarrierOperation(CarrierProjectionOperationBase):
                 )
             )
         return tuple(replacements)
-
-    def required_class_node(self, root: ast.Module) -> ast.ClassDef:
-        matches = tuple(
-            node
-            for node in ast.walk(root)
-            if isinstance(node, ast.ClassDef) and node.name == self.class_name
-        )
-        if len(matches) != 1:
-            raise ValueError(
-                f"Expected exactly one class named {self.class_name!r}; found {len(matches)}"
-            )
-        return matches[0]
 
     @staticmethod
     def field_name_for_statement(statement: ast.stmt) -> str | None:

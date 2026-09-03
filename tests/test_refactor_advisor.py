@@ -131,6 +131,7 @@ from nominal_refactor_advisor.codemod import (
     CancelableCompositionKind,
     CallSiteSelector,
     CallSiteTargetSelector,
+    CarrierFieldProjection,
     ClassFamilyAuthorityConcept,
     ClassFamilyTargetSelector,
     CodemodSelectorContext,
@@ -2989,21 +2990,43 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="EmbeddedStaticPayloadCandidate",
+        ),
+        carrier_field_declaration="static_payload_stats: StaticPayloadStats",
+        field_projections=(
+            CarrierFieldProjection(
+                source_field="static_payload_line_count",
+                carrier_attribute="payload_line_count",
+            ),
+            CarrierFieldProjection(
+                source_field="marker_kinds",
+                carrier_attribute="marker_kinds",
+            ),
+        ),
+        attribute_owner_expressions=("payload_candidate",),
+    )
     recipe = RefactorRecipe(
         recipe_id="reuse-static-payload-stats",
         reason="Collapse projected payload facts into the existing stats carrier.",
-    ).with_operation(
-        ReplaceFieldsWithCarrierOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            class_name="EmbeddedStaticPayloadCandidate",
-            carrier_field_declaration="static_payload_stats: StaticPayloadStats",
-            field_projection_pairs=(
-                "static_payload_line_count=payload_line_count",
-                "marker_kinds=marker_kinds",
-            ),
-            attribute_owner_expressions=("payload_candidate",),
-        )
+    ).with_operation(operation)
+
+    payload = operation.to_dict()
+    assert "class_name" not in payload
+    assert "field_projection_pairs" not in payload
+    assert payload["field_projections"] == (
+        {
+            "source_field": "static_payload_line_count",
+            "carrier_attribute": "payload_line_count",
+        },
+        {
+            "source_field": "marker_kinds",
+            "carrier_attribute": "marker_kinds",
+        },
     )
+    assert RefactorRecipeOperation.from_dict(payload) == operation
 
     simulation = CodemodPlanDocument(recipes=(recipe,)).simulate(
         _indexed_snapshot(source_index, source_by_path),
@@ -3033,6 +3056,23 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
     assert "other.static_payload_line_count" in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_carrier_field_projection_rejects_ambiguous_source_fields() -> None:
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(qualname="Candidate", file_path="pkg/mod.py"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(
+            CarrierFieldProjection("count", "count"),
+            CarrierFieldProjection("count", "total"),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Carrier source fields have multiple projections: \\('count',\\)",
+    ):
+        _ = operation.field_projection_map
 
 
 def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
@@ -17835,6 +17875,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import FindingObligationClass
     from nominal_refactor_advisor import NominalBoundaryConcept
     from nominal_refactor_advisor import ProjectedScanModuleSet
+    from nominal_refactor_advisor import CarrierFieldProjection
     from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
     from nominal_refactor_advisor import ReplaceTargetOperation
 
@@ -17906,6 +17947,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert not hasattr(nra, "CodemodStrategyRegistry")
     assert not hasattr(nra, "CodemodWorkflowScanRequest")
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
+    assert CarrierFieldProjection.__name__ == "CarrierFieldProjection"
     assert (
         ReplaceFieldsWithCarrierOperation.__name__
         == "ReplaceFieldsWithCarrierOperation"
