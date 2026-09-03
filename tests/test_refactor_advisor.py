@@ -11180,7 +11180,7 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    detector_id = "local"\n\n    def _candidate_items(self, module, settings):\n        del settings\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    detector_id = "configured"\n\n    def _candidate_items(self, module, settings):\n        return _configured_candidates(module, settings)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, settings):\n        del settings\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, settings):\n        return _configured_candidates(module, settings)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
     )
     findings = [
         item
@@ -11248,6 +11248,27 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
     assert not any(
         finding.detector_id == "candidate_collector_boilerplate"
         for finding in analyze_path(tmp_path)
+    )
+
+
+def test_candidate_collector_boilerplate_ignores_implementation_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "mod.py",
+        "class Candidate:\n"
+        "    pass\n\n\n"
+        "class ModuleCollectorCandidateDetector(CandidateFindingDetector[Candidate]):\n"
+        "    def _candidate_items(self, module, settings):\n"
+        "        del settings\n"
+        "        return type(self).candidate_collector(module)\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+
+    assert (
+        base_detectors.CandidateCollectorBoilerplateCandidate.from_module(module)
+        == ()
     )
 
 

@@ -8540,6 +8540,13 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
         if collector_call is None:
             return ()
         collector_name, uses_config = collector_call
+        collector_base_name = (
+            DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+                CandidateCollectorBaseShape(collector_scope, uses_config)
+            )
+        )
+        if collector_base_name == node.name:
+            return ()
         return (
             cls(
                 file_path=module.file_path,
@@ -8557,11 +8564,6 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
     def detector_shape(
         node: ast.ClassDef,
     ) -> tuple[CandidateCollectorScope, str] | None:
-        if (
-            IssueDetector.__registry_key__
-            not in CLASS_NODE_AUTHORITY.direct_assignments(node)
-        ):
-            return None
         for base in node.bases:
             parameterized_base = ParameterizedBaseSource.from_node(base)
             if parameterized_base is None:
