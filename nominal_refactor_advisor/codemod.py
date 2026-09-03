@@ -4849,32 +4849,6 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         )
 
 
-class TargetNodeRecipeOperationMixin(ABC):
-    """Operation family whose rewrites require the target AST node."""
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[NominalSourceEdit, ...]:
-        target_identifier, target_digest, node = self.target_node_from_context(context)
-        return self.source_edits_for_target_node(
-            context,
-            target_identifier,
-            target_digest,
-            node,
-        )
-
-    @abstractmethod
-    def source_edits_for_target_node(
-        self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[NominalSourceEdit, ...]:
-        raise NotImplementedError
-
-
 @dataclass(frozen=True, kw_only=True)
 class SourcePayloadOperation(RefactorRecipeOperation, ABC):
     """Recipe operation whose declaration owns required Python source text."""
@@ -4883,8 +4857,8 @@ class SourcePayloadOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
-    """Operation whose declaration owns a non-empty assignment-name set."""
+class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
+    """Source-proved deletion of one non-empty assignment-name set."""
 
     assignment_names: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec()
@@ -4898,6 +4872,33 @@ class AssignmentNamesPayloadOperation(RefactorRecipeOperation, ABC):
             raise ValueError(f"{operation_key} requires Python identifier names")
         if len(set(self.assignment_names)) != len(self.assignment_names):
             raise ValueError(f"{operation_key} requires unique assignment_names")
+
+    def selected_assignment_statements(
+        self,
+        statements: Iterable[ast.stmt],
+    ) -> tuple[ast.stmt, ...]:
+        requested_names = set(self.assignment_names)
+        pending_names = set(requested_names)
+        assignments: list[ast.stmt] = []
+        for statement in statements:
+            statement_names = set(AssignmentStatementNameProjection(statement).names)
+            matched_names = pending_names & statement_names
+            if not matched_names:
+                continue
+            unselected_names = statement_names - requested_names
+            if unselected_names:
+                raise ValueError(
+                    "Selected assignment statement also declares unselected names "
+                    f"{tuple(sorted(unselected_names))!r}"
+                )
+            pending_names -= matched_names
+            assignments.append(statement)
+        if pending_names:
+            raise ValueError(
+                "No assignment statements found for "
+                f"{tuple(sorted(pending_names))!r}"
+            )
+        return tuple(assignments)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -5592,61 +5593,25 @@ class CreateFileOperation(SourcePayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteClassAssignmentsOperation(
-    TargetNodeRecipeOperationMixin,
-    AssignmentNamesPayloadOperation,
-):
+class DeleteClassAssignmentsOperation(AssignmentDeletionOperationABC):
     """Delete a proven set of class-level assignment statements."""
 
-    def selected_assignments(
+    def source_edits_from_snapshot(
         self,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[ast.stmt, ...]:
-        if not isinstance(node, ast.ClassDef):
-            raise ValueError(
-                f"Target {target_digest.qualname!r} is not a class definition"
-            )
-        requested_names = set(self.assignment_names)
-        pending_names = set(requested_names)
-        assignments: list[ast.stmt] = []
-        for statement in node.body:
-            statement_names = set(AssignmentStatementNameProjection(statement).names)
-            matched_names = pending_names & statement_names
-            if not matched_names:
-                continue
-            unselected_names = statement_names - requested_names
-            if unselected_names:
-                raise ValueError(
-                    f"Class {target_digest.qualname!r} assignment also declares "
-                    f"unselected names {tuple(sorted(unselected_names))!r}"
-                )
-            pending_names -= matched_names
-            assignments.append(statement)
-        if pending_names:
-            raise ValueError(
-                f"Class {target_digest.qualname!r} has no assignments for "
-                f"{tuple(sorted(pending_names))!r}"
-            )
-        return tuple(assignments)
-
-    def source_edits_for_target_node(
-        self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        del context, target_identifier
+        _target_identifier, target, node = self.target_node_from_context(snapshot)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(f"Target {target.qualname!r} is not a class definition")
         return tuple(
             SourceSpanReplacement(
-                file_path=target_digest.file_path,
+                file_path=target.file_path,
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
                 rationale=self.rationale
                 or f"Delete class assignments {self.assignment_names!r}.",
             )
-            for assignment in self.selected_assignments(target_digest, node)
+            for assignment in self.selected_assignment_statements(node.body)
         )
 
 
@@ -5691,43 +5656,29 @@ class DeleteInheritedAutoRegisterConfigurationOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
+class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
     """Delete named module-level assignment statements."""
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source_path = self.required_source_path(
-            context,
+            snapshot,
             "delete_module_assignments",
         )
-        module = context.module_nodes_by_file_path[source_path]
-        pending_names = set(self.assignment_names)
-        replacements = []
-        for statement in module.body:
-            matched_names = pending_names & set(
-                AssignmentStatementNameProjection(statement).names
+        module = snapshot.module_nodes_by_file_path[source_path]
+        return tuple(
+            SourceSpanReplacement(
+                file_path=source_path,
+                start_line=assignment.lineno,
+                end_line=assignment.end_lineno or assignment.lineno,
+                replacement_lines=(),
+                rationale=self.rationale
+                or f"Delete module assignments {self.assignment_names!r}.",
             )
-            if not matched_names:
-                continue
-            pending_names -= matched_names
-            replacements.append(
-                SourceSpanReplacement(
-                    file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
-                    replacement_lines=(),
-                    rationale=self.rationale
-                    or f"Delete module assignments {tuple(sorted(matched_names))!r}.",
-                )
-            )
-        if pending_names:
-            raise ValueError(
-                f"Module {source_path!r} has no top-level assignments for "
-                f"{tuple(sorted(pending_names))!r}"
-            )
-        return tuple(replacements)
+            for assignment in self.selected_assignment_statements(module.body)
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -9629,55 +9580,47 @@ class DeclareAuthorityOperation(AuthoritySourceOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class InsertBeforeTargetOperation(
-    TargetNodeRecipeOperationMixin,
-    SourcePayloadOperation,
-):
-    """Insert source immediately before a source-index target."""
+class TargetAdjacentInsertionOperationABC(SourceReprovedOperation, ABC):
+    """Source-proved insertion adjacent to one indexed declaration."""
 
-    def source_edits_for_target_node(
+    source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        del context, target_identifier, node
+        _target_identifier, target, _node = self.target_node_from_context(snapshot)
         return (
             SourceInsertion(
-                file_path=target_digest.file_path,
-                insertion_line=target_digest.line,
+                file_path=target.file_path,
+                insertion_line=self.insertion_line(target),
                 inserted_lines=SourceTargetEditor.source_lines(self.source),
                 rationale=self.rationale
-                or f"Insert source before {target_digest.qualname!r}.",
+                or f"Insert source adjacent to {target.qualname!r}.",
             ),
         )
+
+    @abstractmethod
+    def insertion_line(self, target: AstTargetDigest) -> int:
+        """Return the leaf operation's insertion geometry."""
+
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
-class InsertAfterTargetOperation(
-    TargetNodeRecipeOperationMixin,
-    SourcePayloadOperation,
-):
+class InsertBeforeTargetOperation(TargetAdjacentInsertionOperationABC):
+    """Insert source immediately before a source-index target."""
+
+    def insertion_line(self, target: AstTargetDigest) -> int:
+        return target.line
+
+
+@dataclass(frozen=True, kw_only=True)
+class InsertAfterTargetOperation(TargetAdjacentInsertionOperationABC):
     """Insert source immediately after a source-index target."""
 
-    def source_edits_for_target_node(
-        self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del context, target_identifier, node
-        return (
-            SourceInsertion(
-                file_path=target_digest.file_path,
-                insertion_line=target_digest.end_line + 1,
-                inserted_lines=SourceTargetEditor.source_lines(self.source),
-                rationale=self.rationale
-                or f"Insert source after {target_digest.qualname!r}.",
-            ),
-        )
+    def insertion_line(self, target: AstTargetDigest) -> int:
+        return target.end_line + 1
 
 
 @dataclass(frozen=True, kw_only=True)

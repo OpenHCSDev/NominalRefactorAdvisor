@@ -502,8 +502,6 @@ def test_source_payload_operations_share_the_source_declaration() -> None:
     operation_types = (
         codemod.CreateFileOperation,
         codemod.ReplaceModuleAssignmentOperation,
-        codemod.InsertBeforeTargetOperation,
-        codemod.InsertAfterTargetOperation,
         codemod.InsertAfterImportsOperation,
     )
 
@@ -523,6 +521,37 @@ def test_source_payload_operations_share_the_source_declaration() -> None:
     assert "assignment_name" not in (
         codemod.ReplaceModuleAssignmentOperation.__dataclass_fields__
     )
+
+
+def test_target_adjacent_insertions_share_source_proof_and_own_geometry() -> None:
+    for operation_type in (
+        codemod.InsertBeforeTargetOperation,
+        codemod.InsertAfterTargetOperation,
+    ):
+        assert issubclass(
+            operation_type,
+            codemod.TargetAdjacentInsertionOperationABC,
+        )
+        assert issubclass(operation_type, codemod.SourceReprovedOperation)
+        assert "source_edits_from_snapshot" not in operation_type.__dict__
+        assert "insertion_line" in operation_type.__dict__
+        assert tuple(
+            binding.field_name for binding in operation_type.payload_bindings()
+        ) == ("target", "rationale", "source")
+
+
+def test_assignment_deletions_share_validated_source_reproof() -> None:
+    for operation_type in (
+        codemod.DeleteClassAssignmentsOperation,
+        codemod.DeleteModuleAssignmentsOperation,
+    ):
+        assert issubclass(operation_type, codemod.AssignmentDeletionOperationABC)
+        assert issubclass(operation_type, codemod.SourceReprovedOperation)
+        assert tuple(
+            binding.field_name for binding in operation_type.payload_bindings()
+        ) == ("target", "rationale", "assignment_names")
+    assert not hasattr(codemod, "AssignmentNamesPayloadOperation")
+    assert not hasattr(codemod, "TargetNodeRecipeOperationMixin")
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:

@@ -88,6 +88,11 @@ target before producing a physical edit.
 Direct class-base mutations share one current-source proof and edit shell; the
 nominal add and remove operation leaves own only their respective header
 transformation.  Semantic no-ops preserve the original header source.
+Target-adjacent insertions likewise share one current-source proof and physical
+edit shell; the before and after leaves own only their insertion geometry.
+Class and module assignment deletions share one exact statement-selection
+authority.  A chained assignment is deleted only when every name it binds is
+selected, so a compressed plan cannot remove an unrequested binding.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.

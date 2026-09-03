@@ -165,6 +165,7 @@ from nominal_refactor_advisor.codemod import (
     SemanticDescentRecipeEvaluation,
     DeclareAuthorityOperation,
     DeleteClassAssignmentsOperation,
+    DeleteModuleAssignmentsOperation,
     DeleteTargetOperation,
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
@@ -2518,6 +2519,47 @@ def test_delete_class_assignments_rejects_missing_name_without_applying(
         )
 
     assert module_path.read_text() == original_source
+
+
+def test_assignment_deletion_rejects_partial_chained_bindings_in_every_scope(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "module_left = module_right = 1\n\n\n"
+        "class Holder:\n"
+        "    class_left = class_right = 2\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operations = (
+        DeleteModuleAssignmentsOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            assignment_names=("module_left",),
+        ),
+        DeleteClassAssignmentsOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Holder",
+            ),
+            assignment_names=("class_left",),
+        ),
+    )
+
+    for operation in operations:
+        with pytest.raises(
+            CodemodOperationPreflightError,
+            match="also declares unselected names",
+        ):
+            operation.source_edits(snapshot)
+
+    complete_module_deletion = DeleteModuleAssignmentsOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        assignment_names=("module_left", "module_right"),
+    ).source_edits(snapshot)
+    assert len(complete_module_deletion) == 1
+    assert complete_module_deletion[0].start_line == 1
 
 
 def test_delete_class_assignments_is_the_only_class_assignment_deletion_dsl() -> None:
