@@ -444,6 +444,11 @@ def test_class_base_operations_own_the_base_name_payload() -> None:
         ) == ("target", "rationale", "base_name")
 
 
+def test_legacy_mirrored_method_extraction_payload_is_absent() -> None:
+    assert not hasattr(codemod, "ExtractMethodsToClassOperation")
+    assert "extract_methods_to_class" not in codemod.RefactorRecipeOperation.__registry__
+
+
 def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
     assert "payload_value" not in codemod.AuthoritySourceOperation.__dataclass_fields__
     assert tuple(
