@@ -22,6 +22,7 @@ import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
+import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
 import nominal_refactor_advisor.codemod_imports as codemod_imports_module
 import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
@@ -189,6 +190,7 @@ from nominal_refactor_advisor.codemod import (
     InsertBeforeTargetOperation,
     MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation,
+    ModuleImportScope,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
@@ -6902,6 +6904,252 @@ def test_symbol_move_preserves_class_dependency_loaded_before_local_binding(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "class External:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from .dependencies import External\n\n\n"
+        "@dataclass\n"
+        "class Helper:\n"
+        "    value: External\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-type-only-dependency").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert tuple(
+        (dependency.name, dependency.scope)
+        for dependency in report.import_dependencies
+    ) == (
+        ("External", ModuleImportScope.TYPE_CHECKING),
+        ("dataclass", ModuleImportScope.RUNTIME),
+    )
+    assert all(
+        dependency.destination_import_required
+        and dependency.source_removal_required
+        for dependency in report.import_dependencies
+    )
+    assert "if TYPE_CHECKING:" not in rewritten_source
+    assert (
+        "from dataclasses import dataclass\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:"
+    ) in (
+        rewritten_destination
+    )
+    assert "    from .dependencies import External" in rewritten_destination
+    assert rewritten_destination.index("if TYPE_CHECKING:") < (
+        rewritten_destination.index("class Helper:")
+    )
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.destination import Helper; "
+            "assert Helper.__annotations__ == {'value': 'External'}; "
+            "assert Helper.__dataclass_fields__",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_rewrites_type_checking_consumer_import(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/source.py", "class Helper:\n    pass\n")
+    _write_module(tmp_path, "pkg/destination.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from __future__ import annotations\n\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from .source import Helper\n\n\n"
+        "def build(value: Helper) -> Helper:\n"
+        "    return value\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("rewrite-type-only-consumer").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_consumer = simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ]
+
+    assert "from .source import Helper" not in rewritten_consumer
+    assert "if TYPE_CHECKING:\n    from .destination import Helper" in (
+        rewritten_consumer
+    )
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumer import build; assert build(1) == 1",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_extends_aliased_type_checking_guard(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "class External:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "import typing as t\n\n"
+        "if t.TYPE_CHECKING:\n"
+        "    from .dependencies import External\n\n\n"
+        "class Helper:\n"
+        "    value: External\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n\n"
+        "import typing as t\n\n"
+        "if t.TYPE_CHECKING:\n"
+        "    from pathlib import Path\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = RefactorRecipe("extend-aliased-type-guard").with_operation(
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("Helper",),
+            destination_path=destination_path.as_posix(),
+        )
+    ).simulate(snapshot)
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert rewritten_destination.count("if t.TYPE_CHECKING:") == 1
+    assert "from typing import TYPE_CHECKING" not in rewritten_destination
+    assert "    from .dependencies import External" in rewritten_destination
+    assert "    from pathlib import Path" in rewritten_destination
+    assert rewritten_destination.index("if t.TYPE_CHECKING:") < (
+        rewritten_destination.index("class Helper:")
+    )
+
+
+def test_symbol_move_rejects_guarded_import_for_eager_annotation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ModuleAnnotationEvaluationMode,
+        "runtime_default",
+        classmethod(lambda cls: cls.EAGER),
+    )
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "class External:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from .dependencies import External\n\n\n"
+        "class Helper:\n"
+        "    value: External\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.is_clean is False
+    assert report.unresolved_dependency_names == ("External",)
+    with pytest.raises(CodemodOperationPreflightError, match="External"):
+        RefactorRecipe("reject-eager-guarded-import").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
+def test_symbol_move_rejects_multiple_import_authorities(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/first.py", "class Base:\n    pass\n")
+    _write_module(tmp_path, "pkg/second.py", "class Base:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .first import Base\n"
+        "from .second import Base\n\n\n"
+        "class Helper(Base):\n"
+        "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.is_clean is False
+    assert report.ambiguous_import_dependency_names == ("Base",)
+    with pytest.raises(CodemodOperationPreflightError, match="import authorities"):
+        RefactorRecipe("reject-ambiguous-import").with_operation(operation).simulate(
+            snapshot
+        )
 
 
 def test_refactor_recipe_extracts_symbol_closure_to_new_module(
@@ -23668,9 +23916,10 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 
 @pytest.mark.parametrize(
     "declaration_owner",
-    (
-        codemod_import_graph_module,
-        codemod_imports_module,
+        (
+            codemod_import_graph_module,
+            codemod_import_scopes_module,
+            codemod_imports_module,
         codemod_paths_module,
         codemod_semantics_module,
         codemod_source_edits_module,

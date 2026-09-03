@@ -1,7 +1,13 @@
 # Nominal Refactor Advisor
 
 AST-driven refactoring advisor for nominal architecture, SSOT recovery, and
-anti-duck-typing cleanup.
+anti-duck-typing cleanup in mature Python systems.
+
+NRA is designed for repositories whose production behaviour, integrations,
+and operational knowledge make replacement prohibitively expensive.  A
+practitioner or agent chooses the intended semantic authority.  NRA proves the
+current source boundary and compiles the deterministic dependency, import,
+placement, and consumer-rewrite work into one reviewable change.
 
 The tool emits evidence-backed refactoring findings, architectural direction,
 and proof-gated executable recipes where the source establishes a safe target.

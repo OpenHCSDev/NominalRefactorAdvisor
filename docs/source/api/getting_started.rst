@@ -96,6 +96,12 @@ source re-exports, repository-local consumer imports, and the new-file revision
 contract.  A non-movable or unresolved dependency fails preflight without
 writing either module.
 
+Runtime imports remain runtime imports.  Imports declared under a recognised
+``typing.TYPE_CHECKING`` guard retain that scope when the dependency is used
+only by deferred annotations.  NRA also rewrites guarded imports in repository
+consumers and fails preflight when eager annotation evaluation would make a
+guarded dependency unavailable.
+
 Source and destination modules must use the same annotation evaluation policy
 when moved declarations contain annotations.  Align their
 ``from __future__ import annotations`` usage before applying the move; NRA
