@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cache, cached_property
 import hashlib
-from typing import Any, Callable, ClassVar, Self
+from typing import Any, Callable, ClassVar, Self, TypedDict, Unpack
 
 from .class_composition import CompositeClassSpec
 from .descriptor_algebra import AliasProperty, ConstantProperty
@@ -766,6 +766,76 @@ class FindingSemantics(SemanticRecord):
         return FindingObligationClass.from_semantics(self)
 
 
+class FindingBuildContextKwargs(TypedDict, total=False):
+    """Typed per-finding values that can refine a reusable finding spec."""
+
+    compression_certificate: CompressionCertificate | None
+    metrics: FindingMetrics | None
+    title: str | None
+    why: str | None
+    capability_gap: str | None
+    confidence: ConfidenceLevel | None
+    relation_context: str | None
+    authority_evidence: SourceLocation | None
+    certification: CertificationLevel | None
+    capability_tags: tuple[CapabilityTag, ...] | None
+    observation_tags: tuple[ObservationTag, ...] | None
+
+
+@dataclass(frozen=True)
+class FindingBuildContext:
+    """Nominal owner of per-finding evidence, metrics, and spec refinements."""
+
+    compression_certificate: CompressionCertificate | None = None
+    metrics: FindingMetrics | None = None
+    title: str | None = None
+    why: str | None = None
+    capability_gap: str | None = None
+    confidence: ConfidenceLevel | None = None
+    relation_context: str | None = None
+    authority_evidence: SourceLocation | None = None
+    certification: CertificationLevel | None = None
+    capability_tags: tuple[CapabilityTag, ...] | None = None
+    observation_tags: tuple[ObservationTag, ...] | None = None
+
+    @classmethod
+    def merge(
+        cls,
+        base: "FindingBuildContext | None" = None,
+        **overrides: Unpack[FindingBuildContextKwargs],
+    ) -> "FindingBuildContext":
+        context = cls() if base is None else base
+        return context if not overrides else replace(context, **overrides)
+
+    def finding(
+        self,
+        spec: "FindingSpec",
+        detector_id: str,
+        summary: str,
+        evidence: tuple[SourceLocation, ...],
+        /,
+    ) -> "RefactorFinding":
+        """Apply this context once while constructing a concrete finding."""
+
+        return RefactorFinding(
+            detector_id=detector_id,
+            pattern_id=spec.pattern_id,
+            title=self.title or spec.title,
+            summary=summary,
+            why=self.why or spec.why,
+            capability_gap=self.capability_gap or spec.capability_gap,
+            confidence=self.confidence or spec.confidence,
+            relation_context=self.relation_context or spec.relation_context,
+            evidence=evidence,
+            authority_evidence=self.authority_evidence,
+            compression_certificate=self.compression_certificate,
+            certification=self.certification or spec.certification,
+            capability_tags=self.capability_tags or spec.capability_tags,
+            observation_tags=self.observation_tags or spec.observation_tags,
+            metrics=self.metrics or EmptyFindingMetrics(),
+        )
+
+
 @dataclass(frozen=True, order=True)
 class FindingObligationClass(SemanticRecord):
     """Canonical identity of one unresolved required-relation obligation."""
@@ -881,46 +951,6 @@ class RefactorFinding(FindingSemantics):
         )
         return payload
 
-    @classmethod
-    def from_spec(
-        cls,
-        spec: "FindingSpec",
-        detector_id: str,
-        summary: str,
-        evidence: tuple[SourceLocation, ...],
-        /,
-        *,
-        title: str | None = None,
-        why: str | None = None,
-        capability_gap: str | None = None,
-        confidence: ConfidenceLevel | None = None,
-        relation_context: str | None = None,
-        authority_evidence: SourceLocation | None = None,
-        compression_certificate: CompressionCertificate | None = None,
-        certification: CertificationLevel | None = None,
-        capability_tags: tuple[CapabilityTag, ...] | None = None,
-        observation_tags: tuple[ObservationTag, ...] | None = None,
-        metrics: FindingMetrics | None = None,
-    ) -> "RefactorFinding":
-        return cls(
-            detector_id=detector_id,
-            pattern_id=spec.pattern_id,
-            title=title or spec.title,
-            summary=summary,
-            why=why or spec.why,
-            capability_gap=capability_gap or spec.capability_gap,
-            confidence=confidence or spec.confidence,
-            relation_context=relation_context or spec.relation_context,
-            evidence=evidence,
-            authority_evidence=authority_evidence,
-            compression_certificate=compression_certificate,
-            certification=certification or spec.certification,
-            capability_tags=capability_tags or spec.capability_tags,
-            observation_tags=observation_tags or spec.observation_tags,
-            metrics=metrics or EmptyFindingMetrics(),
-        )
-
-
 @dataclass(frozen=True)
 class FindingSpec(FindingSemantics):
     """Reusable finding template shared by detector implementations."""
@@ -931,34 +961,14 @@ class FindingSpec(FindingSemantics):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        compression_certificate: CompressionCertificate | None = None,
-        metrics: FindingMetrics | None = None,
-        title: str | None = None,
-        why: str | None = None,
-        capability_gap: str | None = None,
-        confidence: ConfidenceLevel | None = None,
-        relation_context: str | None = None,
-        authority_evidence: SourceLocation | None = None,
-        certification: CertificationLevel | None = None,
-        capability_tags: tuple[CapabilityTag, ...] | None = None,
-        observation_tags: tuple[ObservationTag, ...] | None = None,
+        context: FindingBuildContext | None = None,
+        **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
-        return RefactorFinding.from_spec(
+        return FindingBuildContext.merge(context, **overrides).finding(
             self,
             detector_id,
             summary,
             evidence,
-            title=title,
-            why=why,
-            capability_gap=capability_gap,
-            confidence=confidence,
-            relation_context=relation_context,
-            authority_evidence=authority_evidence,
-            compression_certificate=compression_certificate,
-            certification=certification,
-            capability_tags=capability_tags,
-            observation_tags=observation_tags,
-            metrics=metrics,
         )
 
 

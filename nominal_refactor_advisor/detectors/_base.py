@@ -17,7 +17,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Hashable, Iterator, MutableMapping
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from operator import attrgetter
@@ -155,6 +155,8 @@ from ..models import (
     CertifiedFindingSpec,
     DispatchCountMetrics,
     FindingMetrics,
+    FindingBuildContext,
+    FindingBuildContextKwargs,
     FindingSemantics,
     FindingSpec,
     HighConfidenceCertifiedFindingSpec,
@@ -562,22 +564,12 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         detector_id = type(self).effective_detector_id()
         if detector_id is None:
             raise TypeError(f"{type(self).__name__} has no detector_id")
-        context = FindingBuildContext.merge(context, **overrides)
         return type(self).finding_spec.build(
             detector_id,
             summary,
             evidence,
-            compression_certificate=context.compression_certificate,
-            metrics=context.metrics,
-            title=context.title,
-            why=context.why,
-            capability_gap=context.capability_gap,
-            confidence=context.confidence,
-            relation_context=context.relation_context,
-            authority_evidence=context.authority_evidence,
-            certification=context.certification,
-            capability_tags=context.capability_tags,
-            observation_tags=context.observation_tags,
+            context=context,
+            **overrides,
         )
 
     @abstractmethod
@@ -1119,46 +1111,6 @@ def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeVa
 
 ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
-
-
-class FindingBuildContextKwargs(TypedDict, total=False):
-    compression_certificate: CompressionCertificate | None
-    metrics: FindingMetrics | None
-    title: str | None
-    why: str | None
-    capability_gap: str | None
-    confidence: ConfidenceLevel | None
-    relation_context: str | None
-    authority_evidence: SourceLocation | None
-    certification: CertificationLevel | None
-    capability_tags: tuple[CapabilityTag, ...] | None
-    observation_tags: tuple[ObservationTag, ...] | None
-
-
-@dataclass(frozen=True)
-class FindingBuildContext:
-    """Nominal bundle for finding rendering, payoff, and override authority."""
-
-    compression_certificate: CompressionCertificate | None = None
-    metrics: FindingMetrics | None = None
-    title: str | None = None
-    why: str | None = None
-    capability_gap: str | None = None
-    confidence: ConfidenceLevel | None = None
-    relation_context: str | None = None
-    authority_evidence: SourceLocation | None = None
-    certification: CertificationLevel | None = None
-    capability_tags: tuple[CapabilityTag, ...] | None = None
-    observation_tags: tuple[ObservationTag, ...] | None = None
-
-    @classmethod
-    def merge(
-        cls,
-        base: "FindingBuildContext | None" = None,
-        **overrides: Unpack[FindingBuildContextKwargs],
-    ) -> "FindingBuildContext":
-        context = cls() if base is None else base
-        return context if not overrides else replace(context, **overrides)
 
 
 @dataclass(frozen=True)

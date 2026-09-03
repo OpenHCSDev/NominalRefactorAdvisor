@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import gc
+import inspect
 import json
 import os
 import subprocess
@@ -238,6 +239,7 @@ from nominal_refactor_advisor.models import (
     AutoRegisterMetaRentMetrics,
     AutoRegisterMetaRentSignal,
     DispatchCountMetrics,
+    FindingBuildContext,
     FindingSpec,
     HierarchyCandidateMetrics,
     MappingMetrics,
@@ -7510,6 +7512,43 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
     assert finding.compression_certificate == certificate
     assert "Semantic description length: 8 -> 3" in markdown
     assert "certified savings 5" in markdown
+
+
+def test_finding_build_context_remains_nominal_through_spec_construction() -> None:
+    spec = _finding_spec(
+        PatternId.SHARED_ALGORITHM_AUTHORITY,
+        "Default title",
+        "Default reason.",
+        "one nominal build context",
+        "default relation",
+    )
+    context = FindingBuildContext(
+        title="Context title",
+        relation_context="context relation",
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="FindingContext",
+            source_name="FindingSpec",
+            field_names=("title", "relation_context"),
+        ),
+    )
+
+    finding = spec.build(
+        "context_detector",
+        "context remains one value",
+        (SourceLocation("pkg/mod.py", 8, "Detector.finding"),),
+        context=context,
+        relation_context="call relation",
+    )
+
+    assert finding.title == "Context title"
+    assert finding.relation_context == "call relation"
+    assert finding.metrics == context.metrics
+    assert context.relation_context == "context relation"
+    assert not hasattr(RefactorFinding, "from_spec")
+    assert not {field.name for field in fields(FindingBuildContext)} & (
+        inspect.signature(FindingSpec.build).parameters.keys()
+    )
 
 
 def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
