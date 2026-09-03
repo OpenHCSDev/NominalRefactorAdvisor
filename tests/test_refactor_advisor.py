@@ -6711,6 +6711,18 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
         "class Existing"
     )
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import Helper; assert Helper.__module__ == 'pkg.destination'",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
 
 
 def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(

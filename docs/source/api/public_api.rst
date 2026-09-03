@@ -76,6 +76,8 @@ member rosters.
 Module-symbol moves likewise derive canonical source-module re-exports from the
 destination module and moved declarations.  They reject import cycles rather
 than accepting caller-authored import text that can disagree with the move.
+Destination dependency imports precede the declarations that consume them,
+including when the destination is a newly created empty module.
 Module-assignment replacements derive the selected assignment name from their
 single replacement declaration instead of serializing that name twice.
 Function signature and body mutations share one current-source proof of their

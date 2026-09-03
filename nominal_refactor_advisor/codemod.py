@@ -10767,11 +10767,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
             )
         edits: list[NominalSourceEdit] = [
-            self.destination_insertion(context),
-            *(
-                block.deletion_replacement(rationale=self.rationale)
-                for block in self.source_blocks
-            ),
             *(
                 ModuleImportMutation.from_source(
                     file_path=self.destination_path,
@@ -10783,6 +10778,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     ),
                 )
                 for import_source in self.dependency_report.import_sources
+            ),
+            self.destination_insertion(context),
+            *(
+                block.deletion_replacement(rationale=self.rationale)
+                for block in self.source_blocks
             ),
         ]
         edits.extend(
