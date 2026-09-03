@@ -4771,8 +4771,8 @@ class SourceDerivedAuthorityProjectionOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceTargetOperation(RefactorRecipeOperation):
-    """Replace one exact source-index target with caller-declared source."""
+class ReplaceTargetOperation(SourceReprovedOperation):
+    """Replace one exact declaration while preserving its nominal identity."""
 
     replacement_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     contributors: tuple[SourceRewriteContributor, ...] = codemod_payload_field(
@@ -4780,11 +4780,46 @@ class ReplaceTargetOperation(RefactorRecipeOperation):
         default=(),
     )
 
-    def source_edits(
+    @cached_property
+    def replacement_declaration(self) -> _TargetNode:
+        """Parse the one declaration represented by the replacement source."""
+
+        try:
+            replacement_module = ast.parse(
+                textwrap.dedent(self.replacement_source),
+                filename=f"<{self.operation_key()}-replacement>",
+            )
+        except SyntaxError as error:
+            raise ValueError(
+                f"Replacement source is not valid Python: {error}"
+            ) from error
+        if (
+            len(replacement_module.body) != 1
+            or not isinstance(replacement_module.body[0], _TargetNode)
+        ):
+            raise ValueError(
+                "Replacement source must contain exactly one class or function "
+                "declaration"
+            )
+        return replacement_module.body[0]
+
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        _target_identifier, target = self.target_digest(context)
+        _target_identifier, target, target_node = self.target_node_from_context(
+            snapshot
+        )
+        replacement_node = self.replacement_declaration
+        if (
+            type(replacement_node) is not type(target_node)
+            or replacement_node.name != target_node.name
+        ):
+            raise ValueError(
+                "Replacement declaration must preserve target identity "
+                f"{type(target_node).__name__} {target_node.name!r}; got "
+                f"{type(replacement_node).__name__} {replacement_node.name!r}"
+            )
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,

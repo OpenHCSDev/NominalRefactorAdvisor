@@ -80,6 +80,9 @@ Module-assignment replacements derive the selected assignment name from their
 single replacement declaration instead of serializing that name twice.
 Function-signature replacements carry only their parameter and return suffix;
 the targeted declaration supplies its function name and sync or async kind.
+Whole-target replacements parse exactly one class or function declaration and
+re-prove its concrete declaration kind and name against the current indexed
+target before producing a physical edit.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.

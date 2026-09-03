@@ -782,6 +782,71 @@ def test_replace_target_payload_schema_round_trips_contributors() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("replacement_source", "expected_error"),
+    (
+        (
+            "    def renamed(self):\n        return 1\n",
+            "must preserve target identity FunctionDef 'run'; got FunctionDef "
+            "'renamed'",
+        ),
+        (
+            "    async def run(self):\n        return 1\n",
+            "must preserve target identity FunctionDef 'run'; got AsyncFunctionDef "
+            "'run'",
+        ),
+        (
+            "    class run:\n        pass\n",
+            "must preserve target identity FunctionDef 'run'; got ClassDef 'run'",
+        ),
+        (
+            "    def run(self):\n        return 1\n\n    def helper(self):\n"
+            "        return 2\n",
+            "must contain exactly one class or function declaration",
+        ),
+        (
+            "    result = 1\n",
+            "must contain exactly one class or function declaration",
+        ),
+        (
+            "    def run(:\n        return 1\n",
+            "Replacement source is not valid Python",
+        ),
+    ),
+)
+def test_replace_target_reproves_declaration_identity(
+    tmp_path: Path,
+    replacement_source: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n    def run(self):\n        return 0\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ReplaceTargetOperation(
+        target=SourceRewriteTarget(
+            qualname="Alpha.run",
+            file_path=module_path.as_posix(),
+        ),
+        replacement_source=replacement_source,
+    )
+
+    with pytest.raises(CodemodOperationPreflightError, match=expected_error) as error:
+        operation.source_edits(snapshot)
+
+    assert error.value.report.operation == ReplaceTargetOperation.operation_key()
+    assert error.value.report.details == {
+        "target": {
+            "target_id": None,
+            "target_qualname": "Alpha.run",
+            "file_path": module_path.as_posix(),
+        }
+    }
+
+
 def test_codemod_apply_rejects_source_changed_after_simulation(
     tmp_path: Path,
 ) -> None:
