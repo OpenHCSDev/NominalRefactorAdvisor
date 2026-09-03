@@ -47,6 +47,38 @@ class SourceModuleImportGraph:
         )
 
     @cached_property
+    def source_files_by_module_name(
+        self,
+    ) -> dict[str, tuple[SourceFileDigest, ...]]:
+        """Derive every parsed file claiming each canonical module identity."""
+
+        files_by_module_name: dict[str, list[SourceFileDigest]] = {}
+        for source_file in self.source_index.files:
+            files_by_module_name.setdefault(source_file.module_name, []).append(
+                source_file
+            )
+        return {
+            module_name: tuple(source_files)
+            for module_name, source_files in files_by_module_name.items()
+        }
+
+    def unique_source_file_for_module_name(
+        self,
+        module_name: str,
+    ) -> SourceFileDigest | None:
+        """Return the unique parsed owner of a module identity or fail closed."""
+
+        candidates = self.source_files_by_module_name.get(module_name, ())
+        if len(candidates) > 1:
+            raise ValueError(
+                f"Module identity {module_name!r} has multiple source authorities: "
+                f"{tuple(candidate.file_path for candidate in candidates)!r}"
+            )
+        if not candidates:
+            return None
+        return candidates[0]
+
+    @cached_property
     def import_edges_by_module(self) -> dict[str, frozenset[str]]:
         if self.imported_modules_by_module is not None:
             return dict(self.imported_modules_by_module)

@@ -137,6 +137,11 @@ class ModuleImportScope(StrEnum):
             imported_name,
         )
 
+    def is_satisfied_by(self, available_scope: "ModuleImportScope") -> bool:
+        """Return whether an existing import is visible wherever this scope is."""
+
+        return self.is_guarded or not available_scope.is_guarded
+
 
 @dataclass(frozen=True)
 class TypeCheckingGuardReference:

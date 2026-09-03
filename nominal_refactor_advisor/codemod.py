@@ -222,6 +222,12 @@ from .codemod_semantics import (
     _validate_libcst_source as _validate_libcst_source,
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
+from .codemod_import_bindings import (
+    DirectModuleImportBindingIdentity as DirectModuleImportBindingIdentity,
+    FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
+    ModuleImportBinding as ModuleImportBinding,
+    ModuleImportBindingIdentity as ModuleImportBindingIdentity,
+)
 from .codemod_import_scopes import (
     ModuleImportScope as ModuleImportScope,
     TypeCheckingGuardProjection as TypeCheckingGuardProjection,
@@ -8054,28 +8060,42 @@ _AVAILABLE_WITHOUT_IMPORT = frozenset(dir(builtins)) | _PYTHON_RUNTIME_GLOBAL_NA
 
 
 @dataclass(frozen=True)
-class ModuleImportBinding:
-    """One import-bound name with its source and execution scope."""
-
-    name: str
-    source: str
-    scope: ModuleImportScope
-
-
-@dataclass(frozen=True)
 class ModuleMoveImportDependency:
     """One proved import transfer in a multi-symbol module move."""
 
-    name: str
-    source: str
-    scope: ModuleImportScope
+    binding: ModuleImportBinding
+    identity: ModuleImportBindingIdentity
     destination_import_required: bool
     source_removal_required: bool
+
+    @property
+    def name(self) -> str:
+        return self.binding.name
+
+    @property
+    def source(self) -> str:
+        return self.binding.source
+
+    @property
+    def scope(self) -> ModuleImportScope:
+        return self.binding.scope
+
+    def destination_source(
+        self,
+        import_graph: SourceModuleImportGraph,
+        destination_path: str,
+    ) -> str:
+        return self.identity.source_for(
+            import_graph,
+            importing_file_path=destination_path,
+            scope=self.scope,
+        )
 
     def to_dict(self) -> JsonObject:
         return {
             "name": self.name,
             "source": self.source,
+            **self.identity.to_dict(),
             "scope": self.scope.value,
             "destination_import_required": self.destination_import_required,
             "source_removal_required": self.source_removal_required,
@@ -8098,6 +8118,7 @@ class ModuleMoveDependencyReport:
     source_local_dependency_names: tuple[str, ...]
     unresolved_dependency_names: tuple[str, ...]
     ambiguous_import_dependency_names: tuple[str, ...]
+    destination_import_conflict_names: tuple[str, ...]
 
     @property
     def destination_import_dependencies(
@@ -8146,6 +8167,7 @@ class ModuleMoveDependencyReport:
             not self.source_local_dependency_names
             and not self.unresolved_dependency_names
             and not self.ambiguous_import_dependency_names
+            and not self.destination_import_conflict_names
             and self.annotation_evaluation_is_preserved
         )
 
@@ -8184,6 +8206,11 @@ class ModuleMoveDependencyReport:
                 "dependencies with multiple import authorities="
                 f"{self.ambiguous_import_dependency_names!r}"
             )
+        if self.destination_import_conflict_names:
+            parts.append(
+                "destination bindings have different authorities="
+                f"{self.destination_import_conflict_names!r}"
+            )
         if not self.annotation_evaluation_is_preserved:
             parts.append(
                 "annotation evaluation mode changes "
@@ -8219,6 +8246,9 @@ class ModuleMoveDependencyReport:
             "unresolved_dependency_names": self.unresolved_dependency_names,
             "ambiguous_import_dependency_names": (
                 self.ambiguous_import_dependency_names
+            ),
+            "destination_import_conflict_names": (
+                self.destination_import_conflict_names
             ),
             "is_clean": self.is_clean,
         }
@@ -8306,12 +8336,16 @@ class ModuleSymbolTable:
         return tuple(
             ModuleImportBinding(
                 name=name,
-                source=source,
-                scope=scope,
+                request=RequestedImportStatement(
+                    statement,
+                    scope=scope,
+                ).with_aliases((ImportAliasRequirement.from_alias(alias),)),
             )
             for scope in ModuleImportScope
             for statement in scope.import_statements(self.module)
-            for name, source in ImportBoundNameProjection(statement).name_sources()
+            for alias in statement.names
+            for name in (ImportBoundNameProjection(statement).alias_bound_name(alias),)
+            if name
         )
 
     @cached_property
@@ -8331,30 +8365,22 @@ class ModuleSymbolTable:
                 sources[binding.name] = binding.source
         return sources
 
-    def available_names_for_import_scope(
-        self,
-        scope: ModuleImportScope,
-    ) -> frozenset[str]:
-        names = set(self.available_names)
-        if scope.is_guarded:
-            names.update(self.import_bindings_by_name)
-        return frozenset(names)
-
     def import_binding_for_dependency(
         self,
         name: str,
         *,
+        import_graph: SourceModuleImportGraph,
         permits_guarded_import: bool,
-    ) -> ModuleImportBinding | None:
-        candidates = tuple(
-            binding
-            for binding in self.import_bindings_by_name.get(name, ())
-            if permits_guarded_import or not binding.scope.is_guarded
+    ) -> tuple[ModuleImportBinding, ModuleImportBindingIdentity] | None:
+        candidates = self.resolved_import_bindings(
+            name,
+            import_graph=import_graph,
+            permits_guarded_import=permits_guarded_import,
         )
         unique_candidates = tuple(
             {
-                (candidate.source, candidate.scope): candidate
-                for candidate in candidates
+                (identity, binding.scope): (binding, identity)
+                for binding, identity in candidates
             }.values()
         )
         if len(unique_candidates) != 1:
@@ -8365,14 +8391,85 @@ class ModuleSymbolTable:
         self,
         name: str,
         *,
+        import_graph: SourceModuleImportGraph,
         permits_guarded_import: bool,
     ) -> bool:
         candidates = frozenset(
-            (binding.source, binding.scope)
-            for binding in self.import_bindings_by_name.get(name, ())
-            if permits_guarded_import or not binding.scope.is_guarded
+            (identity, binding.scope)
+            for binding, identity in self.resolved_import_bindings(
+                name,
+                import_graph=import_graph,
+                permits_guarded_import=permits_guarded_import,
+            )
         )
         return len(candidates) > 1
+
+    def resolved_import_bindings(
+        self,
+        name: str,
+        *,
+        import_graph: SourceModuleImportGraph,
+        permits_guarded_import: bool = True,
+    ) -> tuple[tuple[ModuleImportBinding, ModuleImportBindingIdentity], ...]:
+        """Resolve every import declaration for one bound name."""
+
+        return tuple(
+            (binding, identity)
+            for binding in self.import_bindings_by_name.get(name, ())
+            if permits_guarded_import or not binding.scope.is_guarded
+            if (identity := binding.identity(import_graph, self.file_path)) is not None
+        )
+
+    def satisfies_import_binding(
+        self,
+        name: str,
+        identity: ModuleImportBindingIdentity,
+        required_scope: ModuleImportScope,
+        *,
+        import_graph: SourceModuleImportGraph,
+    ) -> bool:
+        """Prove that this module already exposes the required authority."""
+
+        if (
+            name in self.top_level_names
+            and identity.is_destination_declaration(
+                import_graph,
+                destination_path=self.file_path,
+                bound_name=name,
+            )
+        ):
+            return True
+        return any(
+            available_identity == identity
+            and required_scope.is_satisfied_by(binding.scope)
+            for binding, available_identity in self.resolved_import_bindings(
+                name,
+                import_graph=import_graph,
+            )
+        )
+
+    def conflicts_with_import_binding(
+        self,
+        name: str,
+        identity: ModuleImportBindingIdentity,
+        *,
+        import_graph: SourceModuleImportGraph,
+    ) -> bool:
+        """Return whether this module already gives the name another meaning."""
+
+        if name in self.top_level_names:
+            return not identity.is_destination_declaration(
+                import_graph,
+                destination_path=self.file_path,
+                bound_name=name,
+            )
+        return any(
+            available_identity != identity
+            for _, available_identity in self.resolved_import_bindings(
+                name,
+                import_graph=import_graph,
+            )
+        )
 
     @cached_property
     def available_names(self) -> frozenset[str]:
@@ -8660,6 +8757,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             for target in targets
         )
         report = cls._dependency_report(
+            context.module_import_graph,
             source_table,
             destination_table,
             targets,
@@ -8797,6 +8895,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     @classmethod
     def _dependency_report(
         cls,
+        import_graph: SourceModuleImportGraph,
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
         targets: tuple[AstTargetDigest, ...],
@@ -8810,10 +8909,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             source_table.module
         )
         external_names = moved_dependencies.names - _AVAILABLE_WITHOUT_IMPORT
-        destination_available = destination_table.available_names | moved_names
-        destination_dependency_names = tuple(
-            sorted(external_names & destination_table.top_level_names)
-        )
         permits_guarded_import_by_name = {
             name: name in moved_dependencies.annotation_only_names
             and not source_annotation_mode.annotations_execute_at_declaration
@@ -8825,17 +8920,19 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 for name in external_names
                 if source_table.import_dependency_is_ambiguous(
                     name,
+                    import_graph=import_graph,
                     permits_guarded_import=permits_guarded_import_by_name[name],
                 )
             )
         )
         source_import_binding_by_name = {
-            name: binding
+            name: binding_and_identity
             for name in external_names
             if name not in ambiguous_import_names
             if (
-                binding := source_table.import_binding_for_dependency(
+                binding_and_identity := source_table.import_binding_for_dependency(
                     name,
+                    import_graph=import_graph,
                     permits_guarded_import=permits_guarded_import_by_name[name],
                 )
             )
@@ -8848,7 +8945,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             sorted(
                 (
                     external_names
-                    - destination_available
+                    - moved_names
                     - resolved_import_names
                     - ambiguous_import_name_set
                 )
@@ -8858,7 +8955,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         unresolved_names = tuple(
             sorted(
                 external_names
-                - destination_available
+                - moved_names
                 - resolved_import_names
                 - ambiguous_import_name_set
                 - source_table.top_level_names
@@ -8870,13 +8967,14 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         import_dependencies = tuple(
             ModuleMoveImportDependency(
-                name=name,
-                source=binding.source,
-                scope=binding.scope,
+                binding=binding,
+                identity=identity,
                 destination_import_required=(
-                    name
-                    not in destination_table.available_names_for_import_scope(
-                        binding.scope
+                    not destination_table.satisfies_import_binding(
+                        name,
+                        identity,
+                        binding.scope,
+                        import_graph=import_graph,
                     )
                 ),
                 source_removal_required=(
@@ -8884,7 +8982,28 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     and name not in source_table.explicit_reexport_bound_names
                 ),
             )
-            for name, binding in sorted(source_import_binding_by_name.items())
+            for name, (binding, identity) in sorted(
+                source_import_binding_by_name.items()
+            )
+        )
+        destination_dependency_names = tuple(
+            dependency.name
+            for dependency in import_dependencies
+            if dependency.identity.is_destination_declaration(
+                import_graph,
+                destination_path=destination_table.file_path,
+                bound_name=dependency.name,
+            )
+            and dependency.name in destination_table.top_level_names
+        )
+        destination_import_conflict_names = tuple(
+            dependency.name
+            for dependency in import_dependencies
+            if destination_table.conflicts_with_import_binding(
+                dependency.name,
+                dependency.identity,
+                import_graph=import_graph,
+            )
         )
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
@@ -8904,6 +9023,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             source_local_dependency_names=source_local_names,
             unresolved_dependency_names=unresolved_names,
             ambiguous_import_dependency_names=ambiguous_import_names,
+            destination_import_conflict_names=(
+                destination_import_conflict_names
+            ),
         )
 
     def source_edits(
@@ -8915,7 +9037,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             *(
                 ModuleImportMutation.from_source(
                     file_path=self.destination_path,
-                    import_source=dependency.source,
+                    import_source=dependency.destination_source(
+                        context.module_import_graph,
+                        self.destination_path,
+                    ),
                     scope=dependency.scope,
                     rationale=self.rationale
                     or (

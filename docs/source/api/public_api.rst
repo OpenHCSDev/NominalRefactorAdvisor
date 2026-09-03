@@ -232,10 +232,14 @@ module; bindings with any remaining static name or string reference are
 retained.  A source-local dependency that is not one unambiguous movable class
 or function leaves the closure unproved and fails preflight.
 ``ModuleMoveDependencyReport.import_dependencies`` is the authoritative import
-transfer record.  Each ``ModuleMoveImportDependency`` carries its bound name,
-source statement, execution scope, destination requirement, and source-removal
-decision.  The flat name and source properties in the report are derived
-presentation views of those rows.
+transfer record.  Each ``ModuleMoveImportDependency`` carries one parsed
+binding, its canonical module identity, its execution scope, its destination
+requirement, and its source-removal decision.  Source spelling is a derived
+presentation and removal surface; destination spelling is rendered from the
+identity at the destination package depth.  A same-named destination binding
+with a different identity is an explicit proof failure.  The flat name and
+source properties in the report remain derived presentation views of those
+rows.
 Repository-local explicit ``from`` imports are redirected to the declaration
 owner while mixed imports retain their unmoved aliases.  Generated imports
 preserve future, absolute, and relative source groups; the source-module
@@ -246,6 +250,9 @@ reexports remain as an external compatibility boundary.
 
 .. automodule:: nominal_refactor_advisor.codemod_import_scopes
    :members: ModuleImportScope, TypeCheckingGuardReference, TypeCheckingGuardProjection
+
+.. automodule:: nominal_refactor_advisor.codemod_import_bindings
+   :members: ModuleImportBinding, ModuleImportBindingIdentity, DirectModuleImportBindingIdentity, FromModuleImportBindingIdentity
 
 .. automodule:: nominal_refactor_advisor.codemod_imports
    :members: TypeCheckingGuardImportInsertionPoint, ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource, ModuleImportInsertionPoint, ImportNameRemoval, ImportBoundNameRemoval, ModuleImportMutation

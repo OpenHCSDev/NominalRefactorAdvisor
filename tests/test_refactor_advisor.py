@@ -21,6 +21,7 @@ import pytest
 import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
+import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
 import nominal_refactor_advisor.codemod_imports as codemod_imports_module
@@ -6985,6 +6986,54 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_renders_relative_dependency_from_destination_identity(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/nested/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "VALUE = object()\n")
+    _write_module(tmp_path, "pkg/nested/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .dependencies import VALUE\n\n\n"
+        "class Helper:\n"
+        "    value = VALUE\n",
+    )
+    _write_module(tmp_path, "pkg/nested/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = RefactorRecipe("move-relative-dependency").with_operation(
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("Helper",),
+            destination_path=destination_path.as_posix(),
+        )
+    ).simulate(snapshot)
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert "from ..dependencies import VALUE" in rewritten_destination
+    assert "from .dependencies import VALUE" not in rewritten_destination
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.dependencies import VALUE; "
+            "from pkg.nested.destination import Helper; "
+            "assert Helper.value is VALUE",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_symbol_move_rewrites_type_checking_consumer_import(tmp_path: Path) -> None:
     source_path = tmp_path / "pkg/source.py"
     destination_path = tmp_path / "pkg/destination.py"
@@ -7487,6 +7536,74 @@ def test_existing_module_move_follows_destination_declaration_dependencies(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_rejects_destination_import_from_different_authority(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/first.py", "class Base:\n    pass\n")
+    _write_module(tmp_path, "pkg/second.py", "class Base:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .first import Base\n\n\nclass Derived(Base):\n    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from .second import Base\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Derived",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.destination_import_conflict_names == ("Base",)
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="destination bindings have different authorities",
+    ):
+        RefactorRecipe("reject-destination-import-collision").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
+def test_symbol_move_rejects_same_named_destination_for_source_local_dependency(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Base:\n    pass\n\n\nclass Derived(Base):\n    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "class Base:\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Derived",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.source_local_dependency_names == ("Base",)
+    with pytest.raises(CodemodOperationPreflightError, match="source-local"):
+        RefactorRecipe("reject-source-local-name-collision").with_operation(
+            operation
+        ).simulate(snapshot)
 
 
 def test_new_module_closure_extraction_rejects_nonmovable_local_dependency(
@@ -23917,6 +24034,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 @pytest.mark.parametrize(
     "declaration_owner",
         (
+            codemod_import_bindings_module,
             codemod_import_graph_module,
             codemod_import_scopes_module,
             codemod_imports_module,

@@ -102,6 +102,13 @@ only by deferred annotations.  NRA also rewrites guarded imports in repository
 consumers and fails preflight when eager annotation evaluation would make a
 guarded dependency unavailable.
 
+Relative imports are resolved to their canonical module identity before a
+declaration moves.  NRA then renders the dependency from the destination, so a
+move into a deeper or shallower package does not silently retarget the import.
+An existing destination binding satisfies the dependency only when its resolved
+authority matches; a same-named local declaration or different import fails
+preflight.
+
 Source and destination modules must use the same annotation evaluation policy
 when moved declarations contain annotations.  Align their
 ``from __future__ import annotations`` usage before applying the move; NRA
