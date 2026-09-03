@@ -230,6 +230,9 @@ reexports remain as an external compatibility boundary.
 .. automodule:: nominal_refactor_advisor.codemod_imports
    :members: ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource
 
+.. automodule:: nominal_refactor_advisor.codemod_import_graph
+   :members: SourceModuleImportGraph
+
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
 
