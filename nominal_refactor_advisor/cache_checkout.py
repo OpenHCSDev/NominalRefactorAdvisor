@@ -48,7 +48,11 @@ def checkout_relative_path(
         lexical_root = lexical_absolute_path(roots[0])
         lexical_path = (
             lexical_root
-            if lexical_root.is_file() and candidate_path == Path(lexical_root.name)
+            if lexical_root.is_file()
+            and (
+                candidate_path == Path(lexical_root.name)
+                or lexical_absolute_path(candidate_path) == lexical_root
+            )
             else lexical_absolute_path(lexical_root / candidate_path)
         )
     else:

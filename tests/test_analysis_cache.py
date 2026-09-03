@@ -1083,6 +1083,27 @@ def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
     assert cache.load(identity).status is AnalysisCacheStatus.MISS
 
 
+def test_checkout_cache_identity_accepts_cwd_relative_file_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg" / "module.py"
+    module_path.parent.mkdir()
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    relative_module_path = Path("pkg/module.py")
+
+    logical_path = checkout_relative_path(
+        relative_module_path,
+        (relative_module_path,),
+    )
+
+    assert logical_path == "0:."
+    assert absolute_checkout_path(logical_path, (relative_module_path,)) == str(
+        module_path
+    )
+
+
 def test_checkout_cache_identity_preserves_in_root_source_symlink(
     tmp_path: Path,
 ) -> None:
