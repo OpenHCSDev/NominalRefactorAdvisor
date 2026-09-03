@@ -57,6 +57,11 @@ def _fixture_source() -> str:
         "    module_name: str\n"
         "    file_path: str\n\n\n"
         "@dataclass(frozen=True)\n"
+        "class ZetaProjection:\n"
+        "    \"\"\"Projection documented without additional behavior.\"\"\"\n\n"
+        "    module_name: str\n"
+        "    file_path: str\n\n\n"
+        "@dataclass(frozen=True)\n"
         "class GammaProjection:\n"
         "    module_name: str\n"
         "    file_path: str\n"
@@ -203,6 +208,11 @@ def test_operation_reproves_field_component_without_serializing_rosters(
     assert "class EpsilonProjection(ProjectionIdentity):\n    pass\n\n\n@dataclass" in (
         rewritten
     )
+    assert (
+        "class ZetaProjection(ProjectionIdentity):\n"
+        '    """Projection documented without additional behavior."""\n\n\n'
+        "@dataclass"
+    ) in rewritten
     assert all(
         f"class {class_name}(ProjectionIdentity):" in rewritten
         for class_name in (
@@ -210,6 +220,7 @@ def test_operation_reproves_field_component_without_serializing_rosters(
             "BetaProjection",
             "DeltaProjection",
             "EpsilonProjection",
+            "ZetaProjection",
             "GammaProjection",
         )
     )

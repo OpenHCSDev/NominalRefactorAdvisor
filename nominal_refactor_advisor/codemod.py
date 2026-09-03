@@ -6206,19 +6206,28 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
             promoted_statement_ids = frozenset(
                 id(statement) for statement in promoted_statements
             )
-            class_would_be_empty = not any(
-                id(statement) not in promoted_statement_ids
+            retained_statements = tuple(
+                statement
                 for statement in class_target.node.body
+                if id(statement) not in promoted_statement_ids
             )
+            class_would_be_empty = not retained_statements
+            class_retains_only_docstring = bool(retained_statements) and not (
+                statements_without_docstring(retained_statements)
+            )
+            source = targets.source_for(class_target.file_path)
             for index, statement in enumerate(promoted_statements):
                 member_statement = self.statement_type(statement)
                 replacements.append(
                     SourceSpanReplacement(
                         file_path=class_target.file_path,
-                        start_line=member_statement.start_line,
-                        end_line=member_statement.deletion_end_line(
-                            targets.source_for(class_target.file_path)
+                        start_line=member_statement.deletion_start_line(
+                            source,
+                            remove_leading_separator=(
+                                class_retains_only_docstring and index == 0
+                            ),
                         ),
+                        end_line=member_statement.deletion_end_line(source),
                         replacement_lines=self.replacement_lines_for_deleted_member(
                             class_would_be_empty,
                             index,
@@ -8541,6 +8550,19 @@ class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
     @property
     def end_line(self) -> int:
         return self.statement.end_lineno or self.statement.lineno
+
+    def deletion_start_line(
+        self,
+        source: str,
+        *,
+        remove_leading_separator: bool,
+    ) -> int:
+        """Return the first source line removed with this member."""
+
+        if not remove_leading_separator or self.start_line <= 1:
+            return self.start_line
+        preceding_line = source.splitlines()[self.start_line - 2]
+        return self.start_line - 1 if not preceding_line.strip() else self.start_line
 
     def deletion_end_line(self, _source: str) -> int:
         """Return the complete source span removed with this member."""
@@ -19167,11 +19189,16 @@ class InferredMappingRecipeSelection:
 
 
 @dataclass(frozen=True)
-class ReturnFieldValue:
-    """One named return-product field and the expression assigned to it."""
+class ProductFieldValue:
+    """One named product field and the expression assigned to it."""
 
     field_name: str
     value_node: ast.expr
+
+
+@dataclass(frozen=True)
+class ReturnFieldValue(ProductFieldValue):
+    """One named return-product field and the expression assigned to it."""
 
 
 @dataclass(frozen=True)
@@ -21449,11 +21476,8 @@ class NominalConstructorCall:
 
 
 @dataclass(frozen=True)
-class DataclassConstructorFieldArgument:
+class DataclassConstructorFieldArgument(ProductFieldValue):
     """One authority field and its value at an external constructor call."""
-
-    field_name: str
-    value_node: ast.expr
 
 
 @dataclass(frozen=True)
