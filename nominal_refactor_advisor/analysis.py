@@ -270,11 +270,16 @@ class DetectorAnalysisWorkerPlan:
 
 
 @dataclass(frozen=True)
-class DetectorAnalysisWorkerState:
-    """Process-local parsed source and config for detector worker tasks."""
+class DetectorWorkerContext:
+    """Immutable parsed source and configuration shared by detector workers."""
 
     modules: tuple[ParsedModule, ...]
     config: DetectorConfig
+
+
+@dataclass(frozen=True)
+class DetectorAnalysisWorkerState(DetectorWorkerContext):
+    """Process-local parsed source and config for detector worker tasks."""
 
     def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
         return detector_type().detect(list(self.modules), self.config)
@@ -323,11 +328,8 @@ def detect_with_active_worker_state(
 
 
 @dataclass(frozen=True)
-class PerModuleDetectorShardWorkerState:
+class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
     """Process-local parsed source for per-module detector shard tasks."""
-
-    modules: tuple[ParsedModule, ...]
-    config: DetectorConfig
 
     def detect_task(
         self,
