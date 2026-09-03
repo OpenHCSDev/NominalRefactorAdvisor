@@ -12461,6 +12461,74 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     assert "will not overwrite or shadow from_source" in plan.records[0].reason
 
 
+def test_repeated_builder_rejects_existing_consumer_family_authority(
+    tmp_path: Path,
+) -> None:
+    source = """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    reason: str
+    declaration_type: type
+    retryable: bool
+
+
+class Synthesizer:
+    def rejected(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+
+
+class Alpha(Synthesizer):
+    def evaluate(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+
+
+class Beta(Synthesizer):
+    def evaluate(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+
+
+class Gamma(Synthesizer):
+    def evaluate(self, reason):
+        return Evaluation(
+            reason=reason,
+            declaration_type=type(self),
+            retryable=False,
+        )
+"""
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert "pkg.mod.Synthesizer.rejected" in plan.records[0].reason
+
+
 @pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))
 def test_repeated_builder_rejects_unproved_source_projection_type(
     tmp_path: Path,

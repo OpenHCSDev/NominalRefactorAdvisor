@@ -13898,6 +13898,118 @@ class RepeatedBuilderCallSite:
                 return parameter
         return None
 
+    def owner_class_symbol(self, context: CodemodSelectorContext) -> str | None:
+        """Return the nominal class that owns this participant method."""
+
+        if self.participant.target.node_kind is not AstTargetNodeKind.METHOD:
+            return None
+        if self.participant.owner_qualname is None:
+            return None
+        return context.required_class_family_index.symbol_for(
+            file_path=self.participant.source_path,
+            qualname=self.participant.owner_qualname,
+        )
+
+
+@dataclass(frozen=True)
+class ConsumerFamilyBuilderAuthorityCandidate:
+    """Existing shared-family method that constructs the observed record schema."""
+
+    declaration: IndexedClass
+    method: ast.FunctionDef
+    constructor: "NominalConstructorCall"
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.declaration.symbol}.{self.method.name}"
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority: "DataclassPayloadAuthorityTarget",
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+    ) -> tuple[Self, ...]:
+        """Find methods inherited by every participant without choosing among them."""
+
+        class_index = context.required_class_family_index
+        owner_symbols = tuple(
+            call_site.owner_class_symbol(context) for call_site in call_sites
+        )
+        if not owner_symbols or any(symbol is None for symbol in owner_symbols):
+            return ()
+        nominal_families = tuple(
+            frozenset((symbol, *class_index.ancestor_symbols(symbol)))
+            for symbol in owner_symbols
+            if symbol is not None
+        )
+        shared_symbols = frozenset.intersection(*nominal_families)
+        participant_nodes = frozenset(
+            call_site.participant.node for call_site in call_sites
+        )
+        authority_symbol = authority.class_symbol(context)
+        if authority_symbol is None:
+            return ()
+        return tuple(
+            candidate
+            for symbol in sorted(shared_symbols)
+            for declaration in (class_index.class_for(symbol),)
+            if declaration is not None
+            for method in declaration.node.body
+            if isinstance(method, ast.FunctionDef)
+            and (
+                method not in participant_nodes
+                or any(owner_symbol != symbol for owner_symbol in owner_symbols)
+            )
+            for candidate in (
+                cls.from_method(
+                    context,
+                    declaration,
+                    method,
+                    authority_symbol,
+                    authority.field_names,
+                ),
+            )
+            if candidate is not None
+        )
+
+    @classmethod
+    def from_method(
+        cls,
+        context: CodemodSelectorContext,
+        declaration: IndexedClass,
+        method: ast.FunctionDef,
+        authority_symbol: str,
+        field_names: tuple[str, ...],
+    ) -> Self | None:
+        body = statements_without_docstring(method.body)
+        if (
+            len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or not isinstance(body[0].value, ast.Call)
+        ):
+            return None
+        constructor = NominalConstructorCall.from_context(
+            context,
+            declaration.file_path,
+            method,
+            body[0].value,
+        )
+        if (
+            constructor is None
+            or constructor.constructor_symbol != authority_symbol
+            or not RepeatedBuilderAuthorityDerivation.constructor_call_matches(
+                constructor.call_node,
+                field_names,
+            )
+        ):
+            return None
+        return cls(
+            declaration=declaration,
+            method=method,
+            constructor=constructor,
+        )
+
 
 @dataclass(frozen=True)
 class RepeatedBuilderSourceProjectionTemplate:
@@ -14752,6 +14864,20 @@ class RepeatedBuilderAuthorityDerivation(RepeatedBuilderAuthorityMethodDeriver):
             authority_reference,
         )
         authority.require_complete_owned_schema(context)
+        call_sites = cls.peer_call_sites(context, authority)
+        consumer_authorities = ConsumerFamilyBuilderAuthorityCandidate.from_context(
+            context,
+            authority,
+            call_sites,
+        )
+        if consumer_authorities:
+            raise ValueError(
+                "Repeated-builder generation found existing consumer-family "
+                "constructor authority: "
+                + ", ".join(
+                    candidate.symbol for candidate in consumer_authorities
+                )
+            )
         derivations = cls.proven_derivations(context, authority)
         if not derivations:
             raise ValueError(
@@ -16641,6 +16767,15 @@ class FunctionProjectionTarget:
     source_path: str
     function_qualname: str
 
+    @property
+    def owner_qualname(self) -> str | None:
+        """Return the enclosing nominal declaration, when this is a method."""
+
+        owner_qualname, separator, _member_name = self.function_qualname.rpartition(
+            "."
+        )
+        return owner_qualname if separator else None
+
 
 @dataclass(frozen=True)
 class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
@@ -17496,11 +17631,11 @@ class DataclassInstanceFieldProjection:
         projection: ReturnCollectionProjectionTarget,
     ) -> bool:
         enclosing_class = cls.enclosing_class_node(context, projection)
-        if enclosing_class is None:
+        if enclosing_class is None or projection.owner_qualname is None:
             return False
         class_symbol = context.required_class_family_index.symbol_for(
             file_path=projection.source_path,
-            qualname=projection.function_qualname.rpartition(".")[0],
+            qualname=projection.owner_qualname,
         )
         return class_symbol is not None and class_symbol == authority.class_symbol(
             context
@@ -17511,15 +17646,12 @@ class DataclassInstanceFieldProjection:
         context: CodemodSelectorContext,
         projection: ReturnCollectionProjectionTarget,
     ) -> ast.ClassDef | None:
-        class_qualname, separator, _method_name = (
-            projection.function_qualname.rpartition(".")
-        )
-        if not separator:
+        if projection.owner_qualname is None:
             return None
         target_ids = SourceIndexTargetSelector(
             node_kinds=(AstTargetNodeKind.CLASS,),
             file_paths=(projection.source_path,),
-            qualnames=(class_qualname,),
+            qualnames=(projection.owner_qualname,),
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
