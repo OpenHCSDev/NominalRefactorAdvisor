@@ -121,7 +121,8 @@ authority.  ``CollapseClosedParameterConveyorOperation`` serialises only that
 authority's source target.  Execution re-derives the product and call families
 from the current source snapshot, requires the component proof again, and then
 rewrites all participating signatures, field loads, and calls as one operation.
-``CollapseDeclaredCarrierExpansionOperation`` applies the same atomic rewrite
+The ``declared_carrier_expansion`` detector exposes
+``CollapseDeclaredCarrierExpansionOperation`` through the same atomic rewrite
 contract when a value already proved to have the carrier's declared return type
 is expanded into its fields at a call boundary.  It follows the complete
 downstream forwarding graph, re-proves every participating callable and product

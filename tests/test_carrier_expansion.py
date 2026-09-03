@@ -13,10 +13,16 @@ from nominal_refactor_advisor.carrier_expansion import (
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     CollapseDeclaredCarrierExpansionOperation,
+    FindingRecipeSynthesisStatus,
     RefactorRecipe,
     RefactorRecipeOperation,
     SourceRewriteTarget,
+    codemod_plan_from_findings,
 )
+from nominal_refactor_advisor.detectors import DeclaredCarrierExpansionDetector
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
 
 
 def _module(module_name: str, source: str) -> ParsedModule:
@@ -27,6 +33,31 @@ def _module(module_name: str, source: str) -> ParsedModule:
         is_package_init=False,
         module=ast.parse(source, filename=str(path)),
         source=source,
+    )
+
+
+def _closed_expansion_source() -> str:
+    return (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _Context:\n"
+        "    first: object\n"
+        "    second: object\n"
+        "\n"
+        "    @classmethod\n"
+        "    def merge(cls, base) -> '_Context':\n"
+        "        return base\n"
+        "\n"
+        "def _leaf(first, second):\n"
+        "    return first, second\n"
+        "\n"
+        "def _middle(left, right):\n"
+        "    return _leaf(left, right)\n"
+        "\n"
+        "def caller(base):\n"
+        "    context = _Context.merge(base)\n"
+        "    return _middle(context.first, context.second)\n"
     )
 
 
@@ -293,29 +324,7 @@ def test_builder_rejects_mutated_projected_parameters() -> None:
 
 
 def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> None:
-    module = _module(
-        "pkg.rewrite",
-        "from dataclasses import dataclass\n"
-        "\n"
-        "@dataclass(frozen=True)\n"
-        "class _Context:\n"
-        "    first: object\n"
-        "    second: object\n"
-        "\n"
-        "    @classmethod\n"
-        "    def merge(cls, base) -> '_Context':\n"
-        "        return base\n"
-        "\n"
-        "def _leaf(first, second):\n"
-        "    return first, second\n"
-        "\n"
-        "def _middle(left, right):\n"
-        "    return _leaf(left, right)\n"
-        "\n"
-        "def caller(base):\n"
-        "    context = _Context.merge(base)\n"
-        "    return _middle(context.first, context.second)\n",
-    )
+    module = _module("pkg.rewrite", _closed_expansion_source())
     snapshot = CodemodSourceSnapshot.from_modules((module,), ())
     authority_target = next(
         target
@@ -361,6 +370,43 @@ def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> 
     assert original_namespace["caller"](original_context) == rewritten_namespace[
         "caller"
     ](rewritten_context)
+
+
+def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
+    module = _module("pkg.detected", _closed_expansion_source())
+
+    findings = DeclaredCarrierExpansionDetector().detect(
+        [module],
+        DetectorConfig(),
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.detector_id == "declared_carrier_expansion"
+    assert finding.pattern_id is PatternId.AUTHORITATIVE_CONTEXT
+    assert finding.certification == "certified"
+    assert finding.authority_evidence == SourceLocation(
+        "pkg/detected.py",
+        4,
+        "pkg.detected._Context",
+    )
+    assert finding.metrics == ParameterThreadMetrics(
+        function_count=2,
+        shared_parameter_count=2,
+        shared_parameter_names=("first", "second"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+
+    assert len(plan.records) == 1
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    operation = plan.document.recipes[0].operations[0]
+    assert isinstance(operation, CollapseDeclaredCarrierExpansionOperation)
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    rewritten_source = simulation.simulation.rewritten_sources[module.file_path]
+    assert "def _middle(*, context: '_Context'):" in rewritten_source
+    assert "return _middle(context=context)" in rewritten_source
 
 
 def test_declared_carrier_operation_imports_cross_module_authority() -> None:

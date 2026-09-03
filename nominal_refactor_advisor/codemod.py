@@ -15446,11 +15446,20 @@ class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
         return self.rejected_evaluation(metrics.recipe_rejection_reason())
 
 
-class ClosedParameterConveyorFindingRecipeSynthesizer(
+class CarrierCollapseFindingRecipeSynthesizer(
     FindingRecipeSynthesizer,
     SemanticCarrierConcept,
+    ABC,
 ):
-    """Collapse a currently re-proven conveyor into its existing authority."""
+    """Collapse a currently re-proven flat component into its carrier."""
+
+    @classmethod
+    @abstractmethod
+    def carrier_collapse_operation(
+        cls,
+        target: SourceRewriteTarget,
+    ) -> CarrierCollapseOperationABC:
+        raise NotImplementedError
 
     def evaluate_recipe_for_finding(
         self,
@@ -15459,12 +15468,12 @@ class ClosedParameterConveyorFindingRecipeSynthesizer(
     ) -> FindingRecipeEvaluation:
         if context is None:
             return self.rejected_evaluation(
-                "parameter-conveyor collapse requires source context"
+                "carrier collapse requires source context"
             )
         authority_location = finding.authority_evidence
         if authority_location is None:
             return self.rejected_evaluation(
-                "parameter-conveyor finding lacks authority evidence"
+                "carrier-collapse finding lacks authority evidence"
             )
         try:
             authority_target = context.required_class_target_for_authority_evidence(
@@ -15472,12 +15481,12 @@ class ClosedParameterConveyorFindingRecipeSynthesizer(
             )
         except ValueError as error:
             return self.rejected_evaluation(str(error))
-        operation = CollapseClosedParameterConveyorOperation(
-            target=SourceRewriteTarget(target_id=authority_target.target_id),
+        operation = type(self).carrier_collapse_operation(
+            SourceRewriteTarget(target_id=authority_target.target_id)
         )
         recipe = (
             RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-collapse-parameter-conveyor",
+                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     "Replace the complete flat parameter component with its "
                     "existing nominal carrier."

@@ -326,6 +326,12 @@ class CompactProductFlowRepository:
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
 
+    @classmethod
+    def require(cls, context: object | None) -> Self:
+        if not isinstance(context, cls):
+            raise TypeError("compact product-flow repository is unavailable")
+        return context
+
     @cached_property
     def class_index(self) -> CompactClassFamilyIndex:
         return build_compact_class_family_index(self.class_projections)

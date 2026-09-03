@@ -84,6 +84,8 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     detectors.AutoRegisterExplicitPriorityOrderingDetector: (
         codemod.AutoRegisterMroOrderingConcept
     ),
+    detectors.ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
+    detectors.DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
     codemod.AutoregisterInstanceViewRecipeBuilder: (
         codemod.AutoRegisterClassRegistryConcept
@@ -130,6 +132,14 @@ def test_detector_declarations_own_executable_synthesis_through_mro() -> None:
         (
             detectors.AutoRegisterMetaUnderRentedDetector,
             codemod.AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
+        ),
+        (
+            detectors.ClosedParameterConveyorDetector,
+            detectors.ClosedParameterConveyorDetector,
+        ),
+        (
+            detectors.DeclaredCarrierExpansionDetector,
+            detectors.DeclaredCarrierExpansionDetector,
         ),
         (
             detectors.EnvironmentBooleanAuthorityDriftDetector,
@@ -191,9 +201,10 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
     (
         (
             codemod.NominalBoundaryConcept,
-            frozenset(
-                {
-                    codemod.ConstructorKwargCollapseConcept,
+                frozenset(
+                    {
+                        codemod.SemanticCarrierConcept,
+                        codemod.ConstructorKwargCollapseConcept,
                     codemod.ConstructorKwargCarrierProjectionConcept,
                     codemod.DataclassPayloadProjectionConcept,
                     codemod.DerivedProjectionConcept,
@@ -203,10 +214,21 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.AutoRegisterStrategyFamilyConcept,
                     codemod.AutoRegisterMroOrderingConcept,
                 }
+                ),
             ),
-        ),
-        (
-            codemod.ConstructorKwargCollapseConcept,
+            (
+                codemod.SemanticCarrierConcept,
+                frozenset(
+                    {
+                        codemod.SemanticCarrierConcept,
+                        codemod.ConstructorKwargCollapseConcept,
+                        codemod.ConstructorKwargCarrierProjectionConcept,
+                        codemod.DataclassPayloadProjectionConcept,
+                    }
+                ),
+            ),
+            (
+                codemod.ConstructorKwargCollapseConcept,
             frozenset(
                 {
                     codemod.ConstructorKwargCollapseConcept,
