@@ -270,6 +270,28 @@ def test_import_mutation_orders_forms_by_nominal_ast_declaration(
     )
 
 
+def test_import_mutation_renders_bare_imports_as_independent_statements(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(tmp_path, "VALUE = 1\n")
+    mutations = tuple(
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source=f"import {module_name}\n",
+        )
+        for module_name in ("tokenize", "ast", "io")
+    )
+
+    mutation = NominalSourceEdit.coalesced_by_declaration(mutations, context)[0]
+    physical = mutation.resolved_edits(context)
+
+    assert "".join(physical[0].inserted_lines).startswith(
+        "import ast\n"
+        "import io\n"
+        "import tokenize\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "expected_separator"),
     (

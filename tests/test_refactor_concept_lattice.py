@@ -466,10 +466,10 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
     for operation_type in (
         codemod.MoveSymbolsToModuleOperation,
         codemod.ExtractSymbolsToNewModuleOperation,
+        codemod.ExtractSymbolClosureToNewModuleOperation,
     ):
         assert issubclass(operation_type, codemod.ModuleSymbolMoveOperation)
         assert issubclass(operation_type, codemod.RepositorySourceReprovedOperation)
-        assert "source_edits_from_snapshot" in operation_type.__dict__
         assert (
             codemod.RefactorRecipeOperation.__registry__[
                 operation_type.operation_key()
@@ -490,9 +490,39 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "symbol_qualnames",
         "destination_source",
     )
+    assert tuple(
+        binding.field_name
+        for binding in codemod.ExtractSymbolClosureToNewModuleOperation.payload_bindings()
+    ) == (
+        "target",
+        "rationale",
+        "destination_path",
+        "root_symbol_qualnames",
+        "destination_source",
+    )
+    assert (
+        "source_edits_from_snapshot"
+        in codemod.MoveSymbolsToModuleOperation.__dict__
+    )
+    assert (
+        "source_edits_from_snapshot"
+        in codemod.NewModuleSymbolMoveOperationABC.__dict__
+    )
+    assert (
+        "move_symbol_qualnames"
+        in codemod.ExplicitModuleSymbolSelectionOperationABC.__dict__
+    )
+    assert (
+        "move_symbol_qualnames"
+        in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
+    )
     assert "move_plan" in codemod.ModuleSymbolMoveOperation.__dict__
     assert "move_plan" not in codemod.MoveSymbolsToModuleOperation.__dict__
     assert "move_plan" not in codemod.ExtractSymbolsToNewModuleOperation.__dict__
+    assert (
+        "move_plan"
+        not in codemod.ExtractSymbolClosureToNewModuleOperation.__dict__
+    )
     assert not hasattr(codemod, "MovedSymbolImportPolicy")
     assert not hasattr(codemod, "ReplacementImportPayloadValueCodec")
 

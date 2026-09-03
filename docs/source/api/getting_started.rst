@@ -70,6 +70,32 @@ Some findings intentionally have no recipe.  Repeated source proves that one
 maintenance object exists, but it does not necessarily prove where that object
 belongs.  NRA keeps such findings as evidence instead of inventing an authority.
 
+To extract a declaration and its movable source-local dependency closure into a
+new module, provide only the semantic roots:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/python/package \
+     --codemod-plan - --codemod-simulate <<'JSON'
+   {
+     "recipes": [{
+       "recipe_id": "extract-source-edit-algebra",
+       "operations": [{
+         "operation": "extract_symbol_closure_to_new_module",
+         "file_path": "package/monolith.py",
+         "root_symbol_qualnames": ["NominalSourceEdit"],
+         "destination_path": "package/source_edits.py"
+       }]
+     }]
+   }
+   JSON
+
+Review the simulated diff, then replace ``--codemod-simulate`` with
+``--codemod-apply``.  NRA derives transitive movable declarations, imports,
+source re-exports, repository-local consumer imports, and the new-file revision
+contract.  A non-movable or unresolved dependency fails preflight without
+writing either module.
+
 To prove a goal across reachable source states, run:
 
 .. code-block:: bash

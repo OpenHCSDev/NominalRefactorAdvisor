@@ -176,6 +176,7 @@ from nominal_refactor_advisor.codemod import (
     DeriveCandidateCollectorOperation,
     DescendTypeKeyedBehaviorProjectionOperation,
     ExtractAuthorityOperation,
+    ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation,
     FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
@@ -6818,6 +6819,115 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_new_module_closure_extraction_derives_transitive_local_dependencies(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Base:\n"
+        "    pass\n\n\n"
+        "class Helper(Base):\n"
+        "    pass\n\n\n"
+        "class Root:\n"
+        "    def build(self) -> Helper:\n"
+        "        return Helper()\n\n\n"
+        "class Unrelated:\n"
+        "    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .source import Root, Unrelated\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Root",),
+        destination_path=destination_path.as_posix(),
+        destination_source="from __future__ import annotations\n",
+    )
+
+    restored_operation = RefactorRecipeOperation.from_dict(operation.to_dict())
+    moved_symbol_qualnames = operation.move_symbol_qualnames(
+        snapshot,
+        source_path.as_posix(),
+    )
+    simulation = RefactorRecipe("derive-symbol-closure").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert restored_operation == operation
+    assert operation.to_dict()["root_symbol_qualnames"] == ("Root",)
+    assert moved_symbol_qualnames == ("Base", "Helper", "Root")
+    assert "class Unrelated" in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
+    assert "class Root" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    assert simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ].startswith(
+        "from .source import Unrelated\n"
+        "from .extracted import Root\n"
+    )
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumer import Root, Unrelated; Root().build(); Unrelated()",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_new_module_closure_extraction_rejects_nonmovable_local_dependency(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "VALUE = 1\n\n\n"
+        "def read_value():\n"
+        "    return VALUE\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("read_value",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("reject-nonmovable-dependency").with_operation(
+                operation
+            ),
+        )
+    )
+
+    assert operation.move_symbol_qualnames(
+        snapshot,
+        source_path.as_posix(),
+    ) == ("read_value",)
+    with pytest.raises(CodemodOperationPreflightError) as error:
+        document.simulate(snapshot)
+    assert error.value.report.operation == "extract_symbol_closure_to_new_module"
+    assert error.value.report.details["source_local_dependency_names"] == ("VALUE",)
 
 
 def test_new_module_extraction_reports_its_leaf_creation_conflict(

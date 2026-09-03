@@ -120,10 +120,10 @@ class RequestedImportStatement:
     @property
     def source(self) -> str:
         if isinstance(self.statement, ast.Import):
-            aliases = ", ".join(
-                ImportFromSource.alias_source(alias) for alias in self.statement.names
+            return "".join(
+                f"import {ImportFromSource.alias_source(alias)}\n"
+                for alias in self.statement.names
             )
-            return f"import {aliases}\n"
         return ImportFromSource(
             module_name=ImportFromModuleName.from_node(self.statement).source,
             aliases=tuple(self.statement.names),
