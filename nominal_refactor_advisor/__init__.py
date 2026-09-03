@@ -19,12 +19,9 @@ from .codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardViolation,
-    ArchitectureGuardViolationKind,
     AstTargetNodeIndex,
-    CancelableCompositionKind,
     CancelableCompositionSignal,
     CarrierFieldProjection,
-    CodemodBackend,
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
@@ -37,11 +34,9 @@ from .codemod import (
     FactorExactDataclassFieldAuthorityOperation,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
-    FindingRecipePlanningHorizon,
     FindingRecipeProofObstacle,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisReport,
-    FindingRecipeSynthesisStatus,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
@@ -65,6 +60,13 @@ from .codemod import (
     evaluate_architecture_guards,
     format_codemod_unified_diff,
     simulate_planned_rewrites,
+)
+from .codemod_semantics import (
+    ArchitectureGuardViolationKind,
+    CancelableCompositionKind,
+    CodemodBackend,
+    FindingRecipePlanningHorizon,
+    FindingRecipeSynthesisStatus,
 )
 from .codemod_workflow import (
     CodemodClassPlanProjectedDelta,

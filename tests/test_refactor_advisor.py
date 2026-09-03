@@ -6213,7 +6213,9 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
 
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    assert "+from abc import ABC, abstractmethod" in diff
+    assert "+from abc import (" in diff
+    assert "+    ABC," in diff
+    assert "+    abstractmethod," in diff
     assert "+class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in diff
     assert (
         '+    __registry__: ClassVar[dict[object, type["RenderDispatchCase"]]] = {}'
@@ -6246,7 +6248,10 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
     assert (
-        "from abc import ABC, abstractmethod\n"
+        "from abc import (\n"
+        "    ABC,\n"
+        "    abstractmethod,\n"
+        ")\n"
         "from metaclass_registry import AutoRegisterMeta\n"
         "from typing import ClassVar\n\n\n"
         "def traced(function):"
@@ -6612,7 +6617,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
         )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
-    assert "+from .destination import Helper" in diff
+    assert "+from .destination import Helper as Helper" in diff
     assert "-class Helper:" in diff
     assert "+class Helper:" in diff
     assert set(simulation.apply()) == {
@@ -6622,7 +6627,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from .destination import Helper" in rewritten_source
+    assert "from .destination import Helper as Helper" in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "@dataclass\nclass Helper" in rewritten_destination
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
@@ -6697,7 +6702,9 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from pkg.destination import Helper, LocalBase" in rewritten_source
+    assert "from pkg.destination import (" in rewritten_source
+    assert "    Helper as Helper," in rewritten_source
+    assert "    LocalBase as LocalBase," in rewritten_source
     assert "class LocalBase" not in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "from dataclasses import dataclass" in rewritten_destination
@@ -14781,7 +14788,9 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert payload["parse_validation"]["parse_valid"] is True
     assert "pkg/source.py" in payload["unified_diff"]
     assert "pkg/destination.py" in payload["unified_diff"]
-    assert "from pkg.destination import Helper, LocalBase" in payload["unified_diff"]
+    assert "+from pkg.destination import (" in payload["unified_diff"]
+    assert "+    Helper as Helper," in payload["unified_diff"]
+    assert "+    LocalBase as LocalBase," in payload["unified_diff"]
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
     assert "+class Helper(LocalBase):" in payload["unified_diff"]
     assert "class Helper" in source_path.read_text()
@@ -14959,7 +14968,10 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
 
     assert apply_result.returncode == 0, apply_result.stderr
     assert "Codemod apply complete" in apply_result.stdout
-    assert "from pkg.destination import Helper, LocalBase" in source_path.read_text()
+    rewritten_source = source_path.read_text()
+    assert "from pkg.destination import (" in rewritten_source
+    assert "    Helper as Helper," in rewritten_source
+    assert "    LocalBase as LocalBase," in rewritten_source
     assert "class Helper" not in source_path.read_text()
     assert "@dataclass\nclass Helper(LocalBase):" in destination_path.read_text()
 
@@ -22961,6 +22973,35 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "manual_public_api_surface" for finding in findings
+    )
+
+
+def test_codemod_facade_reexports_declaration_owned_semantic_axes() -> None:
+    import nominal_refactor_advisor as public_api
+    import nominal_refactor_advisor.codemod as codemod_facade
+    import nominal_refactor_advisor.codemod_semantics as semantic_owner
+
+    public_names = (
+        "ArchitectureGuardViolationKind",
+        "CancelableCompositionKind",
+        "CodemodBackend",
+        "FindingRecipePlanningHorizon",
+        "FindingRecipeSynthesisStatus",
+    )
+    owner_declarations = {
+        name: value
+        for name, value in vars(semantic_owner).items()
+        if isinstance(value, type) and value.__module__ == semantic_owner.__name__
+    }
+
+    assert all(
+        getattr(public_api, name) is getattr(semantic_owner, name)
+        for name in public_names
+    )
+    assert owner_declarations
+    assert all(
+        getattr(codemod_facade, name) is declaration
+        for name, declaration in owner_declarations.items()
     )
 
 

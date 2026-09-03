@@ -31,6 +31,10 @@ Codemod Candidate Surface
 The codemod surface models source-anchored candidate rewrites and simulations.
 A clean current-snapshot simulation is not an application recommendation;
 export and application require a proof across reachable refactor trajectories.
+Closed execution axes are declared in ``codemod_semantics``.  Their enum
+members own validation, composition, ranking, and presentation behavior, while
+``codemod`` explicitly re-exports the same objects as its public facade.  The
+facade is an import surface, not a second semantic authority.
 Its cancelable-composition signal is generic: it treats pack, unpack, and
 field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
@@ -200,8 +204,11 @@ Constructor rewrites resolve that target's nominal class identity from the
 current source.  Attribute projections resolve stable nominal parameter types.
 Neither constructor nor attribute-owner spellings are persisted in the plan.
 
+.. automodule:: nominal_refactor_advisor.codemod_semantics
+   :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, ArchitectureGuardViolationKind, CodemodPreflightStatus
+
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
    :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof
