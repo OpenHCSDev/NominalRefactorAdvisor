@@ -8,6 +8,7 @@ from functools import cached_property
 from typing import TypeAlias
 
 from .ast_tools import (
+    EagerNameLoadCollector,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
@@ -662,61 +663,6 @@ class AutoRegisterInstanceViewComponent:
             raise ValueError(
                 f"Instance view omits registered descendants {unsafe_descendants!r}"
             )
-
-
-class EagerNameLoadCollector(ast.NodeVisitor):
-    """Collect module-executed name loads without descending into call bodies."""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.loads: list[ast.Name] = []
-
-    @classmethod
-    def collect(cls, module: ast.Module, name: str) -> tuple[ast.Name, ...]:
-        collector = cls(name)
-        collector.visit(module)
-        return tuple(collector.loads)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if node.id == self.name and isinstance(node.ctx, ast.Load):
-            self.loads.append(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.visit_function_header(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_function_header(node)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self.visit_arguments(node.args)
-
-    def visit_function_header(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        self.visit_arguments(node.args)
-        if node.returns is not None:
-            self.visit(node.returns)
-        for type_parameter in getattr(node, "type_params", ()):
-            self.visit(type_parameter)
-
-    def visit_arguments(self, arguments: ast.arguments) -> None:
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        ):
-            if argument.annotation is not None:
-                self.visit(argument.annotation)
-        if arguments.vararg is not None and arguments.vararg.annotation is not None:
-            self.visit(arguments.vararg.annotation)
-        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
-            self.visit(arguments.kwarg.annotation)
-        for default in (*arguments.defaults, *arguments.kw_defaults):
-            if default is not None:
-                self.visit(default)
 
 
 def _terminal_name(node: ast.AST) -> str | None:

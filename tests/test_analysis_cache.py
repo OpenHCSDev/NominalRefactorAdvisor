@@ -114,6 +114,8 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheIdentity,
     SemanticDescentImplementationSignature,
+    SemanticDescentModuleFamilySignature,
+    SemanticDescentModuleSignature,
     build_semantic_descent_graph,
     build_compact_semantic_descent_graph,
 )
@@ -640,6 +642,21 @@ def test_semantic_graph_cache_treats_truncated_payload_as_miss(
     cache._entry_path(identity).write_bytes(b"\x80\x05")
 
     assert cache.load(identity).graph is None
+
+
+def test_semantic_module_signature_projects_its_content_independent_family() -> None:
+    signature = SemanticDescentModuleSignature(
+        path="package/module.py",
+        parsed_import_name="package.module",
+        is_package_init=False,
+        source_hash="content-hash",
+    )
+
+    assert signature.family_signature == SemanticDescentModuleFamilySignature(
+        path="package/module.py",
+        parsed_import_name="package.module",
+        is_package_init=False,
+    )
 
 
 def test_semantic_graph_cache_interrupted_store_preserves_published_entry(

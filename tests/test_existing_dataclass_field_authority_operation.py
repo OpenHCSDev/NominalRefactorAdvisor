@@ -234,3 +234,29 @@ def test_operation_rejects_a_name_observed_before_relocation(
         RefactorRecipe(recipe_id="observed-relocation").with_operation(
             _operation(module_path)
         ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
+
+def test_operation_allows_a_deferred_name_reference_before_relocation(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_fixture(
+        tmp_path,
+        source=_fixture_source(
+            intervening_source=(
+                "def build_identity() -> ProjectionIdentity:\n"
+                "    return ProjectionIdentity('pkg', 'built.py')\n\n\n"
+            )
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+
+    simulation = RefactorRecipe(recipe_id="deferred-relocation").with_operation(
+        _operation(module_path)
+    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert simulation.is_clean is True
+    assert rewritten.index("class ProjectionIdentity:") < rewritten.index(
+        "class AlphaProjection(ProjectionIdentity):"
+    )
+    assert "return ProjectionIdentity('pkg', 'built.py')" in rewritten

@@ -47,11 +47,13 @@ from .assignment_projection import (
 )
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
+    EagerNameLoadCollector,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
     AstParentIndex,
     BuiltinCallName,
     ImportBoundNameProjection,
+    ModuleAnnotationEvaluationMode,
     ParsedModule,
     PythonModulePathAuthority,
     SourceModule,
@@ -6698,12 +6700,10 @@ class ExistingDataclassFieldAuthorityTargets:
             if self.participants.insertion_line <= statement.lineno
             < self.authority_span.start_line
         )
-        if any(
-            isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and node.id == self.authority_name
-            for statement in intervening_statements
-            for node in ast.walk(statement)
+        if EagerNameLoadCollector.collect(
+            module,
+            self.authority_name,
+            intervening_statements,
         ):
             raise ValueError(
                 "Existing field authority is referenced before its current declaration"
@@ -8246,11 +8246,9 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
 
     @staticmethod
     def _require_deferred_annotations(module: ParsedModule) -> None:
-        if not any(
-            isinstance(statement, ast.ImportFrom)
-            and statement.module == "__future__"
-            and any(alias.name == "annotations" for alias in statement.names)
-            for statement in module.module.body
+        if (
+            ModuleAnnotationEvaluationMode.from_module(module.module)
+            is not ModuleAnnotationEvaluationMode.DEFERRED
         ):
             raise ValueError(
                 "enum-keyed method movement requires deferred annotation semantics"

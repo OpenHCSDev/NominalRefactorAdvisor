@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from itertools import combinations
 
-from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, ParsedModule
+from .ast_tools import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+)
 from .class_index import (
     ATTRIBUTE_CHAIN_AUTHORITY,
     ClassHeaderSourceSpan,
@@ -109,7 +113,7 @@ class ExactDataclassFieldSemantics:
         binding_snapshot: ModuleNominalBindingSnapshot,
         class_bound_names: frozenset[str],
         comment_lines: SourceCommentLineIndex,
-        future_annotations_are_enabled: bool,
+        annotation_mode: ModuleAnnotationEvaluationMode,
     ) -> "ExactDataclassFieldSemantics":
         if not isinstance(statement.target, ast.Name) or statement.value is not None:
             raise ValueError("Promoted dataclass fields must be default-free names")
@@ -117,7 +121,7 @@ class ExactDataclassFieldSemantics:
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines
         ):
             raise ValueError("Promoted dataclass fields must not carry comments")
-        if not future_annotations_are_enabled:
+        if annotation_mode is not ModuleAnnotationEvaluationMode.DEFERRED:
             raise ValueError(
                 "Field authority factoring requires postponed annotation evaluation"
             )
@@ -247,7 +251,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             ).snapshots_before(item.line for item in indexed_classes)
             source_segments = SourceLineSegmentAuthority(parsed_module.source)
             comment_lines = SourceCommentLineIndex.from_source(parsed_module.source)
-            future_annotations_are_enabled = _future_annotations_are_enabled(
+            annotation_mode = ModuleAnnotationEvaluationMode.from_module(
                 parsed_module.module
             )
             for indexed_class in indexed_classes:
@@ -257,7 +261,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
                         binding_snapshots[indexed_class.line],
                         source_segments,
                         comment_lines,
-                        future_annotations_are_enabled,
+                        annotation_mode,
                     )
                 except ValueError:
                     continue
@@ -354,7 +358,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         binding_snapshot: ModuleNominalBindingSnapshot,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
-        future_annotations_are_enabled: bool,
+        annotation_mode: ModuleAnnotationEvaluationMode,
     ) -> ExactDataclassFieldParticipant:
         node = indexed_class.node
         declaration = indexed_class.dataclass_declaration
@@ -421,7 +425,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
                 binding_snapshot,
                 class_bound_names,
                 comment_lines,
-                future_annotations_are_enabled,
+                annotation_mode,
             )
             for statement in direct_fields
         )
@@ -438,12 +442,3 @@ def _common_prefix(
             break
         prefix.append(left_field)
     return tuple(prefix)
-
-
-def _future_annotations_are_enabled(module: ast.Module) -> bool:
-    return any(
-        isinstance(statement, ast.ImportFrom)
-        and statement.module == "__future__"
-        and any(alias.name == "annotations" for alias in statement.names)
-        for statement in module.body
-    )

@@ -1306,6 +1306,116 @@ class LexicalScopeBindingAuthority:
 LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()
 
 
+class ModuleAnnotationEvaluationMode(Enum):
+    """Whether annotations in one module execute with their declarations."""
+
+    EAGER = True
+    DEFERRED = False
+
+    @classmethod
+    def from_module(cls, module: ast.Module) -> "ModuleAnnotationEvaluationMode":
+        if any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in module.body
+        ):
+            return cls.DEFERRED
+        return cls.EAGER
+
+    @property
+    def annotations_execute_at_declaration(self) -> bool:
+        return bool(self.value)
+
+
+class EagerNameLoadCollector(ast.NodeVisitor):
+    """Collect name loads evaluated while a syntax tree is declared."""
+
+    def __init__(
+        self,
+        name: str,
+        annotation_mode: ModuleAnnotationEvaluationMode,
+    ) -> None:
+        self.name = name
+        self.annotation_mode = annotation_mode
+        self.loads: list[ast.Name] = []
+
+    @classmethod
+    def collect(
+        cls,
+        module: ast.Module,
+        name: str,
+        statements: Iterable[ast.stmt] | None = None,
+    ) -> tuple[ast.Name, ...]:
+        collector = cls(name, ModuleAnnotationEvaluationMode.from_module(module))
+        tree = (
+            module
+            if statements is None
+            else ast.Module(body=list(statements), type_ignores=[])
+        )
+        collector.visit(tree)
+        return tuple(collector.loads)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id == self.name and isinstance(node.ctx, ast.Load):
+            self.loads.append(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.visit_function_header(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_function_header(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit_argument_defaults(node.args)
+
+    def visit_function_header(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self.visit_argument_defaults(node.args)
+        if self.annotation_mode.annotations_execute_at_declaration:
+            self.visit_argument_annotations(node.args)
+            if node.returns is not None:
+                self.visit(node.returns)
+        handled_children = (
+            node.args,
+            *node.decorator_list,
+            *node.body,
+            *((node.returns,) if node.returns is not None else ()),
+        )
+        for child in ast.iter_child_nodes(node):
+            if not any(child is handled for handled in handled_children):
+                self.visit(child)
+
+    def visit_argument_annotations(self, arguments: ast.arguments) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if arguments.vararg is not None and arguments.vararg.annotation is not None:
+            self.visit(arguments.vararg.annotation)
+        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
+            self.visit(arguments.kwarg.annotation)
+
+    def visit_argument_defaults(self, arguments: ast.arguments) -> None:
+        for default in (*arguments.defaults, *arguments.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.target)
+        if self.annotation_mode.annotations_execute_at_declaration:
+            self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+
 @dataclass(frozen=True)
 class AstCallObservation:
     call: ast.Call

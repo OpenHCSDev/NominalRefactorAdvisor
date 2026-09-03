@@ -405,13 +405,29 @@ class SemanticDescentImplementationSignature:
 
 
 @dataclass(frozen=True)
-class SemanticDescentModuleSignature:
-    """Parsed module identity used to invalidate semantic-descent graphs."""
+class SemanticDescentModuleFamilySignature:
+    """Source-set member identity for latest semantic-descent graph reuse."""
 
     path: str
     parsed_import_name: str
     is_package_init: bool
+
+
+@dataclass(frozen=True)
+class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
+    """Parsed module identity used to invalidate semantic-descent graphs."""
+
     source_hash: str
+
+    @property
+    def family_signature(self) -> "SemanticDescentModuleFamilySignature":
+        """Project this content identity to its hash-independent source family."""
+
+        return SemanticDescentModuleFamilySignature(
+            path=self.path,
+            parsed_import_name=self.parsed_import_name,
+            is_package_init=self.is_package_init,
+        )
 
     @classmethod
     def from_module(
@@ -437,26 +453,6 @@ class SemanticDescentModuleSignature:
             parsed_import_name=identity.import_name,
             is_package_init=identity.is_package_init,
             source_hash=_source_file_hash(identity.path),
-        )
-
-
-@dataclass(frozen=True)
-class SemanticDescentModuleFamilySignature:
-    """Source-set member identity for latest semantic-descent graph reuse."""
-
-    path: str
-    parsed_import_name: str
-    is_package_init: bool
-
-    @classmethod
-    def from_module_signature(
-        cls,
-        signature: SemanticDescentModuleSignature,
-    ) -> "SemanticDescentModuleFamilySignature":
-        return cls(
-            path=signature.path,
-            parsed_import_name=signature.parsed_import_name,
-            is_package_init=signature.is_package_init,
         )
 
 
@@ -590,10 +586,7 @@ class SemanticDescentGraphCacheFamilyIdentity:
             schema=identity.schema,
             implementation=identity.implementation,
             python_version=identity.python_version,
-            modules=tuple(
-                SemanticDescentModuleFamilySignature.from_module_signature(module)
-                for module in identity.modules
-            ),
+            modules=tuple(module.family_signature for module in identity.modules),
             presentation_roots=identity.presentation_roots,
         )
 
