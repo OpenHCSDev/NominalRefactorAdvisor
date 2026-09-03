@@ -501,6 +501,13 @@ def test_source_payload_operations_share_the_source_declaration() -> None:
             if binding.constructor_argument_name == "source"
         )
         assert source_binding.field_name == "source"
+    assert tuple(
+        binding.field_name
+        for binding in codemod.ReplaceModuleAssignmentOperation.payload_bindings()
+    ) == ("target", "rationale", "source")
+    assert "assignment_name" not in (
+        codemod.ReplaceModuleAssignmentOperation.__dataclass_fields__
+    )
 
 
 def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:

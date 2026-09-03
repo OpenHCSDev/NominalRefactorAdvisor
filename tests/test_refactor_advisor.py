@@ -5407,10 +5407,21 @@ def test_refactor_recipe_replaces_module_assignment(
     ).with_operation(
         ReplaceModuleAssignmentOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            assignment_name="ACTIVE_MODES",
             source="ACTIVE_MODES = Mode.active_modes()",
         )
     )
+    operation = recipe.operations[0]
+    payload = operation.to_dict()
+
+    assert payload["source"] == "ACTIVE_MODES = Mode.active_modes()"
+    assert "assignment_name" not in payload
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported ReplaceModuleAssignmentOperation payload field\(s\)",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {**payload, "assignment_name": "ACTIVE_MODES"}
+        )
 
     simulation = recipe.simulate(
         _indexed_snapshot(source_index, source_by_path),
@@ -5421,6 +5432,42 @@ def test_refactor_recipe_replaces_module_assignment(
     assert simulation.simulation.applied_rewrite_count == 1
     assert "-ACTIVE_MODES = {'alpha', 'beta'}" in diff
     assert "+ACTIVE_MODES = Mode.active_modes()" in diff
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_error"),
+    (
+        ("", "non-empty string"),
+        (
+            "ACTIVE_MODES = ()\nOTHER_MODES = ()\n",
+            "exactly one statement",
+        ),
+        ("ACTIVE_MODES, OTHER_MODES = (), ()", "single direct-name assignment"),
+        ("ACTIVE_MODES = (", "not valid Python"),
+    ),
+)
+def test_replace_module_assignment_rejects_unproved_source_declarations(
+    tmp_path: Path,
+    source: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "ACTIVE_MODES = ()\n")
+    payload = {
+        "operation": "replace_module_assignment",
+        "file_path": module_path.as_posix(),
+        "source": source,
+    }
+
+    if not source:
+        with pytest.raises(ValueError, match=expected_error):
+            RefactorRecipeOperation.from_dict(payload)
+        return
+
+    operation = RefactorRecipeOperation.from_dict(payload)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(ValueError, match=expected_error):
+        operation.source_edits(snapshot)
 
 
 def test_refactor_recipe_removes_import_names(

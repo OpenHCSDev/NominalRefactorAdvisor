@@ -5663,10 +5663,24 @@ class DeleteModuleAssignmentsOperation(AssignmentNamesPayloadOperation):
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
-    """Replace one named module-level assignment statement."""
+    """Replace the module assignment named by the supplied declaration."""
 
-    source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
-    assignment_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    @cached_property
+    def assignment_name(self) -> str:
+        try:
+            module = ast.parse(
+                self.source,
+                filename=f"<{self.operation_key()}-source>",
+            )
+        except SyntaxError as error:
+            raise ValueError(
+                f"Module assignment source is not valid Python: {error}"
+            ) from error
+        if len(module.body) != 1:
+            raise ValueError(
+                "Module assignment source must contain exactly one statement"
+            )
+        return SingleAssignmentAndValueNameProjection(module.body[0]).required_name
 
     def source_edits(
         self,

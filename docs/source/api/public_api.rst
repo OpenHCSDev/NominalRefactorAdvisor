@@ -76,6 +76,8 @@ member rosters.
 Module-symbol moves likewise derive canonical source-module re-exports from the
 destination module and moved declarations.  They reject import cycles rather
 than accepting caller-authored import text that can disagree with the move.
+Module-assignment replacements derive the selected assignment name from their
+single replacement declaration instead of serializing that name twice.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.
