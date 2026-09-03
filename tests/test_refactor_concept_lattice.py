@@ -474,7 +474,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
 def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
     for operation_type, field_name in (
         (codemod.EnsureImportOperation, "import_source"),
-        (codemod.ReplaceFunctionSignatureOperation, "signature_source"),
+        (codemod.ReplaceFunctionSignatureOperation, "signature_suffix"),
         (codemod.ReplaceFunctionBodyOperation, "body_source"),
     ):
         assert "payload_value" not in operation_type.__dataclass_fields__

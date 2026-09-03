@@ -12679,7 +12679,7 @@ class ReplaceFunctionSignatureOperation(
 ):
     """Replace a single-line function signature while preserving its body."""
 
-    signature_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    signature_suffix: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits_for_target_node(
         self,
@@ -12695,7 +12695,7 @@ class ReplaceFunctionSignatureOperation(
         original_line = editor.file_lines[node.lineno - 1]
         replacement_line = FunctionSignatureSourceAuthority(
             original_line,
-        ).replacement_line(self.signature_source)
+        ).replacement_line(self.signature_suffix)
         return (
             SourceSpanReplacement(
                 file_path=target_digest.file_path,
@@ -12904,21 +12904,42 @@ class FunctionSignatureSourceAuthority:
 
     original_line: str
 
-    def replacement_line(self, signature_source: str) -> str:
-        line = SingleLogicalLineSource.parse(
-            self.original_line,
-            "function signature",
-        )
-        if ":" not in line.body:
+    @property
+    def declaration_prefix(self) -> str:
+        header = self.header.body
+        prefix, separator, _suffix = header.partition("(")
+        if not separator or not prefix.startswith(("def ", "async def ")):
             raise ValueError(
                 "Function signature replacement requires a single-line def"
             )
-        stripped_signature = signature_source.strip()
-        if not stripped_signature.endswith(":"):
-            raise ValueError("Replacement function signature must end with ':'")
-        if not stripped_signature.startswith(("def ", "async def ")):
-            raise ValueError("Replacement function signature must start with def")
-        return line.rebuild(stripped_signature)
+        return prefix.rstrip()
+
+    @property
+    def header(self) -> SingleLogicalLineSource:
+        return SingleLogicalLineSource.parse(
+            self.original_line,
+            "function signature",
+        )
+
+    def replacement_line(self, signature_suffix: str) -> str:
+        line = self.header
+        suffix = SingleLogicalLineSource.parse(
+            signature_suffix,
+            "function signature suffix",
+        ).body.strip()
+        if not suffix.startswith("(") or not suffix.endswith(":"):
+            raise ValueError(
+                "Replacement function signature suffix must start with '(' and "
+                "end with ':'"
+            )
+        replacement_body = f"{self.declaration_prefix}{suffix}"
+        try:
+            ast.parse(f"{replacement_body}\n    pass\n")
+        except SyntaxError as error:
+            raise ValueError(
+                f"Replacement function signature is not valid Python: {error}"
+            ) from error
+        return line.rebuild(replacement_body)
 
 
 @dataclass(frozen=True)

@@ -2866,7 +2866,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
                     qualname="Parser.parse",
                     file_path=module_path.as_posix(),
                 ),
-                signature_source="def parse(self, value, *, context):",
+                signature_suffix="(self, value, *, context):",
             )
         )
         .with_operation(
@@ -2904,6 +2904,21 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     )
     diff = simulation.unified_diff(source_by_path)
 
+    signature_operation = recipe.operations[2]
+    signature_payload = signature_operation.to_dict()
+    assert signature_payload["signature_suffix"] == "(self, value, *, context):"
+    assert "signature_source" not in signature_payload
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported ReplaceFunctionSignatureOperation payload field\(s\)",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **signature_payload,
+                "signature_source": "def parse(self, value, *, context):",
+            }
+        )
+
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
     assert "+class ParseContext:" in diff
@@ -2920,6 +2935,61 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     assert "return context.prepare(value)" in rewritten
     assert "class ParserAuthority:" in rewritten
     assert "class LegacyWorker(ParseContext):" in rewritten
+
+
+def test_function_signature_replacement_preserves_async_nominal_identity(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Worker:\n"
+        "    async def run(self, value):\n"
+        "        return value\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    simulation = RefactorRecipe("async-signature").with_operation(
+        ReplaceFunctionSignatureOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Worker.run",
+            ),
+            signature_suffix="(self, value: int) -> int:",
+        )
+    ).simulate(snapshot)
+
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    assert "async def run(self, value: int) -> int:" in rewritten
+
+
+@pytest.mark.parametrize(
+    ("signature_suffix", "expected_error"),
+    (
+        ("def run(self, value):", "must start with '\\('"),
+        ("(self, value)", "end with ':'"),
+        ("(self,, value):", "not valid Python"),
+        ("(self):\n(self, value):", "requires one source line"),
+    ),
+)
+def test_function_signature_replacement_rejects_unproved_suffixes(
+    tmp_path: Path,
+    signature_suffix: str,
+    expected_error: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "def run(value):\n    return value\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ReplaceFunctionSignatureOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="run",
+        ),
+        signature_suffix=signature_suffix,
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        operation.source_edits(snapshot)
 
 
 def test_refactor_recipe_rewrites_multiline_class_base_headers(
