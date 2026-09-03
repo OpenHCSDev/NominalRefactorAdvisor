@@ -487,6 +487,17 @@ def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
         ) == ("target", "rationale", field_name)
 
 
+def test_function_mutations_share_typed_current_source_proof() -> None:
+    for operation_type in (
+        codemod.ReplaceFunctionSignatureOperation,
+        codemod.ReplaceFunctionBodyOperation,
+    ):
+        assert issubclass(operation_type, codemod.FunctionMutationOperationABC)
+        assert issubclass(operation_type, codemod.SourceReprovedOperation)
+        assert "source_edits_from_snapshot" not in operation_type.__dict__
+        assert "source_edits_for_function" in operation_type.__dict__
+
+
 def test_source_payload_operations_share_the_source_declaration() -> None:
     operation_types = (
         codemod.CreateFileOperation,

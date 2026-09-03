@@ -78,6 +78,8 @@ destination module and moved declarations.  They reject import cycles rather
 than accepting caller-authored import text that can disagree with the move.
 Module-assignment replacements derive the selected assignment name from their
 single replacement declaration instead of serializing that name twice.
+Function signature and body mutations share one current-source proof of their
+typed function target.
 Function-signature replacements carry only their parameter and return suffix;
 the targeted declaration supplies its function name and sync or async kind.
 Whole-target replacements parse exactly one class or function declaration and

@@ -3057,6 +3057,34 @@ def test_function_signature_replacement_rejects_unproved_suffixes(
         operation.source_edits(snapshot)
 
 
+def test_function_mutations_reprove_the_target_kind(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "class Worker:\n    pass\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    target = SourceRewriteTarget(
+        file_path=module_path.as_posix(),
+        qualname="Worker",
+    )
+    operations = (
+        ReplaceFunctionSignatureOperation(
+            target=target,
+            signature_suffix="(self):",
+        ),
+        ReplaceFunctionBodyOperation(
+            target=target,
+            body_source="return None",
+        ),
+    )
+
+    for operation in operations:
+        with pytest.raises(
+            CodemodOperationPreflightError,
+            match="Target 'Worker' is not a function",
+        ) as error:
+            operation.source_edits(snapshot)
+        assert error.value.report.operation == operation.operation_key()
+
+
 def test_refactor_recipe_rewrites_multiline_class_base_headers(
     tmp_path: Path,
 ) -> None:

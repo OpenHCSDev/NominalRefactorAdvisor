@@ -12692,75 +12692,86 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionSignatureOperation(
-    TargetNodeRecipeOperationMixin,
-    RefactorRecipeOperation,
-):
+class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
+    """Source-proved mutation of one function declaration."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _target_identifier, target, node = self.target_node_from_context(snapshot)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError(f"Target {target.qualname!r} is not a function")
+        return self.source_edits_for_function(snapshot, target, node)
+
+    @abstractmethod
+    def source_edits_for_function(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        target: AstTargetDigest,
+        node: _FunctionNode,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        """Return the leaf operation's edits for one proved function target."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
     """Replace a single-line function signature while preserving its body."""
 
     signature_suffix: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def source_edits_for_target_node(
+    def source_edits_for_function(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
+        snapshot: CodemodSourceSnapshot,
+        target: AstTargetDigest,
+        node: _FunctionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            raise ValueError(f"Target {target_digest.qualname!r} is not a function")
-        editor = SourceTargetEditor(context.sources_by_file_path, target_digest)
+        editor = SourceTargetEditor(snapshot.sources_by_file_path, target)
         original_line = editor.file_lines[node.lineno - 1]
         replacement_line = FunctionSignatureSourceAuthority(
             original_line,
         ).replacement_line(self.signature_suffix)
         return (
             SourceSpanReplacement(
-                file_path=target_digest.file_path,
+                file_path=target.file_path,
                 start_line=node.lineno,
                 end_line=node.lineno,
                 replacement_lines=(replacement_line,),
                 rationale=self.rationale
-                or f"Replace signature of {target_digest.qualname!r}.",
+                or f"Replace signature of {target.qualname!r}.",
             ),
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionBodyOperation(
-    TargetNodeRecipeOperationMixin,
-    RefactorRecipeOperation,
-):
+class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
     """Replace a function or method body while preserving its signature."""
 
     body_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def source_edits_for_target_node(
+    def source_edits_for_function(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
+        snapshot: CodemodSourceSnapshot,
+        target: AstTargetDigest,
+        node: _FunctionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            raise ValueError(f"Target {target_digest.qualname!r} is not a function")
         if not node.body:
-            raise ValueError(f"Target {target_digest.qualname!r} has no body")
+            raise ValueError(f"Target {target.qualname!r} has no body")
         body_start = node.body[0].lineno
         body_end = node.body[-1].end_lineno or node.body[-1].lineno
         return (
             SourceSpanReplacement(
-                file_path=target_digest.file_path,
+                file_path=target.file_path,
                 start_line=body_start,
                 end_line=body_end,
                 replacement_lines=self._replacement_lines(
-                    SourceTargetEditor(context.sources_by_file_path, target_digest),
+                    SourceTargetEditor(snapshot.sources_by_file_path, target),
                     body_start,
                 ),
                 rationale=self.rationale
-                or f"Replace body of {target_digest.qualname!r}.",
+                or f"Replace body of {target.qualname!r}.",
             ),
         )
 
