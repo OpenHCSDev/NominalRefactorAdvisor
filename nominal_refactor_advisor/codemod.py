@@ -230,6 +230,7 @@ from .codemod_imports import (
     ImportAliasRequirement as ImportAliasRequirement,
     ImportFromModuleName as ImportFromModuleName,
     ImportFromSource as ImportFromSource,
+    RequestedImportBlock as RequestedImportBlock,
     RequestedImportStatement as RequestedImportStatement,
 )
 
@@ -2384,11 +2385,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self.modules_with_source_overlay(source_overlay)
         )
 
-    def with_created_source_paths(
+    def with_source_file_creations(
         self,
-        source_paths: Iterable[str],
+        creations: Iterable["SourceFileCreation"],
     ) -> "CodemodSourceSnapshot":
-        path_tuple = tuple(source_paths)
+        creation_tuple = tuple(creations)
+        path_tuple = tuple(creation.file_path for creation in creation_tuple)
         duplicate_paths = tuple(
             sorted(path for path, count in Counter(path_tuple).items() if count > 1)
         )
@@ -2407,7 +2409,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                     },
                 )
             )
-        return self.with_virtual_sources(dict.fromkeys(path_tuple, ""))
+        return self.with_virtual_sources(
+            {creation.file_path: creation.source for creation in creation_tuple}
+        )
 
     def modules_with_source_overlay(
         self,
@@ -3680,14 +3684,16 @@ class SourceFileCreation(NominalSourceEdit):
         self,
         context: "CodemodSelectorContext",
     ) -> tuple[NominalSourceEdit, ...]:
-        existing_source = context.sources_by_file_path[self.file_path]
-        if existing_source:
-            raise ValueError(f"create_file target {self.file_path!r} is not empty")
+        virtual_source = context.sources_by_file_path[self.file_path]
+        if virtual_source != self.source:
+            raise ValueError(
+                f"Virtual source for {self.file_path!r} disagrees with its creation"
+            )
         return (
             SourceInsertion(
                 file_path=self.file_path,
                 insertion_line=1,
-                inserted_lines=SourceTargetEditor.source_lines(self.source),
+                inserted_lines=(),
                 rationale=self.rationale or f"Create source file {self.file_path!r}.",
                 contributors=self.contributors,
                 origins=self.origins,
@@ -4199,24 +4205,45 @@ class ModuleImportInsertionPoint:
 
     @property
     def line_number(self) -> int:
+        imports = self.leading_import_statements
+        if imports:
+            final_import = imports[-1]
+            return (final_import.end_lineno or final_import.lineno) + 1
+        body = self.module.body
+        if not body:
+            return 1
+        if self._first_statement_index_after_docstring(body):
+            docstring = body[0]
+            return (docstring.end_lineno or docstring.lineno) + 1
+        return 1
+
+    @property
+    def module(self) -> ast.Module:
         module = self.module_node
         if module is None:
             module = ast.parse(self.source, filename=self.file_path)
-        body = module.body
+        return module
+
+    @property
+    def leading_import_statements(
+        self,
+    ) -> tuple[ast.Import | ast.ImportFrom, ...]:
+        body = self.module.body
         if not body:
-            return 1
+            return ()
         index = self._first_statement_index_after_docstring(body)
-        if index:
-            previous_statement = body[index - 1]
-            insertion_line = previous_statement.end_lineno or previous_statement.lineno
-        else:
-            insertion_line = 0
+        imports: list[ast.Import | ast.ImportFrom] = []
         while index < len(body) and isinstance(
             body[index], (ast.Import, ast.ImportFrom)
         ):
-            insertion_line = body[index].end_lineno or body[index].lineno
+            imports.append(body[index])
             index += 1
-        return insertion_line + 1
+        return tuple(imports)
+
+    @property
+    def previous_import_statement(self) -> ast.Import | ast.ImportFrom | None:
+        imports = self.leading_import_statements
+        return imports[-1] if imports else None
 
     @staticmethod
     def _first_statement_index_after_docstring(body: list[ast.stmt]) -> int:
@@ -4471,12 +4498,20 @@ class RefactorRecipeOperation(
         del context
         return ()
 
+    def source_file_creations(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[SourceFileCreation, ...]:
+        del source_index
+        return ()
+
     def created_source_paths(
         self,
         source_index: SourceIndex,
     ) -> tuple[str, ...]:
-        del source_index
-        return ()
+        return tuple(
+            creation.file_path for creation in self.source_file_creations(source_index)
+        )
 
     def declared_authority_claims(
         self,
@@ -5397,23 +5432,11 @@ class CreateFileOperation(SourcePayloadOperation):
 
     source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
 
-    def created_source_paths(
+    def source_file_creations(
         self,
         source_index: SourceIndex,
-    ) -> tuple[str, ...]:
-        return (self.created_source_path(source_index),)
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
-        source_path = self.required_source_path(
-            context,
-            self.operation_key(),
-        )
-        existing_source = context.sources_by_file_path[source_path]
-        if existing_source:
-            raise ValueError(f"create_file target {source_path!r} is not empty")
+        source_path = self.created_source_path(source_index)
         return (
             SourceFileCreation(
                 file_path=source_path,
@@ -5421,6 +5444,12 @@ class CreateFileOperation(SourcePayloadOperation):
                 rationale=self.rationale or f"Create source file {source_path!r}.",
             ),
         )
+
+    def source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[SourceFileCreation, ...]:
+        return self.source_file_creations(context.source_index)
 
     def created_source_path(self, source_index: SourceIndex) -> str:
         if self.target.file_path is None:
@@ -9812,11 +9841,12 @@ class ModuleImportMutation(NominalSourceEdit):
                 )
             )
         if pending_additions:
-            insertion_line = ModuleImportInsertionPoint(
+            insertion_point = ModuleImportInsertionPoint(
                 source,
                 self.file_path,
                 module_node=module,
-            ).line_number
+            )
+            insertion_line = insertion_point.line_number
             spacing = DestinationInsertionSpacing.from_source(
                 source,
                 insertion_line,
@@ -9827,7 +9857,9 @@ class ModuleImportMutation(NominalSourceEdit):
                     file_path=self.file_path,
                     insertion_line=insertion_line,
                     inserted_lines=SourceTargetEditor.source_lines(
-                        "".join(addition.source for addition in pending_additions)
+                        RequestedImportBlock(tuple(pending_additions)).source_after(
+                            insertion_point.previous_import_statement
+                        )
                         + spacing.trailing_separator
                     ),
                     rationale=self.rationale
@@ -10547,7 +10579,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             insertion_line,
             inserted_source_is_import_block=False,
         )
-        return f"{spacing.leading_separator}{moved_source}{spacing.trailing_separator}"
+        leading_separator = (
+            spacing.leading_separator_after_pending_imports
+            if self.dependency_report.import_sources
+            else spacing.leading_separator
+        )
+        return f"{leading_separator}{moved_source}{spacing.trailing_separator}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -12931,9 +12968,18 @@ class RefactorRecipe(CodemodPayloadRecord):
         source_index: SourceIndex,
     ) -> tuple[str, ...]:
         return tuple(
-            source_path
+            creation.file_path
+            for creation in self.source_file_creations(source_index)
+        )
+
+    def source_file_creations(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[SourceFileCreation, ...]:
+        return tuple(
+            creation
             for operation in self.operations
-            for source_path in operation.created_source_paths(source_index)
+            for creation in operation.source_file_creations(source_index)
         )
 
     def preflight_reports(
@@ -13225,10 +13271,10 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodSourceSnapshot:
-        return snapshot.with_created_source_paths(
-            source_path
+        return snapshot.with_source_file_creations(
+            creation
             for recipe in self.recipes
-            for source_path in recipe.created_source_paths(snapshot.source_index)
+            for creation in recipe.source_file_creations(snapshot.source_index)
         )
 
     def simulate(

@@ -14787,9 +14787,8 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
         text=True,
         check=False,
     )
-    payload = json.loads(result.stdout)
-
     assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
     assert payload["applied"] is False
     assert payload["applied_rewrite_count"] == 2
     assert payload["parse_validation"]["parse_valid"] is True
@@ -14850,9 +14849,8 @@ def test_module_cli_preflights_relative_multi_symbol_move_plan_from_stdin(
         text=True,
         check=False,
     )
-    payload = json.loads(result.stdout)
-
     assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
     assert payload["preflight_failed"] is False
     assert payload["is_clean"] is True
     assert payload["applied"] is False
@@ -14890,7 +14888,10 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
                     {
                         "operation": "create_file",
                         "file_path": "pkg/destination.py",
-                        "source": "",
+                        "source": (
+                            '"""Moved helper declarations."""\n\n'
+                            "from __future__ import annotations\n\n"
+                        ),
                     },
                     {
                         "operation": "move_symbols_to_module",
@@ -14980,7 +14981,13 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert "    Helper as Helper," in rewritten_source
     assert "    LocalBase as LocalBase," in rewritten_source
     assert "class Helper" not in source_path.read_text()
-    assert "@dataclass\nclass Helper(LocalBase):" in destination_path.read_text()
+    rewritten_destination = destination_path.read_text()
+    assert rewritten_destination.startswith(
+        '"""Moved helper declarations."""\n\n'
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n\n\n"
+    )
+    assert "@dataclass\nclass Helper(LocalBase):" in rewritten_destination
 
 
 def test_module_cli_preflights_multi_symbol_move_failure_from_stdin(

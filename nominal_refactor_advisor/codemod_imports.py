@@ -64,15 +64,26 @@ class RequestedImportStatement:
         return ast.ImportFrom, self.statement.level, self.statement.module
 
     @property
-    def canonical_family_key(self) -> tuple[str, int, str]:
+    def canonical_family_key(self) -> tuple[bool, str, int, str]:
         """Return deterministic source order without encoding semantic priority."""
 
         if isinstance(self.statement, ast.Import):
-            return type(self.statement).__name__, 0, ""
+            return True, type(self.statement).__name__, 0, ""
         return (
+            not self.is_future_import,
             type(self.statement).__name__,
             self.statement.level,
             self.statement.module or "",
+        )
+
+    @property
+    def is_future_import(self) -> bool:
+        """Return whether this statement belongs to Python's future-import group."""
+
+        return (
+            isinstance(self.statement, ast.ImportFrom)
+            and self.statement.level == 0
+            and self.statement.module == "__future__"
         )
 
     @property
@@ -103,6 +114,29 @@ class RequestedImportStatement:
                 level=self.statement.level,
             )
         )
+
+
+@dataclass(frozen=True)
+class RequestedImportBlock:
+    """Canonical source for a group of requested import statements."""
+
+    statements: tuple[RequestedImportStatement, ...]
+
+    def source_after(
+        self,
+        previous_statement: ast.Import | ast.ImportFrom | None,
+    ) -> str:
+        previous_is_future = (
+            previous_statement is not None
+            and RequestedImportStatement(previous_statement).is_future_import
+        )
+        source_parts: list[str] = []
+        for statement in self.statements:
+            if previous_is_future and not statement.is_future_import:
+                source_parts.append("\n")
+            source_parts.append(statement.source)
+            previous_is_future = statement.is_future_import
+        return "".join(source_parts)
 
 
 @dataclass(frozen=True)

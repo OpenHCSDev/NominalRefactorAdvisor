@@ -11,6 +11,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
+    CreateFileOperation,
     EnsureImportOperation,
     ImportNameRemoval,
     ImportFromModuleName,
@@ -290,14 +291,59 @@ def test_file_creation_is_explicit_and_has_one_authority(tmp_path: Path) -> None
         file_path=module_path.as_posix(),
         source="VALUE = 1\n",
     )
+    virtual_context = context.with_virtual_sources(
+        {module_path.as_posix(): creation.source}
+    )
 
-    resolved = creation.resolved_edits(context)
+    resolved = creation.resolved_edits(virtual_context)
     assert len(resolved) == 1
     assert resolved[0].file_path == module_path.as_posix()
     assert resolved[0].insertion_line == 1
-    assert resolved[0].inserted_lines == ("VALUE = 1\n",)
+    assert resolved[0].inserted_lines == ()
     with pytest.raises(ValueError, match="one creation authority"):
-        NominalSourceEdit.coalesced_by_declaration((creation, creation), context)
+        NominalSourceEdit.coalesced_by_declaration(
+            (creation, creation), virtual_context
+        )
+
+
+def test_same_document_operations_resolve_against_created_initial_source(
+    tmp_path: Path,
+) -> None:
+    _existing_path, snapshot = _snapshot(tmp_path, "EXISTING = 1\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    initial_source = (
+        '"""Generated declarations."""\n\n'
+        "from __future__ import annotations\n\n\n"
+        "VALUE = 1\n"
+    )
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("create-and-import")
+            .with_operation(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    source=initial_source,
+                )
+            )
+            .with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    import_source="import ast\n",
+                )
+            ),
+        )
+    )
+
+    simulation = document.simulate(snapshot)
+    rewritten = simulation.simulation.rewritten_sources[generated_path.as_posix()]
+
+    assert rewritten == (
+        '"""Generated declarations."""\n\n'
+        "from __future__ import annotations\n\n"
+        "import ast\n\n\n"
+        "VALUE = 1\n"
+    )
+    assert simulation.simulation.base_revisions[0].source_hash is None
 
 
 def test_compiler_unions_imports_and_carrier_projection_stays_granular(

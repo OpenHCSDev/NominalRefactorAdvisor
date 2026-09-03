@@ -52,6 +52,12 @@ class DestinationInsertionSpacing:
         return "\n" * max(0, 2 - self.preceding_blank_line_count)
 
     @property
+    def leading_separator_after_pending_imports(self) -> str:
+        """Preserve separators consumed by an import inserted at the same anchor."""
+
+        return "\n" * min(2, self.following_blank_line_count)
+
+    @property
     def trailing_separator(self) -> str:
         missing_blank_lines = max(0, 2 - self.following_blank_line_count)
         if self.inserted_source_is_import_block:

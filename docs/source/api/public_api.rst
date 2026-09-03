@@ -207,12 +207,17 @@ their exact source target.  Each unavoidable field mapping is a nominal
 Constructor rewrites resolve that target's nominal class identity from the
 current source.  Attribute projections resolve stable nominal parameter types.
 Neither constructor nor attribute-owner spellings are persisted in the plan.
+When a document creates a module, its declared initial source becomes part of
+the document's rewrite snapshot before any operation is compiled.  Imports,
+symbol moves, preflight proofs, and parse validation therefore resolve against
+the same source that will be written; an empty placeholder is never a second
+authority for the new module.
 
 .. automodule:: nominal_refactor_advisor.codemod_semantics
    :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, ArchitectureGuardViolationKind, CodemodPreflightStatus
 
 .. automodule:: nominal_refactor_advisor.codemod_imports
-   :members: ImportAliasRequirement, RequestedImportStatement, ImportFromModuleName, ImportFromSource
+   :members: ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource
 
 .. automodule:: nominal_refactor_advisor.codemod
    :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
