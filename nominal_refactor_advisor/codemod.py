@@ -5358,7 +5358,7 @@ class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
+class ClassMemberPromotionOperation(SourceReprovedOperation, ABC):
     """Recipe operation that promotes repeated class members to a shared base."""
 
     base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -5374,9 +5374,9 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     def statement_type(self) -> type["ClassMemberPromotionStatement"]:
         raise NotImplementedError
 
-    def source_edits(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        context: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         targets = self.resolved_targets(context)
         self.validate_targets(targets)
@@ -5432,12 +5432,27 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
-    """Shared mechanics for nominal class-method promotion policies."""
+class PromoteClassMethodsOperation(ClassMemberPromotionOperation):
+    """Promote repeated class methods to a new shared nominal base."""
 
     method_names: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec()
     )
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        targets = self.resolved_targets(context)
+        self.validate_targets(targets)
+        return (
+            AuthorityClaim(
+                claimed_symbol=self.base_name,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=targets.insertion_target.file_path,
+                qualname=self.base_name,
+            ),
+        )
 
     @property
     def member_names(self) -> tuple[str, ...]:
@@ -5518,28 +5533,6 @@ class ClassMethodPromotionOperation(ClassMemberPromotionOperation, ABC):
                 raise self.failed_preflight(
                     "Method promotion cannot cross a custom metaclass boundary"
                 )
-        self.validate_nominal_authority(targets)
-
-    @abstractmethod
-    def validate_nominal_authority(
-        self,
-        targets: "ClassMemberPromotionTargets",
-    ) -> None:
-        """Validate the authority policy owned by one concrete operation."""
-        raise NotImplementedError
-
-
-@dataclass(frozen=True, kw_only=True)
-class PromoteClassMethodsOperation(ClassMethodPromotionOperation):
-    """Promote repeated class methods to a new shared nominal base."""
-
-    def validate_nominal_authority(
-        self,
-        targets: "ClassMemberPromotionTargets",
-    ) -> None:
-        """Permit callers to select a new authority after explicit review."""
-
-        del targets
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -6688,8 +6681,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 
 @dataclass(frozen=True, kw_only=True)
 class ExtractMethodsToClassOperation(
-    TargetNodeRecipeOperationMixin,
-    RefactorRecipeOperation,
+    SourceReprovedOperation,
 ):
     """Extract selected methods from one class into a generated peer authority class."""
 
@@ -6712,17 +6704,47 @@ class ExtractMethodsToClassOperation(
         default=(),
     )
 
-    def source_edits_for_target_node(
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        target_digest, node = self.required_source_class(snapshot)
+        return self.source_edits_for_source_class(
+            snapshot,
+            target_digest,
+            node,
+        )
+
+    def current_source_authority_claims(
         self,
         context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del target_identifier
+    ) -> tuple[AuthorityClaim, ...]:
+        target_digest, _node = self.required_source_class(context)
+        return (
+            AuthorityClaim(
+                claimed_symbol=self.destination_class_name,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=target_digest.file_path,
+                qualname=self.destination_class_name,
+            ),
+        )
+
+    def required_source_class(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AstTargetDigest, ast.ClassDef]:
+        _target_identifier, target_digest, node = self.target_node_from_context(context)
         if not isinstance(node, ast.ClassDef):
             raise ValueError("extract_methods_to_class requires a class target")
         self.validate(context.source_index, target_digest, node)
+        return target_digest, node
+
+    def source_edits_for_source_class(
+        self,
+        context: CodemodSelectorContext,
+        target_digest: AstTargetDigest,
+        node: ast.ClassDef,
+    ) -> tuple[PhysicalSourceEdit, ...]:
         method_nodes = self.selected_method_nodes(node)
         class_would_be_empty = len(method_nodes) == len(node.body)
         return (

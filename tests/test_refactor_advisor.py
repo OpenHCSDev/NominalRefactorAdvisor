@@ -3625,9 +3625,10 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
             method_names=("emit",),
         )
     )
+    snapshot = _indexed_snapshot(source_index, source_by_path)
 
     simulation = recipe.simulate(
-        _indexed_snapshot(source_index, source_by_path),
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -3638,6 +3639,14 @@ def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
         PromoteClassMethodsOperation
     )
     assert operation["method_names"] == ("emit",)
+    assert recipe.declared_authority_claims(snapshot) == (
+        AuthorityClaim(
+            claimed_symbol="SharedEmitMixin",
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            file_path=module_path.as_posix(),
+            qualname="SharedEmitMixin",
+        ),
+    )
     assert simulation.is_clean is True
     assert "+class SharedEmitMixin:" in diff
     assert "+class Alpha(SharedEmitMixin):" in diff
@@ -14956,12 +14965,21 @@ def test_extract_methods_to_class_operation_lifts_methods_into_peer_class(
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
     document = load_codemod_plan_document(plan_path)
+    snapshot = _indexed_snapshot(source_index, source_by_path)
 
     operation_payload = document.recipes[0].operations[0].to_dict()
     assert operation_payload["operation"] == "extract_methods_to_class"
     assert operation_payload["destination_class_name"] == "ResolutionAuthority"
+    assert document.recipes[0].declared_authority_claims(snapshot) == (
+        AuthorityClaim(
+            claimed_symbol="ResolutionAuthority",
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            file_path=module_path.as_posix(),
+            qualname="ResolutionAuthority",
+        ),
+    )
     simulation = document.simulate(
-        _indexed_snapshot(source_index, source_by_path),
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
 
