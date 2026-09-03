@@ -260,6 +260,9 @@ reexports remain as an external compatibility boundary.
 .. automodule:: nominal_refactor_advisor.codemod_import_graph
    :members: SourceModuleImportGraph
 
+.. automodule:: nominal_refactor_advisor.codemod_module_move_reports
+   :members: ModuleMoveImportDependency, ModuleMoveDependencyReport
+
 .. automodule:: nominal_refactor_advisor.declaration_dependencies
    :members: DeclarationDependencyUse, DeclarationDependencyProjection, FunctionBindingProjection
 

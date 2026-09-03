@@ -106,6 +106,19 @@ def test_comprehension_bindings_do_not_escape_their_lexical_scope() -> None:
     assert projection.execution_names == frozenset(("predicate", "transform", "value"))
 
 
+def test_comprehension_walrus_binding_belongs_to_containing_function() -> None:
+    projection = _projection(
+        "def resolve(values):\n"
+        "    return tuple(\n"
+        "        (value, resolved)\n"
+        "        for value in values\n"
+        "        if (resolved := lookup(value)) is not None\n"
+        "    )\n"
+    )
+
+    assert projection.execution_names == frozenset(("lookup", "tuple"))
+
+
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")
 def test_type_parameter_scope_owns_declaration_references() -> None:
     projection = _projection(

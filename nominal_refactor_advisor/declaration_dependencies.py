@@ -96,6 +96,20 @@ class _ClassScope:
 _DependencyScope: TypeAlias = FunctionBindingProjection | _ClassScope
 
 
+@dataclass
+class _ComprehensionContainingScopeBindingCollector(ast.NodeVisitor):
+    """Collect walrus targets owned outside comprehension scopes."""
+
+    bound_names: set[str]
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.bound_names.update(_store_names(node.target))
+        self.visit(node.value)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
 class _CurrentScopeBindingCollector(ast.NodeVisitor):
     """Collect compile-time bindings without descending into child scopes."""
 
@@ -152,7 +166,7 @@ class _CurrentScopeBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
-        return
+        _ComprehensionContainingScopeBindingCollector(self.bound_names).visit(node)
 
     visit_SetComp = visit_ListComp
     visit_DictComp = visit_ListComp

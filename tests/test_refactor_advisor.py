@@ -25,6 +25,7 @@ import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindin
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
 import nominal_refactor_advisor.codemod_imports as codemod_imports_module
+import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
 import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
@@ -24033,11 +24034,12 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 
 @pytest.mark.parametrize(
     "declaration_owner",
-        (
-            codemod_import_bindings_module,
-            codemod_import_graph_module,
-            codemod_import_scopes_module,
-            codemod_imports_module,
+    (
+        codemod_import_bindings_module,
+        codemod_import_graph_module,
+        codemod_import_scopes_module,
+        codemod_imports_module,
+        codemod_module_move_reports_module,
         codemod_paths_module,
         codemod_semantics_module,
         codemod_source_edits_module,
