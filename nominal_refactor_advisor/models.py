@@ -271,6 +271,25 @@ class FindingMetrics(SemanticRecord, ABC):
     plan_literal_cases = ConstantProperty[tuple[str, ...]](())
     plan_field_execution_level = ConstantProperty[str | None](None)
 
+    def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
+        """Return declaration-owned authority candidates for descent graphs."""
+
+        return (
+            self.plan_source_name,
+            self.plan_mapping_name,
+            self.plan_registry_name,
+        )
+
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        """Return declaration-owned fact names for descent graphs."""
+
+        return (
+            self.plan_field_names
+            or self.plan_identity_field_names
+            or self.plan_class_names
+            or self.plan_literal_cases
+        )
+
 
 BehaviorFindingMetrics = CompositeClassSpec(
     "BehaviorFindingMetrics", (FindingMetrics, ABC)
@@ -454,7 +473,7 @@ class MappingMetrics(MappingFindingMetrics):
         mapping_name: str | None = None,
         source_name: str | None = None,
         identity_field_names: tuple[str, ...] = (),
-    ) -> "MappingMetrics":
+    ) -> Self:
         return cls(
             mapping_site_count=mapping_site_count,
             field_count=len(field_names),
@@ -493,6 +512,20 @@ class MappingMetrics(MappingFindingMetrics):
         "identity_field_names"
     )
 
+    def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
+        return self.source_name, self.mapping_name
+
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.field_names or self.identity_field_names
+
+
+@dataclass(frozen=True)
+class ConstructorOwnedMappingMetrics(MappingMetrics):
+    """Mapping metrics whose nominal constructor owns the projected schema."""
+
+    def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
+        return (self.mapping_name,)
+
 
 @dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics):
@@ -511,7 +544,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         class_names: tuple[str, ...],
         registry_name: str | None = None,
         class_key_pairs: tuple[str, ...] = (),
-    ) -> "RegistrationMetrics":
+    ) -> Self:
         return cls(
             registration_site_count=registration_site_count,
             registry_name=registry_name,
@@ -537,6 +570,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     plan_class_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "class_names"
     )
+
     plan_registry_name: ClassVar[AliasProperty[str | None]] = AliasProperty(
         "registry_name"
     )
@@ -546,6 +580,15 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     plan_class_key_pairs: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "class_key_pairs"
     )
+
+    def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
+        return (self.registry_name,)
+
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.class_names or tuple(
+            class_key_pair.split("=", 1)[0]
+            for class_key_pair in self.class_key_pairs
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

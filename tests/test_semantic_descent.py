@@ -36,6 +36,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticMirrorWithoutDescentDetector,
 )
 from nominal_refactor_advisor.models import (
+    ConstructorOwnedMappingMetrics,
     MappingMetrics,
     RefactorFinding,
     SourceLocation,
@@ -930,6 +931,34 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     assert certificate.missing_derivation_path == finding.relation_context
 
 
+def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
+    finding = RefactorFinding(
+        detector_id="repeated_builder_calls",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated construction",
+        summary="consumer methods repeat one nominal constructor",
+        why="the constructor owns its field schema",
+        capability_gap="one constructor-owned builder",
+        relation_context="constructor calls bypass their nominal authority",
+        evidence=(SourceLocation("pkg/mod.py", 7, "Builder.first:Result"),),
+        metrics=ConstructorOwnedMappingMetrics.from_field_names(
+            mapping_site_count=3,
+            mapping_name="Result",
+            source_name="self",
+            field_names=("reason", "owner_type"),
+        ),
+    )
+
+    graph = build_finding_backed_semantic_descent_graph((finding,))
+
+    assert graph.authorities[0].name == "Result"
+    assert {fact.name for fact in graph.facts} == {"reason", "owner_type"}
+    assert not hasattr(
+        semantic_descent_module,
+        "FindingMetricsSemanticProjection",
+    )
+
+
 def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> (
     None
 ):
@@ -1706,6 +1735,7 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
         for item in analyze_path(tmp_path)
         if item.detector_id == "repeated_builder_calls"
     )
+    assert isinstance(finding.metrics, ConstructorOwnedMappingMetrics)
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)

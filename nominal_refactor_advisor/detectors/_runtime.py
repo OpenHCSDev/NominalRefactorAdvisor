@@ -60,6 +60,7 @@ from ..collection_algebra import sorted_tuple
 from ..models import (
     AutoRegisterMetaRentMetrics,
     AutoRegisterMetaRentSignal,
+    ConstructorOwnedMappingMetrics,
     HierarchyCandidateMetrics,
     RefactorFinding,
     SourceLocation,
@@ -1997,7 +1998,7 @@ class RepeatedBuilderCallDetector(
                         if same_source
                         else self.finding_spec.capability_gap
                     ),
-                    metrics=MappingMetrics.from_field_names(
+                    metrics=ConstructorOwnedMappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
                         mapping_name=ordered[0].callee_name,
                         field_names=ordered[0].field_names,

@@ -9,7 +9,6 @@ from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
 from nominal_refactor_advisor import detectors
 from nominal_refactor_advisor import semantic_match
-from nominal_refactor_advisor import semantic_descent
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 
@@ -329,7 +328,8 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
 
 def test_metric_dispatch_uses_nominal_mro_priority() -> None:
     class SpecializedMappingMetrics(codemod.MappingMetrics):
-        pass
+        def semantic_fact_names(self) -> tuple[str, ...]:
+            return ("specialized",)
 
     specialized_metrics = SpecializedMappingMetrics.from_field_names(
         mapping_site_count=2,
@@ -344,27 +344,11 @@ def test_metric_dispatch_uses_nominal_mro_priority() -> None:
         codemod.SemanticMirrorFindingRecipeStrategy.strategy_for(specialized_metrics),
         codemod.MappingSemanticMirrorRecipeStrategy,
     )
-    assert isinstance(
-        semantic_descent.FindingMetricsSemanticProjection.projection_for(
-            specialized_metrics
-        ),
-        semantic_descent.MappingMetricsSemanticProjection,
-    )
+    assert specialized_metrics.semantic_authority_name_candidates() == (None, None)
+    assert specialized_metrics.semantic_fact_names() == ("specialized",)
 
     class SpecializedMappingStrategy(codemod.MappingSemanticMirrorRecipeStrategy):
         metric_type = SpecializedMappingMetrics
-
-    class SpecializedMappingProjection(
-        semantic_descent.MappingMetricsSemanticProjection
-    ):
-        metrics_type = SpecializedMappingMetrics
-
-        def fact_names(
-            self,
-            metrics: codemod.FindingMetrics,
-        ) -> tuple[str, ...]:
-            del metrics
-            return ("specialized",)
 
     try:
         assert (
@@ -375,22 +359,8 @@ def test_metric_dispatch_uses_nominal_mro_priority() -> None:
             )
             is SpecializedMappingStrategy
         )
-        assert (
-            type(
-                semantic_descent.FindingMetricsSemanticProjection.projection_for(
-                    specialized_metrics
-                )
-            )
-            is SpecializedMappingProjection
-        )
-        assert semantic_descent.FindingMetricsSemanticProjection.fact_names_for(
-            specialized_metrics
-        ) == ("specialized",)
     finally:
         del codemod.SemanticMirrorFindingRecipeStrategy.__registry__[
-            SpecializedMappingMetrics
-        ]
-        del semantic_descent.FindingMetricsSemanticProjection.__registry__[
             SpecializedMappingMetrics
         ]
     assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")

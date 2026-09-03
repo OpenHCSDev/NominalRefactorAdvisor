@@ -74,18 +74,12 @@ from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
 from .models import (
     FindingMetrics,
-    MappingMetrics,
     RefactorFinding,
     SemanticRecord,
-    RegistrationMetrics,
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
-from .registry_identity import (
-    AutoRegisterClassAuthority,
-    class_name_registry_key,
-    mro_registry_value,
-)
+from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import SemanticRoleIdentityToken
 from .source_identity import resolved_source_path_text
 
@@ -2783,10 +2777,7 @@ class FindingBackedAuthorityNameProjection:
     def _metric_authority_candidates(
         metrics: FindingMetrics,
     ) -> tuple[str | None, ...]:
-        projection = FindingMetricsSemanticProjection.projection_for(metrics)
-        if projection is None:
-            return ()
-        return projection.authority_name_candidate_names(metrics)
+        return metrics.semantic_authority_name_candidates()
 
     @classmethod
     def _evidence_owner_candidates(
@@ -2879,7 +2870,7 @@ class FindingBackedFactProjection:
 
     @staticmethod
     def fact_names(finding: RefactorFinding) -> tuple[str, ...]:
-        metric_names = FindingMetricsSemanticProjection.fact_names_for(finding.metrics)
+        metric_names = finding.metrics.semantic_fact_names()
         if metric_names:
             return metric_names
         evidence_names = sorted_tuple(location.symbol for location in finding.evidence)
@@ -2925,55 +2916,6 @@ def _build_finding_backed_semantic_descent_graph_cached(
     return request.build_graph()
 
 
-class FindingMetricsSemanticProjection(ABC, metaclass=AutoRegisterMeta):
-    """Registered projection from finding metrics into descent-graph semantics."""
-
-    __registry__: ClassVar[
-        dict[type[FindingMetrics], type["FindingMetricsSemanticProjection"]]
-    ] = {}
-    __registry_key__ = "metrics_type"
-    __skip_if_no_key__ = True
-    metrics_type: ClassVar[type[FindingMetrics]]
-
-    def authority_name_candidate_names(
-        self,
-        metrics: FindingMetrics,
-    ) -> tuple[str | None, ...]:
-        del metrics
-        return ()
-
-    def authority_name(self, metrics: FindingMetrics) -> str | None:
-        return FindingAuthorityNamePolicy.first_specific_name(
-            *self.authority_name_candidate_names(metrics)
-        )
-
-    @abstractmethod
-    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
-        raise NotImplementedError
-
-    @classmethod
-    def projection_for(
-        cls,
-        metrics: FindingMetrics,
-    ) -> "FindingMetricsSemanticProjection | None":
-        projection_type = mro_registry_value(cls.__registry__, type(metrics))
-        return projection_type() if projection_type is not None else None
-
-    @classmethod
-    def authority_name_for(cls, metrics: FindingMetrics) -> str | None:
-        projection = cls.projection_for(metrics)
-        if projection is None:
-            return None
-        return projection.authority_name(metrics)
-
-    @classmethod
-    def fact_names_for(cls, metrics: FindingMetrics) -> tuple[str, ...]:
-        projection = cls.projection_for(metrics)
-        if projection is None:
-            return ()
-        return projection.fact_names(metrics)
-
-
 class FindingAuthorityNamePolicy:
     """Select metric-derived authority names only when they carry identity."""
 
@@ -3011,71 +2953,6 @@ class FindingAuthorityNamePolicy:
             and not any(delimiter in name for delimiter in cls.bag_delimiters)
             and tokens
             and tokens - cls.generic_tokens
-        )
-
-
-class MappingMetricsSemanticProjection(FindingMetricsSemanticProjection):
-    """Use mapping metrics as source-authority and projected field facts."""
-
-    metrics_type: ClassVar[type[FindingMetrics]] = MappingMetrics
-
-    def authority_name_candidate_names(
-        self,
-        metrics: FindingMetrics,
-    ) -> tuple[str | None, ...]:
-        if not isinstance(metrics, MappingMetrics):
-            return ()
-        return (metrics.source_name, metrics.mapping_name)
-
-    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
-        if not isinstance(metrics, MappingMetrics):
-            return ()
-        return metrics.field_names or metrics.identity_field_names
-
-
-class RegistrationMetricsSemanticProjection(FindingMetricsSemanticProjection):
-    """Use registration metrics as registry-authority and registered facts."""
-
-    metrics_type: ClassVar[type[FindingMetrics]] = RegistrationMetrics
-
-    def authority_name_candidate_names(
-        self,
-        metrics: FindingMetrics,
-    ) -> tuple[str | None, ...]:
-        if not isinstance(metrics, RegistrationMetrics):
-            return ()
-        return (metrics.registry_name,)
-
-    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
-        if not isinstance(metrics, RegistrationMetrics):
-            return ()
-        return metrics.class_names or tuple(
-            class_key_pair.split("=", 1)[0]
-            for class_key_pair in metrics.class_key_pairs
-        )
-
-
-class FallbackMetricsSemanticProjection(FindingMetricsSemanticProjection):
-    """Use generic plan fields when no more specific metrics projection exists."""
-
-    metrics_type: ClassVar[type[FindingMetrics]] = FindingMetrics
-
-    def authority_name_candidate_names(
-        self,
-        metrics: FindingMetrics,
-    ) -> tuple[str | None, ...]:
-        return (
-            metrics.plan_source_name,
-            metrics.plan_mapping_name,
-            metrics.plan_registry_name,
-        )
-
-    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
-        return (
-            metrics.plan_field_names
-            or metrics.plan_identity_field_names
-            or metrics.plan_class_names
-            or metrics.plan_literal_cases
         )
 
 
