@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABC
 from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +10,12 @@ from functools import cached_property
 from typing import Callable, ClassVar, Self, TypeAlias
 
 from .ast_tools import ParsedModule
+from .carrier_collapse import (
+    CarrierCollapseCallEdge,
+    CarrierCollapseFieldBinding,
+    CarrierCollapseParticipant,
+    ClosedCarrierCollapseComponent,
+)
 from .class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -28,54 +33,43 @@ from .product_flow_authority import (
     CompactProductFlowRepository,
     CompactResolvedFunctionCall,
 )
-
-
 @dataclass(frozen=True)
-class CarrierExpansionFieldBinding:
-    """One carrier field projected into one callee parameter."""
-
-    field_name: str
-    parameter_name: str
-
-
-@dataclass(frozen=True)
-class CarrierExpansionCallEdge(ABC):
-    """Shared field-to-parameter semantics for one carrier call edge."""
-
-    resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[CarrierExpansionFieldBinding, ...]
-
-    @property
-    def caller_symbol(self) -> str:
-        return self.resolved_call.context.owner_symbol
-
-    @property
-    def callee_symbol(self) -> str:
-        return self.resolved_call.callee.identity.symbol
-
-    @property
-    def call_identity(self) -> CompactFunctionCallIdentity:
-        return CompactFunctionCallIdentity.from_resolution(self.resolved_call)
-
-    @property
-    def field_mapping(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (binding.field_name, binding.parameter_name)
-            for binding in self.field_bindings
-        )
-
-
-@dataclass(frozen=True)
-class DeclaredCarrierExpansion(CarrierExpansionCallEdge):
+class DeclaredCarrierExpansion(CarrierCollapseCallEdge):
     """One call that expands fields from a declaration-typed carrier value."""
 
     carrier_class_symbol: str
     carrier_reference: LexicalValueReference
+    resolved_call: CompactResolvedFunctionCall
+    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
+
+    @property
+    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
+        return ()
+
+    def carrier_value_reference(
+        self,
+        carrier_parameter_names: Mapping[str, str],
+    ) -> LexicalValueReference:
+        del carrier_parameter_names
+        return self.carrier_reference
 
 
 @dataclass(frozen=True)
-class ForwardedCarrierExpansion(CarrierExpansionCallEdge):
+class ForwardedCarrierExpansion(CarrierCollapseCallEdge):
     """One downstream call forwarding every field through flat parameters."""
+
+    resolved_call: CompactResolvedFunctionCall
+    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
+
+    @property
+    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
+        return (self.caller_symbol,)
+
+    def carrier_value_reference(
+        self,
+        carrier_parameter_names: Mapping[str, str],
+    ) -> LexicalValueReference:
+        return LexicalValueReference(carrier_parameter_names[self.caller_symbol])
 
 
 @dataclass(frozen=True)
@@ -93,7 +87,7 @@ class DeclaredCarrierExpansionComponent:
         return next(iter(carrier_symbols))
 
     @property
-    def edges(self) -> tuple[CarrierExpansionCallEdge, ...]:
+    def edges(self) -> tuple[CarrierCollapseCallEdge, ...]:
         return (*self.root_edges, *self.forwarding_edges)
 
     @cached_property
@@ -277,11 +271,34 @@ class DeclaredCarrierExpansionAuthorityProof:
 
 
 @dataclass(frozen=True)
-class DeclaredCarrierExpansionAssessment:
+class DeclaredCarrierExpansionAssessment(ClosedCarrierCollapseComponent):
     """One derived expansion component paired with its rewrite authority proof."""
 
     component: DeclaredCarrierExpansionComponent
     proof: DeclaredCarrierExpansionAuthorityProof
+    participants: tuple[CarrierCollapseParticipant, ...]
+
+    @property
+    def authority(self) -> CompactProductAuthority:
+        if self.proof.carrier_authority is None:
+            raise ValueError("carrier expansion has no proven product authority")
+        return self.proof.carrier_authority
+
+    @property
+    def edges(self) -> tuple[CarrierCollapseCallEdge, ...]:
+        return self.component.edges
+
+    @property
+    def field_mapping_by_participant(
+        self,
+    ) -> Mapping[str, tuple[tuple[str, str], ...]]:
+        if not self.proof.is_proven:
+            raise ValueError("carrier expansion mapping requires a proven component")
+        return self.component.field_mapping_by_participant
+
+    def require_rewrite_authority(self) -> None:
+        if not self.proof.is_proven:
+            raise ValueError("carrier expansion rewrite requires a proven component")
 
 
 @dataclass(frozen=True)
@@ -394,6 +411,19 @@ class DeclaredCarrierExpansionBuilder:
                     carrier_symbols_by_participant,
                     root_expansion_count_by_call,
                 ),
+                tuple(
+                    CarrierCollapseParticipant(
+                        declaration=(
+                            self.repository.function_declarations_by_symbol[
+                                participant_symbol
+                            ]
+                        ),
+                        context=self.repository.flow_contexts_by_owner_symbol[
+                            participant_symbol
+                        ],
+                    )
+                    for participant_symbol in component.participant_symbols
+                ),
             )
             for component in self.components
         )
@@ -496,7 +526,7 @@ class DeclaredCarrierExpansionBuilder:
             return ()
         bindings_by_carrier: dict[
             tuple[LexicalValueReference, str],
-            list[CarrierExpansionFieldBinding],
+            list[CarrierCollapseFieldBinding],
         ] = {}
         for parameter in call.callee.call_signature.parameters:
             argument = call_binding.argument_for(parameter.name)
@@ -522,9 +552,10 @@ class DeclaredCarrierExpansionBuilder:
                 (carrier_reference, carrier_class_symbol),
                 [],
             ).append(
-                CarrierExpansionFieldBinding(
+                CarrierCollapseFieldBinding(
                     field_name=value_reference.terminal_name,
                     parameter_name=parameter.name,
+                    value_reference=value_reference,
                 )
             )
         return tuple(
@@ -631,9 +662,12 @@ class DeclaredCarrierExpansionBuilder:
             if len(parameter_names) != 1:
                 return None
             field_bindings.append(
-                CarrierExpansionFieldBinding(
+                CarrierCollapseFieldBinding(
                     field_name=field_name,
                     parameter_name=next(iter(parameter_names)),
+                    value_reference=LexicalValueReference(
+                        caller_parameter_name
+                    ),
                 )
             )
         if len({binding.parameter_name for binding in field_bindings}) != len(

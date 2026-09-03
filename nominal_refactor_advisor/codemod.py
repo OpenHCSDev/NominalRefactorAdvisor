@@ -61,6 +61,12 @@ from .ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
 )
+from .carrier_collapse import (
+    CarrierCollapseCallEdge,
+    CarrierCollapseParticipant,
+    ClosedCarrierCollapseComponent,
+)
+from .carrier_expansion import DeclaredCarrierExpansionBuilder
 from .class_index import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
@@ -136,10 +142,7 @@ from .manual_registry import (
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .parameter_conveyor import (
-    ClosedParameterConveyorComponent,
     ClosedParameterConveyorComponentBuilder,
-    ParameterConveyorCallEdge,
-    ParameterConveyorParticipant,
 )
 from .patterns import PatternId
 from .planner import (
@@ -4859,7 +4862,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
         )
 
 
-class _ParameterConveyorNameLoadTransformer(ast.NodeTransformer):
+class _CarrierCollapseNameLoadTransformer(ast.NodeTransformer):
     """Rewrite one participant's proven flat field parameters to its carrier."""
 
     def __init__(
@@ -4889,12 +4892,13 @@ class _ParameterConveyorNameLoadTransformer(ast.NodeTransformer):
 
 
 @dataclass(frozen=True)
-class _ParameterConveyorParticipantRewrite:
-    participant: ParameterConveyorParticipant
+class _CarrierCollapseParticipantRewrite:
+    participant: CarrierCollapseParticipant
     target: AstTargetDigest
     node: ast.FunctionDef | ast.AsyncFunctionDef
     field_mapping: tuple[tuple[str, str], ...]
     carrier_parameter_name: str
+    carrier_annotation_source: str
 
     @property
     def fields_by_parameter_name(self) -> dict[str, str]:
@@ -4908,8 +4912,8 @@ class _ParameterConveyorParticipantRewrite:
         return frozenset(self.fields_by_parameter_name)
 
     @property
-    def transformer(self) -> _ParameterConveyorNameLoadTransformer:
-        return _ParameterConveyorNameLoadTransformer(
+    def transformer(self) -> _CarrierCollapseNameLoadTransformer:
+        return _CarrierCollapseNameLoadTransformer(
             carrier_parameter_name=self.carrier_parameter_name,
             fields_by_parameter_name=self.fields_by_parameter_name,
         )
@@ -4970,17 +4974,22 @@ class _ParameterConveyorParticipantRewrite:
         arguments.kw_defaults = [
             default for _parameter, default in retained_keyword_only
         ]
-        arguments.kwonlyargs.append(ast.arg(arg=self.carrier_parameter_name))
+        arguments.kwonlyargs.append(
+            ast.arg(
+                arg=self.carrier_parameter_name,
+                annotation=ast.Constant(value=self.carrier_annotation_source),
+            )
+        )
         arguments.kw_defaults.append(None)
         return ast.unparse(arguments)
 
 
 @dataclass(frozen=True)
-class _ClosedParameterConveyorSourceRewrite:
+class _ClosedCarrierCollapseSourceRewrite:
     """Derive one atomic physical rewrite from a current proven component."""
 
     context: CodemodSourceSnapshot
-    component: ClosedParameterConveyorComponent
+    component: ClosedCarrierCollapseComponent
     rationale: str
 
     _nested_scope_types: ClassVar[tuple[type[ast.AST], ...]] = (
@@ -4995,8 +5004,7 @@ class _ClosedParameterConveyorSourceRewrite:
     )
 
     def __post_init__(self) -> None:
-        if not self.component.proof.is_proven:
-            raise ValueError("parameter-conveyor rewrite requires a proven component")
+        self.component.require_rewrite_authority()
 
     @cached_property
     def geometries_by_file_path(self) -> dict[str, SourceTextGeometry]:
@@ -5006,9 +5014,32 @@ class _ClosedParameterConveyorSourceRewrite:
         }
 
     @cached_property
+    def authority_target(self) -> ResolvedClassTarget:
+        authority_symbol = self.component.authority.class_symbol
+        matches = tuple(
+            target
+            for target in self.context.source_index.targets_matching_repository_symbol(
+                authority_symbol
+            )
+            if target.is_class
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"Carrier authority {authority_symbol!r} has {len(matches)} "
+                "source targets"
+            )
+        target = matches[0]
+        node = self.context.ast_target_nodes_by_id.get(target.target_id)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Carrier authority {authority_symbol!r} has no class node"
+            )
+        return ResolvedClassTarget(target, node)
+
+    @cached_property
     def participant_rewrites(
         self,
-    ) -> tuple[_ParameterConveyorParticipantRewrite, ...]:
+    ) -> tuple[_CarrierCollapseParticipantRewrite, ...]:
         rewrites = []
         for participant in self.component.participants:
             target, node = self._participant_target(participant)
@@ -5020,7 +5051,7 @@ class _ClosedParameterConveyorSourceRewrite:
                 self.geometries_by_file_path[target.file_path],
             )
             rewrites.append(
-                _ParameterConveyorParticipantRewrite(
+                _CarrierCollapseParticipantRewrite(
                     participant=participant,
                     target=target,
                     node=node,
@@ -5033,6 +5064,7 @@ class _ClosedParameterConveyorSourceRewrite:
                             for _field_name, parameter_name in field_mapping
                         ),
                     ),
+                    carrier_annotation_source=self.authority_target.target.name,
                 )
             )
         return tuple(rewrites)
@@ -5040,7 +5072,7 @@ class _ClosedParameterConveyorSourceRewrite:
     @cached_property
     def participant_rewrites_by_symbol(
         self,
-    ) -> dict[str, _ParameterConveyorParticipantRewrite]:
+    ) -> dict[str, _CarrierCollapseParticipantRewrite]:
         return {
             rewrite.participant.symbol: rewrite for rewrite in self.participant_rewrites
         }
@@ -5052,7 +5084,7 @@ class _ClosedParameterConveyorSourceRewrite:
             for participant_symbol, rewrite in self.participant_rewrites_by_symbol.items()
         }
 
-    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+    def source_edits(self) -> tuple[NominalSourceEdit, ...]:
         call_replacements = tuple(
             (edge.resolved_call.context.file_path, self._call_replacement(edge))
             for edge in self.component.edges
@@ -5083,7 +5115,7 @@ class _ClosedParameterConveyorSourceRewrite:
                     call_spans_by_file_path.get(rewrite.target.file_path, ()),
                 )
             )
-        return tuple(
+        physical_edits = tuple(
             edit
             for file_path, replacements in sorted(replacements_by_file_path.items())
             for edit in self.geometries_by_file_path[file_path].physical_edits(
@@ -5096,10 +5128,34 @@ class _ClosedParameterConveyorSourceRewrite:
                 ),
             )
         )
+        return (*self.import_mutations, *physical_edits)
+
+    @cached_property
+    def import_mutations(self) -> tuple[ModuleImportMutation, ...]:
+        imports_by_path_and_source = {
+            (rewrite.target.file_path, import_source): ModuleImportMutation.from_source(
+                file_path=rewrite.target.file_path,
+                import_source=import_source,
+                rationale=(
+                    self.rationale
+                    or "Import the nominal carrier used by a collapsed signature."
+                ),
+            )
+            for rewrite in self.participant_rewrites
+            if (
+                import_source := ClassAuthorityReferenceProof.from_context(
+                    self.context,
+                    self.authority_target,
+                    rewrite.target.file_path,
+                ).required_import_source(self.context)
+            )
+            is not None
+        }
+        return tuple(imports_by_path_and_source.values())
 
     def _participant_target(
         self,
-        participant: ParameterConveyorParticipant,
+        participant: CarrierCollapseParticipant,
     ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef]:
         declaration = participant.declaration
         matches = tuple(
@@ -5144,7 +5200,7 @@ class _ClosedParameterConveyorSourceRewrite:
 
     def _carrier_parameter_name(
         self,
-        participant: ParameterConveyorParticipant,
+        participant: CarrierCollapseParticipant,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         mapped_parameter_names: frozenset[str],
     ) -> str:
@@ -5180,7 +5236,7 @@ class _ClosedParameterConveyorSourceRewrite:
 
     def _call_replacement(
         self,
-        edge: ParameterConveyorCallEdge,
+        edge: CarrierCollapseCallEdge,
     ) -> SourceTextSpanReplacement:
         resolved_call = edge.resolved_call
         geometry = self.geometries_by_file_path[resolved_call.context.file_path]
@@ -5255,7 +5311,7 @@ class _ClosedParameterConveyorSourceRewrite:
 
     def _participant_name_replacements(
         self,
-        rewrite: _ParameterConveyorParticipantRewrite,
+        rewrite: _CarrierCollapseParticipantRewrite,
         call_spans: Iterable[SourceTextSpan],
     ) -> tuple[SourceTextSpanReplacement, ...]:
         geometry = self.geometries_by_file_path[rewrite.target.file_path]
@@ -5302,43 +5358,92 @@ class _ClosedParameterConveyorSourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseClosedParameterConveyorOperation(RepositorySourceReprovedOperation):
-    """Re-prove and atomically collapse one authority-wide parameter conveyor."""
+class CarrierCollapseOperationABC(RepositorySourceReprovedOperation, ABC):
+    """Re-prove every carrier component before one authority-wide collapse."""
 
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._source_rewrite(snapshot).source_edits()
+    ) -> tuple[NominalSourceEdit, ...]:
+        return tuple(
+            edit
+            for component in self._current_components(snapshot)
+            for edit in _ClosedCarrierCollapseSourceRewrite(
+                context=snapshot,
+                component=component,
+                rationale=self.rationale,
+            ).source_edits()
+        )
 
-    def _source_rewrite(
+    def _current_components(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> _ClosedParameterConveyorSourceRewrite:
+    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         (
             _target_identifier,
             authority_target,
             _authority_node,
         ) = self.target_node_from_context(snapshot)
         if not authority_target.is_class:
-            raise ValueError("parameter-conveyor authority target must be a class")
-        components = tuple(
+            raise ValueError("carrier-collapse authority target must be a class")
+        components = self.current_components_for_authority(
+            snapshot,
+            authority_target,
+        )
+        if not components:
+            raise ValueError(
+                f"Authority {authority_target.qualname!r} has no current "
+                "carrier-collapse components"
+            )
+        for component in components:
+            component.require_rewrite_authority()
+        return components
+
+    @abstractmethod
+    def current_components_for_authority(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        authority_target: AstTargetDigest,
+    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseClosedParameterConveyorOperation(CarrierCollapseOperationABC):
+    """Collapse every closed constructor-derived conveyor for one authority."""
+
+    def current_components_for_authority(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        authority_target: AstTargetDigest,
+    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
+        authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
+        return tuple(
             component
             for component in ClosedParameterConveyorComponentBuilder.from_modules(
                 snapshot.parsed_modules
-            ).proven_components()
-            if component.authority.file_path == authority_target.file_path
-            and component.authority.line == authority_target.line
+            ).assessed_components()
+            if component.authority.class_symbol == authority_symbol
         )
-        if len(components) != 1:
-            raise ValueError(
-                f"Authority {authority_target.qualname!r} has {len(components)} "
-                "current proven parameter-conveyor components"
-            )
-        return _ClosedParameterConveyorSourceRewrite(
-            context=snapshot,
-            component=components[0],
-            rationale=self.rationale,
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseDeclaredCarrierExpansionOperation(CarrierCollapseOperationABC):
+    """Collapse every declaration-typed carrier expansion for one authority."""
+
+    def current_components_for_authority(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        authority_target: AstTargetDigest,
+    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
+        authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
+        builder = DeclaredCarrierExpansionBuilder.from_modules(
+            snapshot.parsed_modules
+        )
+        return tuple(
+            assessment
+            for assessment in builder.assessed_components()
+            if assessment.component.carrier_class_symbol == authority_symbol
         )
 
 

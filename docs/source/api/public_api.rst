@@ -121,6 +121,11 @@ authority.  ``CollapseClosedParameterConveyorOperation`` serialises only that
 authority's source target.  Execution re-derives the product and call families
 from the current source snapshot, requires the component proof again, and then
 rewrites all participating signatures, field loads, and calls as one operation.
+``CollapseDeclaredCarrierExpansionOperation`` applies the same atomic rewrite
+contract when a value already proved to have the carrier's declared return type
+is expanded into its fields at a call boundary.  It follows the complete
+downstream forwarding graph, re-proves every participating callable and product
+relation, and derives any cycle-safe carrier imports from the repository.
 Exact byte spans distinguish multiple calls on the same line.  Source forms
 that cannot be edited without losing comments or lexical-scope semantics remain
 rejected; field mappings are never copied into the recipe payload.
@@ -145,7 +150,7 @@ their exact source target.  Each unavoidable field mapping is a nominal
 ``CarrierFieldProjection`` payload record rather than an encoded string pair.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------

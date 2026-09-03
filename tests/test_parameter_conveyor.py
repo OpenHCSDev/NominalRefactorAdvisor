@@ -281,7 +281,8 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     rewritten_source = simulation.rewritten_sources[module.file_path]
     assert rewritten_source == _base_source().replace(
         "def _build(left, right):\n    return left, right\n",
-        "def _build(*, cache_key):\n    return cache_key.left, cache_key.right\n",
+        "def _build(*, cache_key: '_CacheKey'):\n"
+        "    return cache_key.left, cache_key.right\n",
     ).replace(
         "    return _build(left, right)\n",
         "    return _build(cache_key=key)\n",
@@ -382,7 +383,7 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
         _base_source()
         .replace(
             "def _build(left, right):\n    return left, right\n",
-            "def _build(*, cache_key):\n"
+            "def _build(*, cache_key: '_CacheKey'):\n"
             "    return cache_key.left, cache_key.right\n",
         )
         .replace(
@@ -455,7 +456,7 @@ def test_parameter_conveyor_cli_proves_exports_and_applies_the_goal(
     assert application_payload["applied"] is True
     assert application_payload["applied_rewrite_count"] == 2
     rewritten_source = source_path.read_text(encoding="utf-8")
-    assert "def _build(*, cache_key):" in rewritten_source
+    assert "def _build(*, cache_key: '_CacheKey'):" in rewritten_source
     assert "return _build(cache_key=key)" in rewritten_source
     compile(rewritten_source, source_path.as_posix(), "exec")
 
@@ -497,7 +498,10 @@ def test_parameter_conveyor_recipe_reproves_current_source_before_rewriting() ->
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "0 current proven parameter-conveyor components" in plan.records[0].reason
+    assert (
+        "parameter-conveyor rewrite requires a proven component"
+        in plan.records[0].reason
+    )
 
 
 def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
@@ -534,9 +538,9 @@ def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _second(*, cache_key):" in rewritten_source
+    assert "def _second(*, cache_key: '_CacheKey'):" in rewritten_source
     assert "return cache_key.left, cache_key.right" in rewritten_source
-    assert "def _first(*, cache_key):" in rewritten_source
+    assert "def _first(*, cache_key: '_CacheKey'):" in rewritten_source
     assert "first_alias = cache_key.left" in rewritten_source
     assert "second_alias = cache_key.right" in rewritten_source
     assert "return _second(cache_key=cache_key)" in rewritten_source
@@ -606,7 +610,7 @@ def test_parameter_conveyor_rewrite_preserves_a_private_method_receiver() -> Non
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _build(self, *, cache_key):" in rewritten_source
+    assert "def _build(self, *, cache_key: '_CacheKey'):" in rewritten_source
     assert "return self._build(cache_key=key)" in rewritten_source
 
 
@@ -645,7 +649,7 @@ def test_parameter_conveyor_rewrite_preserves_cross_module_identity() -> None:
 
     assert tuple(simulation.rewritten_sources) == (worker_module.file_path,)
     assert (
-        "def _build(*, cache_key):"
+        "def _build(*, cache_key: '_CacheKey'):"
         in simulation.rewritten_sources[worker_module.file_path]
     )
     assert (
@@ -682,7 +686,7 @@ def test_parameter_conveyor_rewrite_avoids_existing_carrier_name_bindings() -> N
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _build(*, cache_key_2):" in rewritten_source
+    assert "def _build(*, cache_key_2: '_CacheKey'):" in rewritten_source
     assert "return cache_key_2.left, cache_key_2.right, cache_key" in rewritten_source
     assert "return _build(cache_key_2=key)" in rewritten_source
 

@@ -386,6 +386,7 @@ def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
 def test_source_derived_synthesized_operations_share_one_reproof_contract() -> None:
     operation_types = (
         codemod.CollapseClosedParameterConveyorOperation,
+        codemod.CollapseDeclaredCarrierExpansionOperation,
         codemod.ConvertManualRegistryToAutoregisterOperation,
         codemod.DeleteInheritedAutoRegisterConfigurationOperation,
         codemod.DeriveAutoregisterInstanceViewOperation,

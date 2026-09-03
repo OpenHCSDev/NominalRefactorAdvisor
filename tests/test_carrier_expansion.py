@@ -3,10 +3,19 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.carrier_expansion import (
     DeclaredCarrierExpansionAuthorityViolation,
     DeclaredCarrierExpansionBuilder,
+)
+from nominal_refactor_advisor.codemod import (
+    CodemodSourceSnapshot,
+    CollapseDeclaredCarrierExpansionOperation,
+    RefactorRecipe,
+    RefactorRecipeOperation,
+    SourceRewriteTarget,
 )
 
 
@@ -281,3 +290,173 @@ def test_builder_rejects_mutated_projected_parameters() -> None:
         DeclaredCarrierExpansionAuthorityViolation.REBINDING_OR_MUTATION
         in proof.violations
     )
+
+
+def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> None:
+    module = _module(
+        "pkg.rewrite",
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _Context:\n"
+        "    first: object\n"
+        "    second: object\n"
+        "\n"
+        "    @classmethod\n"
+        "    def merge(cls, base) -> '_Context':\n"
+        "        return base\n"
+        "\n"
+        "def _leaf(first, second):\n"
+        "    return first, second\n"
+        "\n"
+        "def _middle(left, right):\n"
+        "    return _leaf(left, right)\n"
+        "\n"
+        "def caller(base):\n"
+        "    context = _Context.merge(base)\n"
+        "    return _middle(context.first, context.second)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if snapshot.source_index.symbol_for_target(target)
+        == "pkg.rewrite._Context"
+    )
+    operation = CollapseDeclaredCarrierExpansionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id)
+    )
+    operation_payload = operation.to_dict()
+    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    assert "field_mapping" not in operation_payload
+
+    recipe = RefactorRecipe(recipe_id="collapse-declared-carrier").with_operation(
+        operation
+    )
+    simulation = snapshot.simulate_rewrites(recipe.source_rewrite_batch(snapshot))
+
+    assert simulation.parse_validation.parse_valid
+    rewritten_source = simulation.rewritten_sources[module.file_path]
+    assert (
+        "def _leaf(*, context: '_Context'):\n"
+        "    return context.first, context.second\n"
+    ) in rewritten_source
+    assert (
+        "def _middle(*, context: '_Context'):\n"
+        "    return _leaf(context=context)\n"
+    ) in rewritten_source
+    assert "return _middle(context=context)" in rewritten_source
+    original_namespace = {"__name__": "pkg.rewrite_original"}
+    rewritten_namespace = {"__name__": "pkg.rewrite_rewritten"}
+    exec(
+        compile(module.source, module.file_path, "exec", dont_inherit=True),
+        original_namespace,
+    )
+    exec(
+        compile(rewritten_source, module.file_path, "exec", dont_inherit=True),
+        rewritten_namespace,
+    )
+    original_context = original_namespace["_Context"]("left", "right")
+    rewritten_context = rewritten_namespace["_Context"]("left", "right")
+    assert original_namespace["caller"](original_context) == rewritten_namespace[
+        "caller"
+    ](rewritten_context)
+
+
+def test_declared_carrier_operation_imports_cross_module_authority() -> None:
+    models_module = _module(
+        "pkg.models",
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Context:\n"
+        "    first: object\n"
+        "    second: object\n"
+        "\n"
+        "    @classmethod\n"
+        "    def merge(cls, base) -> 'Context':\n"
+        "        return base\n",
+    )
+    worker_module = _module(
+        "pkg.worker",
+        "def _consume(first, second):\n"
+        "    return first, second\n",
+    )
+    entry_module = _module(
+        "pkg.entry",
+        "from pkg.models import Context\n"
+        "from pkg.worker import _consume\n"
+        "\n"
+        "def caller(base):\n"
+        "    context = Context.merge(base)\n"
+        "    return _consume(context.first, context.second)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        (models_module, worker_module, entry_module),
+        (),
+    )
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if snapshot.source_index.symbol_for_target(target) == "pkg.models.Context"
+    )
+    operation = CollapseDeclaredCarrierExpansionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id)
+    )
+
+    simulation = snapshot.simulate_rewrites(
+        RefactorRecipe(recipe_id="cross-module-carrier")
+        .with_operation(operation)
+        .source_rewrite_batch(snapshot)
+    )
+
+    assert simulation.parse_valid
+    rewritten_worker = simulation.rewritten_sources[worker_module.file_path]
+    assert "from pkg.models import Context\n" in rewritten_worker
+    assert "def _consume(*, context: 'Context'):" in rewritten_worker
+    rewritten_entry = simulation.rewritten_sources[entry_module.file_path]
+    assert "return _consume(context=context)" in rewritten_entry
+    compile(rewritten_worker, worker_module.file_path, "exec")
+    compile(rewritten_entry, entry_module.file_path, "exec")
+
+
+def test_declared_carrier_operation_rejects_an_open_current_call_family() -> None:
+    module = _module(
+        "pkg.open_rewrite",
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class _Context:\n"
+        "    first: object\n"
+        "    second: object\n"
+        "\n"
+        "    @classmethod\n"
+        "    def merge(cls, base) -> '_Context':\n"
+        "        return base\n"
+        "\n"
+        "def _consume(first, second):\n"
+        "    return first, second\n"
+        "\n"
+        "def root(base):\n"
+        "    context = _Context.merge(base)\n"
+        "    return _consume(context.first, context.second)\n"
+        "\n"
+        "def outside(first, second):\n"
+        "    return _consume(first, second)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if snapshot.source_index.symbol_for_target(target)
+        == "pkg.open_rewrite._Context"
+    )
+    operation = CollapseDeclaredCarrierExpansionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id)
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="carrier expansion rewrite requires a proven component",
+    ):
+        operation.source_edits_from_snapshot(snapshot)

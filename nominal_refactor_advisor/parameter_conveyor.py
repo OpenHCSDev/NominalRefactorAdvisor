@@ -11,6 +11,12 @@ from collections.abc import Mapping
 from typing import Callable, Self, TypeAlias
 
 from .ast_tools import ParsedModule
+from .carrier_collapse import (
+    CarrierCollapseCallEdge,
+    CarrierCollapseFieldBinding,
+    CarrierCollapseParticipant,
+    ClosedCarrierCollapseComponent,
+)
 from .class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -18,7 +24,6 @@ from .class_index import (
 from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
-    CompactFunctionDeclaration,
     CompactLexicalMutation,
     CompactMutationKind,
     CompactValueOriginResolution,
@@ -38,56 +43,13 @@ from .product_flow_authority import (
 )
 
 
-@dataclass(frozen=True)
-class ParameterConveyorFieldBinding:
-    """One authority field mapped injectively to a callee parameter."""
-
-    field_name: str
-    parameter_name: str
-    value_reference: LexicalValueReference
-
-
-class ParameterConveyorCallEdge(ABC):
-    """A complete product mapping across one nominal call edge."""
-
-    resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[ParameterConveyorFieldBinding, ...]
+class ParameterConveyorCallEdge(CarrierCollapseCallEdge, ABC):
+    """Carrier-collapse edge descending from an explicit product construction."""
 
     @property
     @abstractmethod
     def authority(self) -> CompactProductAuthority:
         raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
-        """Return participants whose remaining call arguments use the carrier."""
-
-        raise NotImplementedError
-
-    @abstractmethod
-    def carrier_value_reference(
-        self,
-        carrier_parameter_names: Mapping[str, str],
-    ) -> LexicalValueReference:
-        """Derive the carrier expression supplied to this edge's callee."""
-
-        raise NotImplementedError
-
-    @property
-    def callee_symbol(self) -> str:
-        return self.resolved_call.callee.identity.symbol
-
-    @property
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(binding.field_name for binding in self.field_bindings)
-
-    @property
-    def field_mapping(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (binding.field_name, binding.parameter_name)
-            for binding in self.field_bindings
-        )
 
 
 @dataclass(frozen=True)
@@ -118,7 +80,7 @@ class ParameterConveyorProductProjection:
 class ConstructedProductCallEdge(ParameterConveyorCallEdge):
     construction: CompactResolvedProductConstruction
     resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[ParameterConveyorFieldBinding, ...]
+    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
     carrier_binding_is_local: bool
     carrier_binding_dominates_call: bool
     intervening_mutation_roots: tuple[str, ...]
@@ -156,10 +118,9 @@ class ConstructedProductCallEdge(ParameterConveyorCallEdge):
 
 @dataclass(frozen=True)
 class ForwardedProductCallEdge(ParameterConveyorCallEdge):
-    caller_symbol: str
     product_authority: CompactProductAuthority
     resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[ParameterConveyorFieldBinding, ...]
+    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
 
     @property
     def authority(self) -> CompactProductAuthority:
@@ -174,18 +135,6 @@ class ForwardedProductCallEdge(ParameterConveyorCallEdge):
         carrier_parameter_names: Mapping[str, str],
     ) -> LexicalValueReference:
         return LexicalValueReference(carrier_parameter_names[self.caller_symbol])
-
-
-@dataclass(frozen=True)
-class ParameterConveyorParticipant:
-    """One function whose flat field parameters can become one carrier."""
-
-    declaration: CompactFunctionDeclaration
-    context: CompactProductFlowContext
-
-    @property
-    def symbol(self) -> str:
-        return self.declaration.identity.symbol
 
 
 ParameterConveyorAuthorityPredicate: TypeAlias = Callable[
@@ -480,11 +429,11 @@ class ClosedParameterConveyorAuthorityProof:
 
 
 @dataclass(frozen=True)
-class ClosedParameterConveyorComponent:
+class ClosedParameterConveyorComponent(ClosedCarrierCollapseComponent):
     """One maximal connected component and its final-authority proof."""
 
     authority: CompactProductAuthority
-    participants: tuple[ParameterConveyorParticipant, ...]
+    participants: tuple[CarrierCollapseParticipant, ...]
     root_edges: tuple[ConstructedProductCallEdge, ...]
     forwarding_edges: tuple[ForwardedProductCallEdge, ...]
     proof: ClosedParameterConveyorAuthorityProof
@@ -520,6 +469,12 @@ class ClosedParameterConveyorComponent:
             participant_symbol: next(iter(participant_mappings))
             for participant_symbol, participant_mappings in mappings.items()
         }
+
+    def require_rewrite_authority(self) -> None:
+        if not self.proof.is_proven:
+            raise ValueError(
+                "parameter-conveyor rewrite requires a proven component"
+            )
 
 
 @dataclass(frozen=True)
@@ -748,7 +703,6 @@ class ClosedParameterConveyorComponentBuilder:
             )
             for call_edge in candidate_edges:
                 edge = self._forwarded_edge(
-                    caller_symbol,
                     authority,
                     call_edge,
                     caller_parameters_by_field,
@@ -848,7 +802,6 @@ class ClosedParameterConveyorComponentBuilder:
 
     def _forwarded_edge(
         self,
-        caller_symbol: str,
         authority: CompactProductAuthority,
         call_edge: CompactResolvedFunctionCall,
         caller_parameters_by_field: dict[str, str],
@@ -866,7 +819,6 @@ class ClosedParameterConveyorComponentBuilder:
         if bindings is None:
             return None
         return ForwardedProductCallEdge(
-            caller_symbol=caller_symbol,
             product_authority=authority,
             resolved_call=call_edge,
             field_bindings=bindings,
@@ -880,7 +832,7 @@ class ClosedParameterConveyorComponentBuilder:
             str,
             frozenset[LexicalValueReference],
         ],
-    ) -> tuple[ParameterConveyorFieldBinding, ...] | None:
+    ) -> tuple[CarrierCollapseFieldBinding, ...] | None:
         simple_arguments = self.simple_bound_arguments_by_call.get(
             self.call_identity(call_edge),
             {},
@@ -889,7 +841,7 @@ class ClosedParameterConveyorComponentBuilder:
             self.call_identity(call_edge),
             {},
         )
-        bindings: list[ParameterConveyorFieldBinding] = []
+        bindings: list[CarrierCollapseFieldBinding] = []
         for field_name in authority.field_names:
             matches = tuple(
                 (parameter_name, value_reference)
@@ -908,7 +860,7 @@ class ClosedParameterConveyorComponentBuilder:
                 return None
             parameter_name, value_reference = matches[0]
             bindings.append(
-                ParameterConveyorFieldBinding(
+                CarrierCollapseFieldBinding(
                     field_name=field_name,
                     parameter_name=parameter_name,
                     value_reference=value_reference,
@@ -991,7 +943,7 @@ class ClosedParameterConveyorComponentBuilder:
         authority_symbols_by_participant: dict[str, set[str]],
     ) -> ClosedParameterConveyorComponent:
         participants = tuple(
-            ParameterConveyorParticipant(
+            CarrierCollapseParticipant(
                 declaration=self.repository.function_declarations_by_symbol[symbol],
                 context=self.repository.flow_contexts_by_owner_symbol[symbol],
             )
@@ -1166,7 +1118,7 @@ class ClosedParameterConveyorComponentBuilder:
 
     def _participant_product_call_hazards(
         self,
-        participants: tuple[ParameterConveyorParticipant, ...],
+        participants: tuple[CarrierCollapseParticipant, ...],
         component_call_ids: frozenset[CompactFunctionCallIdentity],
         field_mapping_by_participant: dict[str, tuple[tuple[str, str], ...]],
     ) -> tuple[set[str], set[str]]:
