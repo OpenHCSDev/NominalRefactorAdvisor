@@ -9787,7 +9787,7 @@ class MovedTopLevelSymbolSource:
             or "." in target_digest.qualname
         ):
             raise ValueError(
-                "move_symbol_to_module only supports module-level classes "
+                "Module symbol moves only support module-level classes "
                 f"and functions; got {target_digest.qualname!r}"
             )
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -9819,138 +9819,6 @@ class MovedSymbolImportPolicy:
     @classmethod
     def from_source(cls, import_source: str | None) -> "MovedSymbolImportPolicy":
         return cls(import_source=import_source)
-
-    def source_mutation(
-        self,
-        source_block: MovedTopLevelSymbolSource,
-        *,
-        rationale: str,
-    ) -> ModuleImportMutation | None:
-        if not self.import_source:
-            return None
-        return ModuleImportMutation.from_source(
-            file_path=source_block.source_file_path,
-            import_source=self.import_source,
-            rationale=rationale
-            or f"Ensure moved symbol import for {source_block.name!r}.",
-        )
-
-
-@dataclass(frozen=True)
-class SourceTopLevelSymbolMovePlan:
-    """Line replacements for moving one module-level class or function."""
-
-    source_block: MovedTopLevelSymbolSource
-    destination_file_path: str
-    rationale: str = ""
-
-    @classmethod
-    def from_target(
-        cls,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-        context: CodemodSelectorContext,
-        *,
-        destination_file_path: str,
-        rationale: str,
-    ) -> "SourceTopLevelSymbolMovePlan":
-        source_block = MovedTopLevelSymbolSource.from_target(
-            target_digest,
-            node,
-            context.sources_by_file_path,
-        )
-        cls._validate_destination(
-            target_digest,
-            context,
-            destination_file_path,
-        )
-        return cls(
-            source_block=source_block,
-            destination_file_path=destination_file_path,
-            rationale=rationale,
-        )
-
-    @staticmethod
-    def _validate_destination(
-        target_digest: AstTargetDigest,
-        context: CodemodSelectorContext,
-        destination_file_path: str,
-    ) -> None:
-        if destination_file_path not in context.sources_by_file_path:
-            raise ValueError(
-                f"move_symbol_to_module destination {destination_file_path!r} "
-                "is not in the source set"
-            )
-        if destination_file_path == target_digest.file_path:
-            raise ValueError(
-                "move_symbol_to_module destination must differ from source"
-            )
-        if any(
-            destination_target.file_path == destination_file_path
-            and destination_target.name == target_digest.name
-            and _is_movable_module_symbol_kind(destination_target.node_kind)
-            and "." not in destination_target.qualname
-            for destination_target in context.source_index.ast_targets
-        ):
-            raise ValueError(
-                f"Destination {destination_file_path!r} already defines "
-                f"module-level symbol {target_digest.name!r}"
-            )
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return (
-            self.destination_insertion(context),
-            self.source_block.deletion_replacement(rationale=self.rationale),
-        )
-
-    def destination_insertion(
-        self,
-        context: CodemodSelectorContext,
-    ) -> SourceInsertion:
-        destination_source = context.sources_by_file_path[self.destination_file_path]
-        insertion_line = ModuleImportInsertionPoint(
-            destination_source,
-            self.destination_file_path,
-            context.module_nodes_by_file_path[self.destination_file_path],
-        ).line_number
-        return SourceInsertion(
-            file_path=self.destination_file_path,
-            insertion_line=insertion_line,
-            inserted_lines=self.destination_replacement_lines(
-                destination_source,
-                insertion_line,
-            ),
-            rationale=self.rationale
-            or f"Move {self.source_block.name!r} into {self.destination_file_path!r}.",
-        )
-
-    def destination_replacement_lines(
-        self,
-        destination_source: str,
-        insertion_line: int,
-    ) -> tuple[str, ...]:
-        destination_lines = destination_source.splitlines(keepends=True)
-        previous_line = self._line_at(destination_lines, insertion_line - 1)
-        current_line = self._line_at(destination_lines, insertion_line)
-        leading_separator = ""
-        if previous_line.strip():
-            leading_separator = "\n"
-        trailing_separator = "\n\n"
-        if current_line and not current_line.strip():
-            trailing_separator = "\n"
-        moved_source = self.source_block.moved_source.strip("\n")
-        return SourceTargetEditor.source_lines(
-            f"{leading_separator}{moved_source}{trailing_separator}"
-        )
-
-    @staticmethod
-    def _line_at(lines: list[str], line_number: int) -> str:
-        if line_number < 1 or line_number > len(lines):
-            return ""
-        return lines[line_number - 1]
 
 
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
@@ -10545,21 +10413,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
 
     def destination_source(self, destination_source: str, insertion_line: int) -> str:
-        destination_lines = destination_source.splitlines(keepends=True)
-        previous_line = SourceTopLevelSymbolMovePlan._line_at(
-            destination_lines,
-            insertion_line - 1,
-        )
-        current_line = SourceTopLevelSymbolMovePlan._line_at(
-            destination_lines,
-            insertion_line,
-        )
         moved_source = "\n\n".join(
             block.moved_source.strip("\n") for block in self.source_blocks
         )
-        spacing = DestinationInsertionSpacing(
-            previous_line=previous_line,
-            current_line=current_line,
+        spacing = DestinationInsertionSpacing.from_source(
+            destination_source,
+            insertion_line,
             has_import_block=False,
         )
         return f"{spacing.leading_separator}{moved_source}{spacing.trailing_separator}"
@@ -10593,41 +10452,6 @@ class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
             *super().referenced_source_targets(),
             SourceRewriteTarget(file_path=self.destination_path),
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class MoveSymbolToModuleOperation(
-    TargetNodeRecipeOperationMixin,
-    ModuleSymbolMoveOperation,
-):
-    """Move one module-level class or function into another existing module."""
-
-    def source_edits_for_target_node(
-        self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> tuple[NominalSourceEdit, ...]:
-        del target_identifier
-        move_plan = SourceTopLevelSymbolMovePlan.from_target(
-            target_digest,
-            node,
-            context,
-            destination_file_path=SourcePathResolutionAuthority.from_source_index(
-                self.destination_path,
-                context.source_index,
-            ).required_path(),
-            rationale=self.rationale,
-        )
-        replacements = list(move_plan.source_edits(context))
-        import_mutation = self.replacement_import.source_mutation(
-            move_plan.source_block,
-            rationale=self.rationale,
-        )
-        if import_mutation is not None:
-            replacements.append(import_mutation)
-        return tuple(replacements)
 
 
 @dataclass(frozen=True, kw_only=True)

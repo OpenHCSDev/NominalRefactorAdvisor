@@ -177,7 +177,6 @@ from nominal_refactor_advisor.codemod import (
     InsertAfterImportsOperation,
     InsertAfterTargetOperation,
     InsertBeforeTargetOperation,
-    MoveSymbolToModuleOperation,
     MoveSymbolsToModuleOperation,
     MovedSymbolImportPolicy,
     PlannedRewriteConflictError,
@@ -6198,7 +6197,7 @@ def test_dispatch_to_polymorphism_derives_unbound_generated_names(
     assert "_dispatch_case_type_2 = RenderDispatchCase.__registry__" in rewritten
 
 
-def test_refactor_recipe_moves_decorated_symbol_between_modules(
+def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
@@ -6230,11 +6229,9 @@ def test_refactor_recipe_moves_decorated_symbol_between_modules(
     }
 
     recipe = RefactorRecipe(recipe_id="move-helper").with_operation(
-        MoveSymbolToModuleOperation(
-            target=SourceRewriteTarget(
-                qualname="Helper",
-                file_path=source_path.as_posix(),
-            ),
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("Helper",),
             destination_path=destination_path.as_posix(),
             replacement_import=MovedSymbolImportPolicy.from_source(
                 "from pkg.destination import Helper\n"
@@ -6249,7 +6246,12 @@ def test_refactor_recipe_moves_decorated_symbol_between_modules(
     )
     diff = simulation.unified_diff(source_by_path)
 
-    assert operation["operation"] == "move_symbol_to_module"
+    assert operation["operation"] == "move_symbols_to_module"
+    with pytest.raises(
+        ValueError,
+        match="Unsupported recipe operation: move_symbol_to_module",
+    ):
+        RefactorRecipeOperation.from_dict({"operation": "move_symbol_to_module"})
     assert operation["destination_path"] == destination_path.as_posix()
     assert operation["replacement_import"] == "from pkg.destination import Helper\n"
     assert simulation.is_clean is True
