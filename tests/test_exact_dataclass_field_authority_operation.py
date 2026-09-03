@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,17 @@ def _fixture_source() -> str:
         "    module_name: str\n"
         "    file_path: str\n"
         "    beta_value: float\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class DeltaProjection:\n"
+        "    \"\"\"Projection with behavior after the promoted fields.\"\"\"\n\n"
+        "    module_name: str\n"
+        "    file_path: str\n\n"
+        "    def endpoint(self) -> str:\n"
+        "        return self.file_path\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class EpsilonProjection:\n"
+        "    module_name: str\n"
+        "    file_path: str\n\n\n"
         "@dataclass(frozen=True)\n"
         "class GammaProjection:\n"
         "    module_name: str\n"
@@ -130,9 +142,23 @@ def test_operation_reproves_field_component_without_serializing_rosters(
     assert rewritten.count("module_name: str") == 1
     assert rewritten.count("file_path: str") == 1
     assert "class ProjectionIdentity:" in rewritten
+    assert "    file_path: str\n\n\n@dataclass(frozen=True)" in rewritten
+    assert (
+        '    """Projection with behavior after the promoted fields."""\n\n'
+        "    def endpoint"
+    ) in rewritten
+    assert "class EpsilonProjection(ProjectionIdentity):\n    pass\n\n\n@dataclass" in (
+        rewritten
+    )
     assert all(
         f"class {class_name}(ProjectionIdentity):" in rewritten
-        for class_name in ("AlphaProjection", "BetaProjection", "GammaProjection")
+        for class_name in (
+            "AlphaProjection",
+            "BetaProjection",
+            "DeltaProjection",
+            "EpsilonProjection",
+            "GammaProjection",
+        )
     )
 
     simulation.apply()
@@ -182,3 +208,55 @@ def test_operation_rejects_generated_authority_name_collision(tmp_path: Path) ->
         RefactorRecipe(recipe_id="colliding-field-authority").with_operation(
             _operation(module_path)
         ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
+
+def test_cli_repository_reproof_skips_unrequested_finding_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import nominal_refactor_advisor.cli as cli
+
+    module_path = _write_fixture(tmp_path)
+    operation = _operation(module_path)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "factor-projection-identity",
+                        "operations": [operation.to_dict()],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def reject_analysis(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("exact recipe execution must not analyze findings")
+
+    monkeypatch.setattr(cli, "analyze_modules_with_cache", reject_analysis)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nominal-refactor-advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--no-structural-overlap",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+            "--json",
+        ],
+    )
+
+    assert cli.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["parse_validation"]["parse_valid"] is True
+    assert payload["applied_rewrite_count"] == 1
+    assert payload["applied"] is False
+    assert payload["plan_sequence_simulation"]["is_clean"] is True

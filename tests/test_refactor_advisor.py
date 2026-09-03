@@ -13549,12 +13549,8 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
     assert consumer_path.as_posix() in simulation_payload["changed_file_paths"]
     sequence_payload = simulation_payload["plan_sequence_simulation"]
     assert sequence_payload["stage_count"] == 3
-    assert any(
-        target["qualname"] == "Generated.run"
-        for target in sequence_payload["stages"][1]["before_source_index"][
-            "ast_targets"
-        ]
-    )
+    assert "before_source_index" not in sequence_payload["stages"][1]
+    assert "final_source_index" not in sequence_payload
     assert "+        return 2" in simulation_payload["unified_diff"]
     assert generated_path.exists() is False
     assert consumer_path.exists() is False
@@ -14261,18 +14257,9 @@ def test_module_cli_simulates_staged_codemod_plan(
     first_stage, second_stage = sequence_payload["stages"]
     assert "stage_index" not in first_stage
     assert "stage_index" not in second_stage
-    assert any(
-        target["qualname"] == "Generated.run"
-        for target in first_stage["after_source_index"]["ast_targets"]
-    )
-    assert any(
-        target["qualname"] == "Generated.run"
-        for target in second_stage["before_source_index"]["ast_targets"]
-    )
-    assert any(
-        target["qualname"] == "Generated.run"
-        for target in sequence_payload["final_source_index"]["ast_targets"]
-    )
+    assert "after_source_index" not in first_stage
+    assert "before_source_index" not in second_stage
+    assert "final_source_index" not in sequence_payload
     assert generated_path.exists() is False
 
 

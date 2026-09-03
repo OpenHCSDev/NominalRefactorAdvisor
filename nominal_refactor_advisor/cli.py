@@ -2517,7 +2517,9 @@ class CodemodCliExecution(
                 post_guard_report=architecture_guard_report,
                 unified_diff=self.optional_unified_diff(snapshot, simulation),
             ).to_dict()
-            payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
+            payload["plan_sequence_simulation"] = (
+                plan_sequence_simulation.execution_payload()
+            )
             projected_findings = self.execution_request.projected_finding_report(
                 self.workflow_scan,
                 simulation,
@@ -3252,9 +3254,6 @@ def _main_without_deadline() -> int:
     args = parser.parse_args()
 
     selected_command_type = CliCommand.selected_type(parser, args)
-    scan_analysis_required = (
-        selected_command_type is None or selected_command_type.requires_analysis()
-    )
     if args.codemod_plan_out is not None and not (
         selected_command_type is not None
         and issubclass(selected_command_type, CodemodPlanProducingCliCommand)
@@ -3395,6 +3394,11 @@ def _main_without_deadline() -> int:
         sequence=codemod_plan_sequence,
         mode=codemod_execution_mode,
         finding_projection=finding_projection,
+    )
+    scan_analysis_required = (
+        selected_command_type.requires_analysis()
+        if selected_command_type is not None
+        else not codemod_execution_request.exact_recipe_execution
     )
     if args.predict_scan:
         SingleRootModeAuthority(

@@ -6216,7 +6216,9 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
                     SourceSpanReplacement(
                         file_path=class_target.file_path,
                         start_line=member_statement.start_line,
-                        end_line=member_statement.end_line,
+                        end_line=member_statement.deletion_end_line(
+                            targets.source_for(class_target.file_path)
+                        ),
                         replacement_lines=self.replacement_lines_for_deleted_member(
                             class_would_be_empty,
                             index,
@@ -6289,7 +6291,7 @@ class ClassMemberPromotionReplacementPlanABC(ClassMemberPromotionSpec, ABC):
         return SourceInsertion(
             file_path=class_target.file_path,
             insertion_line=targets.insertion_line,
-            inserted_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
+            inserted_lines=SourceTargetEditor.source_lines(f"{base_source}\n\n"),
             rationale=self.rationale
             or f"Insert promoted-member base {self.base_name!r}.",
         )
@@ -8454,11 +8456,16 @@ class ClassHeaderSpanSourceAuthority:
 
 
 @dataclass(frozen=True)
-class ClassBodySourceAuthority:
-    """Recover insertion geometry owned by one class body."""
+class ClassSourceAuthority:
+    """Class declaration and source text shared by rewrite projections."""
 
     node: ast.ClassDef
     source: str
+
+
+@dataclass(frozen=True)
+class ClassBodySourceAuthority(ClassSourceAuthority):
+    """Recover insertion geometry owned by one class body."""
 
     @property
     def source_lines(self) -> list[str]:
@@ -8486,11 +8493,8 @@ class ClassBodySourceAuthority:
 
 
 @dataclass(frozen=True)
-class ClassBaseRewriteTarget:
+class ClassBaseRewriteTarget(ClassSourceAuthority):
     """Class declaration target supported by the class-header rewrite engine."""
-
-    node: ast.ClassDef
-    source: str
 
     @property
     def supports_base_rewrite(self) -> bool:
@@ -8538,6 +8542,11 @@ class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
     def end_line(self) -> int:
         return self.statement.end_lineno or self.statement.lineno
 
+    def deletion_end_line(self, _source: str) -> int:
+        """Return the complete source span removed with this member."""
+
+        return self.end_line
+
 
 @dataclass(frozen=True)
 class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
@@ -8557,6 +8566,21 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
         ):
             return self.statement.target.id
         return None
+
+    def deletion_end_line(self, source: str) -> int:
+        source_lines = source.splitlines()
+        remaining_lines = source_lines[self.end_line :]
+        if not remaining_lines or remaining_lines[0].strip():
+            return self.end_line
+        next_content_line = next(
+            (line for line in remaining_lines[1:] if line.strip()),
+            None,
+        )
+        if next_content_line is not None:
+            indentation = len(next_content_line) - len(next_content_line.lstrip())
+            if indentation >= self.statement.col_offset:
+                return self.end_line + 1
+        return self.end_line
 
 
 @dataclass(frozen=True)
@@ -13842,6 +13866,18 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
             "stage_count": len(self.stage_reports),
             "stages": tuple(stage.to_dict() for stage in self.stage_reports),
             "final_source_index": self.final_snapshot.source_index.to_dict(),
+            **self.simulation_payload(),
+        }
+
+    def execution_payload(self) -> JsonObject:
+        """Project execution evidence without serializing internal source indexes."""
+
+        return {
+            "sequence": self.sequence.to_dict(),
+            "stage_count": len(self.stage_reports),
+            "stages": tuple(
+                stage.document_simulation.to_dict() for stage in self.stage_reports
+            ),
             **self.simulation_payload(),
         }
 
