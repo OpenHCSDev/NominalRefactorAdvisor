@@ -6797,6 +6797,113 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/dependencies.py",
+        "class Base:\n"
+        "    pass\n\n\n"
+        "class External:\n"
+        "    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .dependencies import Base, External\n\n\n"
+        "class Helper(Base):\n"
+        "    value: External\n\n"
+        "    def build(self, value: External) -> External:\n"
+        "        Base = object()\n"
+        "        return value\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-shadowed-dependencies").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.imported_dependency_names == ("Base", "External")
+    assert "from .dependencies import (\n    Base,\n    External,\n)" in (
+        simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from typing import get_type_hints; "
+            "from pkg.dependencies import Base, External; "
+            "from pkg.destination import Helper; "
+            "assert issubclass(Helper, Base); "
+            "assert get_type_hints(Helper.build)['value'] is External",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_preserves_class_dependency_loaded_before_local_binding(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "VALUE = object()\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .dependencies import VALUE\n\n\n"
+        "class Helper:\n"
+        "    original = VALUE\n"
+        "    VALUE = 'local'\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-sequential-class-dependency").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.imported_dependency_names == ("VALUE",)
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.dependencies import VALUE; "
+            "from pkg.destination import Helper; "
+            "assert Helper.original is VALUE; "
+            "assert Helper.VALUE == 'local'",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_refactor_recipe_extracts_symbol_closure_to_new_module(
     tmp_path: Path,
 ) -> None:

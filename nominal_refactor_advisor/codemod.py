@@ -45,7 +45,6 @@ from .assignment_projection import (
 )
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
-    DeclarationAnnotationProjection,
     EagerNameLoadCollector,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
@@ -112,6 +111,10 @@ from .detectors._base import (
     IssueDetector,
 )
 from .descriptor_algebra import ConstantProperty
+from .declaration_dependencies import (
+    DeclarationDependencyProjection,
+    FunctionBindingProjection,
+)
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
@@ -8386,90 +8389,6 @@ class ClassAuthorityReferenceProof:
         )
 
 
-class _LoadedAndBoundNameVisitor(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.loaded_names: set[str] = set()
-        self.bound_names: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load):
-            self.loaded_names.add(node.id)
-        elif isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bound_names.add(node.id)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        self.bound_names.add(node.name)
-        self._visit_function_signature(node)
-        for statement in node.body:
-            self.visit(statement)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.bound_names.add(node.name)
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for base in node.bases:
-            self.visit(base)
-        for keyword in node.keywords:
-            self.visit(keyword)
-        for statement in node.body:
-            self.visit(statement)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._bind_arguments(node.args)
-        self.visit(node.body)
-
-    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
-        self.bound_names.update(ImportBoundNameProjection(node).names())
-
-    visit_ImportFrom = visit_Import
-
-    def _visit_function_signature(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        self._bind_arguments(node.args)
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default is not None:
-                self.visit(default)
-        for arg in (
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-        ):
-            if arg.annotation is not None:
-                self.visit(arg.annotation)
-        if node.args.vararg is not None and node.args.vararg.annotation is not None:
-            self.visit(node.args.vararg.annotation)
-        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-            self.visit(node.args.kwarg.annotation)
-        if node.returns is not None:
-            self.visit(node.returns)
-
-    def _bind_arguments(self, args: ast.arguments) -> None:
-        for arg in (
-            *args.posonlyargs,
-            *args.args,
-            *args.kwonlyargs,
-        ):
-            self.bound_names.add(arg.arg)
-        if args.vararg is not None:
-            self.bound_names.add(args.vararg.arg)
-        if args.kwarg is not None:
-            self.bound_names.add(args.kwarg.arg)
-
-
-def _external_names_for_moved_node(node: _TargetNode) -> frozenset[str]:
-    visitor = _LoadedAndBoundNameVisitor()
-    visitor.visit(node)
-    return frozenset(
-        visitor.loaded_names - visitor.bound_names - _AVAILABLE_WITHOUT_IMPORT
-    )
-
-
 @dataclass(frozen=True)
 class SourceTopLevelSymbolMoveSelection:
     """Exact movable declarations selected from one source module."""
@@ -8530,8 +8449,11 @@ class SourceTopLevelSymbolMoveSelection:
             source_dependencies = frozenset(
                 name
                 for target in selected_by_name.values()
-                for name in _external_names_for_moved_node(
-                    context.ast_target_nodes_by_id[target.target_id]
+                for name in (
+                    DeclarationDependencyProjection.from_declarations(
+                        (context.ast_target_nodes_by_id[target.target_id],)
+                    ).names
+                    - _AVAILABLE_WITHOUT_IMPORT
                 )
                 if name in source_table.top_level_names
                 and name not in selected_by_name
@@ -8757,11 +8679,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         target_nodes: Mapping[str, _TargetNode],
     ) -> ModuleMoveDependencyReport:
         moved_names = frozenset(target.name for target in targets)
-        external_names = frozenset(
-            name
-            for target in targets
-            for name in _external_names_for_moved_node(target_nodes[target.target_id])
+        moved_dependencies = DeclarationDependencyProjection.from_declarations(
+            tuple(target_nodes[target.target_id] for target in targets)
         )
+        external_names = moved_dependencies.names - _AVAILABLE_WITHOUT_IMPORT
         destination_available = destination_table.available_names | moved_names
         destination_dependency_names = tuple(
             sorted(external_names & destination_table.top_level_names)
@@ -8791,9 +8712,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             moved_names,
             source_dependency_import_names,
         )
-        moved_annotations = DeclarationAnnotationProjection.from_declarations(
-            target_nodes[target.target_id] for target in targets
-        )
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
             destination_path=destination_table.file_path,
@@ -8820,7 +8738,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_annotation_evaluation_mode=(
                 ModuleAnnotationEvaluationMode.from_module(destination_table.module)
             ),
-            moved_annotation_count=len(moved_annotations.expressions),
+            moved_annotation_count=moved_dependencies.annotation_count,
             source_local_dependency_names=source_local_names,
             unresolved_dependency_names=unresolved_names,
         )
@@ -18459,9 +18377,8 @@ class DataclassInstanceFieldProjection:
         proof: DataclassAuthorityReferenceProof,
     ) -> bool:
         roots = ROOT_NAME_PROJECTION.root_names(reference)
-        visitor = _LoadedAndBoundNameVisitor()
-        visitor.visit(projection.node)
-        return roots.isdisjoint(visitor.bound_names) and proof.resolves(reference)
+        bindings = FunctionBindingProjection.from_function(projection.node)
+        return roots.isdisjoint(bindings.local_names) and proof.resolves(reference)
 
     @classmethod
     def authority_factory_method_names(
@@ -18787,9 +18704,8 @@ class DataclassesModuleReference:
         if len(imported_aliases) > 1:
             return None
         expression = imported_aliases[0] if imported_aliases else "dataclasses"
-        binding_visitor = _LoadedAndBoundNameVisitor()
-        binding_visitor.visit(projection.node)
-        if expression in binding_visitor.bound_names:
+        bindings = FunctionBindingProjection.from_function(projection.node)
+        if expression in bindings.local_names:
             return None
         symbol_table = ModuleSymbolTable(
             file_path=projection.source_path,
@@ -19865,10 +19781,9 @@ class NominalConstructorCall:
         if len(frozenset(keyword_names)) != len(keyword_names):
             return None
         if scope is not None:
-            bound_names = _LoadedAndBoundNameVisitor()
-            bound_names.visit(scope)
+            bindings = FunctionBindingProjection.from_function(scope)
             if not ROOT_NAME_PROJECTION.root_names(call_node.func).isdisjoint(
-                bound_names.bound_names
+                bindings.local_names
             ):
                 return None
         constructor_symbol = ModuleNominalBindingAuthority(

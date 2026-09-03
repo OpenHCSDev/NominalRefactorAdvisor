@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 
 from nominal_refactor_advisor.ast_tools import (
-    DeclarationAnnotationProjection,
     EagerNameLoadCollector,
     ModuleAnnotationEvaluationMode,
 )
@@ -53,29 +52,3 @@ def test_module_annotation_evaluation_mode_distinguishes_runtime_policies() -> N
     assert ModuleAnnotationEvaluationMode.EAGER.annotations_execute_at_declaration
     assert not ModuleAnnotationEvaluationMode.LAZY.annotations_execute_at_declaration
     assert not ModuleAnnotationEvaluationMode.STRINGIZED.annotations_execute_at_declaration
-
-
-def test_declaration_annotation_projection_excludes_function_local_annotations() -> None:
-    module = ast.parse(
-        "class Container:\n"
-        "    field: FieldType\n"
-        "\n"
-        "    def build(self, value: ArgumentType) -> ReturnType:\n"
-        "        local: LocalType\n"
-        "\n"
-        "        class Nested:\n"
-        "            field: NestedType\n"
-        "\n"
-        "        return value\n"
-    )
-    declaration = module.body[0]
-    assert isinstance(declaration, ast.ClassDef)
-
-    projection = DeclarationAnnotationProjection.from_declarations((declaration,))
-
-    assert tuple(map(ast.unparse, projection.expressions)) == (
-        "FieldType",
-        "ArgumentType",
-        "ReturnType",
-        "NestedType",
-    )

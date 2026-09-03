@@ -223,6 +223,10 @@ The extraction variants also derive the new-file revision contract.
 Annotated declarations require matching source and destination annotation
 evaluation modes.  A mismatch appears in the dependency report and fails
 preflight before source edits are compiled.
+``DeclarationDependencyProjection`` resolves dependencies within their lexical
+scope, partitions annotation uses from executable uses, and respects the
+sequential bindings of a class body.  A binding inside one nested scope cannot
+hide a dependency evaluated by an enclosing declaration.
 An import binding used only by moved declarations is removed from the source
 module; bindings with any remaining static name or string reference are
 retained.  A source-local dependency that is not one unambiguous movable class
@@ -240,6 +244,9 @@ reexports remain as an external compatibility boundary.
 
 .. automodule:: nominal_refactor_advisor.codemod_import_graph
    :members: SourceModuleImportGraph
+
+.. automodule:: nominal_refactor_advisor.declaration_dependencies
+   :members: DeclarationDependencyUse, DeclarationDependencyProjection, FunctionBindingProjection
 
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanReplacement, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
