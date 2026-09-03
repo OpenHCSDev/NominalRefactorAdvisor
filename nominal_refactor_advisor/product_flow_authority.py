@@ -9,8 +9,10 @@ from functools import cached_property
 from typing import Callable, Self, TypeAlias
 
 from .class_index import (
+    CompactClassMemberDeclaration,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
+    CompactIndexedClass,
     CompactModuleClassProjection,
     CompactProductAuthority,
     CompactPublicNameExposure,
@@ -31,6 +33,7 @@ from .product_flow import (
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
     CompactValueOriginResolution,
+    CurrentClassMemberMethodReference,
     LexicalValueReference,
 )
 
@@ -105,6 +108,12 @@ class OpenCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return self.candidate_symbols
+
+
+@dataclass(frozen=True)
+class _CompactClassMemberResolution:
+    candidates: tuple[tuple[CompactIndexedClass, CompactClassMemberDeclaration], ...]
+    violation: CompactFunctionTargetResolutionViolation | None
 
 
 class CompactFunctionCallResolution(ABC):
@@ -565,6 +574,8 @@ class CompactProductFlowRepository:
         target: CompactCallTargetReference,
         position: CompactFlowPosition,
     ) -> CompactFunctionTargetResolution:
+        if isinstance(target, CurrentClassMemberMethodReference):
+            return self._class_member_method_resolution(context, target, position)
         reference = target.lexical_reference
         if reference is None:
             candidates = context.flow.local_candidate_symbols(
@@ -588,6 +599,131 @@ class CompactProductFlowRepository:
             reference,
             position,
         )
+
+    def _class_member_method_resolution(
+        self,
+        context: CompactProductFlowContext,
+        target: CurrentClassMemberMethodReference,
+        position: CompactFlowPosition,
+    ) -> CompactFunctionTargetResolution:
+        candidate_symbols = target.local_candidate_symbols(context.module_name, ())
+        if target.uses_runtime_class_lookup and self._lexical_binding_exists(
+            context,
+            LexicalValueReference("type"),
+            position,
+        ):
+            return OpenCompactFunctionTarget(
+                candidate_symbols,
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            )
+        owner_symbol = self.class_index.symbol_for(
+            file_path=context.file_path,
+            qualname=target.owner_class_qualname,
+        )
+        if owner_symbol is None:
+            return OpenCompactFunctionTarget(
+                candidate_symbols,
+                CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+            )
+        member_resolution = self._member_declarations_in_single_lineage(
+            owner_symbol,
+            target.member_name,
+        )
+        if member_resolution.violation is not None:
+            return OpenCompactFunctionTarget(
+                candidate_symbols,
+                member_resolution.violation,
+            )
+        declaring_class, member_declaration = member_resolution.candidates[0]
+        reference_parts = member_declaration.annotation_reference_parts
+        if reference_parts is None:
+            return OpenCompactFunctionTarget(
+                candidate_symbols,
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
+        member_type_symbol = self.class_resolver.symbol_for(
+            module_name=declaring_class.module_name,
+            reference_parts=reference_parts,
+            allow_unique_unqualified=False,
+        )
+        if member_type_symbol is None:
+            return OpenCompactFunctionTarget(
+                candidate_symbols,
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
+        return self._function_resolution_for_symbol(
+            f"{member_type_symbol}.{target.method_name}"
+        )
+
+    def _member_declarations_in_single_lineage(
+        self,
+        owner_symbol: str,
+        member_name: str,
+    ) -> _CompactClassMemberResolution:
+        current_symbol = owner_symbol
+        while (current := self.class_index.class_for(current_symbol)) is not None:
+            declarations = tuple(
+                declaration
+                for declaration in current.direct_member_declarations
+                if declaration.name == member_name
+            )
+            if declarations:
+                candidates = tuple(
+                    (current, declaration) for declaration in declarations
+                )
+                return _CompactClassMemberResolution(
+                    candidates,
+                    (
+                        None
+                        if len(candidates) == 1
+                        else CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
+                    ),
+                )
+            if not current.base_resolution_is_complete:
+                return _CompactClassMemberResolution(
+                    (),
+                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+                )
+            if len(current.resolved_base_symbols) > 1:
+                return _CompactClassMemberResolution(
+                    (),
+                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
+                )
+            if not current.resolved_base_symbols:
+                return _CompactClassMemberResolution(
+                    (),
+                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+                )
+            current_symbol = current.resolved_base_symbols[0]
+        return _CompactClassMemberResolution(
+            (),
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        )
+
+    def _lexical_binding_exists(
+        self,
+        context: CompactProductFlowContext,
+        reference: LexicalValueReference,
+        position: CompactFlowPosition,
+    ) -> bool:
+        for scope_qualname in context.flow.lexical_scope_qualnames:
+            owner_symbol = (
+                f"{context.module_name}.{scope_qualname}"
+                if scope_qualname
+                else context.module_name
+            )
+            scope_context = self.flow_contexts_by_owner_symbol.get(owner_symbol)
+            if scope_context is None:
+                continue
+            if self._scope_binding_resolution(
+                scope_context,
+                reference,
+                position
+                if scope_context.owner_symbol == context.owner_symbol
+                else None,
+            ) is not None:
+                return True
+        return False
 
     def resolve_product_construction(
         self,
@@ -700,6 +836,10 @@ class CompactProductFlowRepository:
             context.flow.owner.kind.is_module_scope
             and class_projection is not None
             and class_projection.star_import_origins
+            and not self.public_exposure_index.star_imports_exclude(
+                context.module_name,
+                root_name,
+            )
         ):
             star_import_symbols = tuple(
                 ".".join(

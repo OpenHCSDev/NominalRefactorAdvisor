@@ -633,6 +633,21 @@ class CompactCallTargetReference(ABC):
         """Return candidates provable without import or type resolution."""
 
 
+class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
+    """Call target whose terminal method is selected from the current class."""
+
+    owner_class_qualname: str
+    method_name: str
+
+    @property
+    def terminal_name(self) -> str:
+        return self.method_name
+
+    @property
+    def lexical_reference(self) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class BareCallTargetReference(CompactCallTargetReference):
     function_name: str
@@ -661,17 +676,9 @@ class BareCallTargetReference(CompactCallTargetReference):
 
 
 @dataclass(frozen=True)
-class CurrentClassMethodReference(CompactCallTargetReference):
+class CurrentClassMethodReference(CurrentClassCallTargetReference):
     owner_class_qualname: str
     method_name: str
-
-    @property
-    def terminal_name(self) -> str:
-        return self.method_name
-
-    @property
-    def lexical_reference(self) -> None:
-        return None
 
     def local_candidate_symbols(
         self,
@@ -680,6 +687,66 @@ class CurrentClassMethodReference(CompactCallTargetReference):
     ) -> tuple[str, ...]:
         del lexical_scope_qualnames
         return (f"{module_name}.{self.owner_class_qualname}.{self.method_name}",)
+
+
+@dataclass(frozen=True)
+class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
+    """Method reached through an annotated member of the current class."""
+
+    owner_class_qualname: str
+    member_name: str
+    method_name: str
+    uses_runtime_class_lookup: bool
+
+    @classmethod
+    def from_expression(
+        cls,
+        expression: ast.expr,
+        *,
+        owner_class_qualname: str | None,
+        receiver_name: str | None,
+    ) -> "CurrentClassMemberMethodReference | None":
+        if (
+            owner_class_qualname is None
+            or receiver_name is None
+            or not isinstance(expression, ast.Attribute)
+            or not isinstance(expression.value, ast.Attribute)
+        ):
+            return None
+        member_access = expression.value
+        if isinstance(member_access.value, ast.Name):
+            if member_access.value.id != receiver_name:
+                return None
+            uses_runtime_class_lookup = False
+        elif (
+            isinstance(member_access.value, ast.Call)
+            and isinstance(member_access.value.func, ast.Name)
+            and member_access.value.func.id == "type"
+            and len(member_access.value.args) == 1
+            and isinstance(member_access.value.args[0], ast.Name)
+            and member_access.value.args[0].id == receiver_name
+            and not member_access.value.keywords
+        ):
+            uses_runtime_class_lookup = True
+        else:
+            return None
+        return cls(
+            owner_class_qualname=owner_class_qualname,
+            member_name=member_access.attr,
+            method_name=expression.attr,
+            uses_runtime_class_lookup=uses_runtime_class_lookup,
+        )
+
+    def local_candidate_symbols(
+        self,
+        module_name: str,
+        lexical_scope_qualnames: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        del lexical_scope_qualnames
+        return (
+            f"{module_name}.{self.owner_class_qualname}."
+            f"{self.member_name}.{self.method_name}",
+        )
 
 
 @dataclass(frozen=True)
@@ -1425,6 +1492,13 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def _call_target(self, expression: ast.expr) -> CompactCallTargetReference:
         if isinstance(expression, ast.Name):
             return BareCallTargetReference(expression.id)
+        member_method = CurrentClassMemberMethodReference.from_expression(
+            expression,
+            owner_class_qualname=self.current_class_qualname,
+            receiver_name=self.current_class_receiver_name,
+        )
+        if member_method is not None:
+            return member_method
         reference = LexicalValueReference.from_expression(expression)
         if reference is None:
             return DynamicCallTargetReference()

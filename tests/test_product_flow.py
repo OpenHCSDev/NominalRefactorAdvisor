@@ -18,6 +18,7 @@ from nominal_refactor_advisor.product_flow import (
     CompactKeywordArgument,
     CompactParameterKind,
     CompactProductFlowModuleProjectionFamily,
+    CurrentClassMemberMethodReference,
     CurrentClassMethodReference,
     DynamicCallTargetReference,
     ExactCompactValueOrigin,
@@ -414,6 +415,35 @@ def test_receiver_identity_and_decorator_safety_are_declaration_derived() -> Non
     assert declarations["Owner.normalize"].signature_decorator_hazard
     assert call.bind_to(declarations["Owner.normalize"]).violation is (
         CompactCallBindingViolation.SIGNATURE_DECORATOR_HAZARD
+    )
+
+
+def test_annotated_member_method_targets_retain_current_class_lookup_semantics() -> (
+    None
+):
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "class Owner:\n"
+            "    renderer: Renderer\n"
+            "\n"
+            "    def direct(self, value):\n"
+            "        return self.renderer.render(value)\n"
+            "\n"
+            "    def runtime(self, value):\n"
+            "        return type(self).renderer.render(value)\n"
+        )
+    )
+
+    targets = tuple(
+        call.target
+        for flow in projection.flows
+        for call in flow.calls
+        if isinstance(call.target, CurrentClassMemberMethodReference)
+    )
+
+    assert targets == (
+        CurrentClassMemberMethodReference("Owner", "renderer", "render", False),
+        CurrentClassMemberMethodReference("Owner", "renderer", "render", True),
     )
 
 

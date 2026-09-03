@@ -183,6 +183,32 @@ class CompactClassMemberDeclaration(NamedTuple):
     constructor_keyword_names: tuple[str, ...]
     annotation_expression: str | None
 
+    @property
+    def annotation_reference_parts(self) -> tuple[str, ...] | None:
+        """Project the one nominal type named by this member annotation."""
+
+        if self.annotation_expression is None:
+            return None
+        try:
+            annotation = ast.parse(self.annotation_expression, mode="eval").body
+        except SyntaxError:
+            return None
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(annotation, ast.Subscript) and (
+            CLASSVAR_ANNOTATION_AUTHORITY.matches(annotation)
+        ):
+            annotation = annotation.slice
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return None
+        return ATTRIBUTE_CHAIN_AUTHORITY.project(annotation)
+
 
 class CompactProductAuthorityViolation(StrEnum):
     """One typed reason a dataclass declaration cannot prove a plain product."""

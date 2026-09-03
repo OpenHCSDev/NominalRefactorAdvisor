@@ -262,6 +262,121 @@ def test_repository_resolves_inherited_method_by_nominal_mro() -> None:
     assert incoming[0].context.owner_symbol == "pkg.methods.Leaf.caller"
 
 
+def test_repository_resolves_annotated_member_method_from_current_class() -> None:
+    repository = _repository(
+        _module(
+            "pkg.models",
+            "class Renderer:\n"
+            "    def render(self, value):\n"
+            "        return value\n",
+        ),
+        _module(
+            "pkg.member",
+            "from typing import ClassVar\n"
+            "from pkg.models import Renderer\n"
+            "\n"
+            "class Owner:\n"
+            "    renderer: ClassVar[Renderer]\n"
+            "\n"
+            "    def execute(self, value):\n"
+            "        return type(self).renderer.render(value)\n",
+        )
+    )
+
+    incoming = repository.incoming_calls_for("pkg.models.Renderer.render")
+
+    assert len(incoming) == 1
+    assert incoming[0].context.owner_symbol == "pkg.member.Owner.execute"
+
+
+def test_repository_resolves_annotated_member_from_single_base_lineage() -> None:
+    repository = _repository(
+        _module(
+            "pkg.inherited_member",
+            "class Renderer:\n"
+            "    def render(self, value):\n"
+            "        return value\n"
+            "\n"
+            "class Base:\n"
+            "    renderer: Renderer\n"
+            "\n"
+            "class Owner(Base):\n"
+            "    def execute(self, value):\n"
+            "        return self.renderer.render(value)\n",
+        )
+    )
+
+    incoming = repository.incoming_calls_for(
+        "pkg.inherited_member.Renderer.render"
+    )
+
+    assert len(incoming) == 1
+    assert incoming[0].context.owner_symbol == "pkg.inherited_member.Owner.execute"
+
+
+def test_repository_keeps_runtime_class_member_call_open_when_type_is_shadowed() -> (
+    None
+):
+    repository = _repository(
+        _module(
+            "pkg.shadowed_type",
+            "class Renderer:\n"
+            "    def render(self, value):\n"
+            "        return value\n"
+            "\n"
+            "class Owner:\n"
+            "    renderer: Renderer\n"
+            "\n"
+            "    def execute(self, type, value):\n"
+            "        return type(self).renderer.render(value)\n",
+        )
+    )
+
+    resolution = next(
+        resolution
+        for resolution in repository.function_call_resolutions
+        if resolution.context.owner_symbol == "pkg.shadowed_type.Owner.execute"
+        and resolution.call.target.terminal_name == "render"
+    )
+
+    assert isinstance(resolution, CompactOpenFunctionCall)
+    assert resolution.target_resolution.violation is (
+        CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+    )
+    assert repository.incoming_calls_for("pkg.shadowed_type.Renderer.render") == ()
+
+
+def test_repository_uses_export_contract_to_exclude_builtin_shadowing() -> None:
+    repository = _repository(
+        _module(
+            "pkg.exports",
+            "__all__ = ('public_helper',)\n"
+            "\n"
+            "def public_helper(value):\n"
+            "    return value\n",
+        ),
+        _module(
+            "pkg.star_member",
+            "from pkg.exports import *\n"
+            "\n"
+            "class Renderer:\n"
+            "    def render(self, value):\n"
+            "        return value\n"
+            "\n"
+            "class Owner:\n"
+            "    renderer: Renderer\n"
+            "\n"
+            "    def execute(self, value):\n"
+            "        return type(self).renderer.render(value)\n",
+        ),
+    )
+
+    incoming = repository.incoming_calls_for("pkg.star_member.Renderer.render")
+
+    assert len(incoming) == 1
+    assert incoming[0].context.owner_symbol == "pkg.star_member.Owner.execute"
+
+
 def test_repository_keeps_inherited_lookup_open_across_unprojectable_base() -> None:
     repository = _repository(
         _module(
