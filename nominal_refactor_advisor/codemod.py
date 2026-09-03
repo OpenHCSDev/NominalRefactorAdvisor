@@ -10238,6 +10238,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     source_blocks: tuple[MovedTopLevelSymbolSource, ...]
     dependency_report: ModuleMoveDependencyReport
     source_reexport_import_sources: tuple[str, ...]
+    consumer_import_mutations: tuple[ModuleImportMutation, ...]
 
     @classmethod
     def from_request(
@@ -10293,6 +10294,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_path=request.destination_path,
             moved_symbol_names=tuple(target.name for target in targets),
         )
+        consumer_import_mutations = cls._consumer_import_mutations(
+            context,
+            source_path=request.source_path,
+            destination_path=request.destination_path,
+            moved_symbol_names=tuple(target.name for target in targets),
+        )
         return cls(
             source_path=request.source_path,
             destination_path=request.destination_path,
@@ -10301,6 +10308,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             dependency_report=report,
             source_reexport_import_sources=source_reexport_import_sources,
+            consumer_import_mutations=consumer_import_mutations,
             rationale=request.rationale,
         )
 
@@ -10321,6 +10329,65 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
             for symbol_name in moved_symbol_names
         )
+
+    @staticmethod
+    def _consumer_import_mutations(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[ModuleImportMutation, ...]:
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        if source_module_name is None:
+            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
+        moved_names = frozenset(moved_symbol_names)
+        mutations: list[ModuleImportMutation] = []
+        for source_file in context.source_index.files:
+            consumer_path = source_file.file_path
+            if consumer_path in (source_path, destination_path):
+                continue
+            module = context.module_nodes_by_file_path.get(consumer_path)
+            if module is None:
+                continue
+            for statement in module.body:
+                if not isinstance(statement, ast.ImportFrom):
+                    continue
+                imported_module = import_graph.resolve_import_from_module(
+                    source_file,
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
+                if imported_module != source_module_name:
+                    continue
+                moved_aliases = tuple(
+                    alias for alias in statement.names if alias.name in moved_names
+                )
+                if not moved_aliases:
+                    continue
+                destination_reference = import_graph.required_import_module_reference(
+                    importing_file_path=consumer_path,
+                    imported_file_path=destination_path,
+                    imported_name=moved_aliases[0].name,
+                )
+                mutations.extend(
+                    (
+                        ModuleImportMutation.remove_names(
+                            file_path=consumer_path,
+                            module_name=ImportFromModuleName.from_node(statement).source,
+                            names=(alias.name for alias in moved_aliases),
+                        ),
+                        ModuleImportMutation.from_source(
+                            file_path=consumer_path,
+                            import_source=ImportFromSource(
+                                module_name=destination_reference,
+                                aliases=moved_aliases,
+                            ).source,
+                        ),
+                    )
+                )
+        return tuple(mutations)
 
     @staticmethod
     def _target_digest_for_symbol(
@@ -10490,6 +10557,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
             for import_source in self.source_reexport_import_sources
         )
+        edits.extend(self.consumer_import_mutations)
         return tuple(edits)
 
     def destination_insertion(

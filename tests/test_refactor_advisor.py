@@ -6883,6 +6883,62 @@ def test_symbol_move_retains_import_with_remaining_string_reference(
     ]
 
 
+def test_symbol_move_rewrites_repository_consumer_imports(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Helper:\n"
+        "    pass\n\n\n"
+        "class Unmoved:\n"
+        "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .source import Helper as ImportedHelper, Unmoved\n\n\n"
+        "def build():\n"
+        "    return ImportedHelper(), Unmoved()\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("rewrite-consumer-import").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_consumer = simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ]
+
+    assert rewritten_consumer.startswith(
+        "from .source import Unmoved\n"
+        "from .destination import Helper as ImportedHelper\n"
+    )
+    assert set(simulation.apply()) == {
+        source_path.as_posix(),
+        destination_path.as_posix(),
+        consumer_path.as_posix(),
+    }
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.consumer import build; build()"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
     tmp_path: Path,
 ) -> None:

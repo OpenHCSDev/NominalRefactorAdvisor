@@ -219,7 +219,10 @@ operation derives dependency imports, source reexports, insertion geometry,
 and the new-file revision contract from the current source snapshot.  An import
 binding used only by moved declarations is removed from the source module;
 bindings with any remaining static name or string reference are retained.
-Generated imports preserve future, absolute, and relative source groups.
+Repository-local explicit ``from`` imports are redirected to the declaration
+owner while mixed imports retain their unmoved aliases.  Generated imports
+preserve future, absolute, and relative source groups; the source-module
+reexports remain as an external compatibility boundary.
 
 .. automodule:: nominal_refactor_advisor.codemod_semantics
    :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, ArchitectureGuardViolationKind, CodemodPreflightStatus

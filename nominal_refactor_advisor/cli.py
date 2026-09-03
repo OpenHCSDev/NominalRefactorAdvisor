@@ -88,10 +88,12 @@ from .codemod import (
     JsonObject,
     JsonValue,
     RefactorConcept,
-    SourcePathCandidateAuthority,
-    SourcePathCandidateSet,
     codemod_class_plan_from_findings,
     evaluate_architecture_guards,
+)
+from .codemod_paths import (
+    SourcePathCandidateAuthority,
+    SourcePathCandidateSet,
 )
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
@@ -142,6 +144,7 @@ from .semantic_descent import (
     build_finding_backed_semantic_descent_graph,
 )
 from .source_index import build_source_index
+
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
