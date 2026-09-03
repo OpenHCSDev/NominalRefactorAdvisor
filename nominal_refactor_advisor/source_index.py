@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from abc import ABC
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import Generic, Iterable, TypeAlias, TypeVar
@@ -17,7 +16,12 @@ from .ast_tools import (
     PythonModulePathIdentity,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .models import RefactorFinding, SourceLocation, stable_source_location_id
+from .models import (
+    RefactorFinding,
+    SemanticRecord,
+    SourceLocation,
+    stable_source_location_id,
+)
 
 IndexKeyT = TypeVar("IndexKeyT")
 IndexValueT = TypeVar("IndexValueT")
@@ -81,15 +85,8 @@ _FUNCTION_LIKE_NODE_KINDS = frozenset(
 )
 
 
-class SourceIndexRecord(ABC):
-    """Nominal owner of storage-shaped source-index record payloads."""
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
 @dataclass(frozen=True)
-class SourceFileDigest(SourceIndexRecord):
+class SourceFileDigest(SemanticRecord):
     """Stable source id for one parsed file."""
 
     file_id: str
@@ -124,7 +121,7 @@ class SourceFileDigest(SourceIndexRecord):
 
 
 @dataclass(frozen=True)
-class AstTargetDigest(SourceIndexRecord):
+class AstTargetDigest(SemanticRecord):
     """Stable AST target address for one module, class, function, or method."""
 
     target_id: str
@@ -175,7 +172,7 @@ class AstTargetDigest(SourceIndexRecord):
 
 
 @dataclass(frozen=True)
-class EvidenceDigest(SourceIndexRecord):
+class EvidenceDigest(SemanticRecord):
     """Stable source-address row for one finding evidence coordinate."""
 
     evidence_id: str

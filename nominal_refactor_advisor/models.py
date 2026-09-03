@@ -18,7 +18,6 @@ from typing import Any, Callable, ClassVar, Self
 from .class_composition import CompositeClassSpec
 from .descriptor_algebra import AliasProperty, ConstantProperty
 from .patterns import PatternId
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_description_length import CompressionCertificate
 from .source_identity import source_path_text
 
@@ -35,12 +34,8 @@ from .taxonomy import (
 from metaclass_registry import AutoRegisterMeta
 
 
-class SemanticRecord(ABC, metaclass=AutoRegisterMeta):
+class SemanticRecord(ABC):
     """Base ABC for frozen records that can be serialized to dictionaries."""
-
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
 
     def to_dict(self) -> dict[str, object]:
         record: Any = self

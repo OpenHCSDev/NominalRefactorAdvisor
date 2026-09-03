@@ -8,7 +8,7 @@ reason about partial views, confusability, and coherence.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from typing import TYPE_CHECKING, TypeAlias
@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import CollectionAttributeProjection
 from .export_tools import PublicExportPolicy, derive_public_exports
+from .models import SemanticRecord
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from metaclass_registry import AutoRegisterMeta
 
@@ -49,13 +50,6 @@ _ObservationAxis: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel]
 _FiberGroupKey: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel, str]
 
 
-class ObservationPayloadRecord:
-    """Nominal owner of storage-shaped observation payloads."""
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
 @dataclass(frozen=True)
 class _CoherenceCohortCacheKey:
     observation_kind: ObservationKind
@@ -65,7 +59,7 @@ class _CoherenceCohortCacheKey:
 
 
 @dataclass(frozen=True)
-class StructuralObservation(ObservationPayloadRecord):
+class StructuralObservation(SemanticRecord):
     """Normalized structural fact emitted by a collected shape."""
 
     file_path: str
@@ -95,7 +89,7 @@ class StructuralObservationCarrier(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class ObservationGroup(ObservationPayloadRecord, metaclass=AutoRegisterMeta):
+class ObservationGroup(SemanticRecord, metaclass=AutoRegisterMeta):
     """Common carrier for grouped observations under one structural axis."""
 
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
@@ -143,7 +137,7 @@ _WitnessGroupsByAxis: TypeAlias = dict[
 
 
 @dataclass(frozen=True)
-class ObservationCohort(ObservationPayloadRecord):
+class ObservationCohort(SemanticRecord):
     """Coherent cluster of fibers that share the same witness family."""
 
     observation_kind: ObservationKind
