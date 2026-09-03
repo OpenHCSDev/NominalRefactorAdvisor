@@ -22,6 +22,7 @@ import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_imports as codemod_imports_module
+import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
@@ -6632,6 +6633,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
     assert "from .destination import Helper as Helper" in rewritten_source
+    assert "from dataclasses import dataclass" not in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "@dataclass\nclass Helper" in rewritten_destination
     assert "from dataclasses import dataclass\n\n\n@dataclass\nclass Helper" in (
@@ -6698,6 +6700,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         "from pathlib import Path\n",
         "from dataclasses import dataclass\n",
     )
+    assert report.source_import_removal_names == ("ClassVar", "dataclass")
     assert report.source_local_dependency_names == ()
     assert report.unresolved_dependency_names == ()
     assert simulation.is_clean is True
@@ -6712,6 +6715,9 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert "from pkg.destination import (" in rewritten_source
     assert "    Helper as Helper," in rewritten_source
     assert "    LocalBase as LocalBase," in rewritten_source
+    assert "from dataclasses import field" in rewritten_source
+    assert "from pathlib import Path" in rewritten_source
+    assert "from typing import ClassVar" not in rewritten_source
     assert "class LocalBase" not in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "from dataclasses import dataclass" in rewritten_destination
@@ -6749,10 +6755,10 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from dataclasses import dataclass\n\n\n"
+        "import dataclasses as dc\n\n\n"
         "class LocalBase:\n"
         "    pass\n\n\n"
-        "@dataclass\n"
+        "@dc.dataclass\n"
         "class Helper(LocalBase):\n"
         "    value: int\n\n\n"
         "def use_helper(value: int) -> Helper:\n"
@@ -6785,10 +6791,10 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
     assert rewritten_destination == (
         '"""Extracted helper declarations."""\n\n'
         "from __future__ import annotations\n\n"
-        "from dataclasses import dataclass\n\n\n"
+        "import dataclasses as dc\n\n\n"
         "class LocalBase:\n"
         "    pass\n\n\n"
-        "@dataclass\n"
+        "@dc.dataclass\n"
         "class Helper(LocalBase):\n"
         "    value: int\n"
     )
@@ -6799,6 +6805,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
         source_path.as_posix(),
         destination_path.as_posix(),
     }
+    assert "import dataclasses" not in source_path.read_text()
     imported = subprocess.run(
         [
             sys.executable,
@@ -6841,6 +6848,39 @@ def test_new_module_extraction_reports_its_leaf_creation_conflict(
         destination_path.as_posix(),
     )
     assert destination_path.read_text() == "KEEP = 1\n"
+
+
+def test_symbol_move_retains_import_with_remaining_string_reference(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from functools import lru_cache\n\n\n"
+        "@lru_cache\n"
+        "def helper(value: int) -> int:\n"
+        "    return value\n\n\n"
+        '__all__ = ("lru_cache",)\n',
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("retain-exported-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.source_import_removal_names == ()
+    assert "from functools import lru_cache" in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
 
 
 def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
@@ -23113,7 +23153,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 
 @pytest.mark.parametrize(
     "declaration_owner",
-    (codemod_imports_module, codemod_semantics_module),
+    (codemod_imports_module, codemod_paths_module, codemod_semantics_module),
 )
 def test_codemod_facade_reexports_declaration_owned_types(
     declaration_owner: ModuleType,

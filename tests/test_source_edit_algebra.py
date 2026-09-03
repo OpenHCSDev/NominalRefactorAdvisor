@@ -255,12 +255,18 @@ def test_import_mutation_orders_forms_by_nominal_ast_declaration(
             file_path=module_path.as_posix(),
             import_source="import ast\n",
         ),
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source="from .types import LocalType\n",
+        ),
     )
     mutation = NominalSourceEdit.coalesced_by_declaration(mutations, context)[0]
     physical = mutation.resolved_edits(context)
 
     assert "".join(physical[0].inserted_lines).startswith(
-        "import ast\nfrom collections.abc import Iterable\n"
+        "import ast\n"
+        "from collections.abc import Iterable\n\n"
+        "from .types import LocalType\n"
     )
 
 
@@ -332,6 +338,12 @@ def test_same_document_operations_resolve_against_created_initial_source(
                     import_source="import ast\n",
                 )
             ),
+            RefactorRecipe("add-relative-import").with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=generated_path.as_posix()),
+                    import_source="from .source import Thing\n",
+                )
+            ),
         )
     )
 
@@ -341,7 +353,8 @@ def test_same_document_operations_resolve_against_created_initial_source(
     assert rewritten == (
         '"""Generated declarations."""\n\n'
         "from __future__ import annotations\n\n"
-        "import ast\n\n\n"
+        "import ast\n\n"
+        "from .source import Thing\n\n\n"
         "VALUE = 1\n"
     )
     assert simulation.simulation.base_revisions[0].source_hash is None

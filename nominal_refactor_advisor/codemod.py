@@ -34,7 +34,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
-from functools import cached_property, lru_cache
+from functools import cached_property
 from itertools import combinations
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
@@ -203,11 +203,7 @@ from .source_index import (
     iter_statement_definition_nodes,
 )
 from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
-from .source_identity import (
-    canonical_source_mapping,
-    resolved_source_path_text,
-    source_path_text,
-)
+from .source_identity import canonical_source_mapping
 from .taxonomy import CertificationLevel, ConfidenceLevel
 from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
@@ -232,6 +228,17 @@ from .codemod_imports import (
     ImportFromSource as ImportFromSource,
     RequestedImportBlock as RequestedImportBlock,
     RequestedImportStatement as RequestedImportStatement,
+)
+from .codemod_paths import (
+    ExactSourcePathResolution as ExactSourcePathResolution,
+    NormalizedSourcePathResolution as NormalizedSourcePathResolution,
+    RelativeSuffixSourcePathResolution as RelativeSuffixSourcePathResolution,
+    ResolvedSourcePathResolution as ResolvedSourcePathResolution,
+    SourceCreationPathAuthority as SourceCreationPathAuthority,
+    SourcePathCandidateAuthority as SourcePathCandidateAuthority,
+    SourcePathCandidateSet as SourcePathCandidateSet,
+    SourcePathResolutionAuthority as SourcePathResolutionAuthority,
+    _source_path_candidate_set as _source_path_candidate_set,
 )
 
 
@@ -1023,202 +1030,6 @@ class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
                 contributor.to_dict() for contributor in self.contributors
             ),
         }
-
-
-class ExactSourcePathResolution:
-    """Resolve an indexed source path exactly as provided by the DSL."""
-
-    @staticmethod
-    def matching_paths(
-        requested_path: str,
-        projection: "SourcePathCandidateSet",
-    ) -> tuple[str, ...]:
-        return tuple(
-            candidate for candidate in projection.paths if candidate == requested_path
-        )
-
-
-class NormalizedSourcePathResolution(ExactSourcePathResolution):
-    """Preserve exact resolution and add slash-normalized matching."""
-
-    @classmethod
-    def matching_paths(
-        cls,
-        requested_path: str,
-        projection: "SourcePathCandidateSet",
-    ) -> tuple[str, ...]:
-        exact_matches = super().matching_paths(requested_path, projection)
-        if exact_matches:
-            return exact_matches
-        requested_posix = source_path_text(requested_path)
-        return tuple(
-            candidate
-            for candidate, candidate_posix in projection.normalized_rows
-            if candidate_posix == requested_posix
-        )
-
-
-class ResolvedSourcePathResolution(NormalizedSourcePathResolution):
-    """Preserve textual matching and add current-directory resolution."""
-
-    @classmethod
-    def matching_paths(
-        cls,
-        requested_path: str,
-        projection: "SourcePathCandidateSet",
-    ) -> tuple[str, ...]:
-        textual_matches = super().matching_paths(requested_path, projection)
-        if textual_matches:
-            return textual_matches
-        requested_resolved = resolved_source_path_text(requested_path)
-        return tuple(
-            candidate
-            for candidate, candidate_resolved in projection.resolved_rows
-            if candidate_resolved == requested_resolved
-        )
-
-
-class RelativeSuffixSourcePathResolution(ResolvedSourcePathResolution):
-    """Preserve stronger matches and add repo-relative suffix resolution."""
-
-    @classmethod
-    def matching_paths(
-        cls,
-        requested_path: str,
-        projection: "SourcePathCandidateSet",
-    ) -> tuple[str, ...]:
-        resolved_matches = super().matching_paths(requested_path, projection)
-        if resolved_matches:
-            return resolved_matches
-        requested = Path(requested_path)
-        suffix = f"/{requested.as_posix()}"
-        return tuple(
-            candidate
-            for candidate, candidate_posix in projection.normalized_rows
-            if not requested.is_absolute() and candidate_posix.endswith(suffix)
-        )
-
-
-@dataclass(frozen=True)
-class SourcePathCandidateSet:
-    """Reusable source-index candidate path set with derived projections."""
-
-    paths: tuple[str, ...]
-
-    @classmethod
-    def from_paths(
-        cls,
-        candidate_paths: tuple[str, ...],
-    ) -> "SourcePathCandidateSet":
-        del cls
-        return _source_path_candidate_set(candidate_paths)
-
-    @cached_property
-    def normalized_rows(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (candidate, source_path_text(candidate)) for candidate in self.paths
-        )
-
-    @cached_property
-    def resolved_rows(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (candidate, resolved_source_path_text(candidate))
-            for candidate in self.paths
-        )
-
-
-@lru_cache(maxsize=128)
-def _source_path_candidate_set(
-    candidate_paths: tuple[str, ...],
-) -> SourcePathCandidateSet:
-    return SourcePathCandidateSet(tuple(sorted(set(candidate_paths))))
-
-
-@dataclass(frozen=True)
-class SourcePathCandidateAuthority:
-    """Base authority for resolving DSL paths against indexed source files."""
-
-    requested_path: str
-    candidate_set: SourcePathCandidateSet
-
-    @classmethod
-    def from_source_index(
-        cls,
-        requested_path: str,
-        source_index: SourceIndex,
-    ) -> "SourcePathResolutionAuthority":
-        return cls(
-            requested_path=requested_path,
-            candidate_set=SourcePathCandidateSet.from_paths(
-                source_index.target_file_paths
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class SourcePathResolutionAuthority(SourcePathCandidateAuthority):
-    """Resolve DSL file_path values against indexed source files."""
-
-    def optional_path(self) -> str | None:
-        matches = self.matching_paths()
-        if matches[1:]:
-            return None
-        return (matches + (None,))[0]
-
-    def required_path(self) -> str:
-        matches = self.matching_paths()
-        if len(matches) == 1:
-            return matches[0]
-        if not matches:
-            raise ValueError(
-                f"Source path {self.requested_path!r} did not resolve to any "
-                "indexed source file"
-            )
-        raise ValueError(
-            f"Source path {self.requested_path!r} resolved to multiple indexed "
-            f"source files: {matches!r}"
-        )
-
-    def matching_paths(self) -> tuple[str, ...]:
-        return RelativeSuffixSourcePathResolution.matching_paths(
-            self.requested_path,
-            self.candidate_set,
-        )
-
-
-@dataclass(frozen=True)
-class SourceCreationPathAuthority(SourcePathCandidateAuthority):
-    """Resolve a new DSL file path against existing indexed source roots."""
-
-    def required_path(self) -> str:
-        requested = Path(self.requested_path)
-        if requested.is_absolute():
-            return requested.as_posix()
-        parent_matches = self.parent_matches(requested)
-        if len(parent_matches) == 1:
-            return parent_matches[0]
-        if len(parent_matches) > 1:
-            raise ValueError(
-                f"New source path {self.requested_path!r} resolved to multiple "
-                f"candidate locations: {parent_matches!r}"
-            )
-        return requested.as_posix()
-
-    def parent_matches(self, requested: Path) -> tuple[str, ...]:
-        requested_parent = requested.parent.as_posix()
-        if requested_parent in ("", "."):
-            return ()
-        suffix = f"/{requested_parent}"
-        return tuple(
-            sorted(
-                {
-                    (Path(candidate).parent / requested.name).as_posix()
-                    for candidate in self.candidate_set.paths
-                    if Path(candidate).parent.as_posix() == requested_parent
-                    or Path(candidate).parent.as_posix().endswith(suffix)
-                }
-            )
-        )
 
 
 @dataclass(frozen=True)
@@ -9613,6 +9424,7 @@ class ModuleImportMutation(NominalSourceEdit):
     file_path: str
     additions: tuple[RequestedImportStatement, ...] = ()
     removals: tuple[ImportNameRemoval, ...] = ()
+    bound_name_removals: tuple[str, ...] = ()
 
     @classmethod
     def from_source(
@@ -9651,6 +9463,22 @@ class ModuleImportMutation(NominalSourceEdit):
             rationale=rationale,
         )
 
+    @classmethod
+    def remove_bound_names(
+        cls,
+        *,
+        file_path: str,
+        names: Iterable[str],
+        rationale: str = "",
+    ) -> "ModuleImportMutation":
+        """Remove exact import bindings after current-source resolution."""
+
+        return cls(
+            file_path=file_path,
+            bound_name_removals=tuple(dict.fromkeys(names)),
+            rationale=rationale,
+        )
+
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
@@ -9678,6 +9506,15 @@ class ModuleImportMutation(NominalSourceEdit):
         removals = cls._coalesced_removals(
             removal for mutation in mutations for removal in mutation.removals
         )
+        bound_name_removals = tuple(
+            sorted(
+                {
+                    name
+                    for mutation in mutations
+                    for name in mutation.bound_name_removals
+                }
+            )
+        )
         removed_names_by_module = {
             removal.module_name: frozenset(removal.names) for removal in removals
         }
@@ -9692,14 +9529,26 @@ class ModuleImportMutation(NominalSourceEdit):
                 frozenset(),
             )
         )
-        if conflicts:
+        bound_name_conflicts = tuple(
+            sorted(
+                {
+                    name
+                    for addition in additions
+                    for name in addition.bound_names
+                    if name in bound_name_removals
+                }
+            )
+        )
+        if conflicts or bound_name_conflicts:
             raise ValueError(
-                f"Import mutations both add and remove names: {conflicts!r}"
+                "Import mutations both add and remove names: "
+                f"{(*conflicts, *bound_name_conflicts)!r}"
             )
         return replace(
             first,
             additions=additions,
             removals=removals,
+            bound_name_removals=bound_name_removals,
             rationale=_joined_rationales(mutation.rationale for mutation in mutations),
             contributors=NominalSourceEdit.merged_contributors(mutations),
             origins=NominalSourceEdit.merged_origins(mutations),
@@ -9771,16 +9620,22 @@ class ModuleImportMutation(NominalSourceEdit):
             removal.module_name: frozenset(removal.names)
             for removal in self._coalesced_removals(self.removals)
         }
-        import_from_statements = tuple(
+        requested_bound_name_removals = frozenset(self.bound_name_removals)
+        import_statements = tuple(
             statement
             for statement in module.body
+            if isinstance(statement, (ast.Import, ast.ImportFrom))
+        )
+        import_from_statements = tuple(
+            statement
+            for statement in import_statements
             if isinstance(statement, ast.ImportFrom)
         )
         aliases_by_statement = {
             id(statement): [
                 ImportAliasRequirement.from_alias(alias) for alias in statement.names
             ]
-            for statement in import_from_statements
+            for statement in import_statements
         }
 
         for statement in import_from_statements:
@@ -9796,6 +9651,29 @@ class ModuleImportMutation(NominalSourceEdit):
                 if alias.name not in removed_names
             ]
 
+        matched_bound_name_removals: set[str] = set()
+        for statement in import_statements:
+            requested_statement = RequestedImportStatement(statement)
+            retained_aliases: list[ImportAliasRequirement] = []
+            for alias in aliases_by_statement[id(statement)]:
+                bound_name = requested_statement.bound_name(alias)
+                if (
+                    bound_name is not None
+                    and bound_name in requested_bound_name_removals
+                ):
+                    matched_bound_name_removals.add(bound_name)
+                else:
+                    retained_aliases.append(alias)
+            aliases_by_statement[id(statement)] = retained_aliases
+        unmatched_bound_name_removals = tuple(
+            sorted(requested_bound_name_removals - matched_bound_name_removals)
+        )
+        if unmatched_bound_name_removals:
+            raise ValueError(
+                "Import bindings no longer resolve for removal: "
+                f"{unmatched_bound_name_removals!r}"
+            )
+
         pending_additions: list[RequestedImportStatement] = []
         for addition in additions:
             matching_from_statements = tuple(
@@ -9805,10 +9683,10 @@ class ModuleImportMutation(NominalSourceEdit):
             )
             if addition.module_name is None:
                 existing_aliases = tuple(
-                    ImportAliasRequirement.from_alias(alias)
-                    for statement in module.body
+                    alias
+                    for statement in import_statements
                     if isinstance(statement, ast.Import)
-                    for alias in statement.names
+                    for alias in aliases_by_statement[id(statement)]
                 )
                 missing_aliases = tuple(
                     alias for alias in addition.aliases if alias not in existing_aliases
@@ -9840,7 +9718,7 @@ class ModuleImportMutation(NominalSourceEdit):
                     aliases.append(alias)
 
         replacements: list[PhysicalSourceEdit] = []
-        for statement in import_from_statements:
+        for statement in import_statements:
             original_aliases = tuple(
                 ImportAliasRequirement.from_alias(alias) for alias in statement.names
             )
@@ -9848,22 +9726,17 @@ class ModuleImportMutation(NominalSourceEdit):
             if aliases == original_aliases:
                 continue
             replacement = RequestedImportStatement(statement).with_aliases(aliases)
-            replacement_statement = cast(ast.ImportFrom, replacement.statement)
+            replacement_source = replacement.source if aliases else ""
             replacements.append(
                 SourceSpanReplacement(
                     file_path=self.file_path,
                     start_line=statement.lineno,
                     end_line=statement.end_lineno or statement.lineno,
                     replacement_lines=SourceTargetEditor.source_lines(
-                        ImportFromSource(
-                            module_name=ImportFromModuleName.from_node(
-                                replacement_statement
-                            ).source,
-                            aliases=tuple(replacement_statement.names),
-                        ).source
+                        replacement_source
                     ),
                     rationale=self.rationale
-                    or f"Update imports from {ImportFromModuleName.from_node(statement).source!r}.",
+                    or f"Update import bindings in {self.file_path!r}.",
                     contributors=self.contributors,
                     origins=self.origins,
                 )
@@ -10020,6 +9893,7 @@ class ModuleMoveDependencyReport:
     moved_symbol_names: tuple[str, ...]
     imported_dependency_names: tuple[str, ...]
     import_sources: tuple[str, ...]
+    source_import_removal_names: tuple[str, ...]
     source_local_dependency_names: tuple[str, ...]
     unresolved_dependency_names: tuple[str, ...]
 
@@ -10061,6 +9935,7 @@ class ModuleMoveDependencyReport:
             "moved_symbol_names": self.moved_symbol_names,
             "imported_dependency_names": self.imported_dependency_names,
             "import_sources": self.import_sources,
+            "source_import_removal_names": self.source_import_removal_names,
             "source_local_dependency_names": self.source_local_dependency_names,
             "unresolved_dependency_names": self.unresolved_dependency_names,
             "is_clean": self.is_clean,
@@ -10154,6 +10029,32 @@ class ModuleSymbolTable:
             source=_statement_source(self.source, statement),
             line=statement.lineno,
         )
+
+    def referenced_names_excluding(
+        self,
+        excluded_symbol_names: Iterable[str],
+        candidate_names: Iterable[str],
+    ) -> frozenset[str]:
+        """Conservatively retain import bindings referenced outside moved nodes."""
+
+        excluded_names = frozenset(excluded_symbol_names)
+        candidates = frozenset(candidate_names)
+        references: set[str] = set()
+        for statement in self.module.body:
+            if (
+                isinstance(
+                    statement,
+                    (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+                and statement.name in excluded_names
+            ):
+                continue
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    references.add(node.id)
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    references.update(name for name in candidates if node.value == name)
+        return frozenset(references)
 
 
 def _store_name_targets(targets: Iterable[ast.AST]) -> tuple[str, ...]:
@@ -10481,6 +10382,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         destination_available = destination_table.available_names | moved_names
         source_import_names = frozenset(source_table.import_sources_by_name)
+        source_dependency_import_names = tuple(
+            sorted(external_names & source_import_names)
+        )
         importable_names = tuple(
             sorted((external_names - destination_available) & source_import_names)
         )
@@ -10498,6 +10402,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 - source_table.top_level_names
             )
         )
+        remaining_references = source_table.referenced_names_excluding(
+            moved_names,
+            source_dependency_import_names,
+        )
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
             destination_path=destination_table.file_path,
@@ -10507,6 +10415,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 source_table,
                 destination_table,
                 importable_names,
+            ),
+            source_import_removal_names=tuple(
+                name
+                for name in source_dependency_import_names
+                if name not in remaining_references
             ),
             source_local_dependency_names=source_local_names,
             unresolved_dependency_names=unresolved_names,
@@ -10553,6 +10466,18 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 for block in self.source_blocks
             ),
         ]
+        if self.dependency_report.source_import_removal_names:
+            edits.append(
+                ModuleImportMutation.remove_bound_names(
+                    file_path=self.source_path,
+                    names=self.dependency_report.source_import_removal_names,
+                    rationale=self.rationale
+                    or (
+                        "Remove imports used only by moved symbols "
+                        f"{self.dependency_report.moved_symbol_names!r}."
+                    ),
+                )
+            )
         edits.extend(
             ModuleImportMutation.from_source(
                 file_path=self.source_path,

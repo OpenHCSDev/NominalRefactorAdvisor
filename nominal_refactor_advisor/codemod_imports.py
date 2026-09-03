@@ -6,6 +6,8 @@ import ast
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from .ast_tools import ImportBoundNameProjection
+
 
 @dataclass(frozen=True)
 class ImportAliasRequirement:
@@ -64,13 +66,14 @@ class RequestedImportStatement:
         return ast.ImportFrom, self.statement.level, self.statement.module
 
     @property
-    def canonical_family_key(self) -> tuple[bool, str, int, str]:
+    def canonical_family_key(self) -> tuple[bool, bool, str, int, str]:
         """Return deterministic source order without encoding semantic priority."""
 
         if isinstance(self.statement, ast.Import):
-            return True, type(self.statement).__name__, 0, ""
+            return True, False, type(self.statement).__name__, 0, ""
         return (
             not self.is_future_import,
+            self.is_relative_import,
             type(self.statement).__name__,
             self.statement.level,
             self.statement.module or "",
@@ -85,6 +88,34 @@ class RequestedImportStatement:
             and self.statement.level == 0
             and self.statement.module == "__future__"
         )
+
+    @property
+    def is_relative_import(self) -> bool:
+        """Return whether this statement belongs to the relative-import group."""
+
+        return isinstance(self.statement, ast.ImportFrom) and self.statement.level > 0
+
+    @property
+    def source_group_identity(self) -> tuple[bool, bool]:
+        """Return the syntax-derived import-block group identity."""
+
+        return self.is_future_import, self.is_relative_import
+
+    @property
+    def bound_names(self) -> tuple[str, ...]:
+        """Return names introduced into the importing module."""
+
+        return tuple(
+            bound_name
+            for alias in self.aliases
+            if (bound_name := self.bound_name(alias)) is not None
+        )
+
+    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
+        bound_names = ImportBoundNameProjection(
+            self.with_aliases((alias,)).statement
+        ).names()
+        return bound_names[0] if bound_names else None
 
     @property
     def source(self) -> str:
@@ -126,16 +157,20 @@ class RequestedImportBlock:
         self,
         previous_statement: ast.Import | ast.ImportFrom | None,
     ) -> str:
-        previous_is_future = (
-            previous_statement is not None
-            and RequestedImportStatement(previous_statement).is_future_import
+        previous = (
+            RequestedImportStatement(previous_statement)
+            if previous_statement is not None
+            else None
         )
         source_parts: list[str] = []
         for statement in self.statements:
-            if previous_is_future and not statement.is_future_import:
+            if (
+                previous is not None
+                and previous.source_group_identity != statement.source_group_identity
+            ):
                 source_parts.append("\n")
             source_parts.append(statement.source)
-            previous_is_future = statement.is_future_import
+            previous = statement
         return "".join(source_parts)
 
 
