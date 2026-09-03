@@ -195,7 +195,6 @@ from nominal_refactor_advisor.codemod import (
     ReplaceTargetOperation,
     ReplaceTextOperation,
     RewriteOperation,
-    PromoteClassMethodsOperation,
     PromoteExactLeafMethodsToAncestorOperation,
     RecipeCallReplacement,
     SemanticCarrierConcept,
@@ -3679,64 +3678,6 @@ def _exact_tiny_method_runtime_observations(
     return tuple(observations)
 
 
-def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "class Alpha:\n"
-        "    def emit(self, rows):\n"
-        "        cleaned = self.normalize(rows)\n"
-        "        return self.write(cleaned)\n\n\n"
-        "class Beta:\n"
-        "    def emit(self, rows):\n"
-        "        cleaned = self.normalize(rows)\n"
-        "        return self.write(cleaned)\n",
-    )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    recipe = RefactorRecipe(recipe_id="promote-repeated-methods").with_operation(
-        PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            base_name="SharedEmitMixin",
-            class_names=("Alpha", "Beta"),
-            method_names=("emit",),
-        )
-    )
-    snapshot = _indexed_snapshot(source_index, source_by_path)
-
-    simulation = recipe.simulate(
-        snapshot,
-        backend=CodemodBackend.AST_SPAN,
-    )
-    diff = simulation.unified_diff(source_by_path)
-
-    operation = recipe.operations[0].to_dict()
-    assert operation["operation"] == "promote_class_methods"
-    assert type(RefactorRecipeOperation.from_dict(operation)) is (
-        PromoteClassMethodsOperation
-    )
-    assert operation["method_names"] == ("emit",)
-    assert recipe.declared_authority_claims(snapshot) == (
-        AuthorityClaim(
-            claimed_symbol="SharedEmitMixin",
-            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-            file_path=module_path.as_posix(),
-            qualname="SharedEmitMixin",
-        ),
-    )
-    assert simulation.is_clean is True
-    assert "+class SharedEmitMixin:" in diff
-    assert "+class Alpha(SharedEmitMixin):" in diff
-    assert "+class Beta(SharedEmitMixin):" in diff
-    simulation.apply()
-    rewritten = module_path.read_text()
-    assert rewritten.count("def emit") == 1
-    assert "class Alpha(SharedEmitMixin):\n    pass\n" in rewritten
-    assert "class Beta(SharedEmitMixin):\n    pass\n" in rewritten
-    build_source_index(parse_python_modules(tmp_path), ())
-
-
 def test_exact_tiny_method_role_does_not_invent_an_authority(
     tmp_path: Path,
 ) -> None:
@@ -3810,6 +3751,11 @@ def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
     assert type(RefactorRecipeOperation.from_dict(payload)) is (
         FactorExactMethodRoleOperation
     )
+    with pytest.raises(
+        ValueError,
+        match="Unsupported recipe operation: promote_class_methods",
+    ):
+        RefactorRecipeOperation.from_dict({"operation": "promote_class_methods"})
     assert len(declared_claims) == 1
     assert declared_claims[0].claimed_symbol == "NormalizedRenderMixin"
     assert declared_claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
@@ -4426,6 +4372,21 @@ def test_exact_tiny_method_role_excludes_undeclared_receiver_requirements(
     assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
 
 
+def test_exact_tiny_method_role_excludes_unresolved_bases(tmp_path: Path) -> None:
+    source = _exact_tiny_method_role_source(
+        "def render(self, value):\n"
+        "    normalized = value.strip()\n"
+        "    return normalized.lower()",
+        base_names_by_class={
+            class_name: f"External{class_name}"
+            for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
+        },
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+
+    assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
+
+
 def test_method_promotion_rejects_lossy_commented_class_headers(
     tmp_path: Path,
 ) -> None:
@@ -4440,20 +4401,23 @@ def test_method_promotion_rejects_lossy_commented_class_headers(
 
     assert _exact_tiny_method_role_findings(modules) == ()
 
-    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(recipe_id="commented-header-promotion").with_operation(
-        PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        FactorExactMethodRoleOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Alpha.render",
+            ),
             base_name="SharedRenderMixin",
-            class_names=_EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
-            method_names=("render",),
         )
     )
     with pytest.raises(
         CodemodOperationPreflightError,
-        match="lossless class-header rewrites",
+        match="belongs to 0 current exact-method role components",
     ):
-        recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        recipe.simulate(
+            CodemodSourceSnapshot.from_modules(modules),
+            backend=CodemodBackend.AST_SPAN,
+        )
 
     assert module_path.read_text(encoding="utf-8") == source
 
@@ -4511,7 +4475,7 @@ def test_exact_tiny_method_role_excludes_existing_authority(
     assert _exact_tiny_method_role_findings(parse_python_modules(tmp_path)) == ()
 
 
-def test_promote_class_methods_rejects_generated_base_binding_collision(
+def test_factor_exact_method_role_rejects_generated_base_binding_collision(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -4524,23 +4488,24 @@ def test_promote_class_methods_rejects_generated_base_binding_collision(
     _write_module(tmp_path, "pkg/mod.py", source)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     recipe = RefactorRecipe(recipe_id="base-binding-collision").with_operation(
-        PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        FactorExactMethodRoleOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Alpha.render",
+            ),
             base_name="SharedRenderMixin",
-            class_names=_EXACT_TINY_METHOD_ROLE_CLASS_NAMES,
-            method_names=("render",),
         )
     )
 
     with pytest.raises(
-        ValueError, match="base name 'SharedRenderMixin' is already bound"
+        ValueError, match="authority name 'SharedRenderMixin' is already bound"
     ):
         recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert module_path.read_text(encoding="utf-8") == source
 
 
-def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> None:
+def test_factor_exact_method_role_rejects_nested_class_targets(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     source = (
         "class Outer:\n"
@@ -4556,15 +4521,19 @@ def test_promote_class_methods_rejects_nested_class_targets(tmp_path: Path) -> N
     _write_module(tmp_path, "pkg/mod.py", source)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     recipe = RefactorRecipe(recipe_id="nested-method-promotion").with_operation(
-        PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        FactorExactMethodRoleOperation(
+            target=SourceRewriteTarget(
+                file_path=module_path.as_posix(),
+                qualname="Outer.Alpha.render",
+            ),
             base_name="SharedRenderMixin",
-            class_names=("Outer.Alpha", "Outer.Beta"),
-            method_names=("render",),
         )
     )
 
-    with pytest.raises(ValueError, match="top-level class targets"):
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="belongs to 0 current exact-method role components",
+    ):
         recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert module_path.read_text(encoding="utf-8") == source

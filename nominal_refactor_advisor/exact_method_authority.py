@@ -730,6 +730,7 @@ class ExactMethodRoleComponentBuilder:
         if any(
             indexed_class.class_keyword_names
             or indexed_class.declares_autoregister_meta
+            or not indexed_class.base_resolution_is_complete
             or not indexed_class.class_decorators_are_promotion_safe
             or not indexed_class.class_header_is_reconstructible
             for indexed_class in indexed_classes

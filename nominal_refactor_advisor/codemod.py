@@ -62,7 +62,6 @@ from .ast_tools import (
     walk_function_body_nodes,
 )
 from .class_index import (
-    ATTRIBUTE_CHAIN_AUTHORITY,
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
     ClassHeaderSourceSpan,
@@ -199,7 +198,6 @@ from .source_identity import (
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
 from .type_keyed_behavior import (
-    TypeKeyedBehaviorBinding,
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
@@ -5564,184 +5562,6 @@ class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClassMemberPromotionOperation(RepositorySourceReprovedOperation, ABC):
-    """Recipe operation that promotes repeated class members to a shared base."""
-
-    base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    class_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
-
-    @property
-    @abstractmethod
-    def member_names(self) -> tuple[str, ...]:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def statement_type(self) -> type["ClassMemberPromotionStatement"]:
-        raise NotImplementedError
-
-    def source_edits_from_snapshot(
-        self,
-        context: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        targets = self.resolved_targets(context)
-        self.validate_targets(targets)
-        return ClassMemberPromotionReplacementPlan(
-            base_name=self.base_name,
-            member_names=self.member_names,
-            statement_type=self.statement_type,
-            rationale=self.rationale,
-        ).source_edits(targets)
-
-    def resolved_targets(
-        self,
-        context: CodemodSelectorContext,
-    ) -> "ClassMemberPromotionTargets":
-        try:
-            return ClassMemberPromotionTargets.resolve(
-                context,
-                source_path=self.target.optional_file_path(context.source_index),
-                class_names=self.class_names,
-            )
-        except ValueError as error:
-            raise self.failed_preflight(str(error)) from error
-
-    def preflight_reports(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.validate_targets(self.resolved_targets(context))
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return ()
-
-    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
-        return CodemodOperationPreflightError(
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.FAILED,
-                message=message,
-                details={
-                    "base_name": self.base_name,
-                    "class_names": self.class_names,
-                    "member_names": self.member_names,
-                },
-            )
-        )
-
-    def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
-        if not targets.supports_base_rewrites():
-            raise self.failed_preflight(
-                "Class member promotion requires lossless class-header rewrites"
-            )
-
-
-@dataclass(frozen=True, kw_only=True)
-class PromoteClassMethodsOperation(ClassMemberPromotionOperation):
-    """Promote repeated class methods to a new shared nominal base."""
-
-    method_names: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
-
-    def current_source_authority_claims(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[AuthorityClaim, ...]:
-        targets = self.resolved_targets(context)
-        self.validate_targets(targets)
-        return (
-            AuthorityClaim(
-                claimed_symbol=self.base_name,
-                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                file_path=targets.insertion_target.file_path,
-                qualname=self.base_name,
-            ),
-        )
-
-    @property
-    def member_names(self) -> tuple[str, ...]:
-        return self.method_names
-
-    @property
-    def statement_type(self) -> type["ClassMemberPromotionStatement"]:
-        return ClassMethodPromotionStatement
-
-    def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
-        super().validate_targets(targets)
-        declaration_failure = targets.exact_method_declaration_failure(
-            self.method_names
-        )
-        if declaration_failure is not None:
-            raise self.failed_preflight(declaration_failure)
-        insertion_module = targets.module_nodes_by_file_path[
-            targets.insertion_target.file_path
-        ]
-        if self.base_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            insertion_module.body
-        ):
-            raise self.failed_preflight(
-                f"Promoted method base name {self.base_name!r} is already bound"
-            )
-        class_family_index = targets.required_class_family_index
-        try:
-            participant_symbols = frozenset(targets.required_class_symbols)
-            indexed_classes = targets.indexed_classes
-        except ValueError as error:
-            raise self.failed_preflight(str(error)) from error
-        for class_target, indexed_class in zip(
-            targets.targets,
-            indexed_classes,
-            strict=True,
-        ):
-            if class_target.node.keywords:
-                raise self.failed_preflight(
-                    "Method promotion does not support class keyword arguments"
-                )
-            if not indexed_class.class_decorators_are_promotion_safe:
-                raise self.failed_preflight(
-                    "Method promotion requires proven direct-method-neutral class decorators"
-                )
-            if len(indexed_class.resolved_base_symbols) != len(
-                indexed_class.declared_base_names
-            ):
-                raise self.failed_preflight(
-                    "Method promotion requires completely resolved direct bases"
-                )
-        for class_symbol in participant_symbols:
-            ancestor_symbols = frozenset(
-                class_family_index.ancestor_symbols(class_symbol)
-            )
-            if participant_symbols & ancestor_symbols:
-                raise self.failed_preflight(
-                    "Method promotion cannot compose ancestor and descendant targets"
-                )
-            if any(
-                any(
-                    ClassMethodPromotionStatement(statement).name == method_name
-                    for statement in ancestor.node.body
-                )
-                for ancestor_symbol in ancestor_symbols
-                if (ancestor := class_family_index.class_for(ancestor_symbol))
-                is not None
-                for method_name in self.method_names
-            ):
-                raise self.failed_preflight(
-                    "Method promotion cannot shadow an ancestor-owned method"
-                )
-            if any(
-                ancestor.declares_autoregister_meta or ancestor.node.keywords
-                for ancestor_symbol in ancestor_symbols
-                if (ancestor := class_family_index.class_for(ancestor_symbol))
-                is not None
-            ):
-                raise self.failed_preflight(
-                    "Method promotion cannot cross a custom metaclass boundary"
-                )
-
-
-@dataclass(frozen=True, kw_only=True)
 class ClassMemberPromotionTargets(CodemodSelectorContext):
     """Resolved class nodes participating in a class-member promotion."""
 
@@ -6424,6 +6244,67 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
         )
 
 
+@dataclass(frozen=True)
+class _ExactMethodRoleSourceRewrite:
+    """Physical rewrite derived from one currently proven method role."""
+
+    component: ExactMethodRoleComponent
+    targets: ClassMemberPromotionTargets
+    base_name: str
+    rationale: str
+
+    @classmethod
+    def required(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        component: ExactMethodRoleComponent,
+        *,
+        base_name: str,
+        rationale: str,
+    ) -> "_ExactMethodRoleSourceRewrite":
+        targets = ClassMemberPromotionTargets.resolve(
+            snapshot,
+            source_path=component.file_path,
+            class_names=component.participant_class_names,
+        )
+        if not targets.supports_base_rewrites():
+            raise ValueError(
+                "Exact-method role factoring requires lossless class headers"
+            )
+        insertion_module = targets.module_nodes_by_file_path[
+            targets.insertion_target.file_path
+        ]
+        if base_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            insertion_module.body
+        ):
+            raise ValueError(
+                f"Exact-method role authority name {base_name!r} is already bound"
+            )
+        return cls(
+            component=component,
+            targets=targets,
+            base_name=base_name,
+            rationale=rationale,
+        )
+
+    @property
+    def authority_claim(self) -> AuthorityClaim:
+        return AuthorityClaim(
+            claimed_symbol=self.base_name,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            file_path=self.targets.insertion_target.file_path,
+            qualname=self.base_name,
+        )
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return ClassMemberPromotionReplacementPlan(
+            base_name=self.base_name,
+            member_names=self.component.method_names,
+            statement_type=ClassMethodPromotionStatement,
+            rationale=self.rationale,
+        ).source_edits(self.targets)
+
+
 @dataclass(frozen=True, kw_only=True)
 class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
     """Re-prove one exact-method cohort and give it a named MI authority."""
@@ -6440,36 +6321,24 @@ class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        try:
-            return self.derived_operation(snapshot).source_edits(snapshot)
-        except CodemodOperationPreflightError as error:
-            raise ValueError(error.report.message) from error
+        return self._source_rewrite(snapshot).source_edits()
 
     def current_source_authority_claims(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[AuthorityClaim, ...]:
-        component = self.required_component(context.execution_snapshot())
-        return (
-            AuthorityClaim(
-                claimed_symbol=self.base_name,
-                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                file_path=component.file_path,
-                qualname=self.base_name,
-            ),
-        )
+        return (self._source_rewrite(context.execution_snapshot()).authority_claim,)
 
-    def derived_operation(
+    def _source_rewrite(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> PromoteClassMethodsOperation:
+    ) -> _ExactMethodRoleSourceRewrite:
         component = self.required_component(snapshot)
-        return PromoteClassMethodsOperation(
-            target=SourceRewriteTarget(file_path=component.file_path),
-            rationale=self.rationale,
+        return _ExactMethodRoleSourceRewrite.required(
+            snapshot,
+            component,
             base_name=self.base_name,
-            class_names=component.participant_class_names,
-            method_names=component.method_names,
+            rationale=self.rationale,
         )
 
     def required_component(
