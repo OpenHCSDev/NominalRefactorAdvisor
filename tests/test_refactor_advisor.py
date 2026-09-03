@@ -168,6 +168,7 @@ from nominal_refactor_advisor.codemod import (
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
     DeriveCandidateCollectorOperation,
+    DescendTypeKeyedBehaviorProjectionOperation,
     ExtractAuthorityOperation,
     ExtractMethodsToClassOperation,
     FactorExactMethodRoleOperation,
@@ -23217,3 +23218,235 @@ def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(
 
     assert len(findings) == 1
     assert "`inner`" in findings[0].summary
+
+
+def _type_keyed_behavior_projection_source() -> str:
+    return """
+from abc import ABC, abstractmethod
+from typing import ClassVar
+from metaclass_registry import AutoRegisterMeta
+from nominal_refactor_advisor.registry_identity import mro_registry_value
+
+
+class Event:
+    value: str
+
+
+class NamedEvent(Event):
+    name: str
+
+
+class CountedEvent(Event):
+    count: int
+
+
+class EventProjection(ABC, metaclass=AutoRegisterMeta):
+    __registry__: ClassVar[dict[type[Event], type["EventProjection"]]] = {}
+    __registry_key__ = "event_type"
+    __skip_if_no_key__ = True
+    event_type: ClassVar[type[Event]]
+
+    @abstractmethod
+    def render(self, event: Event) -> str:
+        raise NotImplementedError
+
+    @classmethod
+    def projection_for(cls, event: Event):
+        projection_type = mro_registry_value(cls.__registry__, type(event))
+        return projection_type() if projection_type is not None else None
+
+    @classmethod
+    def render_for(cls, event: Event) -> str:
+        projection = cls.projection_for(event)
+        if projection is None:
+            return ""
+        return projection.render(event)
+
+
+class NamedEventProjection(EventProjection):
+    event_type = NamedEvent
+
+    def render(self, event: Event) -> str:
+        return event.name
+
+
+class CountedEventProjection(EventProjection):
+    event_type = CountedEvent
+
+    def render(self, event: Event) -> str:
+        return str(event.count)
+
+
+class FallbackEventProjection(EventProjection):
+    event_type = Event
+
+    def render(self, event: Event) -> str:
+        return event.value
+
+
+def render_event(event: Event) -> str:
+    return EventProjection.render_for(event)
+
+
+def render_event_locally(event: Event) -> str:
+    projection = EventProjection.projection_for(event)
+    if projection is None:
+        return ""
+    return projection.render(event)
+"""
+
+
+def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        _type_keyed_behavior_projection_source(),
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "type_keyed_behavior_projection"
+    )
+
+    assert "EventProjection" in finding.summary
+    assert "`Event`" in finding.summary
+    assert "`render`" in finding.summary
+    assert finding.authority_evidence == SourceLocation(
+        str(tmp_path / "pkg/mod.py"),
+        8,
+        "pkg.mod.Event",
+    )
+
+
+def test_type_keyed_behavior_projection_requires_one_mapped_type_hierarchy(
+    tmp_path: Path,
+) -> None:
+    source = _type_keyed_behavior_projection_source().replace(
+        "class CountedEvent(Event):",
+        "class CountedEvent:",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+
+    assert not any(
+        finding.detector_id == "type_keyed_behavior_projection"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    source = _type_keyed_behavior_projection_source()
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "type_keyed_behavior_projection"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("type_keyed_behavior_projection",),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    operation = plan.document.recipes[0].operations[0]
+    assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
+    assert set(operation.to_dict()) == {"operation", "target_id", "rationale"}
+    assert isinstance(
+        RefactorRecipeOperation.from_dict(operation.to_dict()),
+        DescendTypeKeyedBehaviorProjectionOperation,
+    )
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert simulation.is_clean is True
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    assert "class EventProjection" not in rewritten
+    assert "class NamedEventProjection" not in rewritten
+    assert rewritten.count("def render(self)") == 3
+    assert "return event.render()" in rewritten
+    assert "mro_registry_value" not in rewritten
+    assert "AutoRegisterMeta" not in rewritten
+
+    original_namespace: dict[str, object] = {}
+    rewritten_namespace: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), original_namespace)
+    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
+    for class_name, attributes in (
+        ("Event", {"value": "fallback"}),
+        ("NamedEvent", {"name": "named"}),
+        ("CountedEvent", {"count": 7}),
+    ):
+        original_event = original_namespace[class_name]()
+        rewritten_event = rewritten_namespace[class_name]()
+        for name, value in attributes.items():
+            setattr(original_event, name, value)
+            setattr(rewritten_event, name, value)
+        assert original_namespace["render_event"](
+            original_event
+        ) == rewritten_namespace["render_event"](rewritten_event)
+        assert original_namespace["render_event_locally"](
+            original_event
+        ) == rewritten_namespace["render_event_locally"](rewritten_event)
+
+
+def test_type_keyed_behavior_recipe_requires_mro_equivalent_lookup(
+    tmp_path: Path,
+) -> None:
+    source = _type_keyed_behavior_projection_source().replace(
+        "mro_registry_value(cls.__registry__, type(event))",
+        "cls.__registry__.get(type(event))",
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "type_keyed_behavior_projection"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("type_keyed_behavior_projection",),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "MRO-aware registry lookup" in plan.records[0].reason
+
+
+def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
+    tmp_path: Path,
+) -> None:
+    source = (
+        _type_keyed_behavior_projection_source()
+        + "\n\nPROJECTION_TYPE = EventProjection\n"
+    )
+    _write_module(tmp_path, "pkg/mod.py", source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "type_keyed_behavior_projection"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("type_keyed_behavior_projection",),
+    )
+
+    assert len(findings) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert "projection family reference remains" in plan.records[0].reason

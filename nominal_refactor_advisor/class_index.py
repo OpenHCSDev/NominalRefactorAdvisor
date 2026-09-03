@@ -180,6 +180,7 @@ class CompactClassMemberDeclaration(NamedTuple):
     value_is_none_literal: bool
     constructor_name: str | None
     constructor_keyword_names: tuple[str, ...]
+    annotation_expression: str | None
 
 
 class CompactProductAuthorityViolation(StrEnum):
@@ -5287,9 +5288,11 @@ def _compact_class_member_declarations(
         if isinstance(statement, ast.AnnAssign):
             targets = (statement.target,)
             value = statement.value
+            annotation = statement.annotation
         elif isinstance(statement, ast.Assign):
             targets = tuple(statement.targets)
             value = statement.value
+            annotation = None
         else:
             continue
         constructor_name = (
@@ -5319,6 +5322,9 @@ def _compact_class_member_declarations(
                 ),
                 constructor_name=constructor_name,
                 constructor_keyword_names=constructor_keyword_names,
+                annotation_expression=(
+                    ast.unparse(annotation) if annotation is not None else None
+                ),
             )
             for target in targets
             if isinstance(target, ast.Name)

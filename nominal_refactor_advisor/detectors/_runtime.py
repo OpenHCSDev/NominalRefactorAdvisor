@@ -55,6 +55,7 @@ from ..codemod import (
     NumericLiteralDispatchFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
+    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
@@ -75,6 +76,10 @@ from ..source_index import (
     SourceIndex,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
+from ..type_keyed_behavior import (
+    TypeKeyedBehaviorProjectionComponent,
+    TypeKeyedBehaviorProjectionComponentBuilder,
+)
 from ._base import *
 from ._base import high_confidence_certified_spec
 from ._helpers import *
@@ -2605,6 +2610,16 @@ def _compact_parallel_mirrored_leaf_family_candidates(
     )
 
 
+def _type_keyed_behavior_projection_components(
+    repository: CompactClassRepositoryContext,
+) -> tuple[TypeKeyedBehaviorProjectionComponent, ...]:
+    builder = TypeKeyedBehaviorProjectionComponentBuilder.from_projections(
+        repository.projections,
+        repository.class_index,
+    )
+    return builder.proven_components()
+
+
 def _compact_family_has_registration_authority(
     class_index: CompactClassFamilyIndex,
     indexed_class: CompactIndexedClass,
@@ -3077,6 +3092,59 @@ class ParallelMirroredLeafFamilyDetector(
                 registry_name="/".join(root_names),
                 class_names=class_names,
             ),
+        )
+
+
+class TypeKeyedBehaviorProjectionDetector(
+    CompactClassRepositoryCandidateDetector[TypeKeyedBehaviorProjectionComponent],
+    SsotAuthorityBoundaryDetector,
+    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
+):
+    finding_spec = high_confidence_spec(
+        PatternId.TYPE_NAMESPACE_INJECTION,
+        "Type-keyed behavior projection should descend to its nominal hierarchy",
+        "An external registered class family repeats behavior for an injectively mapped type hierarchy. The mapped types already own the runtime distinction and MRO fallback, so their namespaces should own the behavior directly.",
+        "behavior owned once by the mapped nominal type hierarchy and selected through ordinary MRO",
+        "AutoRegister leaves duplicate one behavior contract while their registry keys reproduce an existing nominal type hierarchy",
+        (
+            CapabilityTag.SHARED_TYPE_NAMESPACE,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.REGISTRY_POPULATION,
+            ObservationTag.REPEATED_METHOD_ROLES,
+        ),
+    )
+
+    def _candidates_from_compact_context(
+        self,
+        context: CompactClassRepositoryContext,
+        config: DetectorConfig,
+    ) -> Sequence[TypeKeyedBehaviorProjectionComponent]:
+        del config
+        return context.cached(
+            TypeKeyedBehaviorProjectionComponentBuilder,
+            lambda: _type_keyed_behavior_projection_components(context),
+        )
+
+    def _finding_for_candidate(
+        self,
+        component: TypeKeyedBehaviorProjectionComponent,
+    ) -> RefactorFinding:
+        method_names = ", ".join(
+            f"`{method_name}`" for method_name in component.behavior_method_names
+        )
+        return self.build_finding(
+            (
+                f"`{component.projection_root.simple_name}` maps {len(component.bindings)} "
+                f"registered leaves onto `{component.target_root.simple_name}` and its "
+                f"descendants while repeating {method_names}; the mapped type hierarchy "
+                "already supplies the behavior dispatch relation."
+            ),
+            component.evidence_locations,
+            authority_evidence=component.authority_evidence,
         )
 
 
