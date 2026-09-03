@@ -12,6 +12,7 @@ from abc import ABC
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from pathlib import Path
+from types import ModuleType
 from typing import cast
 from unittest.mock import Mock
 
@@ -20,6 +21,8 @@ import pytest
 import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
+import nominal_refactor_advisor.codemod_imports as codemod_imports_module
+import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
 import nominal_refactor_advisor.observation_families as observation_families_module
@@ -6630,6 +6633,9 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     assert "from .destination import Helper as Helper" in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "@dataclass\nclass Helper" in rewritten_destination
+    assert "from dataclasses import dataclass\n\n\n@dataclass\nclass Helper" in (
+        rewritten_destination
+    )
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
         "class Existing"
     )
@@ -6712,6 +6718,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert "from pathlib import Path" in rewritten_destination
     assert "from typing import ClassVar" in rewritten_destination
     assert "@dataclass\nclass Helper(LocalBase):" in rewritten_destination
+    assert "from typing import ClassVar\n\n\nclass LocalBase:" in rewritten_destination
     assert rewritten_destination.index("class LocalBase") < rewritten_destination.index(
         "class Helper"
     )
@@ -22976,10 +22983,8 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
     )
 
 
-def test_codemod_facade_reexports_declaration_owned_semantic_axes() -> None:
+def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
     import nominal_refactor_advisor as public_api
-    import nominal_refactor_advisor.codemod as codemod_facade
-    import nominal_refactor_advisor.codemod_semantics as semantic_owner
 
     public_names = (
         "ArchitectureGuardViolationKind",
@@ -22988,16 +22993,28 @@ def test_codemod_facade_reexports_declaration_owned_semantic_axes() -> None:
         "FindingRecipePlanningHorizon",
         "FindingRecipeSynthesisStatus",
     )
-    owner_declarations = {
-        name: value
-        for name, value in vars(semantic_owner).items()
-        if isinstance(value, type) and value.__module__ == semantic_owner.__name__
-    }
 
     assert all(
-        getattr(public_api, name) is getattr(semantic_owner, name)
+        getattr(public_api, name) is getattr(codemod_semantics_module, name)
         for name in public_names
     )
+
+
+@pytest.mark.parametrize(
+    "declaration_owner",
+    (codemod_imports_module, codemod_semantics_module),
+)
+def test_codemod_facade_reexports_declaration_owned_types(
+    declaration_owner: ModuleType,
+) -> None:
+    import nominal_refactor_advisor.codemod as codemod_facade
+
+    owner_declarations = {
+        name: value
+        for name, value in vars(declaration_owner).items()
+        if isinstance(value, type) and value.__module__ == declaration_owner.__name__
+    }
+
     assert owner_declarations
     assert all(
         getattr(codemod_facade, name) is declaration

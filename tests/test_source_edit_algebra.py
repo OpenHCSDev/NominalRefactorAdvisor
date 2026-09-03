@@ -28,6 +28,7 @@ from nominal_refactor_advisor.codemod import (
     SourceSpanReplacement,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
 
 
 def _snapshot(tmp_path: Path, source: str) -> tuple[Path, CodemodSourceSnapshot]:
@@ -238,6 +239,49 @@ def test_import_mutation_owns_add_remove_union_without_parsing_insertions(
             ),
             context,
         )
+
+
+def test_import_mutation_orders_forms_by_nominal_ast_declaration(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(tmp_path, "VALUE = 1\n")
+    mutations = (
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source="from collections.abc import Iterable\n",
+        ),
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source="import ast\n",
+        ),
+    )
+    mutation = NominalSourceEdit.coalesced_by_declaration(mutations, context)[0]
+    physical = mutation.resolved_edits(context)
+
+    assert "".join(physical[0].inserted_lines).startswith(
+        "import ast\nfrom collections.abc import Iterable\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_separator"),
+    (
+        ("import ast\nVALUE = 1\n", "\n\n"),
+        ("import ast\n\nVALUE = 1\n", "\n"),
+        ("import ast\n\n\nVALUE = 1\n", ""),
+    ),
+)
+def test_import_insertion_derives_only_missing_separator_lines(
+    source: str,
+    expected_separator: str,
+) -> None:
+    spacing = DestinationInsertionSpacing.from_source(
+        source,
+        2,
+        inserted_source_is_import_block=True,
+    )
+
+    assert spacing.trailing_separator == expected_separator
 
 
 def test_file_creation_is_explicit_and_has_one_authority(tmp_path: Path) -> None:
