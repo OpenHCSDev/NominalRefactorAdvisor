@@ -10257,6 +10257,11 @@ class ClassAuthorityReferenceProof:
                 f"Class authority name {authority_name!r} is imported from another "
                 "declaration"
             )
+        if context.module_import_graph.import_would_create_cycle(
+            importing_file_path=self.projection_module.file_path,
+            imported_file_path=self.authority.file_path,
+        ):
+            raise ValueError("Class authority import would create a module cycle")
         import_source = context.module_import_graph.import_source(
             importing_file_path=self.projection_module.file_path,
             imported_file_path=self.authority.file_path,

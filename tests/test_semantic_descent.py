@@ -3222,6 +3222,23 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     assert record.status.value == "rejected_by_safety_check"
     assert "module cycle" in record.reason
 
+    authority_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "RefactorAction"
+    )
+    projection_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "ActionReport.to_dict"
+    )
+    operation = DeriveDataclassPayloadProjectionOperation(
+        target=SourceRewriteTarget(target_id=authority_target.target_id),
+        projection_target=SourceRewriteTarget(target_id=projection_target.target_id),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="module cycle"):
+        operation.source_edits(snapshot)
+
 
 def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
     tmp_path: Path,
