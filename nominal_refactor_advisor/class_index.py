@@ -2655,6 +2655,28 @@ class ModuleNominalBindingAuthority:
             policy=policy,
         )[line]
 
+    def snapshots_before(
+        self,
+        lines: Iterable[int],
+        *,
+        policy: ModuleNominalBindingSnapshotPolicy = (
+            ModuleNominalBindingSnapshotPolicy.EXACT
+        ),
+    ) -> dict[int, ModuleNominalBindingSnapshot]:
+        """Resolve many source positions through one sequential module pass."""
+
+        requested_lines = tuple(dict.fromkeys(lines))
+        return {
+            line: snapshot
+            for line, snapshot in _module_nominal_binding_snapshots(
+                self.parsed_module,
+                requested_lines,
+                include_final=False,
+                policy=policy,
+            ).items()
+            if line is not None
+        }
+
     def qualified_name_at(
         self,
         reference: ast.AST,

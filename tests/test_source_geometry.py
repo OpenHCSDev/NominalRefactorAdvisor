@@ -4,6 +4,7 @@ import ast
 
 from nominal_refactor_advisor.source_geometry import (
     SourceByteSpan,
+    SourceCommentLineIndex,
     SourceLineSegmentAuthority,
 )
 
@@ -40,3 +41,15 @@ def test_source_line_segment_authority_rejects_missing_span() -> None:
     node = ast.Name(id="value", ctx=ast.Load())
 
     assert SourceLineSegmentAuthority("value").segment_for_node(node) is None
+
+
+def test_source_comment_line_index_uses_tokens_instead_of_hash_characters() -> None:
+    source = "label = '# value'\nvalue = 1  # explanation\nother = 2\n"
+    module = ast.parse(source)
+    index = SourceCommentLineIndex.from_source(source)
+
+    assert index.is_complete is True
+    assert index.comment_lines == frozenset({2})
+    assert index.intersects(module.body[0]) is False
+    assert index.intersects(module.body[1]) is True
+    assert index.intersects(module.body[2]) is False

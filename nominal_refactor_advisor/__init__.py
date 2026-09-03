@@ -34,6 +34,7 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     DeleteClassAssignmentsOperation,
+    FactorExactDataclassFieldAuthorityOperation,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipePlanningHorizon,

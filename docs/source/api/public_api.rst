@@ -68,8 +68,10 @@ operation-name catalogue in the CLI.
 Caller-authored authority source operations likewise fail closed unless their
 typed claim names the destination and the supplied source contains exactly that
 one top-level class declaration.
-Method-promotion and method-extraction operations derive the new base or peer
-authority claim from their validated current-source targets.
+Exact method and dataclass-field factoring operations re-prove their complete
+cohorts from one current-source witness and an explicit authority name.  Their
+generated claims and physical edits therefore do not serialize participant or
+member rosters.
 Candidate-collector forwarding findings compile to a one-target operation that
 re-derives the collector, traversal scope, candidate type, configuration use,
 old base, and replacement base from the same current-source witness.
@@ -164,7 +166,7 @@ their exact source target.  Each unavoidable field mapping is a nominal
 ``CarrierFieldProjection`` payload record rather than an encoded string pair.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
    :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof

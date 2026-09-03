@@ -117,6 +117,10 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
+from .exact_field_authority import (
+    ExactDataclassFieldAuthorityComponent,
+    ExactDataclassFieldAuthorityComponentBuilder,
+)
 from .exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
@@ -2341,6 +2345,17 @@ class PositionalCallNameIndex:
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
+
+    @cached_property
+    def exact_dataclass_field_authority_component_builder(
+        self,
+    ) -> ExactDataclassFieldAuthorityComponentBuilder:
+        """Derive repeated dataclass state from this source state's class graph."""
+
+        return ExactDataclassFieldAuthorityComponentBuilder.from_modules(
+            self.parsed_modules,
+            class_index=self.required_class_family_index,
+        )
 
     @cached_property
     def exact_leaf_method_component_builder(
@@ -5698,6 +5713,45 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
         )
 
     @classmethod
+    def require_new_authority(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        class_names: tuple[str, ...],
+        authority_name: str,
+    ) -> "ClassMemberPromotionTargets":
+        """Resolve a cohort and prove one new local base can own its members."""
+
+        targets = cls.resolve(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+        )
+        if not targets.supports_base_rewrites():
+            raise ValueError("Class-member factoring requires lossless class headers")
+        insertion_module = targets.module_nodes_by_file_path[
+            targets.insertion_target.file_path
+        ]
+        if authority_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            insertion_module.body
+        ):
+            raise ValueError(
+                f"Class-member authority name {authority_name!r} is already bound"
+            )
+        return targets
+
+    def new_authority_claim(self, authority_name: str) -> AuthorityClaim:
+        """Derive the class-family claim established at this cohort's anchor."""
+
+        return AuthorityClaim(
+            claimed_symbol=authority_name,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            file_path=self.insertion_target.file_path,
+            qualname=authority_name,
+        )
+
+    @classmethod
     def resolve_or_none(
         cls,
         context: CodemodSelectorContext,
@@ -6191,10 +6245,26 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
 
 
 @dataclass(frozen=True)
-class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
-    """Line replacements for promoting class members into one shared base."""
+class ClassMemberPromotionReplacementPlanABC(ClassMemberPromotionSpec, ABC):
+    """Shared rewrites for promoting class members into one nominal base."""
 
     rationale: str
+
+    @abstractmethod
+    def promoted_base_source(self, targets: ClassMemberPromotionTargets) -> str:
+        raise NotImplementedError
+
+    def promoted_member_source(self, targets: ClassMemberPromotionTargets) -> str:
+        """Derive the complete selected member source from the insertion owner."""
+
+        return "".join(
+            ClassMemberSourceSelection(
+                member_names=self.member_names,
+                statement_type=self.statement_type,
+                source_text=targets.first_source,
+                source_class=targets.insertion_target.node,
+            ).member_sources
+        )
 
     def source_edits(
         self,
@@ -6215,13 +6285,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
         targets: ClassMemberPromotionTargets,
     ) -> SourceInsertion:
         class_target = targets.insertion_target
-        base_source = ClassMemberPromotedBase(
-            base_name=self.base_name,
-            member_names=self.member_names,
-            statement_type=self.statement_type,
-            source_text=targets.first_source,
-            source_class=class_target.node,
-        ).source
+        base_source = self.promoted_base_source(targets)
         return SourceInsertion(
             file_path=class_target.file_path,
             insertion_line=targets.insertion_line,
@@ -6283,21 +6347,31 @@ class ClassMemberSourceSelection(ClassMemberSetSpec):
 
 
 @dataclass(frozen=True)
-class ClassMemberPromotedBase(ClassMemberPromotionSpec):
-    """Source for a base class containing promoted class members."""
+class LayoutNeutralClassMemberPromotionReplacementPlan(
+    ClassMemberPromotionReplacementPlanABC
+):
+    """Promote behavior into a layout-neutral mixin authority."""
 
-    source_text: str
-    source_class: ast.ClassDef
+    def promoted_base_source(self, targets: ClassMemberPromotionTargets) -> str:
+        return (
+            f"class {self.base_name}:\n"
+            f"    __slots__ = ()\n\n"
+            f"{self.promoted_member_source(targets)}"
+        )
 
-    @property
-    def source(self) -> str:
-        members = ClassMemberSourceSelection(
-            member_names=self.member_names,
-            statement_type=self.statement_type,
-            source_text=self.source_text,
-            source_class=self.source_class,
-        ).member_sources
-        return f"class {self.base_name}:\n    __slots__ = ()\n\n{''.join(members)}"
+
+@dataclass(frozen=True)
+class DataclassFieldPromotionReplacementPlan(ClassMemberPromotionReplacementPlanABC):
+    """Promote exact fields into a standard dataclass authority."""
+
+    decorator_source: str
+
+    def promoted_base_source(self, targets: ClassMemberPromotionTargets) -> str:
+        return (
+            f"@{self.decorator_source}\n"
+            f"class {self.base_name}:\n"
+            f"{self.promoted_member_source(targets)}"
+        )
 
 
 @dataclass(frozen=True)
@@ -6349,69 +6423,63 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
 
 
 @dataclass(frozen=True)
-class _ExactMethodRoleSourceRewrite:
-    """Physical rewrite derived from one currently proven method role."""
+class NamedClassMemberAuthoritySourceRewriteABC(ABC):
+    """Shared claim surface for one source-proved class-member authority."""
 
-    component: ExactMethodRoleComponent
     targets: ClassMemberPromotionTargets
     base_name: str
     rationale: str
+
+    @property
+    def authority_claim(self) -> AuthorityClaim:
+        return self.targets.new_authority_claim(self.base_name)
+
+    @abstractmethod
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _ExactDataclassFieldAuthoritySourceRewrite(
+    NamedClassMemberAuthoritySourceRewriteABC
+):
+    """Physical rewrite derived from one current repeated-field proof."""
+
+    component: ExactDataclassFieldAuthorityComponent
 
     @classmethod
     def required(
         cls,
         snapshot: CodemodSourceSnapshot,
-        component: ExactMethodRoleComponent,
+        component: ExactDataclassFieldAuthorityComponent,
         *,
         base_name: str,
         rationale: str,
-    ) -> "_ExactMethodRoleSourceRewrite":
-        targets = ClassMemberPromotionTargets.resolve(
+    ) -> "_ExactDataclassFieldAuthoritySourceRewrite":
+        targets = ClassMemberPromotionTargets.require_new_authority(
             snapshot,
             source_path=component.file_path,
             class_names=component.participant_class_names,
+            authority_name=base_name,
         )
-        if not targets.supports_base_rewrites():
-            raise ValueError(
-                "Exact-method role factoring requires lossless class headers"
-            )
-        insertion_module = targets.module_nodes_by_file_path[
-            targets.insertion_target.file_path
-        ]
-        if base_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            insertion_module.body
-        ):
-            raise ValueError(
-                f"Exact-method role authority name {base_name!r} is already bound"
-            )
-        return cls(
-            component=component,
-            targets=targets,
-            base_name=base_name,
-            rationale=rationale,
-        )
-
-    @property
-    def authority_claim(self) -> AuthorityClaim:
-        return AuthorityClaim(
-            claimed_symbol=self.base_name,
-            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-            file_path=self.targets.insertion_target.file_path,
-            qualname=self.base_name,
-        )
+        return cls(targets, base_name, rationale, component)
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
-        return ClassMemberPromotionReplacementPlan(
+        return DataclassFieldPromotionReplacementPlan(
             base_name=self.base_name,
-            member_names=self.component.method_names,
-            statement_type=ClassMethodPromotionStatement,
+            member_names=self.component.field_names,
+            statement_type=ClassDeclarationPromotionStatement,
             rationale=self.rationale,
+            decorator_source=self.component.decorator_source,
         ).source_edits(self.targets)
 
 
 @dataclass(frozen=True, kw_only=True)
-class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
-    """Re-prove one exact-method cohort and give it a named MI authority."""
+class FactorNamedClassMemberAuthorityOperationABC(
+    RepositorySourceReprovedOperation,
+    ABC,
+):
+    """Shared execution shell for a newly named, source-reproved member owner."""
 
     base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
@@ -6419,7 +6487,7 @@ class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
         if not self.base_name.isidentifier() or keyword_module.iskeyword(
             self.base_name
         ):
-            raise ValueError("Exact-method role authority name must be an identifier")
+            raise ValueError("Class-member authority name must be an identifier")
 
     def source_edits_from_snapshot(
         self,
@@ -6432,6 +6500,93 @@ class FactorExactMethodRoleOperation(RepositorySourceReprovedOperation):
         context: CodemodSelectorContext,
     ) -> tuple[AuthorityClaim, ...]:
         return (self._source_rewrite(context.execution_snapshot()).authority_claim,)
+
+    @abstractmethod
+    def _source_rewrite(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> NamedClassMemberAuthoritySourceRewriteABC:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class FactorExactDataclassFieldAuthorityOperation(
+    FactorNamedClassMemberAuthorityOperationABC
+):
+    """Re-prove repeated leading fields and give them one dataclass authority."""
+
+    evidence_field_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.evidence_field_name.isidentifier() or keyword_module.iskeyword(
+            self.evidence_field_name
+        ):
+            raise ValueError("Evidence field name must be an identifier")
+
+    def _source_rewrite(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> _ExactDataclassFieldAuthoritySourceRewrite:
+        component = self.required_component(snapshot)
+        return _ExactDataclassFieldAuthoritySourceRewrite.required(
+            snapshot,
+            component,
+            base_name=self.base_name,
+            rationale=self.rationale,
+        )
+
+    def required_component(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> ExactDataclassFieldAuthorityComponent:
+        _target_id, target, _node = self.target_node_from_context(snapshot)
+        if target.node_kind is not AstTargetNodeKind.CLASS:
+            raise ValueError("Exact dataclass field factoring requires a class target")
+        return (
+            snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
+                file_path=target.file_path,
+                class_qualname=target.qualname,
+                field_name=self.evidence_field_name,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _ExactMethodRoleSourceRewrite(NamedClassMemberAuthoritySourceRewriteABC):
+    """Physical rewrite derived from one currently proven method role."""
+
+    component: ExactMethodRoleComponent
+
+    @classmethod
+    def required(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        component: ExactMethodRoleComponent,
+        *,
+        base_name: str,
+        rationale: str,
+    ) -> "_ExactMethodRoleSourceRewrite":
+        targets = ClassMemberPromotionTargets.require_new_authority(
+            snapshot,
+            source_path=component.file_path,
+            class_names=component.participant_class_names,
+            authority_name=base_name,
+        )
+        return cls(targets, base_name, rationale, component)
+
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return LayoutNeutralClassMemberPromotionReplacementPlan(
+            base_name=self.base_name,
+            member_names=self.component.method_names,
+            statement_type=ClassMethodPromotionStatement,
+            rationale=self.rationale,
+        ).source_edits(self.targets)
+
+
+@dataclass(frozen=True, kw_only=True)
+class FactorExactMethodRoleOperation(FactorNamedClassMemberAuthorityOperationABC):
+    """Re-prove one exact-method cohort and give it a named MI authority."""
 
     def _source_rewrite(
         self,
@@ -6513,7 +6668,7 @@ class _ParallelMirroredLeafFamilySourceRewrite:
                 self.targets.role_classes,
                 strict=True,
             )
-            for edit in ClassMemberPromotionReplacementPlan(
+            for edit in LayoutNeutralClassMemberPromotionReplacementPlan(
                 base_name=role.authority_name,
                 member_names=self.targets.component.contract_method_names,
                 statement_type=ClassMethodPromotionStatement,

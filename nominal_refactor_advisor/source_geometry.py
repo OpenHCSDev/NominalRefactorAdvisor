@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -122,3 +124,33 @@ class SourceLineSegmentAuthority:
         if span is None or not span.fits_lines(self.lines):
             return None
         return span.segment(self.lines)
+
+
+@dataclass(frozen=True)
+class SourceCommentLineIndex:
+    """One token-derived comment-line projection for a complete source file."""
+
+    comment_lines: frozenset[int]
+    is_complete: bool
+
+    @classmethod
+    def from_source(cls, source: str) -> "SourceCommentLineIndex":
+        try:
+            return cls(
+                comment_lines=frozenset(
+                    token.start[0]
+                    for token in tokenize.generate_tokens(io.StringIO(source).readline)
+                    if token.type == tokenize.COMMENT
+                ),
+                is_complete=True,
+            )
+        except (IndentationError, tokenize.TokenError):
+            return cls(frozenset(), is_complete=False)
+
+    def intersects(self, node: ast.expr | ast.stmt) -> bool:
+        """Return true when comments occur within an AST node's line span."""
+
+        end_line = node.end_lineno or node.lineno
+        return not self.is_complete or any(
+            node.lineno <= line <= end_line for line in self.comment_lines
+        )

@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.codemod import (
+    CodemodBackend,
+    CodemodOperationPreflightError,
+    CodemodSourceSnapshot,
+    FactorExactDataclassFieldAuthorityOperation,
+    RefactorRecipe,
+    RefactorRecipeOperation,
+    SourceRewriteTarget,
+)
+from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
+
+
+def _write_module(root: Path, relative_path: str, source: str) -> Path:
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return path
+
+
+def _fixture_source() -> str:
+    return (
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class AlphaProjection:\n"
+        "    module_name: str\n"
+        "    file_path: str\n"
+        "    alpha_value: int\n\n"
+        "    def label(self) -> str:\n"
+        "        return f'{self.module_name}:{self.file_path}'\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class BetaProjection:\n"
+        "    module_name: str\n"
+        "    file_path: str\n"
+        "    beta_value: float\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class GammaProjection:\n"
+        "    module_name: str\n"
+        "    file_path: str\n"
+        "    gamma_value: bytes\n"
+    )
+
+
+def _write_fixture(root: Path, *, source: str | None = None) -> Path:
+    _write_module(root, "pkg/__init__.py", "")
+    return _write_module(
+        root,
+        "pkg/models.py",
+        _fixture_source() if source is None else source,
+    )
+
+
+def _operation(module_path: Path) -> FactorExactDataclassFieldAuthorityOperation:
+    return FactorExactDataclassFieldAuthorityOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="AlphaProjection",
+        ),
+        evidence_field_name="file_path",
+        base_name="ProjectionIdentity",
+    )
+
+
+def _runtime_output(root: Path) -> str:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; "
+            "from dataclasses import fields; "
+            "from inspect import signature; "
+            "from pkg.models import AlphaProjection, BetaProjection, GammaProjection; "
+            "values = [AlphaProjection('pkg', 'a.py', 3), "
+            "BetaProjection(module_name='pkg', file_path='b.py', beta_value=2.5), "
+            "GammaProjection('pkg', 'c.py', b'x')]; "
+            "print(json.dumps({'fields': [[f.name for f in fields(type(v))] for v in values], "
+            "'match_args': [type(v).__match_args__ for v in values], "
+            "'signatures': [str(signature(type(v))) for v in values], "
+            "'repr': [repr(v) for v in values], "
+            "'hashable': [isinstance(hash(v), int) for v in values], "
+            "'equal': values[0] == AlphaProjection('pkg', 'a.py', 3), "
+            "'label': values[0].label()}, sort_keys=True))",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def test_operation_reproves_field_component_without_serializing_rosters(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_fixture(tmp_path)
+    before = _runtime_output(tmp_path)
+    modules = tuple(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    operation = _operation(module_path)
+    recipe = RefactorRecipe(recipe_id="factor-projection-identity").with_operation(
+        operation
+    )
+
+    payload = operation.to_dict()
+    claims = recipe.declared_authority_claims(snapshot)
+    simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert payload["operation"] == "factor_exact_dataclass_field_authority"
+    assert payload["evidence_field_name"] == "file_path"
+    assert payload["base_name"] == "ProjectionIdentity"
+    assert "class_names" not in payload
+    assert "field_names" not in payload
+    assert type(RefactorRecipeOperation.from_dict(payload)) is (
+        FactorExactDataclassFieldAuthorityOperation
+    )
+    assert len(claims) == 1
+    assert claims[0].claimed_symbol == "ProjectionIdentity"
+    assert claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
+    assert simulation.is_clean is True
+    assert rewritten.count("module_name: str") == 1
+    assert rewritten.count("file_path: str") == 1
+    assert "class ProjectionIdentity:" in rewritten
+    assert all(
+        f"class {class_name}(ProjectionIdentity):" in rewritten
+        for class_name in ("AlphaProjection", "BetaProjection", "GammaProjection")
+    )
+
+    simulation.apply()
+    assert _runtime_output(tmp_path) == before
+    after_snapshot = CodemodSourceSnapshot.from_modules(
+        tuple(parse_python_modules(tmp_path))
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="belongs to 0 current exact dataclass field authority components",
+    ):
+        recipe.simulate(after_snapshot, backend=CodemodBackend.AST_SPAN)
+
+
+def test_operation_rejects_a_drifted_target_component(tmp_path: Path) -> None:
+    module_path = _write_fixture(
+        tmp_path,
+        source=_fixture_source().replace(
+            "    file_path: str\n",
+            "    source_path: str\n",
+            1,
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="belongs to 0 current exact dataclass field authority components",
+    ):
+        RefactorRecipe(recipe_id="drifted-field-authority").with_operation(
+            _operation(module_path)
+        ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
+
+def test_operation_rejects_generated_authority_name_collision(tmp_path: Path) -> None:
+    source = _fixture_source().replace(
+        "from dataclasses import dataclass\n",
+        "from dataclasses import dataclass\n\nProjectionIdentity = object()\n",
+    )
+    module_path = _write_fixture(tmp_path, source=source)
+    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="authority name 'ProjectionIdentity' is already bound",
+    ):
+        RefactorRecipe(recipe_id="colliding-field-authority").with_operation(
+            _operation(module_path)
+        ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
