@@ -2272,6 +2272,16 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
     @cached_property
+    def parallel_mirrored_leaf_family_component_builder(
+        self,
+    ) -> ParallelMirroredLeafFamilyComponentBuilder:
+        """Derive role products from this source state's exact-method proof."""
+
+        return ParallelMirroredLeafFamilyComponentBuilder(
+            self.exact_leaf_method_component_builder
+        )
+
+    @cached_property
     def source_state_id(self) -> str:
         """Return the exact identity of this complete source state."""
 
@@ -5922,9 +5932,10 @@ class ParallelMirroredLeafFamilyTargets:
         if not root_target.is_class:
             raise ValueError("parallel leaf-family authority target must be a class")
         root_symbol = snapshot.source_index.symbol_for_target(root_target)
-        component = ParallelMirroredLeafFamilyComponentBuilder.from_modules(
-            snapshot.parsed_modules
-        ).required_proven_component(root_symbol)
+        component = (
+            snapshot.parallel_mirrored_leaf_family_component_builder
+            .required_proven_component(root_symbol)
+        )
         targets = cls.resolve(snapshot, component)
         failure = targets.validation_failure()
         if failure is not None:
@@ -6358,18 +6369,39 @@ class FactorParallelMirroredLeafFamilyOperation(SourceReprovedOperation):
     ) -> tuple[PhysicalSourceEdit, ...]:
         return self._source_rewrite(snapshot).source_edits()
 
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        component = self.required_targets(context.execution_snapshot()).component
+        return tuple(
+            AuthorityClaim(
+                claimed_symbol=role.authority_name,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=component.file_path,
+                qualname=role.authority_name,
+            )
+            for role in component.roles
+        )
+
+    def required_targets(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> ParallelMirroredLeafFamilyTargets:
+        _target_identifier, root_target, _root_node = self.target_node_from_context(
+            snapshot
+        )
+        return ParallelMirroredLeafFamilyTargets.required_for_root_target(
+            snapshot,
+            root_target,
+        )
+
     def _source_rewrite(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> _ParallelMirroredLeafFamilySourceRewrite:
-        _target_identifier, root_target, _root_node = self.target_node_from_context(
-            snapshot
-        )
         return _ParallelMirroredLeafFamilySourceRewrite(
-            targets=ParallelMirroredLeafFamilyTargets.required_for_root_target(
-                snapshot,
-                root_target,
-            ),
+            targets=self.required_targets(snapshot),
             rationale=self.rationale,
         )
 
@@ -11101,7 +11133,23 @@ class RefactorRecipe(CodemodPayloadRecord):
         self,
         context: CodemodSelectorContext | None,
     ) -> CodemodOperationPreflightReport | None:
-        claims = self.effective_authority_claims(context)
+        try:
+            declared_claims = (
+                self.declared_authority_claims(context)
+                if context is not None
+                else ()
+            )
+        except CodemodOperationPreflightError as error:
+            return CodemodOperationPreflightReport(
+                operation=AuthorityClaimPayload.field_name,
+                status=CodemodPreflightStatus.FAILED,
+                message=error.report.message,
+                details={
+                    "recipe_id": self.recipe_id,
+                    "declaration_preflight": error.report.to_dict(),
+                },
+            )
+        claims = tuple(dict.fromkeys((*self.authority_claims, *declared_claims)))
         if not claims:
             return None
         if context is None:
@@ -11116,7 +11164,7 @@ class RefactorRecipe(CodemodPayloadRecord):
             )
         resolver = AuthorityClaimSourceIndexResolver(
             context.source_index,
-            declared_claims=self.declared_authority_claims(context),
+            declared_claims=declared_claims,
         )
         resolutions = tuple(resolver.resolve(claim) for claim in claims)
         failed_resolutions = tuple(
@@ -14904,29 +14952,22 @@ class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
             authority_target = snapshot.required_class_target_for_authority_evidence(
                 authority_location
             )
-            targets = ParallelMirroredLeafFamilyTargets.required_for_root_target(
-                snapshot,
-                authority_target,
-            )
         except ValueError as error:
             return self.rejected_evaluation(str(error))
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-factor-parallel-leaf-family",
-            reason=(
-                "Move exact role behavior to one authority per role and compose "
-                "each domain leaf through MRO."
-            ),
-        ).with_operation(
-            FactorParallelMirroredLeafFamilyOperation(
-                target=SourceRewriteTarget(target_id=authority_target.target_id),
-                rationale="",
+        return self.executable_evaluation(
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-factor-parallel-leaf-family",
+                reason=(
+                    "Move exact role behavior to one authority per role and compose "
+                    "each domain leaf through MRO."
+                ),
+            ).with_operation(
+                FactorParallelMirroredLeafFamilyOperation(
+                    target=SourceRewriteTarget(target_id=authority_target.target_id),
+                    rationale="",
+                )
             )
         )
-        for class_target in targets.all_classes.targets:
-            recipe = recipe.with_authority_claim(
-                AstTargetAuthorityClaim.from_target(class_target.target)
-            )
-        return self.executable_evaluation(recipe)
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(

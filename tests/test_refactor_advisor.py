@@ -18987,6 +18987,13 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
+    parallel_builder = snapshot.parallel_mirrored_leaf_family_component_builder
+    assert parallel_builder is (
+        snapshot.parallel_mirrored_leaf_family_component_builder
+    )
+    assert parallel_builder.exact_method_builder is (
+        snapshot.exact_leaf_method_component_builder
+    )
     plan = snapshot.plan_from_findings(
         findings,
         detector_ids=("parallel_mirrored_leaf_family",),
@@ -18997,7 +19004,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     expected_class_count = len(domains) * (len(_PARALLEL_LEAF_ROLES) + 1)
     assert len(plan.records[0].action_keys) == expected_class_count
     recipe = plan.document.recipes[0]
-    assert len(recipe.authority_claims) == expected_class_count
+    assert recipe.authority_claims == ()
     assert len(recipe.operations) == 1
     operation = recipe.operations[0]
     assert isinstance(operation, FactorParallelMirroredLeafFamilyOperation)
@@ -19006,6 +19013,23 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         RefactorRecipeOperation.from_dict(operation.to_dict()),
         FactorParallelMirroredLeafFamilyOperation,
     )
+    declared_claims = recipe.declared_authority_claims(snapshot)
+    assert tuple(claim.claimed_symbol for claim in declared_claims) == tuple(
+        f"{role}Emitter" for role in _PARALLEL_LEAF_ROLES
+    )
+    assert all(
+        claim.authority_kind is SemanticAuthorityKind.CLASS_FAMILY
+        and claim.file_path == module_path.as_posix()
+        and claim.qualname == claim.claimed_symbol
+        for claim in declared_claims
+    )
+    authority_report = recipe.authority_claim_preflight_report(snapshot)
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert {
+        resolution["status"]
+        for resolution in authority_report.details["resolutions"]
+    } == {"declared"}
 
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert simulation.is_clean is True

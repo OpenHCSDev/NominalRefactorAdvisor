@@ -196,6 +196,24 @@ class ParallelMirroredLeafFamilyComponent:
         "roles", "role_name"
     )
 
+    def __post_init__(self) -> None:
+        if len(self.roots) < 2:
+            raise ValueError("Parallel leaf family requires multiple nominal roots")
+        if len(frozenset(root.file_path for root in self.roots)) != 1:
+            raise ValueError("Parallel leaf-family roots must share one source file")
+        if not self.roles:
+            raise ValueError("Parallel leaf family requires at least one exact role")
+        if any(len(role.classes) != len(self.roots) for role in self.roles):
+            raise ValueError(
+                "Every parallel role must span the complete root product"
+            )
+
+    @property
+    def file_path(self) -> str:
+        """Return the source file shared by the proven parallel family."""
+
+        return self.roots[0].file_path
+
     @cached_property
     def leaf_classes(self) -> tuple[CompactIndexedClass, ...]:
         return tuple(
@@ -753,8 +771,11 @@ class ParallelMirroredLeafFamilyComponentBuilder:
     """Prove exact reusable role behavior across nominal domain families."""
 
     minimum_product_role_count: ClassVar[int] = 3
-    projections: tuple[CompactModuleClassProjection, ...]
-    class_index: CompactClassFamilyIndex
+    exact_method_builder: ExactLeafMethodAncestorPromotionComponentBuilder
+
+    @property
+    def class_index(self) -> CompactClassFamilyIndex:
+        return self.exact_method_builder.class_index
 
     @classmethod
     def from_projections(
@@ -764,11 +785,9 @@ class ParallelMirroredLeafFamilyComponentBuilder:
         class_index: CompactClassFamilyIndex | None = None,
     ) -> Self:
         return cls(
-            projections=projections,
-            class_index=(
-                build_compact_class_family_index(projections)
-                if class_index is None
-                else class_index
+            exact_method_builder=ExactLeafMethodAncestorPromotionComponentBuilder.from_projections(
+                projections,
+                class_index=class_index,
             ),
         )
 
@@ -776,15 +795,6 @@ class ParallelMirroredLeafFamilyComponentBuilder:
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
         return cls.from_projections(
             CompactModuleClassProjectionFamily.collect_modules(modules)
-        )
-
-    @cached_property
-    def exact_method_builder(
-        self,
-    ) -> ExactLeafMethodAncestorPromotionComponentBuilder:
-        return ExactLeafMethodAncestorPromotionComponentBuilder.from_projections(
-            self.projections,
-            class_index=self.class_index,
         )
 
     @cached_property
@@ -858,9 +868,7 @@ class ParallelMirroredLeafFamilyComponentBuilder:
     ) -> ParallelMirroredLeafFamilyComponent:
         components = tuple(
             component
-            for component in self.proven_components(
-                min_shared_roles=self.minimum_product_role_count,
-            )
+            for component in self.default_proven_components
             if root_symbol in component.root_symbols
         )
         if len(components) != 1:
@@ -869,6 +877,16 @@ class ParallelMirroredLeafFamilyComponentBuilder:
                 "parallel leaf-family components"
             )
         return components[0]
+
+    @cached_property
+    def default_proven_components(
+        self,
+    ) -> tuple[ParallelMirroredLeafFamilyComponent, ...]:
+        """Cache the production-threshold proof set for source reproof consumers."""
+
+        return self.proven_components(
+            min_shared_roles=self.minimum_product_role_count,
+        )
 
     def _component_for_roots(
         self,
