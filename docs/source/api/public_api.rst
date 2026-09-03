@@ -64,6 +64,9 @@ typed claim names the destination and the supplied source contains exactly that
 one top-level class declaration.
 Method-promotion and method-extraction operations derive the new base or peer
 authority claim from their validated current-source targets.
+Candidate-collector forwarding findings compile to a one-target operation that
+re-derives the collector, traversal scope, candidate type, configuration use,
+old base, and replacement base from the same current-source witness.
 ``AuthorityClaim`` carries ``SemanticAuthorityKind`` directly and matches exact
 target identity, name, and any declared location coordinates.  A declaration
 missing a coordinate required by the claim does not prove it.

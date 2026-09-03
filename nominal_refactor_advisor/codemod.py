@@ -75,7 +75,6 @@ from .codemod_payload import (
     CodemodJsonReport,
     CodemodPayloadRecord,
     DataclassPayloadProjection,
-    DefaultedStringPayloadValueCodec,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
@@ -89,15 +88,13 @@ from .codemod_payload import (
     PayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
-    StrEnumPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .detectors._base import (
-    CandidateCollectorBaseShape,
-    CandidateCollectorScope,
+    CandidateCollectorBoilerplateCandidate,
     DerivedCandidateCollectorMixin,
     IssueDetector,
 )
@@ -4462,7 +4459,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
     def source_edits(
         self,
         context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         return self.required_reproof(
             lambda: self.source_edits_from_snapshot(
                 context.execution_snapshot()
@@ -4512,7 +4509,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
 
@@ -7628,6 +7625,12 @@ class ImportAliasRequirement:
     def from_alias(cls, alias: ast.alias) -> "ImportAliasRequirement":
         return cls(name=alias.name, asname=alias.asname)
 
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        """Return the source-spelling key for commutative import merging."""
+
+        return self.name, self.asname or ""
+
 
 @dataclass(frozen=True)
 class RequestedImportStatement:
@@ -7666,6 +7669,14 @@ class RequestedImportStatement:
         if isinstance(self.statement, ast.Import):
             return ast.Import, 0, None
         return ast.ImportFrom, self.statement.level, self.statement.module
+
+    @property
+    def canonical_family_key(self) -> tuple[str, int, str]:
+        """Return deterministic source order without encoding semantic priority."""
+
+        if isinstance(self.statement, ast.Import):
+            return "import", 0, ""
+        return "from", self.statement.level, self.statement.module or ""
 
     @property
     def source(self) -> str:
@@ -7896,8 +7907,16 @@ class ModuleImportMutation(NominalSourceEdit):
                 if alias not in aliases:
                     aliases.append(alias)
         return tuple(
-            statement_by_family[family].with_aliases(aliases)
-            for family, aliases in aliases_by_family.items()
+            statement_by_family[family].with_aliases(
+                sorted_tuple(
+                    aliases_by_family[family],
+                    key=lambda alias: alias.canonical_key,
+                )
+            )
+            for family in sorted(
+                statement_by_family,
+                key=lambda item: statement_by_family[item].canonical_family_key,
+            )
         )
 
     @staticmethod
@@ -7911,8 +7930,14 @@ class ModuleImportMutation(NominalSourceEdit):
                 if name not in names:
                     names.append(name)
         return tuple(
-            ImportNameRemoval(module_name=module_name, names=tuple(names))
-            for module_name, names in names_by_module.items()
+            ImportNameRemoval(
+                module_name=module_name,
+                names=tuple(sorted(names)),
+            )
+            for module_name, names in sorted(
+                names_by_module.items(),
+                key=lambda item: item[0].source,
+            )
         )
 
     def resolved_edits(
@@ -8507,12 +8532,6 @@ class ClassAuthorityReferenceProof:
         self,
         context: CodemodSelectorContext,
     ) -> str | None:
-        if any(
-            isinstance(statement, ast.ImportFrom)
-            and any(alias.name == "*" for alias in statement.names)
-            for statement in self.projection_module.module.body
-        ):
-            raise ValueError("Class authority projection has an ambiguous star import")
         authority_name = self.authority.target.name
         declaration_bindings = self.symbol_table.binding_statements(authority_name)
         import_binding = self.symbol_table.import_sources_by_name.get(authority_name)
@@ -9087,300 +9106,229 @@ class RemoveClassBaseOperation(
 
 
 @dataclass(frozen=True)
-class CandidateCollectorMethodSpec:
-    """Source facts for a generated detector candidate-cache method."""
+class CandidateCollectorMigration:
+    """One source-proved detector collector migration."""
 
-    collector_name: str
-    item_sort_attributes: tuple[str, ...]
+    candidate: CandidateCollectorBoilerplateCandidate
+    target: AstTargetDigest
+    node: ast.ClassDef
+    source: str
+    import_source: str | None
+    rationale: str
 
     @property
-    def sort_key_source(self) -> str:
-        sort_key_items = ", ".join(
-            f"item.{attribute_name}" for attribute_name in self.item_sort_attributes
+    def contextual_base_source(self) -> str:
+        return (
+            f"{self.candidate.recommended_base_name}"
+            f"[{self.candidate.candidate_type_source}]"
         )
-        if len(self.item_sort_attributes) == 1:
-            return f"{sort_key_items},"
-        return sort_key_items
 
-    def class_declaration_source(
+    def source_edits(
         self,
-        class_indentation: str,
-    ) -> str:
-        indent = f"{class_indentation}    "
-        declarations = (
-            f"{indent}candidate_collector = staticmethod({self.collector_name})\n"
-        )
-        if self.item_sort_attributes:
-            declarations += (
-                f"{indent}candidate_sort_key = staticmethod(\n"
-                f"{indent}    lambda item: ({self.sort_key_source})\n"
-                f"{indent})\n"
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        if any(
+            ClassDeclarationPromotionStatement(statement).name
+            == self.candidate.collector_declaration_name
+            for statement in self.node.body
+        ):
+            raise ValueError(
+                f"{self.node.name!r} already declares "
+                f"{self.candidate.collector_declaration_name}"
             )
-        return f"{declarations}\n"
+        import_edits = (
+            ()
+            if self.import_source is None
+            else EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=self.target.file_path),
+                import_source=self.import_source,
+                rationale=self.rationale,
+            ).source_edits(context)
+        )
+        return (
+            *import_edits,
+            self.class_header_replacement(),
+            self.candidate_declaration_insertion(),
+            self.candidate_method_deletion(),
+        )
 
+    def class_header_replacement(self) -> SourceSpanReplacement:
+        header = ClassHeaderSpanSourceAuthority(node=self.node, source=self.source)
+        replaced_base_name = self.candidate.replaced_base_name
+        matching_base_items = tuple(
+            base_item
+            for base_item in header.base_items
+            if base_item == replaced_base_name
+            or base_item.startswith(f"{replaced_base_name}[")
+        )
+        if len(matching_base_items) != 1:
+            raise ValueError(
+                f"{self.node.name!r} must have one {replaced_base_name!r} base"
+            )
+        registered_collector_base_names = (
+            DerivedCandidateCollectorMixin.collector_base_names()
+        )
+        if any(
+            base_item.split("[", 1)[0] in registered_collector_base_names
+            for base_item in header.base_items
+            if base_item not in matching_base_items
+        ):
+            raise ValueError(
+                f"{self.node.name!r} already composes a candidate collector base"
+            )
+        return SourceSpanReplacement(
+            file_path=self.target.file_path,
+            start_line=header.start_line,
+            end_line=header.end_line,
+            replacement_lines=header.with_base_items(
+                tuple(
+                    self.contextual_base_source
+                    if base_item in matching_base_items
+                    else base_item
+                    for base_item in header.base_items
+                )
+            ),
+            rationale=self.rationale
+            or f"Derive {self.node.name!r} candidate traversal from its collector.",
+        )
 
-class CandidateCacheDetectorProtocolSource:
-    """Source-level method protocol for detector candidate-cache integration."""
-
-    candidate_method_name: ClassVar[str] = "_candidate_items"
-    collect_anchor_method_name: ClassVar[str] = "_collect_findings"
-    candidate_collector_assignment_name: ClassVar[str] = "candidate_collector"
-    candidate_sort_key_assignment_name: ClassVar[str] = "candidate_sort_key"
-    contextual_candidate_base_names: ClassVar[frozenset[str]] = frozenset(
-        ("CrossModuleCandidateDetector",)
-    )
-
-    @classmethod
-    def class_def_has_candidate_method(cls, node: ast.ClassDef) -> bool:
-        return cls.candidate_method(node) is not None
-
-    @classmethod
-    def candidate_method(cls, node: ast.ClassDef) -> ast.FunctionDef | None:
-        return next(
+    def candidate_declaration_insertion(self) -> SourceInsertion:
+        header = ClassHeaderSpanSourceAuthority(node=self.node, source=self.source)
+        anchor = next(
             (
                 statement
-                for statement in node.body
-                if cls.is_function_named(statement, cls.candidate_method_name)
+                for statement in self.node.body
+                if isinstance(statement, ast.FunctionDef)
+                and statement.name == IssueDetector._collect_findings.__name__
             ),
             None,
         )
+        insertion_line = (
+            ClassHeaderSourceSpan.statement_start_line(anchor)
+            if anchor is not None
+            else header.end_line + 1
+        )
+        indent = f"{header.indentation}    "
+        return SourceInsertion(
+            file_path=self.target.file_path,
+            insertion_line=insertion_line,
+            inserted_lines=SourceTargetEditor.source_lines(
+                f"{indent}{self.candidate.collector_declaration_source}\n\n"
+            ),
+            rationale=self.rationale
+            or "Declare the detector candidate collector strategy.",
+        )
 
-    @classmethod
-    def collect_findings_anchor(cls, node: ast.ClassDef) -> ast.stmt | None:
-        return next(
+    def candidate_method_deletion(self) -> SourceSpanReplacement:
+        method = next(
             (
                 statement
-                for statement in node.body
-                if cls.is_function_named(statement, cls.collect_anchor_method_name)
+                for statement in self.node.body
+                if isinstance(statement, ast.FunctionDef)
+                and statement.name == self.candidate.method_name
             ),
             None,
         )
-
-    @staticmethod
-    def is_function_named(statement: ast.stmt, method_name: str) -> bool:
-        return isinstance(statement, ast.FunctionDef) and statement.name == method_name
-
-    @classmethod
-    def class_def_has_collector_assignment(cls, node: ast.ClassDef) -> bool:
-        return cls.class_def_has_assignment(
-            node,
-            cls.candidate_collector_assignment_name,
-        )
-
-    @classmethod
-    def class_def_has_assignment(cls, node: ast.ClassDef, assignment_name: str) -> bool:
-        return any(
-            cls.statement_assigns_name(statement, assignment_name)
-            for statement in node.body
-        )
-
-    @staticmethod
-    def statement_assigns_name(statement: ast.stmt, assignment_name: str) -> bool:
-        if isinstance(statement, ast.AnnAssign):
-            return (
-                isinstance(statement.target, ast.Name)
-                and statement.target.id == assignment_name
+        if method is None:
+            raise ValueError(
+                f"{self.candidate.symbol!r} is no longer declared by the target class"
             )
-        if not isinstance(statement, ast.Assign):
-            return False
-        return any(
-            isinstance(target, ast.Name) and target.id == assignment_name
-            for target in statement.targets
-        )
-
-    @classmethod
-    def is_contextual_candidate_base_source(cls, base_source: str) -> bool:
-        base_name = base_source.split("[", 1)[0]
-        return base_name in (
-            cls.contextual_candidate_base_names
-            | DerivedCandidateCollectorMixin.collector_base_names()
+        return SourceNodeSpan(
+            method,
+            SourceNodeDecoratorPolicy.INCLUDE,
+        ).line_span.line_replacement(
+            file_path=self.target.file_path,
+            replacement_lines=(),
+            rationale=self.rationale
+            or "Delete candidate traversal now owned by the collector base.",
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExposeGlobalCandidateCacheContextOperation(
-    TargetNodeRecipeOperationMixin,
-    RefactorRecipeOperation,
-):
-    """Make a global detector cache by its candidate projection."""
+class DeriveCandidateCollectorOperation(SourceReprovedOperation):
+    """Replace one proved forwarding method with its collector declaration."""
 
-    candidate_type_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    candidate_collector_name: str = codemod_payload_field(
-        RequiredStringPayloadValueCodec()
-    )
-    candidate_collector_scope: CandidateCollectorScope = codemod_payload_field(
-        StrEnumPayloadValueCodec(
-            CandidateCollectorScope,
-            CandidateCollectorScope.CROSS_MODULE,
-        ),
-        default=CandidateCollectorScope.CROSS_MODULE,
-    )
-    candidate_collector_uses_config: bool = codemod_payload_field(
-        BooleanPayloadValueCodec(),
-        default=False,
-    )
-    candidate_item_sort_attributes: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    base_name: str = codemod_payload_field(
-        DefaultedStringPayloadValueCodec("IssueDetector"),
-        default="IssueDetector",
-    )
-    import_source: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(),
-        default="",
-    )
-
-    @property
-    def candidate_method_spec(self) -> CandidateCollectorMethodSpec:
-        return CandidateCollectorMethodSpec(
-            collector_name=self.candidate_collector_name,
-            item_sort_attributes=self.candidate_item_sort_attributes,
-        )
-
-    @property
-    def candidate_collector_base_name(self) -> str:
-        return DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-            CandidateCollectorBaseShape(
-                scope=self.candidate_collector_scope,
-                uses_config=self.candidate_collector_uses_config,
-            )
-        )
-
-    @property
-    def contextual_base_source(self) -> str:
-        return f"{self.candidate_collector_base_name}[{self.candidate_type_name}]"
-
-    @property
-    def required_import_source(self) -> str:
-        if self.import_source:
-            return self.import_source
-        return f"from ._base import {self.candidate_collector_base_name}"
-
-    def source_edits_for_target_node(
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
-        target_identifier: str,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        del target_identifier
-        if not isinstance(node, ast.ClassDef):
+        return self.required_migration(snapshot).source_edits(snapshot)
+
+    def required_migration(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> CandidateCollectorMigration:
+        _target_identifier, method_target, _method_node = self.target_node_from_context(
+            snapshot
+        )
+        if method_target.node_kind is not AstTargetNodeKind.METHOD:
+            raise ValueError("Candidate collector derivation requires a method target")
+        matching_modules = tuple(
+            module
+            for module in snapshot.parsed_modules
+            if module.file_path == method_target.file_path
+        )
+        if len(matching_modules) != 1:
             raise ValueError(
-                f"Target {target_digest.qualname!r} is not a class definition"
+                f"Candidate collector source module count is {len(matching_modules)}"
             )
-        source_path = target_digest.file_path
-        source = context.sources_by_file_path[source_path]
-        edits: list[NominalSourceEdit] = []
-        import_source = self.required_import_source
-        if import_source:
-            edits.extend(
-                self.required_import_mutations(
-                    context,
-                    source_path,
-                    import_source=import_source,
-                    default_rationale=(
-                        "Import the contextual candidate detector cache base."
-                    ),
-                )
+        matching_candidates = tuple(
+            candidate
+            for candidate in CandidateCollectorBoilerplateCandidate.from_module(
+                matching_modules[0]
             )
-        edits.extend(self.class_header_replacements(node, source_path, source))
-        edits.extend(self.candidate_declaration_replacements(node, source_path, source))
-        edits.extend(self.candidate_method_replacements(node, source_path, source))
-        return tuple(edits)
-
-    def class_header_replacements(
-        self,
-        node: ast.ClassDef,
-        source_path: str,
-        source: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
-        base_items = header_authority.base_items
-        if self.contextual_base_source in base_items:
-            return ()
-        if any(self.should_replace_base_item(base_item) for base_item in base_items):
-            updated_base_items = tuple(
-                (
-                    self.contextual_base_source
-                    if self.should_replace_base_item(base_item)
-                    else base_item
-                )
-                for base_item in base_items
+            if candidate.symbol == method_target.qualname
+            and candidate.line == method_target.line
+        )
+        if len(matching_candidates) != 1:
+            raise ValueError(
+                f"{method_target.qualname!r} belongs to {len(matching_candidates)} "
+                "current candidate collector forwarding components"
             )
-        else:
-            updated_base_items = (*base_items, self.contextual_base_source)
-        return (
-            SourceSpanReplacement(
-                file_path=source_path,
-                start_line=header_authority.start_line,
-                end_line=header_authority.end_line,
-                replacement_lines=header_authority.with_base_items(updated_base_items),
-                rationale=self.rationale
-                or f"Cache `{node.name}` by detector candidate semantics.",
-            ),
+        candidate = matching_candidates[0]
+        class_target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(candidate.file_path,),
+            qualnames=(candidate.class_name,),
+        ).target_ids(snapshot)
+        if len(class_target_ids) != 1:
+            raise ValueError(
+                f"Candidate collector owner count is {len(class_target_ids)}"
+            )
+        class_target = snapshot.source_index.target_by_id[class_target_ids[0]]
+        class_node = snapshot.ast_target_nodes_by_id[class_target.target_id]
+        if not isinstance(class_node, ast.ClassDef):
+            raise ValueError("Candidate collector owner is not a class declaration")
+        replacement_base_targets = tuple(
+            target
+            for target in snapshot.source_index.ast_targets
+            if target.node_kind is AstTargetNodeKind.CLASS
+            and target.name == candidate.recommended_base_name
+            and target.qualname == target.name
         )
-
-    def should_replace_base_item(self, base_item: str) -> bool:
-        if base_item == self.base_name:
-            return True
-        if base_item.startswith(f"{self.base_name}["):
-            return True
-        return CandidateCacheDetectorProtocolSource.is_contextual_candidate_base_source(
-            base_item
-        )
-
-    def candidate_declaration_replacements(
-        self,
-        node: ast.ClassDef,
-        source_path: str,
-        source: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        if CandidateCacheDetectorProtocolSource.class_def_has_collector_assignment(
-            node
-        ):
-            return ()
-        header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
-        anchor = CandidateCacheDetectorProtocolSource.collect_findings_anchor(node)
-        insertion_line = (
-            ClassHeaderSourceSpan.statement_start_line(anchor)
-            if anchor is not None
-            else header_authority.end_line + 1
-        )
-        return (
-            SourceInsertion(
-                file_path=source_path,
-                insertion_line=insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(
-                    self.candidate_method_spec.class_declaration_source(
-                        header_authority.indentation,
-                    )
-                ),
-                rationale=self.rationale
-                or "Declare the detector candidate collector cache context.",
-            ),
-        )
-
-    def candidate_method_replacements(
-        self,
-        node: ast.ClassDef,
-        source_path: str,
-        source: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        del source
-        method = CandidateCacheDetectorProtocolSource.candidate_method(node)
-        if method is None:
-            return ()
-        return (
-            SourceSpanReplacement(
-                file_path=source_path,
-                start_line=method.lineno,
-                end_line=method.end_lineno or method.lineno,
-                replacement_lines=(),
-                rationale=self.rationale
-                or "Delete leaf detector candidate traversal now owned by base.",
-            ),
+        if len(replacement_base_targets) != 1:
+            raise ValueError(
+                f"{candidate.recommended_base_name!r} resolves to "
+                f"{len(replacement_base_targets)} class authorities"
+            )
+        replacement_base_target = replacement_base_targets[0]
+        replacement_base_node = snapshot.ast_target_nodes_by_id[
+            replacement_base_target.target_id
+        ]
+        if not isinstance(replacement_base_node, ast.ClassDef):
+            raise ValueError("Candidate collector base is not a class declaration")
+        import_source = ClassAuthorityReferenceProof.from_context(
+            snapshot,
+            ResolvedClassTarget(replacement_base_target, replacement_base_node),
+            class_target.file_path,
+        ).required_import_source(snapshot)
+        return CandidateCollectorMigration(
+            candidate=candidate,
+            target=class_target,
+            node=class_node,
+            source=snapshot.sources_by_file_path[class_target.file_path],
+            import_source=import_source,
+            rationale=self.rationale,
         )
 
 
@@ -13569,6 +13517,66 @@ class FindingRecipeSynthesizer(ABC):
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
         return ()
+
+
+class CandidateCollectorBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Compile a forwarding-method finding through its current source witness."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "candidate collector derivation requires source context"
+            )
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return self.rejected_evaluation(
+                "candidate collector derivation requires one primary source witness"
+            )
+        try:
+            source_path = SourcePathResolutionAuthority.from_source_index(
+                evidence.file_path,
+                context.source_index,
+            ).required_path()
+            target_ids = SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.METHOD,),
+                file_paths=(source_path,),
+                qualnames=(evidence.symbol,),
+            ).target_ids(context)
+            if len(target_ids) != 1:
+                raise ValueError(
+                    f"Candidate collector evidence target count is {len(target_ids)}"
+                )
+            operation = DeriveCandidateCollectorOperation(
+                target=SourceRewriteTarget(target_id=target_ids[0]),
+            )
+            operation.source_edits(context)
+        except (CodemodOperationPreflightError, ValueError) as error:
+            return self.rejected_evaluation(str(error))
+        return self.executable_evaluation(
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-derive-candidate-collector",
+                reason=(
+                    "Replace candidate forwarding boilerplate with a typed "
+                    "collector declaration."
+                ),
+            ).with_operation(operation)
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, evidence.symbol),),
+        )
 
 
 class InferredFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):

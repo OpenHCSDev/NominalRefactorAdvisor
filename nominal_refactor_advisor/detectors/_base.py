@@ -1452,15 +1452,64 @@ DetectorCollector: TypeAlias = (
 
 
 class CandidateCollectorScope(StrEnum):
-    MODULE = "module"
-    FLATTENED_MODULE = "flattened_module"
-    CROSS_MODULE = "cross_module"
+    """Traversal scope and its source-level forwarding contract."""
+
+    MODULE = ("module", "CandidateFindingDetector", "module")
+    FLATTENED_MODULE = ("flattened_module", None, "module")
+    CROSS_MODULE = ("cross_module", "CrossModuleCandidateDetector", "modules")
+
+    def __new__(
+        cls,
+        value: str,
+        forwarding_base_name: str | None,
+        collector_argument_name: str,
+    ) -> "CandidateCollectorScope":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._forwarding_base_name = forwarding_base_name
+        member._collector_argument_name = collector_argument_name
+        return member
+
+    @property
+    def forwarding_base_name(self) -> str | None:
+        return self._forwarding_base_name
+
+    @property
+    def collector_argument_name(self) -> str:
+        return self._collector_argument_name
+
+    @classmethod
+    def from_forwarding_base_name(
+        cls,
+        base_name: str,
+    ) -> "CandidateCollectorScope | None":
+        return next(
+            (scope for scope in cls if scope.forwarding_base_name == base_name),
+            None,
+        )
 
 
 @dataclass(frozen=True)
 class CandidateCollectorBaseShape:
     scope: CandidateCollectorScope
     uses_config: bool
+
+
+@dataclass(frozen=True)
+class ParameterizedBaseSource:
+    """One source-level generic base and its parameter expression."""
+
+    base_name: str
+    parameter_source: str
+
+    @classmethod
+    def from_node(cls, node: ast.AST) -> "ParameterizedBaseSource | None":
+        if not isinstance(node, ast.Subscript):
+            return None
+        base_name = name_id(node.value)
+        if base_name is None:
+            return None
+        return cls(base_name, ast.unparse(node.slice))
 
 
 class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
@@ -8447,10 +8496,136 @@ class RepeatedResultAssemblyPipelineCandidate:
 
 @dataclass(frozen=True)
 class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+    collector_declaration_name: ClassVar[str] = "candidate_collector"
+
     collector_name: str
-    scope_kind: str
+    collector_scope: CandidateCollectorScope
     uses_config: bool
-    recommended_base_name: str
+    candidate_type_source: str
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ParsedModule,
+    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+        return tuple(
+            candidate
+            for node in module.module.body
+            if isinstance(node, ast.ClassDef)
+            for candidate in cls.from_class(module, node)
+        )
+
+    @classmethod
+    def from_class(
+        cls,
+        module: ParsedModule,
+        node: ast.ClassDef,
+    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+        detector_shape = cls.detector_shape(node)
+        if detector_shape is None:
+            return ()
+        collector_scope, candidate_type_source = detector_shape
+        method = next(
+            (
+                statement
+                for statement in node.body
+                if isinstance(statement, ast.FunctionDef)
+                and statement.name == CandidateFindingDetector._candidate_items.__name__
+            ),
+            None,
+        )
+        if method is None:
+            return ()
+        collector_call = cls.collector_call(method, collector_scope)
+        if collector_call is None:
+            return ()
+        collector_name, uses_config = collector_call
+        return (
+            cls(
+                file_path=module.file_path,
+                line=method.lineno,
+                class_name=node.name,
+                method_name=method.name,
+                collector_name=collector_name,
+                collector_scope=collector_scope,
+                uses_config=uses_config,
+                candidate_type_source=candidate_type_source,
+            ),
+        )
+
+    @staticmethod
+    def detector_shape(
+        node: ast.ClassDef,
+    ) -> tuple[CandidateCollectorScope, str] | None:
+        if (
+            IssueDetector.__registry_key__
+            not in CLASS_NODE_AUTHORITY.direct_assignments(node)
+        ):
+            return None
+        for base in node.bases:
+            parameterized_base = ParameterizedBaseSource.from_node(base)
+            if parameterized_base is None:
+                continue
+            collector_scope = CandidateCollectorScope.from_forwarding_base_name(
+                parameterized_base.base_name
+            )
+            if collector_scope is not None:
+                return collector_scope, parameterized_base.parameter_source
+        return None
+
+    @staticmethod
+    def collector_call(
+        method: ast.FunctionDef,
+        collector_scope: CandidateCollectorScope,
+    ) -> tuple[str, bool] | None:
+        parameter_names = SUPPORT_PROJECTION_AUTHORITY.parameter_names(method)
+        if len(parameter_names) != 2:
+            return None
+        collector_argument_name, config_argument_name = parameter_names
+        if collector_argument_name != collector_scope.collector_argument_name:
+            return None
+        body = tuple(
+            statement
+            for statement in statements_without_docstring(method.body)
+            if not (
+                isinstance(statement, ast.Delete)
+                and any(
+                    name_id(target) == config_argument_name
+                    for target in statement.targets
+                )
+            )
+        )
+        returned_call = return_call(single_item(body)) if len(body) == 1 else None
+        collector_name = _call_name(returned_call.func) if returned_call else None
+        if collector_name is None:
+            return None
+        arg_names = tuple(name_id(argument) for argument in returned_call.args)
+        if arg_names == (collector_argument_name,):
+            return collector_name, False
+        if arg_names == (collector_argument_name, config_argument_name):
+            return collector_name, True
+        return None
+
+    @property
+    def collector_declaration_source(self) -> str:
+        return (
+            f"{self.collector_declaration_name} = staticmethod({self.collector_name})"
+        )
+
+    @property
+    def replaced_base_name(self) -> str:
+        base_name = self.collector_scope.forwarding_base_name
+        if base_name is None:
+            raise TypeError(
+                f"{self.collector_scope.value} has no direct forwarding base"
+            )
+        return base_name
+
+    @property
+    def recommended_base_name(self) -> str:
+        return DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+            CandidateCollectorBaseShape(self.collector_scope, self.uses_config)
+        )
 
 
 @dataclass(frozen=True)

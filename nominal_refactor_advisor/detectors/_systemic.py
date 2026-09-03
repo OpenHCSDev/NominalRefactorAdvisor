@@ -25,6 +25,7 @@ from ..ast_tools import (
 from ..class_index import CompactNamedProjectionSurface, CompactSortedKeyCall
 from ..codemod import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
+    CandidateCollectorBoilerplateFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
 from ..native_syntax import NativePythonSyntaxIndex
@@ -3666,6 +3667,13 @@ class RepeatedResultAssemblyPipelineDetector(
         )
 
 
+class CandidateCollectorBoilerplateDetectorBase(
+    ModuleCollectorCandidateDetector[CandidateCollectorBoilerplateCandidate],
+    CandidateCollectorBoilerplateFindingRecipeSynthesizer,
+):
+    """Compose collector-boilerplate detection with its proved refactor."""
+
+
 declare_candidate_rule_detector(
     CandidateCollectorBoilerplateCandidate,
     high_confidence_spec(
@@ -3694,7 +3702,8 @@ declare_candidate_rule_detector(
         parameter_count=2 if collector.uses_config else 1,
         callee_family_count=1,
     ),
-    candidate_collector=_candidate_collector_boilerplate_candidates,
+    candidate_collector=CandidateCollectorBoilerplateCandidate.from_module,
+    detector_base=CandidateCollectorBoilerplateDetectorBase,
 )
 
 

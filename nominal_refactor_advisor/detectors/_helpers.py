@@ -4390,15 +4390,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
 
 
-_CANDIDATE_COLLECTOR_METHOD_NAME = "_candidate_items"
 _DECLARATIVE_DETECTOR_BASE_NAMES = DerivedCandidateCollectorMixin.collector_base_names()
-
-
-def _subscript_base_parts(base: ast.AST) -> tuple[str, str] | None:
-    if not isinstance(base, ast.Subscript):
-        return None
-    base_name = name_id(base.value)
-    return None if base_name is None else (base_name, ast.unparse(base.slice))
 
 
 def _class_assignment_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -4436,14 +4428,14 @@ def _declarative_detector_class_candidates(
         base_parts = tuple(
             part
             for base in node.bases
-            for part in (_subscript_base_parts(base),)
+            for part in (ParameterizedBaseSource.from_node(base),)
             if part is not None
         )
         base_part = single_item(
             tuple(
                 part
                 for part in base_parts
-                if part[0] in _DECLARATIVE_DETECTOR_BASE_NAMES
+                if part.base_name in _DECLARATIVE_DETECTOR_BASE_NAMES
             )
         )
         assignment_names = _class_assignment_names(node)
@@ -4457,8 +4449,8 @@ def _declarative_detector_class_candidates(
                 file_path=module.file_path,
                 line=node.lineno,
                 class_name=node.name,
-                base_name=base_part[0],
-                candidate_type_name=base_part[1],
+                base_name=base_part.base_name,
+                candidate_type_name=base_part.parameter_source,
                 assignment_names=assignment_names,
                 line_count=node.end_lineno - node.lineno + 1,
             )
@@ -4588,96 +4580,6 @@ def _static_typed_observation_detector_candidates(
                 minimum_evidence_count=minimum_evidence,
                 summary_expression=summary_expression,
                 line_count=node.end_lineno - node.lineno + 1,
-            )
-        )
-    return tuple(candidates)
-
-
-def _candidate_detector_scope_kind(
-    node: ast.ClassDef,
-) -> CandidateCollectorScope | None:
-    if not any(
-        (
-            isinstance(statement, ast.Assign)
-            and any((name_id(target) == "detector_id" for target in statement.targets))
-            for statement in node.body
-        )
-    ):
-        return None
-    base_names = set(HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node))
-    if "CandidateFindingDetector" in base_names:
-        return CandidateCollectorScope.MODULE
-    if "CrossModuleCandidateDetector" in base_names:
-        return CandidateCollectorScope.CROSS_MODULE
-    return None
-
-
-def _candidate_collector_method_call(
-    method: ast.FunctionDef,
-    scope_kind: CandidateCollectorScope,
-) -> tuple[str, bool] | None:
-    body = tuple(
-        (
-            statement
-            for statement in statements_without_docstring(method.body)
-            if not (
-                isinstance(statement, ast.Delete)
-                and any((name_id(target) == "config" for target in statement.targets))
-            )
-        )
-    )
-    returned_call = return_call(single_item(body)) if len(body) == 1 else None
-    collector_name = _call_name(returned_call.func) if returned_call else None
-    if collector_name is None:
-        return None
-    expected_first_arg = (
-        "modules" if scope_kind is CandidateCollectorScope.CROSS_MODULE else "module"
-    )
-    arg_names = tuple(name_id(argument) for argument in returned_call.args)
-    if arg_names == (expected_first_arg,):
-        return (collector_name, False)
-    if arg_names == (expected_first_arg, "config"):
-        return (collector_name, True)
-    return None
-
-
-def _candidate_collector_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
-    candidates: list[CandidateCollectorBoilerplateCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        scope_kind = _candidate_detector_scope_kind(node)
-        if scope_kind is None:
-            continue
-        method = next(
-            (
-                statement
-                for statement in node.body
-                if isinstance(statement, ast.FunctionDef)
-                and statement.name == _CANDIDATE_COLLECTOR_METHOD_NAME
-            ),
-            None,
-        )
-        if method is None:
-            continue
-        collector_call = _candidate_collector_method_call(method, scope_kind)
-        if collector_call is None:
-            continue
-        collector_name, uses_config = collector_call
-        candidates.append(
-            CandidateCollectorBoilerplateCandidate(
-                file_path=module.file_path,
-                line=method.lineno,
-                class_name=node.name,
-                method_name=method.name,
-                collector_name=collector_name,
-                scope_kind=scope_kind.value,
-                uses_config=uses_config,
-                recommended_base_name=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-                    CandidateCollectorBaseShape(scope_kind, uses_config)
-                ),
             )
         )
     return tuple(candidates)

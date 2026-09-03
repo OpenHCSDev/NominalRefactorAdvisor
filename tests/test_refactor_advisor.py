@@ -166,7 +166,7 @@ from nominal_refactor_advisor.codemod import (
     DeleteTargetOperation,
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
-    ExposeGlobalCandidateCacheContextOperation,
+    DeriveCandidateCollectorOperation,
     ExtractAuthorityOperation,
     ExtractMethodsToClassOperation,
     FactorExactMethodRoleOperation,
@@ -4783,44 +4783,53 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
     assert simulation.simulation.applied_rewrite_count == 0
 
 
-def test_expose_global_candidate_cache_context_operation(
+def test_derive_candidate_collector_operation(
     tmp_path: Path,
 ) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/collector_runtime.py",
+        "class CandidateFindingDetector:\n"
+        "    pass\n\n\n"
+        "class ConfiguredModuleCollectorCandidateDetector:\n"
+        "    pass\n",
+    )
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from ._base import (\n"
+        "from .collector_runtime import (\n"
         "    DetectorConfig,\n"
-        "    IssueDetector,\n"
+        "    CandidateFindingDetector,\n"
         "    ParsedModule,\n"
         ")\n"
         "\n\n"
         "class Candidate:\n"
         "    pass\n"
         "\n\n"
-        "def _candidates(modules, config):\n"
+        "def _candidates(module, config):\n"
         "    return ()\n"
         "\n\n"
-        "class AlphaDetector(IssueDetector):\n"
-        "    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig):\n"
-        "        return list(_candidates(modules, config))\n",
+        "class AlphaDetector(CandidateFindingDetector[Candidate]):\n"
+        "    detector_id = 'alpha'\n\n"
+        "    def _candidate_items(self, module: ParsedModule, config: DetectorConfig):\n"
+        "        return _candidates(module, config)\n\n"
+        "    def _finding_for_candidate(self, candidate):\n"
+        "        return candidate\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    source_by_path = {module.file_path: module.source for module in modules}
 
     simulation = (
         RefactorRecipe("contextualize-alpha")
         .with_operation(
-            ExposeGlobalCandidateCacheContextOperation(
+            DeriveCandidateCollectorOperation(
                 target=SourceRewriteTarget(
-                    qualname="AlphaDetector",
+                    qualname="AlphaDetector._candidate_items",
                     file_path=module_path.as_posix(),
                 ),
-                candidate_type_name="Candidate",
-                candidate_collector_name="_candidates",
-                candidate_collector_uses_config=True,
             )
         )
         .simulate(
@@ -4830,30 +4839,34 @@ def test_expose_global_candidate_cache_context_operation(
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert "ConfiguredCrossModuleCollectorCandidateDetector" in rewritten
+    assert "ConfiguredModuleCollectorCandidateDetector" in rewritten
+    assert "from .collector_runtime import (" in rewritten
+    assert "    ConfiguredModuleCollectorCandidateDetector," in rewritten
+    assert "from ._base" not in rewritten
     assert (
-        "class AlphaDetector("
-        "ConfiguredCrossModuleCollectorCandidateDetector[Candidate]"
-        "):"
+        "class AlphaDetector(ConfiguredModuleCollectorCandidateDetector[Candidate]):"
     ) in rewritten
     assert "candidate_collector = staticmethod(_candidates)" in rewritten
     assert "def _candidate_items(" not in rewritten
 
 
-def test_expose_global_candidate_cache_context_scope_round_trips() -> None:
-    operation = ExposeGlobalCandidateCacheContextOperation(
-        target=SourceRewriteTarget(qualname="AlphaDetector", file_path="detectors.py"),
-        candidate_type_name="Candidate",
-        candidate_collector_name="_candidates",
-        candidate_collector_scope=(
-            base_detectors.CandidateCollectorScope.FLATTENED_MODULE
+def test_derive_candidate_collector_operation_round_trips_without_mirrors() -> None:
+    operation = DeriveCandidateCollectorOperation(
+        target=SourceRewriteTarget(
+            qualname="AlphaDetector._candidate_items",
+            file_path="detectors.py",
         ),
     )
 
     payload = operation.to_dict()
-    decoded = ExposeGlobalCandidateCacheContextOperation.from_dict(payload)
+    decoded = DeriveCandidateCollectorOperation.from_dict(payload)
 
-    assert payload["candidate_collector_scope"] == "flattened_module"
+    assert tuple(payload) == (
+        "operation",
+        "file_path",
+        "target_qualname",
+        "rationale",
+    )
     assert decoded == operation
 
 
@@ -5071,13 +5084,14 @@ def test_source_text_geometry_rejects_replacements_outside_target_span(
 def test_operation_compiler_coalesces_identical_line_replacements(
     tmp_path: Path,
 ) -> None:
+    _write_candidate_collector_base_module(tmp_path)
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
         "from ._base import (\n"
+        "    CrossModuleCandidateDetector,\n"
         "    DetectorConfig,\n"
-        "    IssueDetector,\n"
         "    ParsedModule,\n"
         ")\n"
         "\n\n"
@@ -5090,46 +5104,38 @@ def test_operation_compiler_coalesces_identical_line_replacements(
         "def _beta_candidates(modules):\n"
         "    return ()\n"
         "\n\n"
-        "class AlphaDetector(IssueDetector):\n"
-        "    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig):\n"
-        "        return list(_alpha_candidates(modules))\n"
+        "class AlphaDetector(CrossModuleCandidateDetector[Candidate]):\n"
+        "    detector_id = 'alpha'\n\n"
+        "    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig):\n"
+        "        del config\n"
+        "        return _alpha_candidates(modules)\n"
         "\n\n"
-        "class BetaDetector(IssueDetector):\n"
-        "    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig):\n"
-        "        return list(_beta_candidates(modules))\n",
+        "class BetaDetector(CrossModuleCandidateDetector[Candidate]):\n"
+        "    detector_id = 'beta'\n\n"
+        "    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig):\n"
+        "        del config\n"
+        "        return _beta_candidates(modules)\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    source_by_path = {module.file_path: module.source for module in modules}
 
     simulation = (
         RefactorRecipe("contextualize-two-detectors")
         .with_operation(
-            ExposeGlobalCandidateCacheContextOperation(
+            DeriveCandidateCollectorOperation(
                 target=SourceRewriteTarget(
-                    qualname="AlphaDetector",
+                    qualname="AlphaDetector._candidate_items",
                     file_path=module_path.as_posix(),
                 ),
-                candidate_type_name="Candidate",
-                candidate_collector_name="_alpha_candidates",
-                candidate_collector_scope=(
-                    base_detectors.CandidateCollectorScope.FLATTENED_MODULE
-                ),
-                candidate_item_sort_attributes=("name",),
             )
         )
         .with_operation(
-            ExposeGlobalCandidateCacheContextOperation(
+            DeriveCandidateCollectorOperation(
                 target=SourceRewriteTarget(
-                    qualname="BetaDetector",
+                    qualname="BetaDetector._candidate_items",
                     file_path=module_path.as_posix(),
                 ),
-                candidate_type_name="Candidate",
-                candidate_collector_name="_beta_candidates",
-                candidate_collector_scope=(
-                    base_detectors.CandidateCollectorScope.FLATTENED_MODULE
-                ),
-                candidate_item_sort_attributes=("name",),
             )
         )
         .simulate(
@@ -5139,11 +5145,10 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert rewritten.count("FlattenedModuleCollectorCandidateDetector") == 3
-    assert rewritten.count("    FlattenedModuleCollectorCandidateDetector,\n") == 1
+    assert rewritten.count("CrossModuleCollectorCandidateDetector") == 3
+    assert rewritten.count("    CrossModuleCollectorCandidateDetector,\n") == 1
     assert "candidate_collector = staticmethod(_alpha_candidates)" in rewritten
     assert "candidate_collector = staticmethod(_beta_candidates)" in rewritten
-    assert rewritten.count("lambda item: (item.name,)") == 2
     assert "def _candidate_items(" not in rewritten
 
 
@@ -5178,6 +5183,12 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
         snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
+    reverse_simulation = CodemodPlanDocument(
+        recipes=tuple(reversed(document.recipes))
+    ).simulate(
+        snapshot,
+        backend=CodemodBackend.AST_SPAN,
+    )
 
     assert simulation.simulation.applied_rewrite_count == 1
     rewrite = simulation.simulation.rewrites[0]
@@ -5189,6 +5200,9 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
         "class Parser:\n"
         "    pass\n"
     )
+    assert reverse_simulation.simulation.rewritten_sources == (
+        simulation.simulation.rewritten_sources
+    )
     assert {
         (contributor.recipe_id, contributor.plan_item_index)
         for contributor in rewrite.contributors
@@ -5198,18 +5212,15 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
     }
 
 
-def test_expose_global_candidate_cache_context_collapses_existing_candidate_method(
+def test_derive_candidate_collector_collapses_existing_candidate_method(
     tmp_path: Path,
 ) -> None:
+    _write_candidate_collector_base_module(tmp_path)
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from ._base import (\n"
-        "    CrossModuleCandidateDetector,\n"
-        "    DetectorConfig,\n"
-        "    ParsedModule,\n"
-        ")\n"
+        "from ._base import *\n"
         "\n\n"
         "class Candidate:\n"
         "    pass\n"
@@ -5218,6 +5229,7 @@ def test_expose_global_candidate_cache_context_collapses_existing_candidate_meth
         "    return ()\n"
         "\n\n"
         "class AlphaDetector(CrossModuleCandidateDetector[Candidate]):\n"
+        "    detector_id = 'alpha'\n\n"
         "    def _candidate_items(\n"
         "        self,\n"
         "        modules: list[ParsedModule],\n"
@@ -5231,18 +5243,16 @@ def test_expose_global_candidate_cache_context_collapses_existing_candidate_meth
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    source_by_path = {module.file_path: module.source for module in modules}
 
     simulation = (
         RefactorRecipe("contextualize-existing-alpha")
         .with_operation(
-            ExposeGlobalCandidateCacheContextOperation(
+            DeriveCandidateCollectorOperation(
                 target=SourceRewriteTarget(
-                    qualname="AlphaDetector",
+                    qualname="AlphaDetector._candidate_items",
                     file_path=module_path.as_posix(),
                 ),
-                candidate_type_name="Candidate",
-                candidate_collector_name="_candidates",
             )
         )
         .simulate(
@@ -5258,6 +5268,7 @@ def test_expose_global_candidate_cache_context_collapses_existing_candidate_meth
     )
     assert "candidate_collector = staticmethod(_candidates)" in rewritten
     assert "def _candidate_items(" not in rewritten
+    assert rewritten.count("CrossModuleCollectorCandidateDetector") == 1
 
 
 def test_refactor_recipe_replaces_module_assignment(
@@ -5818,7 +5829,10 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
     assert (
-        "from metaclass_registry import AutoRegisterMeta\n\n\ndef traced(function):"
+        "from abc import ABC, abstractmethod\n"
+        "from metaclass_registry import AutoRegisterMeta\n"
+        "from typing import ClassVar\n\n\n"
+        "def traced(function):"
     ) in rewritten
     assert "class JsonRenderDispatchCase(RenderDispatchCase):" in rewritten
     assert "render_json(value)" in rewritten
@@ -8269,6 +8283,26 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
+
+
+def _write_candidate_collector_base_module(root: Path) -> None:
+    _write_module(root, "pkg/__init__.py", "")
+    _write_module(
+        root,
+        "pkg/_base.py",
+        "class CandidateFindingDetector:\n"
+        "    pass\n\n\n"
+        "class CrossModuleCandidateDetector:\n"
+        "    pass\n\n\n"
+        "class ModuleCollectorCandidateDetector:\n"
+        "    pass\n\n\n"
+        "class ConfiguredModuleCollectorCandidateDetector:\n"
+        "    pass\n\n\n"
+        "class CrossModuleCollectorCandidateDetector:\n"
+        "    pass\n\n\n"
+        "class ConfiguredCrossModuleCollectorCandidateDetector:\n"
+        "    pass\n",
+    )
 
 
 def _manual_class_registration_source() -> str:
@@ -11142,10 +11176,11 @@ def test_source_segment_projection_reuses_cached_geometry(
 
 
 def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
+    _write_candidate_collector_base_module(tmp_path)
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalDetector(CandidateFindingDetector):\n    detector_id = "local"\n\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector):\n    detector_id = "configured"\n\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    detector_id = "local"\n\n    def _candidate_items(self, module, settings):\n        del settings\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    detector_id = "configured"\n\n    def _candidate_items(self, module, settings):\n        return _configured_candidates(module, settings)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
     )
     findings = [
         item
@@ -11164,6 +11199,55 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
             "ConfiguredModuleCollectorCandidateDetector" in finding.summary
             for finding in findings
         )
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("candidate_collector_boilerplate",),
+    )
+
+    assert len(plan.records) == 2
+    assert all(
+        record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        for record in plan.records
+    ), tuple((record.status, record.reason) for record in plan.records)
+    assert all(
+        isinstance(recipe.operations[0], DeriveCandidateCollectorOperation)
+        for recipe in plan.document.recipes
+    )
+    assert all(
+        tuple(recipe.operations[0].to_dict()) == ("operation", "target_id", "rationale")
+        for recipe in plan.document.recipes
+    )
+    local_operation = next(
+        recipe.operations[0]
+        for recipe in plan.document.recipes
+        if snapshot.source_index.target_by_id[
+            recipe.operations[0].target.required_target_id(snapshot.source_index)
+        ].qualname
+        == "LocalDetector._candidate_items"
+    )
+    source_path = (tmp_path / "pkg/mod.py").as_posix()
+    drifted_snapshot = snapshot.with_virtual_sources(
+        {
+            source_path: snapshot.sources_by_file_path[source_path].replace(
+                "return _local_candidates(module)",
+                "return tuple(_local_candidates(module))",
+            )
+        }
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="0 current candidate collector forwarding components",
+    ):
+        local_operation.source_edits(drifted_snapshot)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert simulation.is_clean is True
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == "candidate_collector_boilerplate"
+        for finding in analyze_path(tmp_path)
     )
 
 
