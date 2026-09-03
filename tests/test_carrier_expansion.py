@@ -5,6 +5,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.carrier_expansion import (
+    DeclaredCarrierExpansionAuthorityViolation,
     DeclaredCarrierExpansionBuilder,
 )
 
@@ -117,7 +118,7 @@ def test_builder_follows_complete_flat_field_forwarding_graph() -> None:
 
     assert len(builder.components) == 1
     component = builder.components[0]
-    assert component.root.field_mapping == (
+    assert component.root_edges[0].field_mapping == (
         ("alpha", "left"),
         ("beta", "right"),
     )
@@ -135,3 +136,148 @@ def test_builder_follows_complete_flat_field_forwarding_graph() -> None:
         "pkg.chain.middle": (("alpha", "left"), ("beta", "right")),
         "pkg.chain.leaf": (("alpha", "first"), ("beta", "second")),
     }
+
+
+def test_builder_unifies_connected_root_expansions_into_one_component() -> None:
+    builder = DeclaredCarrierExpansionBuilder.from_modules(
+        (
+            _module(
+                "pkg.connected",
+                "class Context:\n"
+                "    @classmethod\n"
+                "    def merge(cls, base) -> 'Context':\n"
+                "        return base\n"
+                "\n"
+                "def consume(left, right):\n"
+                "    return left, right\n"
+                "\n"
+                "def first(base):\n"
+                "    context = Context.merge(base)\n"
+                "    return consume(context.left, context.right)\n"
+                "\n"
+                "def second(base):\n"
+                "    context = Context.merge(base)\n"
+                "    return consume(context.left, context.right)\n",
+            ),
+        )
+    )
+
+    assert len(builder.components) == 1
+    component = builder.components[0]
+    assert tuple(edge.caller_symbol for edge in component.root_edges) == (
+        "pkg.connected.first",
+        "pkg.connected.second",
+    )
+    assert component.participant_symbols == ("pkg.connected.consume",)
+    assert (
+        builder.assessed_components()[0]
+        .proof.callable_component.incomplete_call_family_symbols
+        == ()
+    )
+
+
+def test_builder_proves_one_closed_private_carrier_expansion() -> None:
+    builder = DeclaredCarrierExpansionBuilder.from_modules(
+        (
+            _module(
+                "pkg.closed",
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass(frozen=True)\n"
+                "class _Context:\n"
+                "    left: object\n"
+                "    right: object\n"
+                "\n"
+                "    @classmethod\n"
+                "    def merge(cls, base) -> '_Context':\n"
+                "        return base\n"
+                "\n"
+                "def _consume(left, right):\n"
+                "    return left, right\n"
+                "\n"
+                "def root(base):\n"
+                "    context = _Context.merge(base)\n"
+                "    return _consume(context.left, context.right)\n",
+            ),
+        )
+    )
+
+    assessments = builder.assessed_components()
+
+    assert len(assessments) == 1
+    assert assessments[0].proof.is_proven
+    assert assessments[0].proof.batch_compression_delta == 2
+    assert builder.proven_components() == assessments
+
+
+def test_builder_rejects_calls_outside_the_atomic_component() -> None:
+    builder = DeclaredCarrierExpansionBuilder.from_modules(
+        (
+            _module(
+                "pkg.open_call",
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass(frozen=True)\n"
+                "class _Context:\n"
+                "    left: object\n"
+                "    right: object\n"
+                "\n"
+                "    @classmethod\n"
+                "    def merge(cls, base) -> '_Context':\n"
+                "        return base\n"
+                "\n"
+                "def _consume(left, right):\n"
+                "    return left, right\n"
+                "\n"
+                "def root(base):\n"
+                "    context = _Context.merge(base)\n"
+                "    return _consume(context.left, context.right)\n"
+                "\n"
+                "def other(left, right):\n"
+                "    return _consume(left, right)\n",
+            ),
+        )
+    )
+
+    proof = builder.assessed_components()[0].proof
+
+    assert (
+        DeclaredCarrierExpansionAuthorityViolation.INCOMPLETE_CALL_FAMILY
+        in proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_builder_rejects_mutated_projected_parameters() -> None:
+    builder = DeclaredCarrierExpansionBuilder.from_modules(
+        (
+            _module(
+                "pkg.mutated",
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass(frozen=True)\n"
+                "class _Context:\n"
+                "    left: object\n"
+                "    right: object\n"
+                "\n"
+                "    @classmethod\n"
+                "    def merge(cls, base) -> '_Context':\n"
+                "        return base\n"
+                "\n"
+                "def _consume(left, right):\n"
+                "    left = right\n"
+                "    return left, right\n"
+                "\n"
+                "def root(base):\n"
+                "    context = _Context.merge(base)\n"
+                "    return _consume(context.left, context.right)\n",
+            ),
+        )
+    )
+
+    proof = builder.assessed_components()[0].proof
+
+    assert (
+        DeclaredCarrierExpansionAuthorityViolation.REBINDING_OR_MUTATION
+        in proof.violations
+    )

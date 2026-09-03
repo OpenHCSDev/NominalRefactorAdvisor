@@ -2594,6 +2594,7 @@ class ModuleNominalBindingSnapshot:
     bindings_by_name: dict[str, CompactNominalBinding]
     unresolved_bound_names: frozenset[str] = frozenset()
     star_import_ambiguity: bool = False
+    star_import_excluded_names: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         overlap = self.bindings_by_name.keys() & self.unresolved_bound_names
@@ -2615,7 +2616,10 @@ class ModuleNominalBindingSnapshot:
         """Prove that one bare name still resolves through Python builtins."""
 
         return (
-            not self.star_import_ambiguity
+            (
+                not self.star_import_ambiguity
+                or name in self.star_import_excluded_names
+            )
             and name not in self.bindings_by_name
             and name not in self.unresolved_bound_names
             and name not in preceding_class_bound_names
@@ -2974,6 +2978,7 @@ def _module_nominal_binding_snapshots(
     policy: ModuleNominalBindingSnapshotPolicy = (
         ModuleNominalBindingSnapshotPolicy.EXACT
     ),
+    star_import_excluded_names: frozenset[str] = frozenset(),
 ) -> dict[int | None, ModuleNominalBindingSnapshot]:
     authority = ModuleNominalBindingAuthority(parsed_module)
     bindings: dict[str, CompactNominalBinding] = {}
@@ -2988,6 +2993,7 @@ def _module_nominal_binding_snapshots(
             bindings_by_name=dict(bindings),
             unresolved_bound_names=frozenset(unresolved_bound_names),
             star_import_ambiguity=star_import_ambiguity,
+            star_import_excluded_names=star_import_excluded_names,
         )
 
     def apply(current: ast.stmt) -> None:
@@ -2997,8 +3003,12 @@ def _module_nominal_binding_snapshots(
             and isinstance(current, ast.ImportFrom)
             and any(alias.name == "*" for alias in current.names)
         ):
-            bindings.clear()
-            unresolved_bound_names.clear()
+            for binding_name in tuple(bindings):
+                if binding_name not in star_import_excluded_names:
+                    del bindings[binding_name]
+            unresolved_bound_names.intersection_update(
+                star_import_excluded_names
+            )
             star_import_ambiguity = True
             return
         direct_bindings = authority._direct_nominal_bindings(current, bindings)
@@ -3259,6 +3269,54 @@ def _compact_base_references(
     )
 
 
+@dataclass(frozen=True)
+class _CompactClassBindingFacets:
+    """Class facts whose authority depends on one module binding snapshot."""
+
+    base_references: tuple[CompactNominalReference, ...]
+    class_decorators_are_promotion_safe: bool
+    dataclass_declaration: CompactDataclassDeclaration | None
+
+    @property
+    def product_base_bindings_are_exact(self) -> bool:
+        return all(
+            reference.root_binding is not None
+            for reference in self.base_references
+            if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                ".".join(reference.source_parts)
+            )
+        )
+
+
+def _compact_class_binding_facets(
+    node: ast.ClassDef,
+    module_binding_snapshot: ModuleNominalBindingSnapshot,
+    qualname: str,
+    *,
+    include_body_facets: bool,
+) -> _CompactClassBindingFacets:
+    return _CompactClassBindingFacets(
+        base_references=_compact_base_references(node, module_binding_snapshot),
+        class_decorators_are_promotion_safe=all(
+            ClassMethodPromotionSafeDecorator.for_qualified_name(
+                _class_scope_qualified_import_name(
+                    module_binding_snapshot,
+                    {},
+                    decorator.func if isinstance(decorator, ast.Call) else decorator,
+                    frozenset(),
+                )
+            )
+            is not None
+            for decorator in node.decorator_list
+        ),
+        dataclass_declaration=(
+            _dataclass_declaration(module_binding_snapshot, qualname, node)
+            if include_body_facets
+            else None
+        ),
+    )
+
+
 def _compact_indexed_classes(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
@@ -3289,7 +3347,7 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_references=base_references,
+            base_references=binding_facets.base_references,
             direct_base_count=sum(
                 ClassSymbolResolutionAuthority.establishes_nominal_family(
                     declared_base_name
@@ -3301,13 +3359,10 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_references_are_complete=len(base_references) == len(node.bases),
-            product_base_bindings_are_exact=all(
-                reference.root_binding is not None
-                for reference in base_references
-                if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                    ".".join(reference.source_parts)
-                )
+            base_references_are_complete=len(binding_facets.base_references)
+            == len(node.bases),
+            product_base_bindings_are_exact=(
+                binding_facets.product_base_bindings_are_exact
             ),
             direct_member_declarations=_compact_class_member_declarations(node),
             metaclass_names=tuple(
@@ -3318,19 +3373,8 @@ def _compact_indexed_classes(
                 is not None
             ),
             class_keyword_names=tuple(keyword.arg or "**" for keyword in node.keywords),
-            class_decorators_are_promotion_safe=all(
-                ClassMethodPromotionSafeDecorator.for_qualified_name(
-                    _class_scope_qualified_import_name(
-                        module_binding_snapshot,
-                        {},
-                        decorator.func
-                        if isinstance(decorator, ast.Call)
-                        else decorator,
-                        frozenset(),
-                    )
-                )
-                is not None
-                for decorator in node.decorator_list
+            class_decorators_are_promotion_safe=(
+                binding_facets.class_decorators_are_promotion_safe
             ),
             class_header_is_reconstructible=ClassHeaderSourceSpan.from_source(
                 node,
@@ -3358,11 +3402,7 @@ def _compact_indexed_classes(
                 )
             ),
             is_abstract=_is_abstract_class(node),
-            dataclass_declaration=(
-                _dataclass_declaration(module_binding_snapshot, qualname, node)
-                if include_body_facets
-                else None
-            ),
+            dataclass_declaration=binding_facets.dataclass_declaration,
             declares_autoregister_meta=_declares_autoregister_meta(node),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
@@ -3389,10 +3429,84 @@ def _compact_indexed_classes(
         )
         for qualname, node in indexed_class_nodes
         for module_binding_snapshot in (binding_snapshots[node.lineno],)
-        for base_references in (
-            _compact_base_references(node, module_binding_snapshot),
+        for binding_facets in (
+            _compact_class_binding_facets(
+                node,
+                module_binding_snapshot,
+                qualname,
+                include_body_facets=include_body_facets,
+            ),
         )
     )
+
+
+def _class_nominal_reference_root_names(
+    parsed_module: ParsedModule,
+) -> frozenset[str]:
+    """Return module bindings queried while projecting class declarations."""
+
+    reference_nodes: list[ast.AST] = []
+    for _qualname, class_node in _iter_class_defs(list(parsed_module.module.body)):
+        reference_nodes.extend(class_node.bases)
+        reference_nodes.extend(class_node.decorator_list)
+        reference_nodes.extend(keyword.value for keyword in class_node.keywords)
+        for statement in class_node.body:
+            if isinstance(statement, ast.AnnAssign):
+                reference_nodes.append(statement.annotation)
+                if statement.value is not None:
+                    reference_nodes.append(statement.value)
+            elif isinstance(statement, ast.Assign):
+                reference_nodes.append(statement.value)
+    return frozenset(
+        node.id
+        for reference_node in reference_nodes
+        for node in ast.walk(reference_node)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    )
+
+
+def _repository_refined_class_projection(
+    parsed_module: ParsedModule,
+    projection: CompactModuleClassProjection,
+    star_import_excluded_names: frozenset[str],
+) -> CompactModuleClassProjection:
+    """Refine only binding-sensitive class facts from repository export proof."""
+
+    class_nodes_by_qualname = dict(
+        _iter_class_defs(list(parsed_module.module.body))
+    )
+    binding_snapshots = _module_nominal_binding_snapshots(
+        parsed_module,
+        tuple(node.lineno for node in class_nodes_by_qualname.values()),
+        include_final=False,
+        star_import_excluded_names=star_import_excluded_names,
+    )
+    refined_classes = []
+    for indexed_class in projection.classes:
+        node = class_nodes_by_qualname[indexed_class.qualname]
+        binding_snapshot = binding_snapshots[node.lineno]
+        binding_facets = _compact_class_binding_facets(
+            node,
+            binding_snapshot,
+            indexed_class.qualname,
+            include_body_facets=True,
+        )
+        refined_classes.append(
+            replace(
+                indexed_class,
+                base_references=binding_facets.base_references,
+                base_references_are_complete=len(binding_facets.base_references)
+                == len(node.bases),
+                product_base_bindings_are_exact=(
+                    binding_facets.product_base_bindings_are_exact
+                ),
+                class_decorators_are_promotion_safe=(
+                    binding_facets.class_decorators_are_promotion_safe
+                ),
+                dataclass_declaration=binding_facets.dataclass_declaration,
+            )
+        )
+    return replace(projection, classes=tuple(refined_classes))
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -3420,9 +3534,27 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> tuple[CompactModuleClassProjection, ...]:
         """Collect the single module projection declared by this family."""
 
+        parsed_modules = tuple(parsed_modules)
+        repository_binding_proof = RepositoryModuleBindingProof(parsed_modules)
         projections: list[CompactModuleClassProjection] = []
         for parsed_module in parsed_modules:
+            star_import_excluded_names = frozenset(
+                name
+                for name in _class_nominal_reference_root_names(parsed_module)
+                if repository_binding_proof.star_imports_exclude(
+                    parsed_module.module_name,
+                    name,
+                )
+            )
             module_projections = collect_family_items(parsed_module, cls)
+            if star_import_excluded_names and len(module_projections) == 1:
+                module_projections = [
+                    _repository_refined_class_projection(
+                        parsed_module,
+                        module_projections[0],
+                        star_import_excluded_names,
+                    )
+                ]
             if len(module_projections) != 1:
                 raise ValueError(
                     "Compact class projection family must emit one item per module"
@@ -5221,16 +5353,16 @@ def _dataclass_field_role(
     statement: ast.AnnAssign,
     preceding_class_bound_names: frozenset[str],
 ) -> CompactDataclassFieldRole:
-    annotation_root = (
-        statement.annotation.value
-        if isinstance(statement.annotation, ast.Subscript)
-        else statement.annotation
-    )
-    qualified_annotation = _class_scope_qualified_import_name(
-        module_binding_snapshot,
-        class_aliases,
-        annotation_root,
-        preceding_class_bound_names,
+    annotation_root = _dataclass_role_reference(statement.annotation)
+    qualified_annotation = (
+        None
+        if annotation_root is None
+        else _class_scope_qualified_import_name(
+            module_binding_snapshot,
+            class_aliases,
+            annotation_root,
+            preceding_class_bound_names,
+        )
     )
     if (
         semantic_role := CompactDataclassFieldRole.for_qualified_annotation(
@@ -5238,11 +5370,23 @@ def _dataclass_field_role(
         )
     ) is not None:
         return semantic_role
-    annotation_is_resolved_plain_field = qualified_annotation is not None or (
-        isinstance(annotation_root, ast.Name)
-        and module_binding_snapshot.resolves_unshadowed_builtin(
-            annotation_root.id,
-            preceding_class_bound_names=preceding_class_bound_names,
+    annotation_is_resolved_plain_field = (
+        (
+            annotation_root is None
+            and _dataclass_plain_annotation_is_resolved(
+                module_binding_snapshot,
+                class_aliases,
+                statement.annotation,
+                preceding_class_bound_names,
+            )
+        )
+        or qualified_annotation is not None
+        or (
+            isinstance(annotation_root, ast.Name)
+            and module_binding_snapshot.resolves_unshadowed_builtin(
+                annotation_root.id,
+                preceding_class_bound_names=preceding_class_bound_names,
+            )
         )
     )
     if not annotation_is_resolved_plain_field:
@@ -5280,6 +5424,48 @@ def _dataclass_field_role(
         CompactDataclassFieldRole.STORED_INIT
         if init_value.value
         else CompactDataclassFieldRole.STORED_NON_INIT
+    )
+
+
+def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
+    """Return only a top-level reference that can alter dataclass field role."""
+
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return annotation
+    if isinstance(annotation, ast.Subscript):
+        return annotation.value
+    return annotation if isinstance(annotation, ast.Name | ast.Attribute) else None
+
+
+def _dataclass_plain_annotation_is_resolved(
+    module_binding_snapshot: ModuleNominalBindingSnapshot,
+    class_aliases: dict[str, str],
+    annotation: ast.expr,
+    preceding_class_bound_names: frozenset[str],
+) -> bool:
+    """Prove every evaluated root in a non-role annotation expression."""
+
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return False
+    root_names = frozenset(
+        node.id
+        for node in ast.walk(annotation)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    )
+    return all(
+        root_name in class_aliases
+        or module_binding_snapshot.binding_for(root_name) is not None
+        or module_binding_snapshot.resolves_unshadowed_builtin(
+            root_name,
+            preceding_class_bound_names=preceding_class_bound_names,
+        )
+        for root_name in root_names
     )
 
 

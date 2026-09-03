@@ -38,9 +38,7 @@ def _repository(*modules: ParsedModule) -> CompactProductFlowRepository:
         product_projections=tuple(
             compact_product_flow_projection(module) for module in modules
         ),
-        class_projections=tuple(
-            CompactModuleClassProjectionFamily.collect(module)[0] for module in modules
-        ),
+        class_projections=CompactModuleClassProjectionFamily.collect_modules(modules),
     )
 
 
@@ -634,6 +632,48 @@ def test_repository_derives_exact_qualified_dataclass_roles_without_classvar_mir
     assert tuple(field.line for field in authority.fields) == (8, 9)
 
 
+def test_repository_treats_resolved_union_annotations_as_stored_fields() -> None:
+    repository = _repository(
+        _module(
+            "pkg.union_fields",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "class Left:\n"
+            "    pass\n"
+            "\n"
+            "class Right:\n"
+            "    pass\n"
+            "\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    left: Left | None\n"
+            "    right: tuple[Right, ...] | None\n",
+        )
+    )
+
+    assert repository.product_authorities_by_symbol[
+        "pkg.union_fields.Product"
+    ].field_names == ("left", "right")
+
+
+def test_repository_keeps_unresolved_union_annotation_open() -> None:
+    repository = _repository(
+        _module(
+            "pkg.open_union_field",
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    left: Missing | None\n"
+            "    right: object\n",
+        )
+    )
+
+    assert CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE in (
+        _open_product_violations(repository, "pkg.open_union_field.Product")
+    )
+
+
 def test_repository_accepts_a_direct_nominal_dataclass_alias() -> None:
     repository = _repository(
         _module(
@@ -686,6 +726,28 @@ def test_repository_invalidates_dataclass_binding_after_star_import() -> None:
     assert CompactProductAuthorityViolation.UNRESOLVED_DATACLASS_DECORATOR in (
         _open_product_violations(repository, "pkg.star_dataclass.Product")
     )
+
+
+def test_repository_proves_dataclass_binding_excluded_by_star_export_contract() -> (
+    None
+):
+    repository = _repository(
+        _module("pkg.decorators", "__all__ = ('public_decorator',)\n"),
+        _module(
+            "pkg.proved_star_dataclass",
+            "from dataclasses import dataclass\n"
+            "from pkg.decorators import *\n"
+            "\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    left: object\n"
+            "    right: object\n",
+        ),
+    )
+
+    assert repository.product_authorities_by_symbol[
+        "pkg.proved_star_dataclass.Product"
+    ].field_names == ("left", "right")
 
 
 def test_repository_keeps_product_construction_open_across_a_star_import() -> None:

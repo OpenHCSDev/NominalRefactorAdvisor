@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -206,6 +207,46 @@ class CompactResolvedCallableEscape:
     context: CompactProductFlowContext
     use: CompactCallableReferenceUse
     declaration: CompactFunctionDeclaration
+
+
+@dataclass(frozen=True)
+class CompactFunctionCallIdentity:
+    """Repository-unique identity for one function-local call site."""
+
+    caller_symbol: str
+    position: CompactFlowPosition
+
+    @classmethod
+    def from_resolution(cls, resolution: CompactFunctionCallResolution) -> Self:
+        return cls(resolution.context.owner_symbol, resolution.call.position)
+
+
+@dataclass(frozen=True)
+class CompactCallableComponentAuthorityProof:
+    """Shared closure proof for an atomic callable-component rewrite."""
+
+    participant_symbols: tuple[str, ...]
+    missing_declaration_symbols: tuple[str, ...]
+    unresolved_consumer_symbols: tuple[str, ...]
+    incomplete_call_family_symbols: tuple[str, ...]
+    escaping_callable_symbols: tuple[str, ...]
+    signature_hazard_symbols: tuple[str, ...]
+    open_boundary_symbols: tuple[str, ...]
+    incomplete_method_family_symbols: tuple[str, ...]
+
+    @property
+    def is_closed(self) -> bool:
+        return not any(
+            (
+                self.missing_declaration_symbols,
+                self.unresolved_consumer_symbols,
+                self.incomplete_call_family_symbols,
+                self.escaping_callable_symbols,
+                self.signature_hazard_symbols,
+                self.open_boundary_symbols,
+                self.incomplete_method_family_symbols,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -822,6 +863,124 @@ class CompactProductFlowRepository:
             declaration.identity.module_name,
             binding_name,
         )
+
+    def callable_component_authority_proof(
+        self,
+        parameter_names_by_participant: Mapping[str, frozenset[str]],
+        component_call_identities: frozenset[CompactFunctionCallIdentity],
+    ) -> CompactCallableComponentAuthorityProof:
+        """Prove the shared callable boundary of one atomic signature rewrite."""
+
+        participant_symbols = frozenset(parameter_names_by_participant)
+        missing_declaration_symbols = participant_symbols - (
+            self.function_declarations_by_symbol.keys()
+            & self.flow_contexts_by_owner_symbol.keys()
+        )
+        unresolved_consumer_symbols = {
+            possible_symbol
+            for resolution in self.function_call_resolutions
+            if resolution.resolved_call is None
+            for possible_symbol in resolution.target_resolution.possible_symbols
+            if possible_symbol in participant_symbols
+        }
+        incomplete_call_family_symbols = {
+            participant_symbol
+            for participant_symbol in participant_symbols
+            if any(
+                CompactFunctionCallIdentity.from_resolution(incoming)
+                not in component_call_identities
+                for incoming in self.incoming_calls_for(participant_symbol)
+            )
+        }
+        escaping_callable_symbols = {
+            participant_symbol
+            for participant_symbol in participant_symbols
+            if self.callable_escapes_for(participant_symbol)
+        }
+        signature_hazard_symbols = {
+            participant_symbol
+            for participant_symbol in participant_symbols - missing_declaration_symbols
+            if not self._signature_is_closed_for_parameters(
+                self.function_declarations_by_symbol[participant_symbol],
+                self.flow_contexts_by_owner_symbol[participant_symbol],
+                parameter_names_by_participant[participant_symbol],
+            )
+        }
+        open_boundary_symbols = {
+            participant_symbol
+            for participant_symbol in participant_symbols - missing_declaration_symbols
+            if self.callable_boundary_exposure(
+                self.function_declarations_by_symbol[participant_symbol]
+            ).blocks_closed_boundary
+        }
+        return CompactCallableComponentAuthorityProof(
+            participant_symbols=tuple(sorted(participant_symbols)),
+            missing_declaration_symbols=tuple(sorted(missing_declaration_symbols)),
+            unresolved_consumer_symbols=tuple(sorted(unresolved_consumer_symbols)),
+            incomplete_call_family_symbols=tuple(
+                sorted(incomplete_call_family_symbols)
+            ),
+            escaping_callable_symbols=tuple(sorted(escaping_callable_symbols)),
+            signature_hazard_symbols=tuple(sorted(signature_hazard_symbols)),
+            open_boundary_symbols=tuple(sorted(open_boundary_symbols)),
+            incomplete_method_family_symbols=tuple(
+                sorted(self._incomplete_method_family_symbols(participant_symbols))
+            ),
+        )
+
+    @staticmethod
+    def _signature_is_closed_for_parameters(
+        declaration: CompactFunctionDeclaration,
+        context: CompactProductFlowContext,
+        parameter_names: frozenset[str],
+    ) -> bool:
+        parameters_by_name = {
+            parameter.name: parameter
+            for parameter in declaration.call_signature.parameters
+        }
+        return (
+            parameter_names <= parameters_by_name.keys()
+            and not declaration.signature_decorator_hazard
+            and not context.flow.local_signature_is_observed
+            and not (
+                declaration.nominal_receiver_name is None
+                and declaration.binding_kind.implicit_parameter_count
+            )
+            and all(
+                parameters_by_name[parameter_name].is_plain_required
+                for parameter_name in parameter_names
+            )
+        )
+
+    def _incomplete_method_family_symbols(
+        self,
+        participant_symbols: frozenset[str],
+    ) -> set[str]:
+        incomplete: set[str] = set()
+        for participant_symbol in participant_symbols:
+            declaration = self.function_declarations_by_symbol.get(
+                participant_symbol
+            )
+            if declaration is None or declaration.owner_class_qualname is None:
+                continue
+            owner_symbol = (
+                f"{declaration.identity.module_name}."
+                f"{declaration.owner_class_qualname}"
+            )
+            method_name = declaration.identity.qualname.rsplit(".", 1)[-1]
+            related_class_symbols = (
+                *self.class_index.ancestor_symbols(owner_symbol),
+                *self.class_index.descendant_symbols(owner_symbol),
+            )
+            related_declarations = {
+                f"{class_symbol}.{method_name}"
+                for class_symbol in related_class_symbols
+                if f"{class_symbol}.{method_name}"
+                in self.function_declarations_by_symbol
+            }
+            if related_declarations - participant_symbols:
+                incomplete.add(participant_symbol)
+        return incomplete
 
     def _lexical_function_target_resolution(
         self,

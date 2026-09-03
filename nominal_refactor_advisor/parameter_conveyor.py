@@ -27,6 +27,8 @@ from .product_flow import (
     compact_product_flow_projection,
 )
 from .product_flow_authority import (
+    CompactCallableComponentAuthorityProof,
+    CompactFunctionCallIdentity,
     CompactFunctionCallResolution,
     CompactProductAuthority,
     CompactProductFlowContext,
@@ -185,24 +187,6 @@ class ParameterConveyorParticipant:
     def symbol(self) -> str:
         return self.declaration.identity.symbol
 
-    def signature_is_closed_for(
-        self,
-        field_mapping: tuple[tuple[str, str], ...],
-    ) -> bool:
-        mapped_parameter_names = frozenset(
-            parameter_name for _field_name, parameter_name in field_mapping
-        )
-        return not (
-            self.declaration.signature_decorator_hazard
-            or self.context.flow.local_signature_is_observed
-            or self.declaration.nominal_receiver_name is None
-            and self.declaration.binding_kind.implicit_parameter_count
-        ) and all(
-            parameter.is_plain_required
-            for parameter in self.declaration.call_signature.parameters
-            if parameter.name in mapped_parameter_names
-        )
-
 
 ParameterConveyorAuthorityPredicate: TypeAlias = Callable[
     ["ClosedParameterConveyorAuthorityProof"],
@@ -247,7 +231,13 @@ def _has_incomplete_product_consumption(
 def _has_unresolved_consumer(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.unresolved_consumer_symbols)
+    return bool(proof.callable_component.unresolved_consumer_symbols)
+
+
+def _has_missing_participant_declaration(
+    proof: "ClosedParameterConveyorAuthorityProof",
+) -> bool:
+    return bool(proof.callable_component.missing_declaration_symbols)
 
 
 def _has_open_value_alias_forwarding(
@@ -265,13 +255,13 @@ def _has_unresolved_complete_product_call(
 def _has_incomplete_call_family(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.incomplete_call_family_symbols)
+    return bool(proof.callable_component.incomplete_call_family_symbols)
 
 
 def _has_escaping_callable_reference(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.escaping_callable_symbols)
+    return bool(proof.callable_component.escaping_callable_symbols)
 
 
 def _has_conflicting_call_mapping(
@@ -307,19 +297,19 @@ def _has_repeated_source_evaluation(
 def _has_signature_semantics_hazard(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.signature_hazard_symbols)
+    return bool(proof.callable_component.signature_hazard_symbols)
 
 
 def _has_open_public_boundary(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.open_boundary_symbols)
+    return bool(proof.callable_component.open_boundary_symbols)
 
 
 def _has_incomplete_method_family(
     proof: "ClosedParameterConveyorAuthorityProof",
 ) -> bool:
-    return bool(proof.incomplete_method_family_symbols)
+    return bool(proof.callable_component.incomplete_method_family_symbols)
 
 
 def _has_non_positive_batch_compression(
@@ -360,6 +350,11 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
         "unresolved_consumer",
         "a same-name consumer cannot be resolved to one nominal declaration",
         _has_unresolved_consumer,
+    )
+    MISSING_PARTICIPANT_DECLARATION = (
+        "missing_participant_declaration",
+        "a component participant lacks one declaration and execution flow",
+        _has_missing_participant_declaration,
     )
     OPEN_VALUE_ALIAS_FORWARDING = (
         "open_value_alias_forwarding",
@@ -453,24 +448,18 @@ class ClosedParameterConveyorAuthorityProof:
 
     authority_symbols: tuple[str, ...]
     authority_field_names: tuple[str, ...]
-    participant_symbols: tuple[str, ...]
     projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     non_injective_edge_ids: tuple[str, ...]
     ambiguous_root_call_ids: tuple[str, ...]
     incompletely_consuming_participant_symbols: tuple[str, ...]
-    unresolved_consumer_symbols: tuple[str, ...]
     open_value_alias_call_ids: tuple[str, ...]
     unresolved_complete_product_call_ids: tuple[str, ...]
-    incomplete_call_family_symbols: tuple[str, ...]
-    escaping_callable_symbols: tuple[str, ...]
     conflicting_mapping_symbols: tuple[str, ...]
     non_dominating_root_symbols: tuple[str, ...]
     mutated_binding_symbols: tuple[str, ...]
     observed_root_carrier_symbols: tuple[str, ...]
     reevaluated_source_expression_symbols: tuple[str, ...]
-    signature_hazard_symbols: tuple[str, ...]
-    open_boundary_symbols: tuple[str, ...]
-    incomplete_method_family_symbols: tuple[str, ...]
+    callable_component: CompactCallableComponentAuthorityProof
     batch_compression_delta: int
 
     @cached_property
@@ -541,8 +530,11 @@ class _ParameterConveyorComponentSeed:
     forwarding_edges: tuple[ForwardedProductCallEdge, ...]
 
 
-_CallIdentity: TypeAlias = tuple[str, int, CompactFlowPosition]
-_RootEdgeIdentity: TypeAlias = tuple[str, _CallIdentity, CompactFlowPosition]
+_RootEdgeIdentity: TypeAlias = tuple[
+    str,
+    CompactFunctionCallIdentity,
+    CompactFlowPosition,
+]
 _ValueProjectionKey: TypeAlias = tuple[str, LexicalValueReference]
 
 
@@ -579,7 +571,7 @@ class ClosedParameterConveyorComponentBuilder:
     @cached_property
     def simple_bound_arguments_by_call(
         self,
-    ) -> dict[_CallIdentity, dict[str, LexicalValueReference]]:
+    ) -> dict[CompactFunctionCallIdentity, dict[str, LexicalValueReference]]:
         return {
             self.call_identity(edge): self._simple_bound_arguments(edge)
             for edge in self.repository.resolved_function_calls
@@ -588,7 +580,10 @@ class ClosedParameterConveyorComponentBuilder:
     @cached_property
     def bound_argument_origins_by_call(
         self,
-    ) -> dict[_CallIdentity, dict[str, CompactValueOriginResolution]]:
+    ) -> dict[
+        CompactFunctionCallIdentity,
+        dict[str, CompactValueOriginResolution],
+    ]:
         return {
             self.call_identity(edge): {
                 parameter_name: edge.context.flow.value_origin_for(
@@ -731,7 +726,7 @@ class ClosedParameterConveyorComponentBuilder:
         pending: deque[ParameterConveyorCallEdge] = deque(root_edges)
         visited_mappings: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
         edges: dict[
-            tuple[_CallIdentity, tuple[tuple[str, str], ...]],
+            tuple[CompactFunctionCallIdentity, tuple[tuple[str, str], ...]],
             ForwardedProductCallEdge,
         ] = {}
         while pending:
@@ -985,12 +980,10 @@ class ClosedParameterConveyorComponentBuilder:
         return arguments
 
     @staticmethod
-    def call_identity(edge: CompactResolvedFunctionCall) -> _CallIdentity:
-        return (
-            edge.context.owner_symbol,
-            edge.call.line,
-            edge.call.position,
-        )
+    def call_identity(
+        edge: CompactResolvedFunctionCall,
+    ) -> CompactFunctionCallIdentity:
+        return CompactFunctionCallIdentity.from_resolution(edge)
 
     def _assessed_component(
         self,
@@ -1012,26 +1005,6 @@ class ClosedParameterConveyorComponentBuilder:
             self.call_identity(edge.resolved_call) for edge in edges
         )
         participant_symbols = frozenset(seed.participant_symbols)
-        unresolved_consumers = {
-            possible_symbol
-            for resolution in self.repository.function_call_resolutions
-            if resolution.resolved_call is None
-            for possible_symbol in resolution.target_resolution.possible_symbols
-            if possible_symbol in participant_symbols
-        }
-        incomplete_call_family_symbols = {
-            participant_symbol
-            for participant_symbol in participant_symbols
-            if any(
-                self.call_identity(incoming) not in component_call_ids
-                for incoming in self.repository.incoming_calls_for(participant_symbol)
-            )
-        }
-        escaping_callable_symbols = {
-            participant_symbol
-            for participant_symbol in participant_symbols
-            if self.repository.callable_escapes_for(participant_symbol)
-        }
         field_mappings_by_participant: dict[
             str,
             set[tuple[tuple[str, str], ...]],
@@ -1043,6 +1016,18 @@ class ClosedParameterConveyorComponentBuilder:
             for participant_symbol, mappings in field_mappings_by_participant.items()
             if len(mappings) == 1
         }
+        callable_component = self.repository.callable_component_authority_proof(
+            {
+                participant_symbol: frozenset(
+                    parameter_name
+                    for _field_name, parameter_name in (
+                        exact_field_mapping_by_participant.get(participant_symbol, ())
+                    )
+                )
+                for participant_symbol in participant_symbols
+            },
+            component_call_ids,
+        )
         open_alias_call_ids, unresolved_product_call_ids = (
             self._participant_product_call_hazards(
                 participants,
@@ -1087,9 +1072,6 @@ class ClosedParameterConveyorComponentBuilder:
             for edge in seed.root_edges
             if edge.intervening_mutation_roots
         )
-        incomplete_method_family_symbols = self._incomplete_method_family_symbols(
-            participant_symbols
-        )
         authority_symbols = tuple(
             sorted(
                 {
@@ -1101,19 +1083,13 @@ class ClosedParameterConveyorComponentBuilder:
                 }
             )
         )
-        open_boundary_symbols = {
-            participant.symbol
-            for participant in participants
-            if self.repository.callable_boundary_exposure(
-                participant.declaration
-            ).blocks_closed_boundary
-        }
         compression_delta = (len(seed.authority.field_names) - 1) * (
             len(participants) + len(edges)
         )
-        root_edges_by_call: dict[_CallIdentity, list[ConstructedProductCallEdge]] = (
-            defaultdict(list)
-        )
+        root_edges_by_call: dict[
+            CompactFunctionCallIdentity,
+            list[ConstructedProductCallEdge],
+        ] = defaultdict(list)
         for root_edge in seed.root_edges:
             root_edges_by_call[self.call_identity(root_edge.resolved_call)].append(
                 root_edge
@@ -1121,7 +1097,6 @@ class ClosedParameterConveyorComponentBuilder:
         proof = ClosedParameterConveyorAuthorityProof(
             authority_symbols=authority_symbols,
             authority_field_names=seed.authority.field_names,
-            participant_symbols=tuple(sorted(participant_symbols)),
             projected_field_names_by_edge=tuple(edge.field_names for edge in edges),
             non_injective_edge_ids=tuple(
                 self._edge_display_id(edge)
@@ -1137,15 +1112,10 @@ class ClosedParameterConveyorComponentBuilder:
             incompletely_consuming_participant_symbols=tuple(
                 sorted(incomplete_consumption_symbols)
             ),
-            unresolved_consumer_symbols=tuple(sorted(unresolved_consumers)),
             open_value_alias_call_ids=tuple(sorted(open_alias_call_ids)),
             unresolved_complete_product_call_ids=tuple(
                 sorted(unresolved_product_call_ids)
             ),
-            incomplete_call_family_symbols=tuple(
-                sorted(incomplete_call_family_symbols)
-            ),
-            escaping_callable_symbols=tuple(sorted(escaping_callable_symbols)),
             conflicting_mapping_symbols=tuple(
                 sorted(
                     participant_symbol
@@ -1183,22 +1153,7 @@ class ClosedParameterConveyorComponentBuilder:
                     }
                 )
             ),
-            signature_hazard_symbols=tuple(
-                sorted(
-                    participant.symbol
-                    for participant in participants
-                    if not participant.signature_is_closed_for(
-                        exact_field_mapping_by_participant.get(
-                            participant.symbol,
-                            (),
-                        )
-                    )
-                )
-            ),
-            open_boundary_symbols=tuple(sorted(open_boundary_symbols)),
-            incomplete_method_family_symbols=tuple(
-                sorted(incomplete_method_family_symbols)
-            ),
+            callable_component=callable_component,
             batch_compression_delta=compression_delta,
         )
         return ClosedParameterConveyorComponent(
@@ -1209,39 +1164,10 @@ class ClosedParameterConveyorComponentBuilder:
             proof=proof,
         )
 
-    def _incomplete_method_family_symbols(
-        self,
-        participant_symbols: frozenset[str],
-    ) -> set[str]:
-        incomplete: set[str] = set()
-        for participant_symbol in participant_symbols:
-            declaration = self.repository.function_declarations_by_symbol[
-                participant_symbol
-            ]
-            if declaration.owner_class_qualname is None:
-                continue
-            owner_symbol = (
-                f"{declaration.identity.module_name}.{declaration.owner_class_qualname}"
-            )
-            method_name = declaration.identity.qualname.rsplit(".", 1)[-1]
-            related_class_symbols = (
-                *self.repository.class_index.ancestor_symbols(owner_symbol),
-                *self.repository.class_index.descendant_symbols(owner_symbol),
-            )
-            related_declarations = {
-                f"{class_symbol}.{method_name}"
-                for class_symbol in related_class_symbols
-                if f"{class_symbol}.{method_name}"
-                in self.repository.function_declarations_by_symbol
-            }
-            if related_declarations - participant_symbols:
-                incomplete.add(participant_symbol)
-        return incomplete
-
     def _participant_product_call_hazards(
         self,
         participants: tuple[ParameterConveyorParticipant, ...],
-        component_call_ids: frozenset[_CallIdentity],
+        component_call_ids: frozenset[CompactFunctionCallIdentity],
         field_mapping_by_participant: dict[str, tuple[tuple[str, str], ...]],
     ) -> tuple[set[str], set[str]]:
         participant_symbols = frozenset(
@@ -1380,5 +1306,5 @@ class ClosedParameterConveyorComponentBuilder:
     def _raw_call_identity(
         context: CompactProductFlowContext,
         call: CompactFunctionCall,
-    ) -> _CallIdentity:
-        return context.owner_symbol, call.line, call.position
+    ) -> CompactFunctionCallIdentity:
+        return CompactFunctionCallIdentity(context.owner_symbol, call.position)

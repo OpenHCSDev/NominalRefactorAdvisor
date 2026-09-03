@@ -1457,5 +1457,8 @@ def test_self_host_coherence_cache_key_does_not_cross_its_public_owner() -> None
         "nominal_refactor_advisor.observation_graph."
         "ObservationGraph._build_coherence_cohorts_for",
     )
-    assert component.proof.open_boundary_symbols == component.participant_symbols
+    assert (
+        component.proof.callable_component.open_boundary_symbols
+        == component.participant_symbols
+    )
     assert builder.proven_components() == ()
