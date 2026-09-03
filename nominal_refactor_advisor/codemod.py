@@ -13949,24 +13949,17 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return RejectedRecipeEvaluation(
-                reason=(
-                    "repeated-builder authority extraction requires a source selector context"
-                ),
-                executable_declaration_type=type(self),
+            return self.rejected_evaluation(
+                "repeated-builder authority extraction requires a source selector context"
             )
         if context.class_family_index is None:
             context = context.execution_snapshot()
         parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
         if rejection_reason:
-            return RejectedRecipeEvaluation(
-                reason=rejection_reason,
-                executable_declaration_type=type(self),
-            )
+            return self.rejected_evaluation(rejection_reason)
         if parts is None:
-            return RejectedRecipeEvaluation(
-                reason="repeated-builder authority extraction found no recipe parts",
-                executable_declaration_type=type(self),
+            return self.rejected_evaluation(
+                "repeated-builder authority extraction found no recipe parts"
             )
         return ExecutableRecipeEvaluation(
             executable_recipe=parts.recipe_for(finding),
@@ -20322,9 +20315,8 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
     ) -> FindingRecipeEvaluation:
         strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding.metrics)
         if strategy is None:
-            return RejectedRecipeEvaluation(
-                reason="semantic mirror metrics have no registered recipe strategy",
-                executable_declaration_type=type(self),
+            return self.rejected_evaluation(
+                "semantic mirror metrics have no registered recipe strategy"
             )
         return strategy.evaluate_recipe_for_finding(finding, context)
 
