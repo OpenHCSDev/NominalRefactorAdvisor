@@ -8546,11 +8546,74 @@ class DescendEnumKeyedDerivedMapFacadeOperation(RepositorySourceReprovedOperatio
 
 
 @dataclass(frozen=True)
-class ClassHeaderRewriteabilityPolicy:
-    """Nominal policy for deciding whether a class-header span can be rewritten."""
-
+class SourceLineSpan:
     start_line: int
     end_line: int
+
+    @classmethod
+    def from_offsets(
+        cls,
+        geometry: SourceTextGeometry,
+        start_offset: int,
+        end_offset: int,
+    ) -> Self:
+        return cls(
+            start_line=cls.line_number_for_offset(geometry, start_offset),
+            end_line=cls.line_number_for_offset(
+                geometry,
+                max(start_offset, end_offset - 1),
+            ),
+        )
+
+    @staticmethod
+    def line_number_for_offset(
+        geometry: SourceTextGeometry,
+        offset: int,
+    ) -> int:
+        line_number = 1
+        for index, line_offset in enumerate(geometry.line_offsets):
+            if line_offset > offset:
+                break
+            line_number = index + 1
+        return line_number
+
+    def overlaps(self, other: "SourceLineSpan") -> bool:
+        return self.start_line <= other.end_line and other.start_line <= self.end_line
+
+    def overlaps_any(self, spans: Iterable["SourceLineSpan"]) -> bool:
+        return any(self.overlaps(span) for span in spans)
+
+    def source_from(self, source: str) -> str:
+        source_lines = source.splitlines(keepends=True)
+        return "".join(source_lines[self.start_line - 1 : self.end_line])
+
+    def line_replacement(
+        self,
+        *,
+        file_path: str,
+        replacement_lines: tuple[str, ...] = (),
+        rationale: str = "",
+    ) -> PhysicalSourceEdit:
+        if self.start_line > self.end_line:
+            return SourceInsertion(
+                file_path=file_path,
+                insertion_line=self.start_line,
+                inserted_lines=replacement_lines,
+                rationale=rationale,
+            )
+        return SourceSpanReplacement(
+            file_path=file_path,
+            start_line=self.start_line,
+            end_line=self.end_line,
+            replacement_lines=replacement_lines,
+            rationale=rationale,
+        )
+
+
+@dataclass(frozen=True)
+class ClassHeaderRewriteabilityPolicy(SourceLineSpan):
+    """Nominal policy for deciding whether a class-header span can be rewritten."""
+
     source_line_count: int
     header_source: str
 
@@ -12651,71 +12714,6 @@ class ReplaceFunctionBodyOperation(
             raise ValueError("Replacement function body must not be empty")
         return tuple(
             body_indent + line if line.strip() else line for line in body_lines
-        )
-
-
-@dataclass(frozen=True)
-class SourceLineSpan:
-    start_line: int
-    end_line: int
-
-    @classmethod
-    def from_offsets(
-        cls,
-        geometry: SourceTextGeometry,
-        start_offset: int,
-        end_offset: int,
-    ) -> "SourceLineSpan":
-        return cls(
-            start_line=cls.line_number_for_offset(geometry, start_offset),
-            end_line=cls.line_number_for_offset(
-                geometry,
-                max(start_offset, end_offset - 1),
-            ),
-        )
-
-    @staticmethod
-    def line_number_for_offset(
-        geometry: SourceTextGeometry,
-        offset: int,
-    ) -> int:
-        line_number = 1
-        for index, line_offset in enumerate(geometry.line_offsets):
-            if line_offset > offset:
-                break
-            line_number = index + 1
-        return line_number
-
-    def overlaps(self, other: "SourceLineSpan") -> bool:
-        return self.start_line <= other.end_line and other.start_line <= self.end_line
-
-    def overlaps_any(self, spans: Iterable["SourceLineSpan"]) -> bool:
-        return any(self.overlaps(span) for span in spans)
-
-    def source_from(self, source: str) -> str:
-        source_lines = source.splitlines(keepends=True)
-        return "".join(source_lines[self.start_line - 1 : self.end_line])
-
-    def line_replacement(
-        self,
-        *,
-        file_path: str,
-        replacement_lines: tuple[str, ...] = (),
-        rationale: str = "",
-    ) -> PhysicalSourceEdit:
-        if self.start_line > self.end_line:
-            return SourceInsertion(
-                file_path=file_path,
-                insertion_line=self.start_line,
-                inserted_lines=replacement_lines,
-                rationale=rationale,
-            )
-        return SourceSpanReplacement(
-            file_path=file_path,
-            start_line=self.start_line,
-            end_line=self.end_line,
-            replacement_lines=replacement_lines,
-            rationale=rationale,
         )
 
 
