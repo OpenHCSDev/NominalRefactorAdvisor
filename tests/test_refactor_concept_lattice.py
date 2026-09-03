@@ -454,7 +454,8 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
     assert tuple(
         binding.field_name
         for binding in codemod.AuthoritySourceOperation.payload_bindings()
-    ) == ("authority_claim", "target", "rationale", "authority_source")
+    ) == ("target", "rationale", "authority_kind", "authority_source")
+    assert "authority_claim" not in codemod.AuthoritySourceOperation.__dataclass_fields__
 
 
 def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:

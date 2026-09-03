@@ -1193,19 +1193,13 @@ def test_codemod_preflight_accepts_declared_authority_claim(
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
-    claim = AuthorityClaim(
-        claimed_symbol="MissingAuthority",
-        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-        file_path=module_path.as_posix(),
-        qualname="MissingAuthority",
-    )
     recipe = RefactorRecipe(
         recipe_id="declared-authority-route",
         reason="route through authority",
     ).with_operation(
         DeclareAuthorityOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
-            authority_claim=claim,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             authority_source="class MissingAuthority(ABC):\n    pass\n\n",
         )
     )
@@ -6477,12 +6471,7 @@ def test_refactor_recipe_extracts_authority(
                 qualname="old_helper",
                 file_path=module_path.as_posix(),
             ),
-            authority_claim=AuthorityClaim(
-                claimed_symbol="HelperAuthority",
-                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                file_path=module_path.as_posix(),
-                qualname="HelperAuthority",
-            ),
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             authority_source=(
                 "class HelperAuthority:\n"
                 "    @staticmethod\n"
@@ -6501,9 +6490,44 @@ def test_refactor_recipe_extracts_authority(
             ),
         ),
     )
+    operation = recipe.operations[0]
+    assert isinstance(operation, ExtractAuthorityOperation)
+    payload = operation.to_dict()
+    assert payload["authority_kind"] == "class_family"
+    assert "authority_claim" not in payload
+    assert "claimed_symbol" not in payload
+    assert "qualname" not in payload
+    with pytest.raises(ValueError, match="Expected string enum field"):
+        RefactorRecipeOperation.from_dict(
+            {key: value for key, value in payload.items() if key != "authority_kind"}
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported ExtractAuthorityOperation payload field\(s\)",
+    ):
+        RefactorRecipeOperation.from_dict(
+            {
+                **payload,
+                "authority_claim": {
+                    "claimed_symbol": "HelperAuthority",
+                    "authority_kind": "class_family",
+                    "file_path": module_path.as_posix(),
+                    "qualname": "HelperAuthority",
+                },
+            }
+        )
+
+    snapshot = _indexed_snapshot(source_index, source_by_path)
+    derived_claim = operation.declared_authority_claims(snapshot)[0]
+    assert derived_claim == AuthorityClaim(
+        claimed_symbol="HelperAuthority",
+        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+        file_path=module_path.as_posix(),
+        qualname="HelperAuthority",
+    )
 
     simulation = recipe.simulate(
-        _indexed_snapshot(source_index, source_by_path),
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -6522,7 +6546,6 @@ def test_refactor_recipe_extracts_authority(
 def test_authority_source_operations_fail_closed_on_unproved_declarations(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -6537,52 +6560,34 @@ def test_authority_source_operations_fail_closed_on_unproved_declarations(
         for target in snapshot.source_index.ast_targets
         if target.qualname == "old_helper"
     )
-    valid_claim = AuthorityClaim(
-        claimed_symbol="HelperAuthority",
-        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-        file_path=module_path.as_posix(),
-        qualname="HelperAuthority",
-    )
+    with pytest.raises(TypeError, match="SemanticAuthorityKind"):
+        ExtractAuthorityOperation(
+            target=SourceRewriteTarget(target_id=helper_target.target_id),
+            authority_kind="class_family",  # type: ignore[arg-type]
+            authority_source="class HelperAuthority:\n    pass\n",
+        )
     cases = (
         (
-            valid_claim,
-            "class DifferentAuthority:\n    pass\n",
-            "exactly one top-level class named 'HelperAuthority'",
-        ),
-        (
-            valid_claim,
             (
                 "class HelperAuthority:\n    pass\n\n"
                 "class UnclaimedAuthority:\n    pass\n"
             ),
-            "exactly one top-level class named 'HelperAuthority'",
+            "exactly one top-level class",
         ),
         (
-            replace(valid_claim, authority_kind=None),
-            "class HelperAuthority:\n    pass\n",
-            "requires a typed authority claim",
+            "class BrokenAuthority:\n    def broken(\n",
+            "Authority source is not valid Python",
         ),
         (
-            replace(valid_claim, file_path="pkg/other.py"),
-            "class HelperAuthority:\n    pass\n",
-            "source and claim must identify the same file",
-        ),
-        (
-            replace(valid_claim, authority_id=helper_target.target_id),
-            "class HelperAuthority:\n    pass\n",
-            "cannot claim an existing target ID",
-        ),
-        (
-            valid_claim,
             "class HelperAuthority:\n    pass\n",
             "name 'HelperAuthority' is already bound",
         ),
     )
 
-    for index, (claim, authority_source, expected_error) in enumerate(cases):
+    for index, (authority_source, expected_error) in enumerate(cases):
         operation = ExtractAuthorityOperation(
             target=SourceRewriteTarget(target_id=helper_target.target_id),
-            authority_claim=claim,
+            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             authority_source=authority_source,
         )
         recipe = RefactorRecipe(f"invalid-authority-source-{index}").with_operation(
@@ -6624,12 +6629,7 @@ def test_codemod_plan_sequence_projects_recipe_source_paths_for_fast_snapshot(
                             qualname="old_helper",
                             file_path=helper_path.as_posix(),
                         ),
-                        authority_claim=AuthorityClaim(
-                            claimed_symbol="HelperAuthority",
-                            authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                            file_path=helper_path.as_posix(),
-                            qualname="HelperAuthority",
-                        ),
+                        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
                         authority_source=(
                             "class HelperAuthority:\n"
                             "    @staticmethod\n"
@@ -6868,12 +6868,7 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
                         qualname="old_helper",
                         file_path=module_path.as_posix(),
                     ),
-                    authority_claim=AuthorityClaim(
-                        claimed_symbol="HelperAuthority",
-                        authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                        file_path=module_path.as_posix(),
-                        qualname="HelperAuthority",
-                    ),
+                    authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
                     authority_source=(
                         "class HelperAuthority:\n"
                         "    @staticmethod\n"
@@ -15208,12 +15203,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 "operation": "extract_authority",
                                 "target_qualname": "legacy_helper",
                                 "file_path": "pkg/mod.py",
-                                "authority_claim": {
-                                    "claimed_symbol": "LegacyHelperAuthority",
-                                    "authority_kind": "class_family",
-                                    "file_path": "pkg/mod.py",
-                                    "qualname": "LegacyHelperAuthority",
-                                },
+                                "authority_kind": "class_family",
                                 "authority_source": (
                                     "class LegacyHelperAuthority:\n"
                                     "    def run(self, value):\n"
@@ -18277,12 +18267,7 @@ def test_module_cli_recipe_only_extract_authority_apply(
                                 "operation": "extract_authority",
                                 "file_path": module_path.as_posix(),
                                 "target_qualname": "old_helper",
-                                "authority_claim": {
-                                    "claimed_symbol": "HelperAuthority",
-                                    "authority_kind": "class_family",
-                                    "file_path": module_path.as_posix(),
-                                    "qualname": "HelperAuthority",
-                                },
+                                "authority_kind": "class_family",
                                 "authority_source": (
                                     "class HelperAuthority:\n"
                                     "    @staticmethod\n"

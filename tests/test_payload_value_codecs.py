@@ -34,6 +34,7 @@ from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     PayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
+    RequiredStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
 )
@@ -99,6 +100,10 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         (EmptyDefaultStringPayloadValueCodec(), ""),
         (OptionalStringPayloadValueCodec(), ""),
         (
+            RequiredStrEnumPayloadValueCodec(SemanticAuthorityKind),
+            SemanticAuthorityKind.CLASS_FAMILY,
+        ),
+        (
             OptionalStrEnumPayloadValueCodec(SemanticAuthorityKind),
             SemanticAuthorityKind.CLASS_FAMILY,
         ),
@@ -151,6 +156,11 @@ def test_flattened_record_codec_owns_nested_projection() -> None:
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
     with pytest.raises(ValueError, match="non-empty string"):
         RequiredStringPayloadValueCodec().read({}, "name")
+    with pytest.raises(ValueError, match="SemanticAuthorityKind"):
+        RequiredStrEnumPayloadValueCodec(SemanticAuthorityKind).read(
+            {},
+            "authority_kind",
+        )
     assert IntegerPayloadValueCodec().serialize(None) is None
     with pytest.raises(TypeError, match="MovedSymbolImportPolicy"):
         ReplacementImportPayloadValueCodec().serialize("from pkg import value")

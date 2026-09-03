@@ -65,9 +65,10 @@ snapshot.  ``RepositorySourceReprovedOperation`` marks operations that derive
 participants, inheritance, imports, or other obligations from the repository;
 the plan then selects the complete scan-backed snapshot without maintaining an
 operation-name catalogue in the CLI.
-Caller-authored authority source operations likewise fail closed unless their
-typed claim names the destination and the supplied source contains exactly that
-one top-level class declaration.
+Caller-authored authority source operations carry only the independent typed
+authority kind.  Their full claim is derived from the operation target and the
+single top-level class declaration in the supplied source, so serialized plans
+cannot mirror or disagree with those nominal coordinates.
 Exact method and dataclass-field factoring operations re-prove their complete
 cohorts from one current-source witness and an explicit authority name.  Their
 generated claims and physical edits therefore do not serialize participant or

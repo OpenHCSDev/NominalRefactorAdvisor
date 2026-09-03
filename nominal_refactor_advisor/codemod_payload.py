@@ -374,6 +374,21 @@ class _StrEnumPayloadValueCodec(
 
 
 @dataclass(frozen=True)
+class RequiredStrEnumPayloadValueCodec(
+    _StrEnumPayloadValueCodec[StrEnumT, StrEnumT],
+    Generic[StrEnumT],
+):
+    """Require one present member of a declared string-enum authority."""
+
+    enum_type: type[StrEnumT]
+
+    def value_when_missing(self) -> StrEnumT:
+        raise ValueError(
+            f"Expected string enum field for {self.enum_type.__name__}"
+        )
+
+
+@dataclass(frozen=True)
 class StrEnumPayloadValueCodec(
     _StrEnumPayloadValueCodec[StrEnumT, StrEnumT],
     Generic[StrEnumT],
