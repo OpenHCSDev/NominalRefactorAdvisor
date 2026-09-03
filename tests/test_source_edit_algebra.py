@@ -288,6 +288,7 @@ def test_import_insertion_derives_only_missing_separator_lines(
 def test_file_creation_is_explicit_and_has_one_authority(tmp_path: Path) -> None:
     module_path, context = _snapshot(tmp_path, "")
     creation = SourceFileCreation(
+        operation_type=CreateFileOperation,
         file_path=module_path.as_posix(),
         source="VALUE = 1\n",
     )

@@ -2398,11 +2398,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             sorted(set(path_tuple).intersection(self.sources_by_file_path))
         )
         if duplicate_paths or existing_paths:
+            conflicting_path = (existing_paths or duplicate_paths)[0]
+            conflicting_creation = next(
+                creation
+                for creation in reversed(creation_tuple)
+                if creation.file_path == conflicting_path
+            )
             raise CodemodOperationPreflightError(
                 CodemodOperationPreflightReport(
-                    operation=CreateFileOperation.operation_key(),
+                    operation=conflicting_creation.operation_key,
                     status=CodemodPreflightStatus.FAILED,
-                    message="create_file requires one new source path per operation",
+                    message="Source creation requires one authority per new path",
                     details={
                         "duplicate_source_paths": duplicate_paths,
                         "existing_source_paths": existing_paths,
@@ -3654,8 +3660,37 @@ class ClassMemberInsertion(NominalSourceEdit):
 class SourceFileCreation(NominalSourceEdit):
     """Create one source path with an explicit initial source."""
 
+    operation_type: type["RefactorRecipeOperation"]
     file_path: str
     source: str = ""
+
+    @classmethod
+    def from_operation(
+        cls,
+        operation: "RefactorRecipeOperation",
+        *,
+        requested_path: str,
+        source_index: SourceIndex,
+        source: str,
+    ) -> "SourceFileCreation":
+        file_path = SourceCreationPathAuthority.from_source_index(
+            requested_path,
+            source_index,
+        ).required_path()
+        return cls(
+            operation_type=type(operation),
+            file_path=file_path,
+            source=source,
+            rationale=operation.rationale_text(
+                f"Create source file {file_path!r}."
+            ),
+        )
+
+    @property
+    def operation_key(self) -> str:
+        """Derive report identity from the operation declaration."""
+
+        return self.operation_type.operation_key()
 
     def coalesced_with_peers(
         self,
@@ -5436,12 +5471,14 @@ class CreateFileOperation(SourcePayloadOperation):
         self,
         source_index: SourceIndex,
     ) -> tuple[SourceFileCreation, ...]:
-        source_path = self.created_source_path(source_index)
+        if self.target.file_path is None:
+            raise ValueError("create_file requires file_path")
         return (
-            SourceFileCreation(
-                file_path=source_path,
+            SourceFileCreation.from_operation(
+                self,
+                requested_path=self.target.file_path,
+                source_index=source_index,
                 source=self.source,
-                rationale=self.rationale or f"Create source file {source_path!r}.",
             ),
         )
 
@@ -5450,15 +5487,6 @@ class CreateFileOperation(SourcePayloadOperation):
         context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
         return self.source_file_creations(context.source_index)
-
-    def created_source_path(self, source_index: SourceIndex) -> str:
-        if self.target.file_path is None:
-            raise ValueError("create_file requires file_path")
-        return SourceCreationPathAuthority.from_source_index(
-            self.target.file_path,
-            source_index,
-        ).required_path()
-
 
 @dataclass(frozen=True, kw_only=True)
 class DeleteClassAssignmentsOperation(AssignmentDeletionOperationABC):
@@ -10010,7 +10038,7 @@ class ModuleMoveDependencyReport:
     @property
     def error_message(self) -> str:
         parts = [
-            "move_symbols_to_module dependency closure is incomplete",
+            "Module symbol move dependency closure is incomplete",
             f"source={self.source_path!r}",
             f"destination={self.destination_path!r}",
             f"moved={self.moved_symbol_names!r}",
@@ -10337,7 +10365,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         if len({target.name for target in targets}) != len(targets):
             raise ValueError(
-                "move_symbols_to_module requires unique top-level symbol names"
+                "Module symbol move requires unique top-level symbol names"
             )
         cls._validate_destination(
             context.source_index,
@@ -10410,7 +10438,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             or "." in target.qualname
         ):
             raise ValueError(
-                "move_symbols_to_module only supports module-level classes "
+                "Module symbol move only supports module-level classes "
                 f"and functions; got {symbol_qualname!r}"
             )
         return target
@@ -10502,15 +10530,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        if not self.dependency_report.is_clean:
-            raise CodemodOperationPreflightError(
-                CodemodOperationPreflightReport(
-                    operation=MoveSymbolsToModuleOperation.operation_key(),
-                    status=CodemodPreflightStatus.FAILED,
-                    message=self.dependency_report.error_message,
-                    details=self.dependency_report.to_dict(),
-                )
-            )
+        self.dependency_report.require_clean()
         edits: list[NominalSourceEdit] = [
             *(
                 ModuleImportMutation.from_source(
@@ -10592,21 +10612,15 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     """Repository-proved destination contract for module-symbol moves."""
 
     destination_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    symbol_qualnames: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return (
             *super().referenced_source_targets(),
             SourceRewriteTarget(file_path=self.destination_path),
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
-    """Move a dependency-checked set of top-level symbols into another module."""
-
-    symbol_qualnames: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec()
-    )
 
     def dependency_report(
         self,
@@ -10626,7 +10640,7 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
             return (error.report,)
         if dependency_report.is_clean:
             status = CodemodPreflightStatus.PASSED
-            message = "move_symbols_to_module dependency closure is clean"
+            message = "Module symbol move dependency closure is clean"
         else:
             status = CodemodPreflightStatus.FAILED
             message = dependency_report.error_message
@@ -10643,14 +10657,14 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
         self,
         context: CodemodSelectorContext,
     ) -> SourceTopLevelSymbolClosureMovePlan:
-        source_path = self.required_source_path(context, "move_symbols_to_module")
+        source_path = self.required_source_path(context, self.operation_key())
         destination_path = SourcePathResolutionAuthority.from_source_index(
             self.destination_path,
             context.source_index,
         ).required_path()
         if source_path == destination_path:
             raise ValueError(
-                "move_symbols_to_module destination must differ from source"
+                "Module symbol move destination must differ from source"
             )
         return SourceTopLevelSymbolClosureMovePlan.from_request(
             SourceTopLevelSymbolClosureMoveRequest(
@@ -10662,11 +10676,54 @@ class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
             context=context,
         )
 
-    def source_edits_from_snapshot(
+    def move_source_edits(
         self,
         context: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         return self.move_plan(context).source_edits(context)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
+    """Move a dependency-checked set of top-level symbols into another module."""
+
+    def source_edits_from_snapshot(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.move_source_edits(context)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtractSymbolsToNewModuleOperation(ModuleSymbolMoveOperation):
+    """Create a module and move a dependency-closed symbol family into it."""
+
+    destination_source: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+
+    def source_file_creations(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[SourceFileCreation, ...]:
+        return (
+            SourceFileCreation.from_operation(
+                self,
+                requested_path=self.destination_path,
+                source_index=source_index,
+                source=self.destination_source,
+            ),
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return (
+            *self.source_file_creations(context.source_index),
+            *self.move_source_edits(context),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

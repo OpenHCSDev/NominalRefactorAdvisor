@@ -463,14 +463,36 @@ def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
 
 
 def test_module_symbol_move_derives_its_source_reexport() -> None:
-    assert issubclass(
+    for operation_type in (
         codemod.MoveSymbolsToModuleOperation,
-        codemod.RepositorySourceReprovedOperation,
-    )
+        codemod.ExtractSymbolsToNewModuleOperation,
+    ):
+        assert issubclass(operation_type, codemod.ModuleSymbolMoveOperation)
+        assert issubclass(operation_type, codemod.RepositorySourceReprovedOperation)
+        assert "source_edits_from_snapshot" in operation_type.__dict__
+        assert (
+            codemod.RefactorRecipeOperation.__registry__[
+                operation_type.operation_key()
+            ]
+            is operation_type
+        )
     assert tuple(
         binding.field_name
         for binding in codemod.MoveSymbolsToModuleOperation.payload_bindings()
     ) == ("target", "rationale", "destination_path", "symbol_qualnames")
+    assert tuple(
+        binding.field_name
+        for binding in codemod.ExtractSymbolsToNewModuleOperation.payload_bindings()
+    ) == (
+        "target",
+        "rationale",
+        "destination_path",
+        "symbol_qualnames",
+        "destination_source",
+    )
+    assert "move_plan" in codemod.ModuleSymbolMoveOperation.__dict__
+    assert "move_plan" not in codemod.MoveSymbolsToModuleOperation.__dict__
+    assert "move_plan" not in codemod.ExtractSymbolsToNewModuleOperation.__dict__
     assert not hasattr(codemod, "MovedSymbolImportPolicy")
     assert not hasattr(codemod, "ReplacementImportPayloadValueCodec")
 

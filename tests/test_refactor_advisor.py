@@ -175,6 +175,7 @@ from nominal_refactor_advisor.codemod import (
     DeriveCandidateCollectorOperation,
     DescendTypeKeyedBehaviorProjectionOperation,
     ExtractAuthorityOperation,
+    ExtractSymbolsToNewModuleOperation,
     FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
     InheritanceEdgeTargetSelector,
@@ -6737,6 +6738,109 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_refactor_recipe_extracts_symbol_closure_to_new_module(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    value: int\n\n\n"
+        "def use_helper(value: int) -> Helper:\n"
+        "    return Helper(value)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("LocalBase", "Helper"),
+        destination_path="pkg/extracted.py",
+        destination_source=(
+            '"""Extracted helper declarations."""\n\n'
+            "from __future__ import annotations\n"
+        ),
+    )
+    restored_operation = RefactorRecipeOperation.from_dict(operation.to_dict())
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("extract-helper-module").with_operation(operation),
+        )
+    )
+
+    simulation = document.simulate(snapshot)
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert restored_operation == operation
+    assert operation.to_dict()["operation"] == "extract_symbols_to_new_module"
+    assert rewritten_destination == (
+        '"""Extracted helper declarations."""\n\n'
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    value: int\n"
+    )
+    assert simulation.simulation.base_revision_by_file_path[
+        destination_path.as_posix()
+    ].source_hash is None
+    assert set(simulation.apply()) == {
+        source_path.as_posix(),
+        destination_path.as_posix(),
+    }
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import Helper; assert Helper.__module__ == 'pkg.extracted'",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_new_module_extraction_reports_its_leaf_creation_conflict(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/existing.py"
+    _write_module(tmp_path, "pkg/source.py", "class Helper:\n    pass\n")
+    _write_module(tmp_path, "pkg/existing.py", "KEEP = 1\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("reject-existing-destination").with_operation(
+                ExtractSymbolsToNewModuleOperation(
+                    target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                    symbol_qualnames=("Helper",),
+                    destination_path=destination_path.as_posix(),
+                )
+            ),
+        )
+    )
+
+    with pytest.raises(CodemodOperationPreflightError) as error:
+        document.simulate(snapshot)
+
+    assert error.value.report.operation == "extract_symbols_to_new_module"
+    assert error.value.report.details["existing_source_paths"] == (
+        destination_path.as_posix(),
+    )
+    assert destination_path.read_text() == "KEEP = 1\n"
 
 
 def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
