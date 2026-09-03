@@ -6988,6 +6988,58 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_existing_module_move_follows_destination_declaration_dependencies(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .destination import Base\n\n\n"
+        "class Derived(Base):\n"
+        "    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "class Base:\n"
+        "    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Derived",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = (
+        RefactorRecipe("move-after-destination-base")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
+
+    assert report.destination_dependency_names == ("Base",)
+    assert report.destination_insertion_line == 3
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import Derived; "
+            "from pkg.destination import Base; "
+            "assert issubclass(Derived, Base)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_new_module_closure_extraction_rejects_nonmovable_local_dependency(
     tmp_path: Path,
 ) -> None:

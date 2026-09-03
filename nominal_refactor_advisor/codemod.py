@@ -259,6 +259,7 @@ from .codemod_source_edits import (
     SourceTextSpan as SourceTextSpan,
     SourceTextSpanReplacement as SourceTextSpanReplacement,
     _joined_rationales as _joined_rationales,
+    SourceFileCreation as SourceFileCreation,
 )
 
 
@@ -2742,86 +2743,6 @@ class ClassMemberInsertion(NominalSourceEdit):
                     )
                 ),
                 rationale=self.rationale,
-                contributors=self.contributors,
-                origins=self.origins,
-            ),
-        )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceFileCreation(NominalSourceEdit):
-    """Create one source path with an explicit initial source."""
-
-    operation_type: type["RefactorRecipeOperation"]
-    file_path: str
-    source: str = ""
-
-    @classmethod
-    def from_operation(
-        cls,
-        operation: "RefactorRecipeOperation",
-        *,
-        requested_path: str,
-        source_index: SourceIndex,
-        source: str,
-    ) -> "SourceFileCreation":
-        file_path = SourceCreationPathAuthority.from_source_index(
-            requested_path,
-            source_index,
-        ).required_path()
-        return cls(
-            operation_type=type(operation),
-            file_path=file_path,
-            source=source,
-            rationale=operation.rationale_text(
-                f"Create source file {file_path!r}."
-            ),
-        )
-
-    @property
-    def operation_key(self) -> str:
-        """Derive report identity from the operation declaration."""
-
-        return self.operation_type.operation_key()
-
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        creations_by_path: dict[str, list[SourceFileCreation]] = defaultdict(list)
-        for peer in peers:
-            creation = cast(SourceFileCreation, peer)
-            creations_by_path[creation.file_path].append(creation)
-        duplicate_paths = tuple(
-            sorted(
-                file_path
-                for file_path, creations in creations_by_path.items()
-                if len(creations) > 1
-            )
-        )
-        if duplicate_paths:
-            raise ValueError(
-                f"Source files require one creation authority: {duplicate_paths!r}"
-            )
-        return tuple(creations[0] for creations in creations_by_path.values())
-
-    def resolved_edits(
-        self,
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        virtual_source = context.sources_by_file_path[self.file_path]
-        if virtual_source != self.source:
-            raise ValueError(
-                f"Virtual source for {self.file_path!r} disagrees with its creation"
-            )
-        return (
-            SourceInsertion(
-                file_path=self.file_path,
-                insertion_line=1,
-                inserted_lines=(),
-                rationale=self.rationale or f"Create source file {self.file_path!r}.",
                 contributors=self.contributors,
                 origins=self.origins,
             ),
@@ -8151,6 +8072,8 @@ class ModuleMoveDependencyReport:
     imported_dependency_names: tuple[str, ...]
     import_sources: tuple[str, ...]
     source_import_removal_names: tuple[str, ...]
+    destination_dependency_names: tuple[str, ...]
+    destination_insertion_line: int
     source_local_dependency_names: tuple[str, ...]
     unresolved_dependency_names: tuple[str, ...]
 
@@ -8193,6 +8116,8 @@ class ModuleMoveDependencyReport:
             "imported_dependency_names": self.imported_dependency_names,
             "import_sources": self.import_sources,
             "source_import_removal_names": self.source_import_removal_names,
+            "destination_dependency_names": self.destination_dependency_names,
+            "destination_insertion_line": self.destination_insertion_line,
             "source_local_dependency_names": self.source_local_dependency_names,
             "unresolved_dependency_names": self.unresolved_dependency_names,
             "is_clean": self.is_clean,
@@ -8237,6 +8162,23 @@ class ModuleSymbolTable:
             for statement in self.module.body
             if name in self.bound_names_for_statement(statement)
         )
+
+    def insertion_line_after_bindings(self, names: Iterable[str]) -> int:
+        """Return the first line after every selected top-level binding."""
+
+        import_boundary = ModuleImportInsertionPoint(
+            self.source,
+            self.file_path,
+            self.module,
+        ).line_number
+        binding_end_lines = tuple(
+            statement.end_lineno or statement.lineno
+            for name in names
+            for statement in self.binding_statements(name)
+        )
+        if not binding_end_lines:
+            return import_boundary
+        return max(import_boundary, max(binding_end_lines) + 1)
 
     @staticmethod
     def bound_names_for_statement(statement: ast.stmt) -> tuple[str, ...]:
@@ -8793,6 +8735,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             for name in _external_names_for_moved_node(target_nodes[target.target_id])
         )
         destination_available = destination_table.available_names | moved_names
+        destination_dependency_names = tuple(
+            sorted(external_names & destination_table.top_level_names)
+        )
         source_import_names = frozenset(source_table.import_sources_by_name)
         source_dependency_import_names = tuple(
             sorted(external_names & source_import_names)
@@ -8833,6 +8778,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 for name in source_dependency_import_names
                 if name not in remaining_references
                 and name not in source_table.explicit_reexport_bound_names
+            ),
+            destination_dependency_names=destination_dependency_names,
+            destination_insertion_line=destination_table.insertion_line_after_bindings(
+                destination_dependency_names
             ),
             source_local_dependency_names=source_local_names,
             unresolved_dependency_names=unresolved_names,
@@ -8911,11 +8860,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         context: CodemodSelectorContext,
     ) -> SourceInsertion:
         destination_source = context.sources_by_file_path[self.destination_path]
-        insertion_line = ModuleImportInsertionPoint(
-            destination_source,
-            self.destination_path,
-            context.module_nodes_by_file_path[self.destination_path],
-        ).line_number
+        insertion_line = self.dependency_report.destination_insertion_line
         return SourceInsertion(
             file_path=self.destination_path,
             insertion_line=insertion_line,
@@ -8938,9 +8883,17 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             insertion_line,
             inserted_source_is_import_block=False,
         )
+        import_insertion_line = ModuleImportInsertionPoint(
+            destination_source,
+            self.destination_path,
+        ).line_number
+        pending_imports_share_anchor = (
+            bool(self.dependency_report.import_sources)
+            and insertion_line == import_insertion_line
+        )
         leading_separator = (
             spacing.leading_separator_after_pending_imports
-            if self.dependency_report.import_sources
+            if pending_imports_share_anchor
             else spacing.leading_separator
         )
         return f"{leading_separator}{moved_source}{spacing.trailing_separator}"

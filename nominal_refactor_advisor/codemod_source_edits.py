@@ -36,15 +36,19 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
+from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
 from .collection_algebra import sorted_tuple
 from .source_geometry import (
     SourceByteSpan,
     SourceLineSegmentAuthority,
 )
-from .source_index import AstTargetDigest
+from .source_index import (
+    AstTargetDigest,
+    SourceIndex,
+)
 
 if TYPE_CHECKING:
-    from .codemod import CodemodSelectorContext
+    from .codemod import CodemodSelectorContext, RefactorRecipeOperation
 
 
 class SourceNodeDecoratorPolicy(StrEnum):
@@ -478,6 +482,84 @@ class SourceInsertion(PhysicalSourceEdit):
             ),
             contributors=NominalSourceEdit.merged_contributors(insertions),
             origins=NominalSourceEdit.merged_origins(insertions),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceFileCreation(NominalSourceEdit):
+    """Create one source path with an explicit initial source."""
+
+    operation_type: type["RefactorRecipeOperation"]
+    file_path: str
+    source: str = ""
+
+    @classmethod
+    def from_operation(
+        cls,
+        operation: "RefactorRecipeOperation",
+        *,
+        requested_path: str,
+        source_index: SourceIndex,
+        source: str,
+    ) -> "SourceFileCreation":
+        file_path = SourceCreationPathAuthority.from_source_index(
+            requested_path,
+            source_index,
+        ).required_path()
+        return cls(
+            operation_type=type(operation),
+            file_path=file_path,
+            source=source,
+            rationale=operation.rationale_text(f"Create source file {file_path!r}."),
+        )
+
+    @property
+    def operation_key(self) -> str:
+        """Derive report identity from the operation declaration."""
+
+        return self.operation_type.operation_key()
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        creations_by_path: dict[str, list[SourceFileCreation]] = defaultdict(list)
+        for peer in peers:
+            creation = cast(SourceFileCreation, peer)
+            creations_by_path[creation.file_path].append(creation)
+        duplicate_paths = tuple(
+            sorted(
+                file_path
+                for file_path, creations in creations_by_path.items()
+                if len(creations) > 1
+            )
+        )
+        if duplicate_paths:
+            raise ValueError(
+                f"Source files require one creation authority: {duplicate_paths!r}"
+            )
+        return tuple(creations[0] for creations in creations_by_path.values())
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        virtual_source = context.sources_by_file_path[self.file_path]
+        if virtual_source != self.source:
+            raise ValueError(
+                f"Virtual source for {self.file_path!r} disagrees with its creation"
+            )
+        return (
+            SourceInsertion(
+                file_path=self.file_path,
+                insertion_line=1,
+                inserted_lines=(),
+                rationale=self.rationale or f"Create source file {self.file_path!r}.",
+                contributors=self.contributors,
+                origins=self.origins,
+            ),
         )
 
 

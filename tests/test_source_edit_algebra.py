@@ -16,7 +16,6 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     RefactorRecipeOperationCompiler,
     ReplaceFieldsWithCarrierOperation,
-    SourceFileCreation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_imports import (
@@ -32,6 +31,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceEditOrigin,
+    SourceFileCreation,
     SourceInsertion,
     SourceSpanReplacement,
 )

@@ -239,7 +239,7 @@ reexports remain as an external compatibility boundary.
    :members: SourceModuleImportGraph
 
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
-   :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanReplacement, SourceInsertion, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
+   :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanReplacement, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
