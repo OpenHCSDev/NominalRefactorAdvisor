@@ -59,6 +59,12 @@ source target, while a source-reproved operation that establishes a new boundary
 declares that claim from its current source proof.  The evaluation gate validates
 both forms without guessing authority names from finding text or copying
 participant rosters into the recipe.
+Each operation declaration also owns its ``CodemodSourceDependencyScope``.
+Operations whose proof is complete over their explicit targets permit a narrow
+snapshot.  ``RepositorySourceReprovedOperation`` marks operations that derive
+participants, inheritance, imports, or other obligations from the repository;
+the plan then selects the complete scan-backed snapshot without maintaining an
+operation-name catalogue in the CLI.
 Caller-authored authority source operations likewise fail closed unless their
 typed claim names the destination and the supplied source contains exactly that
 one top-level class declaration.
@@ -102,6 +108,12 @@ receiver requirements belong to the authority contract, no competing ancestor
 binds the promoted names, no decorator or class-creation hook can observe the
 ownership move, and the complete method batch pays compression rent.  The
 codemod preflight reconstructs the same proof from the current full AST.
+``ReplaceDirectClassBaseOperation`` persists only the displaced and replacement
+class targets.  It derives the complete direct-child cohort, source spelling of
+aliased bases, canonical imports, import-cycle safety, and replacement-relative
+MRO conflicts from the current repository before rewriting any class header.
+The operation rejects incomplete nominal base graphs rather than serialising a
+caller-maintained child roster.
 
 The ``closed_parameter_conveyor`` detector exposes a recipe only for a complete
 private call component that transports every field of one existing dataclass
@@ -133,7 +145,7 @@ their exact source target.  Each unavoidable field mapping is a nominal
 ``CarrierFieldProjection`` payload record rather than an encoded string pair.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodSourceDependencyScope, PlannedSourceRewrite, RefactorRecipeOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 Goal Trajectory Surface
 -----------------------
