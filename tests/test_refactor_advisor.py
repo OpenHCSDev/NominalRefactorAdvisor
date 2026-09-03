@@ -14270,14 +14270,20 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["applied"] is False
     assert payload["preflight_failed"] is False
     assert payload["is_clean"] is True
-    assert payload["report_count"] == 0
+    assert payload["report_count"] == 1
     assert payload["expected_removed_finding_count"] == 1
     assert payload["synthesis_report"]["candidate_count"] == 1
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
     assert payload["preflight_report"]["is_clean"] is True
-    assert payload["preflight_report"]["reports"] == []
+    authority_report = payload["preflight_report"]["reports"][0]
+    assert authority_report["operation"] == "authority_claims"
+    assert authority_report["status"] == "passed"
+    resolution = authority_report["details"]["resolutions"][0]
+    assert resolution["claim"]["claimed_symbol"] == "RegisteredHandler"
+    assert resolution["claim"]["authority_kind"] == "autoregister_family"
+    assert resolution["status"] == "declared"
     assert module_path.read_text() == original_source
 
 
@@ -17931,7 +17937,8 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
-    operation_declaration = plan.document.recipes[0].operations[0]
+    recipe = plan.document.recipes[0]
+    operation_declaration = recipe.operations[0]
     operation = operation_declaration.to_dict()
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
@@ -17941,7 +17948,21 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         if target.qualname in {"AlphaHandler", "BetaHandler"}
     }
     assert RefactorRecipeOperation.from_dict(operation) == operation_declaration
-    assert operation_declaration.declared_authority_claims(selector_context) == ()
+    assert recipe.authority_claims == ()
+    declared_claims = operation_declaration.declared_authority_claims(
+        selector_context
+    )
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "RegisteredHandler"
+    assert declared_claims[0].authority_kind is (
+        SemanticAuthorityKind.AUTOREGISTER_FAMILY
+    )
+    assert declared_claims[0].file_path == module_path.as_posix()
+    assert declared_claims[0].qualname == "RegisteredHandler"
+    authority_report = recipe.authority_claim_preflight_report(selector_context)
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert authority_report.details["resolutions"][0]["status"] == "declared"
     with pytest.raises(
         ValueError,
         match="Unsupported ConvertManualRegistryToAutoregisterOperation payload field",
@@ -18025,8 +18046,14 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
-    assert len(recipe.authority_claims) == 1
-    assert recipe.authority_claims[0].claimed_symbol == "Step"
+    assert recipe.authority_claims == ()
+    declared_claims = recipe.declared_authority_claims(selector_context)
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "Step"
+    assert declared_claims[0].authority_kind is (
+        SemanticAuthorityKind.AUTOREGISTER_FAMILY
+    )
+    assert declared_claims[0].authority_id
     assert simulation.is_clean is True
     assert simulation.simulation.parse_valid is True
     simulation.document_simulation.apply()

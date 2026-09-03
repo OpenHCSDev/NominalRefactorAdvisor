@@ -15,6 +15,7 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodPlanDocument,
+    CodemodPreflightStatus,
     CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
@@ -1215,7 +1216,15 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert operation["target_id"]
-    assert plan.document.recipes[0].authority_claims[0].claimed_symbol == "Step"
+    recipe = plan.document.recipes[0]
+    assert recipe.authority_claims == ()
+    declared_claims = recipe.declared_authority_claims(snapshot)
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "Step"
+    assert declared_claims[0].authority_kind is (
+        SemanticAuthorityKind.AUTOREGISTER_FAMILY
+    )
+    assert declared_claims[0].authority_id
     assert record.action_keys
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
@@ -1505,7 +1514,18 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         "resolution_class_source",
     }.intersection(operations[0])
     assert len(plan.records[0].action_keys) == 4
-    assert len(plan.document.recipes[0].authority_claims) == 4
+    recipe = plan.document.recipes[0]
+    assert recipe.authority_claims == ()
+    declared_claims = recipe.declared_authority_claims(snapshot)
+    assert len(declared_claims) == 1
+    assert declared_claims[0].claimed_symbol == "_PhaseResolutionMro"
+    assert declared_claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
+    assert declared_claims[0].file_path == module_path.as_posix()
+    assert declared_claims[0].qualname == "_PhaseResolutionMro"
+    authority_report = recipe.authority_claim_preflight_report(snapshot)
+    assert authority_report is not None
+    assert authority_report.status is CodemodPreflightStatus.PASSED
+    assert authority_report.details["resolutions"][0]["status"] == "declared"
     assert type(RefactorRecipeOperation.from_dict(operations[0])).__name__ == (
         "DeriveAutoRegisterMroOrderingOperation"
     )

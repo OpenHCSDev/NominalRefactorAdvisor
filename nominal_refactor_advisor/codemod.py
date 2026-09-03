@@ -9572,18 +9572,21 @@ class DeriveAutoregisterInstanceViewOperation(
         )
 
 
-@dataclass(frozen=True, kw_only=True)
-class ConvertManualRegistryToAutoregisterOperation(
-    RegistryKeyDeclarationRewriteMixin,
-    SourceReprovedOperation,
-):
-    """Derive and convert one direct registry component from an anchor class."""
+@dataclass(frozen=True)
+class ManualRegistryConversionTargets:
+    """Current component and physical targets for one registry conversion."""
 
-    def source_edits_from_snapshot(
-        self,
+    component: DirectManualRegistryComponent
+    registered_classes: ClassMemberPromotionTargets
+    authority: ResolvedClassTarget | None
+
+    @classmethod
+    def required_for_anchor(
+        cls,
         snapshot: CodemodSourceSnapshot,
-    ) -> tuple[NominalSourceEdit, ...]:
-        _target_id, anchor_target, anchor_node = self.target_node_from_context(snapshot)
+        anchor_target: AstTargetDigest,
+        anchor_node: _TargetNode,
+    ) -> "ManualRegistryConversionTargets":
         if not anchor_target.is_class or not isinstance(anchor_node, ast.ClassDef):
             raise ValueError("Manual registry conversion target must be a class")
         if "." in anchor_target.qualname:
@@ -9594,52 +9597,104 @@ class ConvertManualRegistryToAutoregisterOperation(
             module,
             anchor_node.name,
         )
-        targets = ClassMemberPromotionTargets.resolve(
+        registered_classes = ClassMemberPromotionTargets.resolve(
             snapshot,
             source_path=source_path,
             class_names=component.class_names,
         )
-        if not targets.supports_base_rewrites():
+        if not registered_classes.supports_base_rewrites():
             raise ValueError("Registry classes require lossless header rewrites")
-        authority_target = self.authority_target(snapshot, source_path, component)
+        authority_node = component.existing_authority_node
+        authority = (
+            None
+            if authority_node is None
+            else ClassMemberPromotionTargets.class_target(
+                snapshot.source_index,
+                snapshot.ast_target_nodes_by_id,
+                source_path=source_path,
+                class_name=authority_node.name,
+            )
+        )
+        return cls(
+            component=component,
+            registered_classes=registered_classes,
+            authority=authority,
+        )
+
+    @property
+    def file_path(self) -> str:
+        return self.registered_classes.targets[0].file_path
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConvertManualRegistryToAutoregisterOperation(
+    RegistryKeyDeclarationRewriteMixin,
+    SourceReprovedOperation,
+):
+    """Derive and convert one direct registry component from an anchor class."""
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        targets = self.required_targets(context.execution_snapshot())
+        if targets.authority is not None:
+            return (
+                AstTargetAuthorityClaim.from_target(
+                    targets.authority.target,
+                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
+                ),
+            )
+        return (
+            AuthorityClaim(
+                claimed_symbol=targets.component.authority_name,
+                authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
+                file_path=targets.file_path,
+                qualname=targets.component.authority_name,
+            ),
+        )
+
+    def required_targets(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> ManualRegistryConversionTargets:
+        _target_id, anchor_target, anchor_node = self.target_node_from_context(snapshot)
+        return ManualRegistryConversionTargets.required_for_anchor(
+            snapshot,
+            anchor_target,
+            anchor_node,
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        targets = self.required_targets(snapshot)
         return (
             *self.required_import_mutations(
                 snapshot,
-                source_path,
+                targets.file_path,
                 import_source=(
                     f"from metaclass_registry import {AUTOREGISTER_META_NAME}\n"
                 ),
                 default_rationale="Import AutoRegisterMeta for class-time registration.",
             ),
             *self.authority_replacements(
-                source_path,
-                snapshot.sources_by_file_path[source_path],
-                component,
-                authority_target,
-                targets,
+                targets.file_path,
+                snapshot.sources_by_file_path[targets.file_path],
+                targets.component,
+                targets.authority,
+                targets.registered_classes,
             ),
             *self.registry_key_declaration_replacements(
-                targets,
-                component.entries,
+                targets.registered_classes,
+                targets.component.entries,
                 DEFAULT_REGISTRY_KEY_ATTRIBUTE,
             ),
-            *self.registration_replacements(source_path, component),
-        )
-
-    @staticmethod
-    def authority_target(
-        context: CodemodSelectorContext,
-        source_path: str,
-        component: DirectManualRegistryComponent,
-    ) -> ResolvedClassTarget | None:
-        authority_node = component.existing_authority_node
-        if authority_node is None:
-            return None
-        return ClassMemberPromotionTargets.class_target(
-            context.source_index,
-            context.ast_target_nodes_by_id,
-            source_path=source_path,
-            class_name=authority_node.name,
+            *self.registration_replacements(
+                targets.file_path,
+                targets.component,
+            ),
         )
 
     def authority_replacements(
@@ -15468,6 +15523,27 @@ class AutoRegisterMroOrderingDerivation:
 class DeriveAutoRegisterMroOrderingOperation(SourceReprovedOperation):
     """Re-prove one registered family and derive its ordering from current source."""
 
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        _target_identifier, root_target, _root_node = self.target_node_from_context(
+            context
+        )
+        if not root_target.is_class:
+            raise ValueError("MRO ordering authority target must be a class")
+        authority_name = AutoRegisterMroOrderingDerivation.resolution_class_name_for(
+            root_target.name
+        )
+        return (
+            AuthorityClaim(
+                claimed_symbol=authority_name,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=root_target.file_path,
+                qualname=authority_name,
+            ),
+        )
+
     def required_derivation(
         self,
         context: CodemodSelectorContext,
@@ -15553,10 +15629,6 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
                 "composition."
             ),
         ).with_operation(operation)
-        for target in derivation.ordering_axis_targets:
-            recipe = recipe.with_authority_claim(
-                AstTargetAuthorityClaim.from_target(target.target)
-            )
         return (
             recipe,
             "",
@@ -15568,7 +15640,6 @@ class ManualRegistryRecipeParts:
     """Source-proved manual registry component and its exact operation anchor."""
 
     anchor_target: AstTargetDigest
-    authority_target: AstTargetDigest | None
 
 
 class ManualClassRegistrationFindingRecipeSynthesizer(
@@ -15634,19 +15705,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
             or frozenset(component.class_names) != expected_class_names
         ):
             return None
-        authority_target = (
-            ConvertManualRegistryToAutoregisterOperation.authority_target(
-                context,
-                source_path,
-                component,
-            )
-        )
-        return ManualRegistryRecipeParts(
-            anchor_target=anchor_target.target,
-            authority_target=(
-                authority_target.target if authority_target is not None else None
-            ),
-        )
+        return ManualRegistryRecipeParts(anchor_target=anchor_target.target)
 
     def recipe_rejection_reason(
         self,
@@ -15669,21 +15728,17 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         finding: RefactorFinding,
         parts: ManualRegistryRecipeParts,
     ) -> RefactorRecipe:
-        recipe = RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-convert-manual-registry",
-            reason="Replace manual registry writes with AutoRegisterMeta.",
-        )
-        if parts.authority_target is not None:
-            recipe = recipe.with_authority_claim(
-                AstTargetAuthorityClaim.from_target(
-                    parts.authority_target,
-                    authority_kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY,
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-convert-manual-registry",
+                reason="Replace manual registry writes with AutoRegisterMeta.",
+            ).with_operation(
+                ConvertManualRegistryToAutoregisterOperation(
+                    target=SourceRewriteTarget(
+                        target_id=parts.anchor_target.target_id
+                    ),
+                    rationale="",
                 )
-            )
-        return recipe.with_operation(
-            ConvertManualRegistryToAutoregisterOperation(
-                target=SourceRewriteTarget(target_id=parts.anchor_target.target_id),
-                rationale="",
             )
         )
 
