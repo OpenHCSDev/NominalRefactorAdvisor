@@ -2238,132 +2238,69 @@ ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[
 CLASS_METHOD_OWNERSHIP_HOOK_NAMES = frozenset(("__init_subclass__",))
 
 
-def _has_too_few_closed_leaf_participants(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return len(proof.participant_symbol_set) < 2
-
-
-def _has_ambiguous_direct_method_authority(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return frozenset(proof.common_direct_base_symbols) != frozenset(
-        (proof.authority_symbol,)
-    )
-
-
-def _has_ambiguous_declared_method_authority(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return proof.common_declared_nominal_base_simple_names != frozenset(
-        (proof.authority_simple_name,)
-    )
-
-
-def _has_incomplete_direct_method_family(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return (
-        frozenset(proof.authority_direct_child_symbols) != proof.participant_symbol_set
-    )
-
-
-def _has_non_leaf_method_participant(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(proof.non_leaf_participant_symbols)
-
-
-def _has_incomplete_method_base_resolution(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(proof.incompletely_resolved_symbols)
-
-
-def _crosses_method_ownership_sensitive_declaration(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(proof.method_ownership_sensitive_symbols)
-
-
-def _has_existing_authority_method_member(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(
-        proof.promoted_method_name_set & proof.authority_lineage_member_name_set
-    )
-
-
-def _has_competing_ancestor_method_member(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(
-        proof.promoted_method_name_set
-        & frozenset(proof.competing_ancestor_member_names)
-    )
-
-
-def _has_undeclared_promoted_receiver_member(
-    proof: "ClosedLeafMethodAuthorityProof",
-) -> bool:
-    return bool(
-        frozenset(proof.receiver_member_names)
-        - (proof.authority_lineage_member_name_set | proof.promoted_method_name_set)
-    )
-
-
 class ClosedLeafMethodAuthorityViolation(StrEnum):
     """One failed proof obligation for promoting leaf methods to an ancestor."""
 
     TOO_FEW_PARTICIPANTS = (
         "too_few_participants",
         "the authority relation requires at least two participating leaves",
-        _has_too_few_closed_leaf_participants,
+        lambda proof: len(proof.participant_symbol_set) < 2,
     )
     AMBIGUOUS_DIRECT_AUTHORITY = (
         "ambiguous_direct_authority",
         "the participants do not have exactly one resolved direct authority",
-        _has_ambiguous_direct_method_authority,
+        lambda proof: frozenset(proof.common_direct_base_symbols)
+        != frozenset((proof.authority_symbol,)),
     )
     AMBIGUOUS_DECLARED_AUTHORITY = (
         "ambiguous_declared_authority",
         "the participants do not have exactly one declared nominal base",
-        _has_ambiguous_declared_method_authority,
+        lambda proof: proof.common_declared_nominal_base_simple_names
+        != frozenset((proof.authority_simple_name,)),
     )
     INCOMPLETE_DIRECT_FAMILY = (
         "incomplete_direct_family",
         "the participants are not the complete direct-child family",
-        _has_incomplete_direct_method_family,
+        lambda proof: frozenset(proof.authority_direct_child_symbols)
+        != proof.participant_symbol_set,
     )
     NON_LEAF_PARTICIPANT = (
         "non_leaf_participant",
         "at least one participant still owns a descendant branch",
-        _has_non_leaf_method_participant,
+        lambda proof: bool(proof.non_leaf_participant_symbols),
     )
     INCOMPLETE_BASE_RESOLUTION = (
         "incomplete_base_resolution",
         "a relevant nominal base cannot be resolved from the repository graph",
-        _has_incomplete_method_base_resolution,
+        lambda proof: bool(proof.incompletely_resolved_symbols),
     )
     METHOD_OWNERSHIP_SENSITIVE_DECLARATION = (
         "method_ownership_sensitive_declaration",
         "a class decorator or metaclass boundary can observe direct method ownership",
-        _crosses_method_ownership_sensitive_declaration,
+        lambda proof: bool(proof.method_ownership_sensitive_symbols),
     )
     EXISTING_AUTHORITY_MEMBER = (
         "existing_authority_member",
         "the authority lineage already binds a promoted member name",
-        _has_existing_authority_method_member,
+        lambda proof: bool(
+            proof.promoted_method_name_set & proof.authority_lineage_member_name_set
+        ),
     )
     COMPETING_ANCESTOR_MEMBER = (
         "competing_ancestor_member",
         "another participant ancestor binds a promoted member name",
-        _has_competing_ancestor_method_member,
+        lambda proof: bool(
+            proof.promoted_method_name_set
+            & frozenset(proof.competing_ancestor_member_names)
+        ),
     )
     UNDECLARED_RECEIVER_MEMBER = (
         "undeclared_receiver_member",
         "a promoted method requires a receiver member outside the authority contract",
-        _has_undeclared_promoted_receiver_member,
+        lambda proof: bool(
+            frozenset(proof.receiver_member_names)
+            - (proof.authority_lineage_member_name_set | proof.promoted_method_name_set)
+        ),
     )
 
     def __new__(
