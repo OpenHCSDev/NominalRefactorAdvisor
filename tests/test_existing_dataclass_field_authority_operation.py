@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
@@ -122,7 +123,7 @@ def test_operation_reuses_and_relocates_existing_field_authority(
         operation
     )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 

@@ -19,6 +19,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 
 
@@ -180,7 +181,7 @@ def test_operation_reproves_field_component_without_serializing_rosters(
         operation
     )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     claims = recipe.declared_authority_claims(snapshot)
     simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
@@ -353,7 +354,7 @@ def test_cli_repository_reproof_skips_unrequested_finding_analysis(
                 "recipes": [
                     {
                         "recipe_id": "factor-projection-identity",
-                        "operations": [operation.to_dict()],
+                        "operations": [json_report_object(operation)],
                     }
                 ]
             }

@@ -22,6 +22,7 @@ from .json_reports import (
     JsonObject,
     JsonValue,
     declared_dataclass_field,
+    json_report_object,
 )
 
 PayloadOwnerT = TypeVar("PayloadOwnerT")
@@ -48,10 +49,11 @@ class DataclassPayloadProjection(DataclassJsonReport, ABC):
 
         return cls(**cls.payload_bindings().constructor_kwargs(payload))
 
-    def to_dict(self) -> JsonObject:
-        return type(self).payload_bindings().payload(
-            self,
-            omit_none=type(self).omit_none_payload_values,
+    @classmethod
+    def project_json_object(cls, record: Self) -> JsonObject:
+        return cls.payload_bindings().payload(
+            record,
+            omit_none=cls.omit_none_payload_values,
         )
 
 
@@ -73,7 +75,7 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
         """Reject fields absent from this record's declaration-derived projection."""
 
         supported_fields = set(type(self).payload_bindings().payload_field_names)
-        supported_fields.update(self.to_dict())
+        supported_fields.update(json_report_object(self))
         unsupported_fields = tuple(sorted(set(payload) - supported_fields))
         if unsupported_fields:
             raise ValueError(
@@ -151,7 +153,7 @@ class FlattenedPayloadRecordValueCodec(
             raise TypeError(
                 f"flattened payload-record codec requires {self.record_type.__name__}"
             )
-        return value.to_dict()
+        return json_report_object(value)
 
     def payload_field_names(self, field_name: str) -> tuple[str, ...]:
         del field_name
@@ -267,14 +269,14 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
         record.require_supported_payload_fields(payload)
         return record
 
-    def to_dict(self) -> JsonObject:
-        record_type = type(self)
+    @classmethod
+    def project_json_object(cls, record: Self) -> JsonObject:
         return JsonObject(
             {
-                record_type.discriminator_field_name: record_type.discriminator_key(),
-                **record_type.payload_bindings().payload(
-                    self,
-                    omit_none=record_type.omit_none_payload_values,
+                cls.discriminator_field_name: cls.discriminator_key(),
+                **cls.payload_bindings().payload(
+                    record,
+                    omit_none=cls.omit_none_payload_values,
                 ),
             }
         )
@@ -566,7 +568,7 @@ class PayloadRecordValueCodec(
             raise TypeError(
                 f"record payload codec requires {self.record_type.__name__}"
             )
-        return value.to_dict()
+        return json_report_object(value)
 
 
 @dataclass(frozen=True)
@@ -598,7 +600,7 @@ class PayloadRecordArrayValueCodec(
                 f"record-array payload codec requires {self.record_type.__name__} "
                 "values"
             )
-        return tuple(item.to_dict() for item in value)
+        return tuple(json_report_object(item) for item in value)
 
 
 @dataclass(frozen=True)

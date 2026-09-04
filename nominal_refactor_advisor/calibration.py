@@ -21,7 +21,7 @@ from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
 from .detectors import DetectorConfig
 from .economics import ScanEconomicsProof
-from .finding_counts import FindingSummary
+from .finding_counts import FindingDetectorCount, FindingSummary
 from .planner import build_refactor_plans
 from .json_reports import (
     SemanticRecord,
@@ -346,8 +346,8 @@ class CalibrationTargetResult(DataclassJsonReport):
         return not self.regression_reasons
 
     @json_report_property()
-    def detector_counts(self) -> list[dict[str, object]]:
-        return self.finding_summary.detector_counts_payload()
+    def detector_counts(self) -> tuple[FindingDetectorCount, ...]:
+        return self.finding_summary.detector_counts
 
 
 @dataclass(frozen=True)

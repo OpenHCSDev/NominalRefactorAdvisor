@@ -13,6 +13,7 @@ from nominal_refactor_advisor import (
     inspect_paths,
 )
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import FindingSpec, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_inspection import inspect_modules
@@ -141,7 +142,7 @@ def test_semantic_inspection_summarizes_ast_and_source_index_targets(
         "Payload.build"
     )
 
-    payload = report.to_dict()
+    payload = json_report_object(report)
     assert {item["import_kind"] for item in payload["imports"]} == {
         "import",
         "from_import",

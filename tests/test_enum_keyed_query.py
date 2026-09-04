@@ -21,6 +21,7 @@ from nominal_refactor_advisor.detectors._runtime import (
 from nominal_refactor_advisor.enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import SourceLocation
 
 
@@ -180,9 +181,9 @@ def test_enum_keyed_facade_recipe_moves_queries_and_preserves_behavior(
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, DescendEnumKeyedDerivedMapFacadeOperation)
-    assert set(operation.to_dict()) == {"operation", "target_id", "rationale"}
+    assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(operation.to_dict()),
+        RefactorRecipeOperation.from_dict(json_report_object(operation)),
         DescendEnumKeyedDerivedMapFacadeOperation,
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

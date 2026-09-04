@@ -13,6 +13,7 @@ import weakref
 
 import pytest
 
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
     CachedPathAnalysisRequest,
@@ -2193,8 +2194,8 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
     modules = parse_python_modules(package_root, use_parse_cache=False)
     full_ast_findings = detector_type().detect(modules, DetectorConfig())
 
-    assert [finding.to_dict() for finding in projected_findings] == [
-        finding.to_dict() for finding in full_ast_findings
+    assert [json_report_object(finding) for finding in projected_findings] == [
+        json_report_object(finding) for finding in full_ast_findings
     ]
 
 
@@ -2223,8 +2224,8 @@ def test_parallel_compact_root_analysis_returns_uncached_projection_fallbacks(
         detector_types=(detector_type,),
     )
 
-    assert [finding.to_dict() for finding in result.findings] == [
-        finding.to_dict() for finding in expected
+    assert [json_report_object(finding) for finding in result.findings] == [
+        json_report_object(finding) for finding in expected
     ]
     assert result.projection_count == 2
 
@@ -3534,8 +3535,8 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
         )
 
         assert full_findings
-        assert [finding.to_dict() for finding in demanded_findings] == [
-            finding.to_dict() for finding in full_findings
+        assert [json_report_object(finding) for finding in demanded_findings] == [
+            json_report_object(finding) for finding in full_findings
         ]
         assert len(demanded_items) < len(full_items)
 
@@ -3603,8 +3604,8 @@ def test_cold_focused_semantic_scan_omits_only_context_presentations(
         detector_types=detector_types,
     )
 
-    assert [finding.to_dict() for finding in demanded.findings] == [
-        finding.to_dict() for finding in eager.findings
+    assert [json_report_object(finding) for finding in demanded.findings] == [
+        json_report_object(finding) for finding in eager.findings
     ]
     assert {finding.detector_id for finding in demanded.findings} == {
         "semantic_mirror_without_descent"
@@ -3720,8 +3721,8 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
         parse_workers=2,
     )
 
-    assert [finding.to_dict() for finding in cold.findings] == [
-        finding.to_dict() for finding in expected
+    assert [json_report_object(finding) for finding in cold.findings] == [
+        json_report_object(finding) for finding in expected
     ]
     assert cold.cache_status is AnalysisCacheStatus.MISS
     assert cold.projection_count > 0
@@ -4200,8 +4201,8 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
 
     for detector_type in detector_types:
         full_ast_findings = detector_type().detect(modules, DetectorConfig())
-        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
-            finding.to_dict() for finding in full_ast_findings
+        assert [json_report_object(finding) for finding in projected_findings[detector_type]] == [
+            json_report_object(finding) for finding in full_ast_findings
         ]
 
 
@@ -4245,8 +4246,8 @@ def test_compact_class_index_detectors_match_full_ast_detection(
 
     for detector_type in detector_types:
         full_ast_findings = detector_type().detect(modules, DetectorConfig())
-        assert [finding.to_dict() for finding in projected_findings[detector_type]] == [
-            finding.to_dict() for finding in full_ast_findings
+        assert [json_report_object(finding) for finding in projected_findings[detector_type]] == [
+            json_report_object(finding) for finding in full_ast_findings
         ]
 
 

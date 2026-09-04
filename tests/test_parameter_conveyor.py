@@ -26,6 +26,7 @@ from nominal_refactor_advisor.codemod_workflow import (
 )
 from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
 from nominal_refactor_advisor.parameter_conveyor import (
     ClosedParameterConveyorAuthorityViolation,
@@ -271,7 +272,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     )
     assert operation.target.target_id == authority_target.target_id
     assert isinstance(operation, CollapseClosedParameterConveyorOperation)
-    operation_payload = operation.to_dict()
+    operation_payload = json_report_object(operation)
     assert RefactorRecipeOperation.from_dict(operation_payload) == operation
     assert "source_edits_by_state_id" not in operation_payload
 

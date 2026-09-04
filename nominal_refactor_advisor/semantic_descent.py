@@ -78,6 +78,7 @@ from .implementation_identity import ImplementationSource, implementation_module
 from .json_reports import (
     DataclassJsonReport,
     SemanticRecord,
+    json_report_object,
     json_report_property,
 )
 from .models import (
@@ -937,7 +938,7 @@ class AuthorityClaim(CodemodPayloadRecord):
 
     def scaffold_source(self) -> str:
         arguments = ", ".join(
-            f"{field_name}={value!r}" for field_name, value in self.to_dict().items()
+            f"{field_name}={value!r}" for field_name, value in json_report_object(self).items()
         )
         return f"AuthorityClaim({arguments})"
 

@@ -49,8 +49,10 @@ common fields and do not own an invariant.
 Codemod operations, selectors, and payload records declare wire semantics with
 ``codemod_payload_field`` on their dataclass fields.
 ``DataclassJsonReport`` derives a shallow JSON object from a concrete
-dataclass's declared fields.  It is the output-only boundary for records whose
-field values are already JSON values.
+dataclass's declared fields.  Report instances do not expose ``to_dict`` and
+therefore cannot erase their nominal type inside semantic code.
+``json_report_object`` is the single explicit object-erasure entry point; it delegates
+through the report type's MRO-owned ``project_json_object`` contract.
 ``DataclassPayloadProjection`` derives each binding catalogue and JSON
 projection from explicit field codecs when decoding or value conversion is
 required.  ``FlattenedPayloadRecordValueCodec`` lets
@@ -123,8 +125,11 @@ ambiguous outcomes from proof edges.  Exact-plan source snapshots include claim
 locations as source dependencies; unlocated claims and repository-wide guards
 select the complete scan-backed snapshot instead.
 
+.. automodule:: nominal_refactor_advisor.json_reports
+   :members: JsonReport, DataclassJsonReport, SemanticRecord, json_report_object
+
 .. automodule:: nominal_refactor_advisor.codemod_payload
-   :members: DataclassJsonReport, DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
+   :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

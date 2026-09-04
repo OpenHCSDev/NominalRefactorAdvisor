@@ -124,7 +124,11 @@ from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.cli import main as cli_main
-from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+    json_report_object,
+)
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodProjectedScanMode,
     CodemodRefactorGoalRunner,
@@ -632,8 +636,8 @@ def test_structural_overlap_reports_only_non_actionable_overlap_evidence() -> No
     )
 
     assert report.group_count >= 2
-    assert report.to_dict()["actionability"] == "structural_evidence_only"
-    assert "trajectories" not in report.to_dict()
+    assert json_report_object(report)["actionability"] == "structural_evidence_only"
+    assert "trajectories" not in json_report_object(report)
 
 
 def test_structural_overlap_observations_are_input_order_invariant() -> None:
@@ -748,12 +752,14 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
         stop_rewrite,
     )
     assert isinstance(first_contributor, SourceEditOrigin)
-    assert first_contributor.to_dict() == {
-        **SourceEditOrigin(
-            "first-recipe",
-            "FirstOperation",
-            0,
-        ).to_dict(),
+    assert json_report_object(first_contributor) == {
+        **json_report_object(
+            SourceEditOrigin(
+                "first-recipe",
+                "FirstOperation",
+                0,
+            )
+        ),
         "file_path": module_path.as_posix(),
         "line": 2,
         "end_line": 3,
@@ -769,7 +775,7 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
     assert simulation.applied_rewrite_count == 1
     assert run_rewrite.operation is RewriteOperation.REPLACE_TARGET
     assert simulation.rewrites[0].operation is RewriteOperation.REPLACE_TARGET
-    assert simulation.rewrites[0].to_dict()["operation"] == "replace_target"
+    assert json_report_object(simulation.rewrites[0])["operation"] == "replace_target"
 
     with pytest.raises(PlannedRewriteConflictError, match="planned rewrites overlap"):
         authority.select((run_rewrite, conflicting_run_rewrite))
@@ -796,23 +802,25 @@ def test_replace_target_payload_schema_round_trips_contributors() -> None:
         contributors=(contributor,),
     )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
 
     assert ReplaceTargetOperation.from_dict(payload) == operation
     assert RefactorRecipeOperation.from_dict(payload) == operation
-    assert payload["contributors"] == (contributor.to_dict(),)
+    assert payload["contributors"] == (json_report_object(contributor),)
     assert "from_dict" not in ReplaceTargetOperation.__dict__
     assert "from_operation_payload" not in ReplaceTargetOperation.__dict__
     assert "operation_payload" not in ReplaceTargetOperation.__dict__
 
     with pytest.raises(ValueError, match="Unsupported recipe operation"):
         ReplaceTargetOperation.from_dict(
-            DeleteTargetOperation(
-                target=SourceRewriteTarget(
-                    qualname="Alpha.run",
-                    file_path="pkg/mod.py",
+            json_report_object(
+                DeleteTargetOperation(
+                    target=SourceRewriteTarget(
+                        qualname="Alpha.run",
+                        file_path="pkg/mod.py",
+                    )
                 )
-            ).to_dict()
+            )
         )
 
 
@@ -874,7 +882,7 @@ def test_replace_target_reproves_declaration_identity(
     assert error.value.report.operation == ReplaceTargetOperation.operation_key()
     assert isinstance(error.value.report.detail, SourceRewriteTargetPreflightDetail)
     assert error.value.report.detail.target == operation.target
-    assert error.value.report.to_dict()["details"] == {
+    assert json_report_object(error.value.report)["details"] == {
         "target": {
             "target_id": None,
             "target_qualname": "Alpha.run",
@@ -1123,9 +1131,9 @@ def test_codemod_source_snapshot_executes_recipe_document(
 
     assert simulation.is_clean is True
     simulation_payload = simulation.simulation_payload()
-    assert simulation_payload["simulation"] == simulation.simulation.to_dict()
+    assert simulation_payload["simulation"] == json_report_object(simulation.simulation)
     assert simulation_payload["architecture_guard_report"] == (
-        simulation.architecture_guard_report.to_dict()
+        json_report_object(simulation.architecture_guard_report)
     )
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+        return AlphaAuthority.run(value)" in diff
@@ -1773,7 +1781,7 @@ def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
 
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
-    payloads = tuple(record.to_dict() for record in records)
+    payloads = tuple(json_report_object(record) for record in records)
 
     assert {record.status for record in records} == {
         FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
@@ -2531,7 +2539,7 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
         "DeleteClassAssignmentsOperation",
         "ReplaceFunctionBodyOperation",
     }
-    assert simulation.simulation.to_dict()["rewrites"][0]["contributors"]
+    assert json_report_object(simulation.simulation)["rewrites"][0]["contributors"]
     assert "-    detector_id = 'manual_detector'" in diff
     assert "-    finding_spec = object()" in diff
     assert "+        return value + 1" in diff
@@ -2785,7 +2793,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
     assert report.scan_mode is CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL
     assert "scan_mode" not in type(report).__dataclass_fields__
     assert report.scan_mode is report.after_scan.scan_mode
-    assert report.to_dict()["scan_mode"] == "evidence_local_partial"
+    assert json_report_object(report)["scan_mode"] == "evidence_local_partial"
     assert analyzed_module_paths == [changed_path.as_posix()]
     assert tuple(finding.summary for finding in report.after_findings) == (
         "changed file after finding",
@@ -3070,7 +3078,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     diff = simulation.unified_diff(source_by_path)
 
     signature_operation = recipe.operations[2]
-    signature_payload = signature_operation.to_dict()
+    signature_payload = json_report_object(signature_operation)
     assert signature_payload["signature_suffix"] == "(self, value, *, context):"
     assert "signature_source" not in signature_payload
     with pytest.raises(
@@ -3376,7 +3384,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         reason="Collapse projected payload facts into the existing stats carrier.",
     ).with_operation(operation)
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     assert "class_name" not in payload
     assert "constructor_names" not in payload
     assert "attribute_owner_expressions" not in payload
@@ -3668,7 +3676,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
         _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
     record = plan.report.records[0]
-    payload = plan.to_dict()
+    payload = json_report_object(plan)
     assert record.status is FindingRecipeSynthesisStatus.NO_EFFECTIVE_REWRITES
     assert record.recipe_id == "empty-generated-recipe"
     assert plan.document.recipes == ()
@@ -4096,7 +4104,7 @@ def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
         operation
     )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     declared_claims = recipe.declared_authority_claims(snapshot)
     authority_report = recipe.authority_claim_preflight_report(snapshot)
     simulation = recipe.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -4195,7 +4203,7 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
         findings,
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
-    operation = plan.document.recipes[0].operations[0].to_dict()
+    operation = json_report_object(plan.document.recipes[0].operations[0])
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
@@ -4254,7 +4262,9 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     assert goal_report.stage_count == 1
     assert goal_report.final_target_finding_ids == ()
     assert (
-        goal_report.replay_sequence.documents[0].recipes[0].operations[0].to_dict()
+        json_report_object(
+            goal_report.replay_sequence.documents[0].recipes[0].operations[0]
+        )
         == operation
     )
     simulation.document_simulation.apply()
@@ -5262,7 +5272,7 @@ def test_derive_candidate_collector_operation_round_trips_without_mirrors() -> N
         ),
     )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     decoded = DeriveCandidateCollectorOperation.from_dict(payload)
 
     assert tuple(payload) == (
@@ -5725,7 +5735,7 @@ def test_refactor_recipe_replaces_module_assignment(
         )
     )
     operation = recipe.operations[0]
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
 
     assert payload["source"] == "ACTIVE_MODES = Mode.active_modes()"
     assert "assignment_name" not in payload
@@ -6110,7 +6120,7 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
         _indexed_snapshot(source_index, {module_path.as_posix(): source})
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
 
     assert set(payload) == {"operation", "target_id", "rationale"}
     assert RefactorRecipeOperation.from_dict(payload) == operation
@@ -6285,7 +6295,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
         "+    _dispatch_case_type = RenderDispatchCase.__registry__.get(kind)" in diff
     )
     assert "+    return _dispatch_case_type().apply(kind, value)" in diff
-    operation_payload = recipe.operations[0].to_dict()
+    operation_payload = json_report_object(recipe.operations[0])
     assert RefactorRecipeOperation.from_dict(operation_payload) == recipe.operations[0]
     assert operation_payload["target_id"] == render_target.target_id
     assert "dispatch_axis_expression" not in operation_payload
@@ -6492,7 +6502,7 @@ def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
     assert materialized_guard.rules == simulation.architecture_guard_report.rules
     assert dispatch_stage.combined_guard_suite.is_empty
     assert (
-        CodemodPlanSequence.from_json_value(simulation.sequence.to_dict())
+        CodemodPlanSequence.from_json_value(json_report_object(simulation.sequence))
         == simulation.sequence
     )
 
@@ -6725,7 +6735,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
             destination_path=destination_path.as_posix(),
         )
     )
-    operation = recipe.operations[0].to_dict()
+    operation = json_report_object(recipe.operations[0])
 
     simulation = recipe.simulate(
         _indexed_snapshot(source_index, source_by_path),
@@ -6862,7 +6872,7 @@ def test_symbol_move_derives_import_authority_independent_of_reexport_spelling(
         ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT
     ) == ()
     assert report.destination_import_dependencies == ()
-    assert "asname" not in report.import_dependencies[0].to_dict()
+    assert "asname" not in json_report_object(report.import_dependencies[0])
     assert simulation.is_clean
     assert simulation.simulation.rewritten_sources[
         destination_path.as_posix()
@@ -6917,7 +6927,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         backend=CodemodBackend.AST_SPAN,
     )
 
-    assert operation.to_dict()["operation"] == "move_symbols_to_module"
+    assert json_report_object(operation)["operation"] == "move_symbols_to_module"
     assert report.is_clean is True
     assert report.imported_dependency_names == ("ClassVar", "Path", "dataclass")
     assert report.import_sources == (
@@ -7634,7 +7644,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
             "from __future__ import annotations\n"
         ),
     )
-    restored_operation = RefactorRecipeOperation.from_dict(operation.to_dict())
+    restored_operation = RefactorRecipeOperation.from_dict(json_report_object(operation))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("extract-helper-module").with_operation(operation),
@@ -7647,7 +7657,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
     ]
 
     assert restored_operation == operation
-    assert operation.to_dict()["operation"] == "extract_symbols_to_new_module"
+    assert json_report_object(operation)["operation"] == "extract_symbols_to_new_module"
     assert rewritten_destination == (
         '"""Extracted helper declarations."""\n\n'
         "from __future__ import annotations\n\n"
@@ -7714,7 +7724,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         destination_path=destination_path.as_posix(),
     )
 
-    restored_operation = RefactorRecipeOperation.from_dict(operation.to_dict())
+    restored_operation = RefactorRecipeOperation.from_dict(json_report_object(operation))
     moved_symbol_qualnames = operation.move_symbol_qualnames(
         snapshot,
         source_path.as_posix(),
@@ -7725,8 +7735,8 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     ).simulate(snapshot)
 
     assert restored_operation == operation
-    assert operation.to_dict()["root_symbol_qualnames"] == ("Root",)
-    assert "destination_source" not in operation.to_dict()
+    assert json_report_object(operation)["root_symbol_qualnames"] == ("Root",)
+    assert "destination_source" not in json_report_object(operation)
     assert moved_symbol_qualnames == ("Base", "Helper", "Root")
     assert selection.requested_symbol_qualnames == ("Root",)
     assert "class Unrelated" in simulation.simulation.rewritten_sources[
@@ -7809,8 +7819,8 @@ def test_new_module_extraction_rejects_explicit_annotation_policy_change(
         destination_source="",
     )
 
-    assert RefactorRecipeOperation.from_dict(operation.to_dict()) == operation
-    assert operation.to_dict()["destination_source"] == ""
+    assert RefactorRecipeOperation.from_dict(json_report_object(operation)) == operation
+    assert json_report_object(operation)["destination_source"] == ""
     with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
         RefactorRecipe("reject-explicit-annotation-mode-change").with_operation(
             operation
@@ -7866,10 +7876,10 @@ def test_module_move_rejects_annotation_evaluation_mode_changes(
     assert report.source_annotation_evaluation_mode is expected_source_mode
     assert report.destination_annotation_evaluation_mode is expected_destination_mode
     assert report.annotation_evaluation_is_preserved is False
-    assert report.to_dict()["source_annotation_evaluation_mode"] == (
+    assert json_report_object(report)["source_annotation_evaluation_mode"] == (
         expected_source_mode.value
     )
-    assert report.to_dict()["destination_annotation_evaluation_mode"] == (
+    assert json_report_object(report)["destination_annotation_evaluation_mode"] == (
         expected_destination_mode.value
     )
     with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
@@ -7936,7 +7946,7 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
     )
 
     dependency_report = operation.dependency_report(snapshot)
-    dependency_payload = dependency_report.to_dict()
+    dependency_payload = json_report_object(dependency_report)
     simulation = RefactorRecipe("move-symbol-closure").with_operation(
         operation
     ).simulate(snapshot)
@@ -8002,7 +8012,7 @@ def test_module_closure_move_rejects_derived_selection_beyond_declared_budget(
             snapshot
         )
 
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     del payload["maximum_moved_symbol_count"]
     with pytest.raises(
         ValueError,
@@ -8651,7 +8661,7 @@ def test_refactor_recipe_extracts_authority(
     )
     operation = recipe.operations[0]
     assert isinstance(operation, ExtractAuthorityOperation)
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     assert payload["authority_kind"] == "class_family"
     assert "authority_claim" not in payload
     assert "claimed_symbol" not in payload
@@ -9127,7 +9137,7 @@ def test_architecture_guard_reports_declaration_owned_constraints(
         for item in report.violations
     )
     assert all(item.target_context.target_id is not None for item in report.violations)
-    assert report.to_dict()["violation_count"] == 4
+    assert json_report_object(report)["violation_count"] == 4
 
 
 def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
@@ -10079,7 +10089,7 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
     )
     assert finding.stable_id != moved.stable_id
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
-    assert finding.to_dict()["stable_id"] == finding.stable_id
+    assert json_report_object(finding)["stable_id"] == finding.stable_id
     assert (
         JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).build()[
             "findings"
@@ -10358,10 +10368,10 @@ def test_execution_plan_groups_findings_by_weighted_graph(
     )
     assert grouped_class.internal_edge_count == 1
     assert grouped_class.graph_density == 1.0
-    assert "batch_priority" not in grouped_class.to_dict()
-    assert "first_batch_move" not in grouped_class.to_dict()
-    assert "first_codemod_hint" not in grouped_class.to_dict()
-    assert "parallel_group" not in grouped_class.to_dict()
+    assert "batch_priority" not in json_report_object(grouped_class)
+    assert "first_batch_move" not in json_report_object(grouped_class)
+    assert "first_codemod_hint" not in json_report_object(grouped_class)
+    assert "parallel_group" not in json_report_object(grouped_class)
 
 
 def test_planning_similarity_requires_concrete_source_authority(
@@ -10559,7 +10569,7 @@ def test_planner_does_not_expose_a_fabricated_escape_proof_surface(
 
     plan = build_refactor_plans(findings, tmp_path)[0]
 
-    assert "trajectories" not in plan.to_dict()
+    assert "trajectories" not in json_report_object(plan)
 
 
 def test_planner_keeps_registry_observations_without_suggesting_a_normal_form(
@@ -10604,9 +10614,9 @@ def test_planner_keeps_registry_observations_without_suggesting_a_normal_form(
         PatternId.AUTO_REGISTER_META,
         PatternId.AUTHORITATIVE_SCHEMA,
     )
-    assert "candidate_normal_forms" not in plan.to_dict()
-    assert "plan_steps" not in plan.to_dict()
-    assert "actions" not in plan.to_dict()
+    assert "candidate_normal_forms" not in json_report_object(plan)
+    assert "plan_steps" not in json_report_object(plan)
+    assert "actions" not in json_report_object(plan)
 
 
 def test_class_family_compression_profile_prices_abc_extraction() -> None:
@@ -10787,7 +10797,7 @@ def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> No
         ),
     )
 
-    payload = report.to_dict()
+    payload = json_report_object(report)
     markdown = MARKDOWN_RENDERER.economics_proof(report)
 
     assert report.proof_passes
@@ -10841,7 +10851,7 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
         "change_budget_unavailable",
     )
     assert not report.proof_passes
-    assert report.to_dict()["regression_reasons"] == report.regression_reasons
+    assert json_report_object(report)["regression_reasons"] == report.regression_reasons
     assert "Regression reasons: package_production_findings" in (
         MARKDOWN_RENDERER.economics_proof(report)
     )
@@ -13565,7 +13575,7 @@ def require_secondary_executor(value):
     assert execution_plan.classes[0].finding_ids == tuple(
         sorted(finding.stable_id for finding in findings)
     )
-    assert "batch_priority" not in execution_plan.classes[0].to_dict()
+    assert "batch_priority" not in json_report_object(execution_plan.classes[0])
 
 
 def test_detects_cross_module_reversed_exact_type_guard(
@@ -13834,7 +13844,8 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
         for recipe in plan.document.recipes
     )
     assert all(
-        tuple(recipe.operations[0].to_dict()) == ("operation", "target_id", "rationale")
+        tuple(json_report_object(recipe.operations[0]))
+        == ("operation", "target_id", "rationale")
         for recipe in plan.document.recipes
     )
     local_operation = next(
@@ -14713,11 +14724,13 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
-    operation_payload = plan.document.recipes[0].operations[0].to_dict()
+    operation_payload = json_report_object(
+        plan.document.recipes[0].operations[0]
+    )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.records[0].status.value == "executable_candidate"
@@ -14779,10 +14792,12 @@ def test_repeated_builder_replay_reproves_changed_participant_mapping(
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-    document_payload = snapshot.plan_from_findings(
-        findings,
-        detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
-    ).document.to_dict()
+    document_payload = json_report_object(
+        snapshot.plan_from_findings(
+            findings,
+            detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
+        ).document
+    )
 
     current_source = (
         _REPEATED_SOURCE_CONSTRUCTOR_PROJECTION.replace(
@@ -15089,7 +15104,7 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
         (tmp_path / "pkg/mod.py").as_posix()
     ]
     replay = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert len(findings) == 1
@@ -15215,7 +15230,7 @@ def test_repeated_builder_inherited_descent_reproves_authority_mapping(
     preflight = document.preflight_snapshot(current_snapshot)
 
     assert preflight.preflight_failed is True
-    assert "complete exact parameter substitution" in str(preflight.to_dict())
+    assert "complete exact parameter substitution" in str(json_report_object(preflight))
 
 
 def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
@@ -15827,7 +15842,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert recipe_constraint.names == (
         "legacy_recipe_value",
     )
-    assert "target_shape" not in document.recipes[0].to_dict()
+    assert "target_shape" not in json_report_object(document.recipes[0])
     assert document.recipes[0].authority_claims[0].claimed_symbol == (
         "AlphaRunAuthority"
     )
@@ -16748,13 +16763,10 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         continuation_report.extended_sequence.documents[-1]
         == continuation_report.plan.document
     )
-    assert (
-        continuation_report.plan.document.recipes[0]
-        .operations[0]
-        .to_dict()["operation"]
-        == "convert_manual_registry_to_autoregister"
-    )
-    continuation_payload = continuation_report.to_dict()
+    assert json_report_object(
+        continuation_report.plan.document.recipes[0].operations[0]
+    )["operation"] == "convert_manual_registry_to_autoregister"
+    continuation_payload = json_report_object(continuation_report)
     assert continuation_payload["has_continuation_stage"] is True
     assert (
         continuation_payload["continuation_sequence"]["stages"][0]["recipes"][0][
@@ -17798,32 +17810,25 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.has_architecture_guards is True
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].operations[0].target.qualname == "Alpha.run"
-    assert document.recipes[0].operations[1].to_dict()["operation"] == (
-        "add_class_base"
+    operation_payloads = tuple(
+        json_report_object(operation) for operation in document.recipes[0].operations
     )
-    assert document.recipes[0].operations[2].to_dict()["operation"] == (
-        "delete_class_assignments"
-    )
-    assert document.recipes[0].operations[2].to_dict()["assignment_names"] == (
+    assert operation_payloads[1]["operation"] == "add_class_base"
+    assert operation_payloads[2]["operation"] == "delete_class_assignments"
+    assert operation_payloads[2]["assignment_names"] == (
         "detector_id",
         "finding_spec",
     )
-    assert document.recipes[0].operations[3].to_dict()["operation"] == "ensure_import"
-    assert document.recipes[0].operations[4].to_dict()["operation"] == "replace_text"
-    assert document.recipes[0].operations[5].to_dict()["operation"] == "delete_target"
-    assert document.recipes[0].operations[6].to_dict()["operation"] == (
-        "delete_selected_targets"
-    )
-    assert document.recipes[0].operations[6].to_dict()["selector"]["selector"] == (
+    assert operation_payloads[3]["operation"] == "ensure_import"
+    assert operation_payloads[4]["operation"] == "replace_text"
+    assert operation_payloads[5]["operation"] == "delete_target"
+    assert operation_payloads[6]["operation"] == "delete_selected_targets"
+    assert operation_payloads[6]["selector"]["selector"] == (
         "source_index_target"
     )
-    assert document.recipes[0].operations[7].to_dict()["operation"] == (
-        "extract_authority"
-    )
+    assert operation_payloads[7]["operation"] == "extract_authority"
     assert (
-        document.recipes[0]
-        .operations[7]
-        .to_dict()["call_replacements"][0]["new_source"]
+        operation_payloads[7]["call_replacements"][0]["new_source"]
         == "LegacyHelperAuthority().run(value)"
     )
     assert document.guard_suite.rules[0].rule_id == (
@@ -17838,8 +17843,8 @@ def test_load_codemod_plan_document_includes_architecture_guards(
         "module.name",
         "module_name",
     )
-    assert document.to_dict()["recipes"]
-    assert document.to_dict()["architecture_guards"]
+    assert json_report_object(document)["recipes"]
+    assert json_report_object(document)["architecture_guards"]
 
 
 def test_selector_backed_recipe_operation_deletes_json_selected_targets(
@@ -17935,7 +17940,7 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     )
     recipe = document.recipes[0]
 
-    assert "target_shape" not in recipe.to_dict()
+    assert "target_shape" not in json_report_object(recipe)
     assert simulation.is_clean is False
     assert simulation.architecture_guard_report.violation_count == 1
     assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
@@ -18441,8 +18446,8 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
     assert report.stages == ()
     assert report.final_target_finding_ids == ()
     assert report.replay_sequence.documents == ()
-    assert "completed" not in report.to_dict()
-    assert "achieved" not in report.to_dict()
+    assert "completed" not in json_report_object(report)
+    assert "achieved" not in json_report_object(report)
 
 
 def test_goal_runner_rejects_terminal_with_new_finding_obligations(
@@ -18492,7 +18497,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
         runtime_detectors.AutoRegisterMetaUnderRentedDetector.effective_detector_id(),
     )
     assert finding_class_change.status is CodemodFindingClassStatus.INTRODUCED
-    payload = report.to_dict()["trajectory_proof"]
+    payload = json_report_object(report)["trajectory_proof"]
     assert payload["unjustified_debt_terminal_count"] == 1
     assert payload["unjustified_debt_terminals"][0]["finding_count_increase"] == 1
     assert (
@@ -18577,7 +18582,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
         CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
     )
     assert incomplete.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
-    assert incomplete.to_dict()["obstacles"] == (
+    assert json_report_object(incomplete)["obstacles"] == (
         {
             "source_state_id": "initial",
             "depth": 1,
@@ -18740,14 +18745,10 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     assert len(stage.class_plan_report.classes) == 1
     assert len(stage.class_plan_report.classes[0].synthesis_records) == 1
-    assert (
-        report.replay_sequence.documents[0]
-        .recipes[0]
-        .operations[0]
-        .to_dict()["operation"]
-        == "replace_text"
-    )
-    stage_payload = report.to_dict()["stages"][0]
+    assert json_report_object(
+        report.replay_sequence.documents[0].recipes[0].operations[0]
+    )["operation"] == "replace_text"
+    stage_payload = json_report_object(report)["stages"][0]
     assert "synthesis_report" not in stage_payload
     assert (
         stage_payload["finding_delta"]["before_finding_ids"]
@@ -18765,7 +18766,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         == 1
     )
     assert "synthesis_records" not in stage_payload["class_plan_report"]["classes"][0]
-    replay_payload = report.replay_sequence.to_dict()
+    replay_payload = json_report_object(report.replay_sequence)
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
         "extract-alpha-semantic-fact"
@@ -19465,7 +19466,7 @@ def test_class_family_migration_proves_complete_serial_trajectory(
     )
     assert report.trajectory_proof.status.proved is True
     assert module_path.read_text(encoding="utf-8") == _staged_class_family_source()
-    assert all("stage_index" not in stage.to_dict() for stage in report.stages)
+    assert all("stage_index" not in json_report_object(stage) for stage in report.stages)
 
 
 def test_class_family_migration_commits_only_after_complete_trajectory_proof(
@@ -19849,7 +19850,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     assert len(terminal_plan.classes) == 1
     assert len(terminal_plan.classes[0].synthesis_records) == 1
     assert report.replay_sequence.documents == ()
-    payload = report.to_dict()
+    payload = json_report_object(report)
     terminal_class_plan = payload["trajectory_proof"]["dead_ends"][0][
         "class_plan_report"
     ]
@@ -20129,7 +20130,7 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
             before_eliminated.stable_id,
         ),
     )
-    payload = delta.to_dict()
+    payload = json_report_object(delta)
     statuses_by_declaration = {
         change.obligation_class.declaration: change.status.value
         for change in delta.changes
@@ -20180,7 +20181,7 @@ def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes
 
     assert before.stable_id != after.stable_id
     assert delta.moved_class_count == 1
-    assert delta.to_dict()["status_counts"] == {"moved": 1}
+    assert json_report_object(delta)["status_counts"] == {"moved": 1}
 
 
 def test_codemod_finding_class_delta_rejects_unknown_relation_declaration(
@@ -20253,11 +20254,11 @@ def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
     ]
     assert before_change.status is CodemodFindingClassStatus.ELIMINATED
     assert after_change.status is CodemodFindingClassStatus.INTRODUCED
-    assert delta.to_dict()["status_counts"] == {
+    assert json_report_object(delta)["status_counts"] == {
         "eliminated": 1,
         "introduced": 1,
     }
-    assert before_change.to_dict()["obligation_class"] == {
+    assert json_report_object(before_change)["obligation_class"] == {
         "declaration": {
             "module_name": SemanticMirrorWithoutDescentDetector.__module__,
             "qualname": SemanticMirrorWithoutDescentDetector.__qualname__,
@@ -20303,8 +20304,8 @@ def test_codemod_finding_class_delta_reports_increased_obligations(
     assert len(delta.increased_changes) == 1
     assert delta.increased_changes[0].status is CodemodFindingClassStatus.EXPANDED
     assert delta.finding_count_increase == 1
-    assert delta.to_dict()["finding_count_increase"] == 1
-    assert delta.to_dict()["status_counts"] == {"expanded": 1}
+    assert json_report_object(delta)["finding_count_increase"] == 1
+    assert json_report_object(delta)["status_counts"] == {"expanded": 1}
 
 
 def test_finding_class_status_members_own_transition_classification(
@@ -20392,14 +20393,14 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
         root=tmp_path,
         selector_context=snapshot,
     )
-    payload = report.to_dict()
+    payload = json_report_object(report)
     class_payload = payload["classes"][0]
     execution_class = payload["execution_plan"]["classes"][0]
     finding_plan = payload["finding_recipe_plan"]
     synthesis_record = finding_plan["synthesis_report"]["records"][0]
     recipe = class_payload["document"]["recipes"][0]
     operation = recipe["operations"][0]
-    class_record = report.classes[0].synthesis_records[0].to_dict()
+    class_record = json_report_object(report.classes[0].synthesis_records[0])
 
     assert isinstance(report, FindingRecipeClassPlanReport)
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
@@ -21134,7 +21135,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     assert len(plan.document.recipes) == 1
     recipe = plan.document.recipes[0]
     operation_declaration = recipe.operations[0]
-    operation = operation_declaration.to_dict()
+    operation = json_report_object(operation_declaration)
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert operation["target_id"] in {
@@ -21174,9 +21175,9 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    assert simulation.to_dict()["expected_removed_finding_count"] == 1
-    assert simulation.to_dict()["simulation"]["parse_validation"]["parse_valid"] is True
-    assert simulation.to_dict()["simulation"]["parse_validation"][
+    assert json_report_object(simulation)["expected_removed_finding_count"] == 1
+    assert json_report_object(simulation)["simulation"]["parse_validation"]["parse_valid"] is True
+    assert json_report_object(simulation)["simulation"]["parse_validation"][
         "validated_file_paths"
     ] == (module_path.as_posix(),)
     simulation.document_simulation.apply()
@@ -21237,7 +21238,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
     recipe = plan.document.recipes[0]
-    operation = recipe.operations[0].to_dict()
+    operation = json_report_object(recipe.operations[0])
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
@@ -22247,9 +22248,9 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert len(recipe.operations) == 1
     operation = recipe.operations[0]
     assert isinstance(operation, FactorParallelMirroredLeafFamilyOperation)
-    assert set(operation.to_dict()) == {"operation", "target_id", "rationale"}
+    assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(operation.to_dict()),
+        RefactorRecipeOperation.from_dict(json_report_object(operation)),
         FactorParallelMirroredLeafFamilyOperation,
     )
     declared_claims = recipe.declared_authority_claims(snapshot)
@@ -22274,7 +22275,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert simulation.is_clean is True
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert replay.simulation.rewritten_sources[module_path.as_posix()] == rewritten
     assert rewritten.count("def emit") == len(domains) + len(_PARALLEL_LEAF_ROLES)
@@ -22855,7 +22856,7 @@ def test_json_payload_reuses_supplied_source_index(
     ).build()
     timing = cast(dict[str, object], payload["timing"])
 
-    assert payload["source_index"] == source_index.to_dict()
+    assert payload["source_index"] == json_report_object(source_index)
     assert timing["source_index_seconds"] == 0.123
 
 
@@ -22918,13 +22919,17 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
         (SourceLocation(str(module_path), 2, "Alpha"),),
     )
 
-    def fail_full_finding_serialization(self: RefactorFinding) -> dict[str, object]:
+    def fail_full_finding_serialization(
+        cls: type[RefactorFinding],
+        finding: RefactorFinding,
+    ) -> JsonObject:
+        del cls, finding
         raise AssertionError("loop payload should not serialize full findings")
 
     monkeypatch.setattr(
         RefactorFinding,
-        "to_dict",
-        fail_full_finding_serialization,
+        "project_json_object",
+        classmethod(fail_full_finding_serialization),
     )
 
     payload = JsonPayloadBuilder(
@@ -23589,7 +23594,7 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
         ).target_id
         == target_keys[0].target_id
     )
-    assert set(source_index.to_dict()) == {"files", "ast_targets", "evidence"}
+    assert set(json_report_object(source_index)) == {"files", "ast_targets", "evidence"}
 
 
 def test_source_rewrite_target_uses_indexed_file_and_qualname_candidates(
@@ -23700,7 +23705,7 @@ def test_structural_overlap_preserves_public_output_shape_with_source_targets(
         ),
     )
 
-    payload = structural_overlap.to_dict()
+    payload = json_report_object(structural_overlap)
     groups = cast(tuple[dict[str, object], ...], payload["groups"])
     group = groups[0]
     key = cast(dict[str, object], group["key"])
@@ -24003,8 +24008,11 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     )
     report = SemanticRefactorGateReport.from_findings((finding,))
 
-    payload_findings = report.finding_payload()
-    report_payload = report.to_dict()
+    payload_findings = [
+        json_report_object(finding_report)
+        for finding_report in report.finding_reports
+    ]
+    report_payload = json_report_object(report)
     discovery_payloads = cast(
         tuple[dict[str, object], ...],
         report_payload["authority_discovery_findings"],
@@ -24204,8 +24212,8 @@ def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
     )
     assert operation.target.target_id == render_target.target_id
     assert operation.target.qualname is None
-    assert "dispatch_axis_expression" not in operation.to_dict()
-    assert "literal_cases" not in operation.to_dict()
+    assert "dispatch_axis_expression" not in json_report_object(operation)
+    assert "literal_cases" not in json_report_object(operation)
 
 
 def test_numeric_literal_dispatch_goal_proves_one_target_only_replay(
@@ -24236,7 +24244,7 @@ def test_numeric_literal_dispatch_goal_proves_one_target_only_replay(
     assert report.stage_count == 1
     assert report.final_target_finding_ids == ()
     operation = report.replay_sequence.documents[0].recipes[0].operations[0]
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     assert isinstance(operation, DispatchToPolymorphismOperation)
     assert payload["target_id"] is not None
     assert "dispatch_axis_expression" not in payload
@@ -24616,8 +24624,8 @@ def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
     }
     assert plan.outcome.registration_sites_removed == 2
     assert plan.outcome.repeated_mappings_centralized >= 3
-    assert "actions" not in plan.to_dict()
-    assert "plan_steps" not in plan.to_dict()
+    assert "actions" not in json_report_object(plan)
+    assert "plan_steps" not in json_report_object(plan)
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
@@ -26210,9 +26218,9 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
-    assert set(operation.to_dict()) == {"operation", "target_id", "rationale"}
+    assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(operation.to_dict()),
+        RefactorRecipeOperation.from_dict(json_report_object(operation)),
         DescendTypeKeyedBehaviorProjectionOperation,
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

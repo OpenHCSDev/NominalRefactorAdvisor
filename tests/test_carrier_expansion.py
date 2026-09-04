@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import DeclaredCarrierExpansionDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 
@@ -335,7 +336,7 @@ def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> 
     operation = CollapseDeclaredCarrierExpansionOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id)
     )
-    operation_payload = operation.to_dict()
+    operation_payload = json_report_object(operation)
     assert RefactorRecipeOperation.from_dict(operation_payload) == operation
     assert "field_mapping" not in operation_payload
 

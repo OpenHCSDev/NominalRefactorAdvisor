@@ -16,6 +16,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
@@ -99,7 +100,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
     expected_runtime_output = _runtime_output(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
 
     result = (
         RefactorRecipe(recipe_id="collapse-semantic-record-authority")
@@ -107,7 +108,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
         .simulate(snapshot)
     )
     rewritten = result.simulation.rewritten_sources[source_index_path.as_posix()]
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
 
     assert result.is_clean is True
     assert payload["operation"] == "collapse_redundant_class_authority"

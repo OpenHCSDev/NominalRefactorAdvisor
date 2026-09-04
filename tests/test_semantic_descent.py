@@ -7,6 +7,7 @@ import pytest
 
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
 )
@@ -1258,7 +1259,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    operation = plan.document.to_dict()["recipes"][0]["operations"][0]
+    operation = json_report_object(plan.document)["recipes"][0]["operations"][0]
     record = plan.records[0]
 
     assert plan.expected_removed_finding_count == 1
@@ -1376,7 +1377,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     operations = tuple(
-        operation.to_dict() for operation in plan.document.recipes[0].operations
+        json_report_object(operation) for operation in plan.document.recipes[0].operations
     )
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
@@ -1436,9 +1437,9 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         initial_modules,
         (finding,),
     )
-    document_payload = initial_snapshot.plan_from_findings(
-        (finding,)
-    ).document.to_dict()
+    document_payload = json_report_object(
+        initial_snapshot.plan_from_findings((finding,)).document
+    )
 
     base_path.write_text(
         "class RegisteredStrategy:\n"
@@ -1535,7 +1536,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     simulation = plan.simulate(snapshot)
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
     operations = tuple(
-        operation.to_dict() for operation in plan.document.recipes[0].operations
+        json_report_object(operation) for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
         snapshot.with_virtual_sources(
@@ -1607,7 +1608,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     )
     assert simulation.is_clean is True
     replay = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).simulate(snapshot)
     assert (
         replay.simulation.rewritten_sources == simulation.simulation.rewritten_sources
@@ -1624,7 +1625,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         parse_python_modules(tmp_path)
     )
     reprioritized = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).simulate(reprioritized_snapshot)
     reprioritized_source = next(
         iter(reprioritized.simulation.rewritten_sources.values())
@@ -1650,7 +1651,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         parse_python_modules(tmp_path)
     )
     duplicate_priority_preflight = CodemodPlanDocument.from_json_value(
-        plan.document.to_dict()
+        json_report_object(plan.document)
     ).preflight_snapshot(duplicate_priority_snapshot)
     assert duplicate_priority_preflight.preflight_failed is True
     assert duplicate_priority_preflight.reports[-1].operation == (
@@ -1977,7 +1978,7 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
         selector_context=snapshot,
     )
     simulation = plan.simulate(snapshot)
-    operation = plan.document.recipes[0].operations[0].to_dict()
+    operation = json_report_object(plan.document.recipes[0].operations[0])
 
     assert plan.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
@@ -2033,7 +2034,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
-    operation = recipe.operations[0].to_dict()
+    operation = json_report_object(recipe.operations[0])
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
     assert plan.records[0].status.value == "executable_candidate"
@@ -2239,8 +2240,8 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
         "source does not prove one complete zero-argument constructor view"
         in obstacles_by_declaration["AutoregisterInstanceViewRecipeBuilder"]
     )
-    assert record.to_dict()["proof_obstacles"] == tuple(
-        obstacle.to_dict() for obstacle in record.proof_obstacles
+    assert json_report_object(record)["proof_obstacles"] == tuple(
+        json_report_object(obstacle) for obstacle in record.proof_obstacles
     )
 
 
@@ -2477,7 +2478,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     )
     operation = recipe.operations[0]
     assert isinstance(operation, DeriveDataclassPayloadProjectionOperation)
-    operation_payload = operation.to_dict()
+    operation_payload = json_report_object(operation)
     assert set(operation_payload) == {
         "operation",
         "target_id",
@@ -2558,7 +2559,7 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
         "RefactorAction",
         "payload",
     )
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "action",
         "record",
@@ -2734,13 +2735,13 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
         operation,
         DeriveDataclassFieldNameCollectionProjectionOperation,
     )
-    assert set(operation.to_dict()) == {
+    assert set(json_report_object(operation)) == {
         "operation",
         "target_id",
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "('run_id', 'seconds')",
         "['run_id', 'seconds']",
@@ -2922,13 +2923,13 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     )
     operation = recipe.operations[0]
     assert isinstance(operation, DeriveDataclassKeyValueSequenceProjectionOperation)
-    assert set(operation.to_dict()) == {
+    assert set(json_report_object(operation)) == {
         "operation",
         "target_id",
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
     changed_source = (
         snapshot.sources_by_file_path[module_path.as_posix()]
         .replace(
@@ -3461,13 +3462,13 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     )
     operation = recipe.operations[0]
     assert isinstance(operation, DeriveDataclassConstructorProjectionOperation)
-    assert set(operation.to_dict()) == {
+    assert set(json_report_object(operation)) == {
         "operation",
         "target_id",
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
     assert replayed == operation
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "def line_replacement(",
@@ -3714,7 +3715,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
-    recipe_payload = plan.document.to_dict()["recipes"][0]
+    recipe_payload = json_report_object(plan.document)["recipes"][0]
     operations = recipe_payload["operations"]
 
     assert plan.records[0].status.value == "executable_candidate"
@@ -3811,7 +3812,7 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
     projection_path.write_text(projection_source, encoding="utf-8")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
     changed_projection_source = projection_source.replace("medium", "low")
     changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
         snapshot.source_index,
@@ -4084,7 +4085,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    recipe_payload = plan.document.to_dict()["recipes"][0]
+    recipe_payload = json_report_object(plan.document)["recipes"][0]
     recipe = plan.document.recipes[0]
     operations = recipe_payload["operations"]
     rewritten = next(
@@ -4181,7 +4182,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    operation = plan.document.to_dict()["recipes"][0]["operations"][0]
+    operation = json_report_object(plan.document)["recipes"][0]["operations"][0]
     rewritten = next(
         source
         for path, source in simulation.simulation.rewritten_sources.items()
@@ -4247,7 +4248,7 @@ def test_class_family_collection_operation_rederives_current_source(
     projection_path.write_text(projection_source, encoding="utf-8")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
     replayed = RefactorRecipeOperation.from_dict(payload)
     changed_projection_source = projection_source.replace(
         "(Alpha, Beta)",
@@ -5000,7 +5001,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     assert plan.records[0].status.value == "executable_candidate"
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, DeriveEnumSubsetOperation)
-    assert operation.to_dict()["projection_target"]["target_id"] == next(
+    assert json_report_object(operation)["projection_target"]["target_id"] == next(
         target.target_id
         for target in snapshot.source_index.ast_targets
         if target.is_module and target.file_path == "pkg/codemod.py"
@@ -6105,7 +6106,9 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
 
     assert cached_graph.relations == first_graph.relations
     assert cached_graph.certificates == first_graph.certificates
-    assert cached_graph.certificates[0].to_dict()["status"] == ("descends_to_authority")
+    assert json_report_object(cached_graph.certificates[0])["status"] == (
+        "descends_to_authority"
+    )
 
 
 def test_semantic_descent_graph_rebase_moves_positive_proof_paths(

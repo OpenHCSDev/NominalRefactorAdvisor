@@ -6,8 +6,8 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .models import RefactorFinding
 from .json_reports import SemanticRecord
+from .models import RefactorFinding
 
 
 @dataclass(frozen=True)
@@ -67,9 +67,6 @@ class FindingSummary(SemanticRecord):
             ),
             0,
         )
-
-    def detector_counts_payload(self) -> list[dict[str, object]]:
-        return [item.to_dict() for item in self.detector_counts]
 
     def detector_counts_text(self) -> str:
         return ", ".join(

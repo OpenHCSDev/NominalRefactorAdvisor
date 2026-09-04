@@ -12,7 +12,7 @@ from typing import ClassVar
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
 from .json_reports import (
     DataclassJsonReport,
-    JsonObject,
+    JsonReport,
     SemanticRecord,
     json_report_field,
     json_report_property,
@@ -514,16 +514,11 @@ class SemanticRefactorGateReport(SemanticRecord):
             )
         )
 
-    def finding_payload(self) -> list[JsonObject]:
-        """Return the JSON `findings` surface when the gate is active."""
+    @property
+    def finding_reports(self) -> tuple[JsonReport, ...]:
+        """Return the typed findings presented when the gate is active."""
 
-        return [
-            *(JsonObject(item.to_dict()) for item in self.boundary_evidence),
-            *(
-                JsonObject(finding.to_dict())
-                for finding in self.authority_discovery_findings
-            ),
-        ]
+        return (*self.boundary_evidence, *self.authority_discovery_findings)
 
     @property
     def count_line(self) -> str:

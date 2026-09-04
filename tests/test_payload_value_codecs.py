@@ -43,6 +43,7 @@ from nominal_refactor_advisor.json_reports import (
     json_report_alias,
     json_report_cached_property,
     json_report_field,
+    json_report_object,
     json_report_property,
 )
 from nominal_refactor_advisor.semantic_descent import (
@@ -85,7 +86,10 @@ def test_dataclass_json_report_derives_shallow_payload_from_declared_fields() ->
         complete: bool
         mode: str
 
-    assert ScanStatus(complete=True, mode="exact").to_dict() == {
+    report = ScanStatus(complete=True, mode="exact")
+
+    assert not hasattr(report, "to_dict")
+    assert json_report_object(report) == {
         "complete": True,
         "mode": "exact",
     }
@@ -106,11 +110,13 @@ def test_dataclass_json_report_derives_nested_and_computed_output_bindings() -> 
         def complete(self) -> bool:
             return True
 
-    assert ReportEnvelope(
-        omitted="hidden",
-        renamed="visible",
-        nested=NestedReport(nested_value="nested"),
-    ).to_dict() == {
+    assert json_report_object(
+        ReportEnvelope(
+            omitted="hidden",
+            renamed="visible",
+            nested=NestedReport(nested_value="nested"),
+        )
+    ) == {
         "label": "visible",
         "nested_value": "nested",
         "complete": True,
@@ -123,8 +129,12 @@ def test_dataclass_json_report_omits_declared_absent_values() -> None:
         required: str
         optional: str | None = json_report_field(omit_none=True, default=None)
 
-    assert OptionalReport(required="present").to_dict() == {"required": "present"}
-    assert OptionalReport(required="present", optional="value").to_dict() == {
+    assert json_report_object(OptionalReport(required="present")) == {
+        "required": "present"
+    }
+    assert json_report_object(
+        OptionalReport(required="present", optional="value")
+    ) == {
         "required": "present",
         "optional": "value",
     }
@@ -137,7 +147,9 @@ def test_dataclass_json_report_derives_alias_bindings() -> None:
 
         projected_value = json_report_alias("source_value")
 
-    assert AliasedReport("derived").to_dict() == {"projected_value": "derived"}
+    assert json_report_object(AliasedReport("derived")) == {
+        "projected_value": "derived"
+    }
 
 
 def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
@@ -157,7 +169,9 @@ def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
         def status(self) -> str:
             return "leaf"
 
-    assert LeafReport(base_value="base", leaf_value="leaf").to_dict() == {
+    assert json_report_object(
+        LeafReport(base_value="base", leaf_value="leaf")
+    ) == {
         "base_value": "base",
         "leaf_value": "leaf",
         "status": "leaf",
@@ -178,8 +192,8 @@ def test_dataclass_json_report_preserves_cached_projection_members() -> None:
 
     report = CachedReport(value="cached")
 
-    assert report.to_dict()["normalized_value"] == "CACHED"
-    assert report.to_dict()["normalized_value"] == "CACHED"
+    assert json_report_object(report)["normalized_value"] == "CACHED"
+    assert json_report_object(report)["normalized_value"] == "CACHED"
     assert evaluations == ["cached"]
 
 
@@ -259,12 +273,12 @@ def test_flattened_record_codec_owns_nested_projection() -> None:
         "file_path",
         "target_qualname",
     )
-    assert dict(codec.payload_items(target, "target")) == target.to_dict()
+    assert dict(codec.payload_items(target, "target")) == json_report_object(target)
     assert dict(codec.payload_items(target, "target", omit_none=True)) == {
         "file_path": "pkg/example.py",
         "target_qualname": "Alpha.run",
     }
-    assert codec.read(target.to_dict(), "target") == target
+    assert codec.read(json_report_object(target), "target") == target
 
 
 def test_payload_codecs_fail_closed_for_unsupported_values() -> None:
@@ -324,7 +338,8 @@ def test_payload_records_own_boundary_diagnostics() -> None:
 
     explicit_null = SelectionCountExpectation.from_json_value({"min": None})
     assert explicit_null.minimum is None
-    assert explicit_null.to_dict() == {}
+    assert not hasattr(explicit_null, "to_dict")
+    assert json_report_object(explicit_null) == {}
 
     with pytest.raises(
         ValueError,

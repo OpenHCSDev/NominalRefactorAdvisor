@@ -23,6 +23,7 @@ from nominal_refactor_advisor.codemod_imports import (
     ImportNameRemoval,
     ModuleImportMutation,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
@@ -595,8 +596,8 @@ def test_plan_root_owns_document_sequence_input_algebra() -> None:
     )
     sequence = CodemodPlanSequence.from_document(document)
 
-    assert CodemodPlanRoot.from_json_value(document.to_dict()) == document
-    assert CodemodPlanRoot.from_json_value(sequence.to_dict()) == sequence
+    assert CodemodPlanRoot.from_json_value(json_report_object(document)) == document
+    assert CodemodPlanRoot.from_json_value(json_report_object(sequence)) == sequence
     assert document.as_sequence() == sequence
     assert sequence.as_sequence() is sequence
 
@@ -607,4 +608,4 @@ def test_plan_root_owns_document_sequence_input_algebra() -> None:
             r"'architecture_guards', 'recipes'"
         ),
     ):
-        CodemodPlanSequence.from_json_value(document.to_dict())
+        CodemodPlanSequence.from_json_value(json_report_object(document))

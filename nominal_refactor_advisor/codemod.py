@@ -447,6 +447,7 @@ from .json_reports import (
     JsonValue,
     json_report_cached_property,
     json_report_field,
+    json_report_object,
     json_report_property,
 )
 from .manual_registry import (
@@ -1953,7 +1954,7 @@ class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectati
             )
         if value.is_empty:
             return None
-        return value.to_dict()
+        return json_report_object(value)
 
 
 @dataclass(frozen=True)
@@ -11329,10 +11330,10 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
         """Project execution evidence without serializing internal source indexes."""
 
         return {
-            "sequence": self.sequence.to_dict(),
+            "sequence": json_report_object(self.sequence),
             "stage_count": len(self.stage_reports),
             "stages": tuple(
-                stage.document_simulation.to_dict() for stage in self.stage_reports
+                json_report_object(stage.document_simulation) for stage in self.stage_reports
             ),
             **self.simulation_payload(),
         }
@@ -11586,8 +11587,8 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
         return self.evaluation.recipe_id
 
     @json_report_property(field_name="recipe")
-    def recipe_payload(self) -> JsonObject | None:
-        return self.evaluation.recipe_payload
+    def recipe(self) -> RefactorRecipe | None:
+        return self.evaluation.recipe
 
     @property
     def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
@@ -11781,10 +11782,6 @@ class FindingRecipeSynthesisBoundary(DataclassJsonReport):
     def unsupported_count(self) -> int:
         return self.report.unsupported_count
 
-    def synthesis_payload(self) -> JsonObject:
-        return FindingRecipeSynthesisBoundary.report_bindings().payload(self)
-
-
 @dataclass(frozen=True, kw_only=True)
 class FindingRecipeEvaluation(ABC):
     """Closed nominal outcome of one finding-backed recipe safety pass."""
@@ -11792,7 +11789,7 @@ class FindingRecipeEvaluation(ABC):
     status: ClassVar[FindingRecipeSynthesisStatus]
     rejection_reason = ConstantProperty[str]("")
     recipe_id = ConstantProperty[str]("")
-    recipe_payload = ConstantProperty[JsonObject | None](None)
+    recipe = ConstantProperty[RefactorRecipe | None](None)
     candidate_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
     proof_obstacles = ConstantProperty[tuple[FindingRecipeProofObstacle, ...]](())
     refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
@@ -11905,8 +11902,8 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         return self.executable_recipe.recipe_id
 
     @property
-    def recipe_payload(self) -> JsonObject:
-        return self.executable_recipe.to_dict()
+    def recipe(self) -> RefactorRecipe:
+        return self.executable_recipe
 
     @property
     def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:

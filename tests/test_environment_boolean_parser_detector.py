@@ -18,6 +18,7 @@ from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     EnvironmentBooleanAuthorityDriftDetector,
 )
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import (
     EnvironmentReadKind,
     FixedKeyEnvironmentAuthorityWrapperMetrics,
@@ -148,10 +149,10 @@ class FeatureEnvironmentAuthority:
         use_parse_cache=False,
     ).findings_by_detector(DetectorConfig())[detector_type]
     assert sorted(
-        (finding.to_dict() for finding in projected_findings),
+        (json_report_object(finding) for finding in projected_findings),
         key=lambda item: item["summary"],
     ) == sorted(
-        (finding.to_dict() for finding in findings),
+        (json_report_object(finding) for finding in findings),
         key=lambda item: item["summary"],
     )
     summaries_by_symbol = {

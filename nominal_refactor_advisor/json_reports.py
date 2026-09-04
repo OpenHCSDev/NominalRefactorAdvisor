@@ -60,8 +60,11 @@ ReportValueT = TypeVar("ReportValueT")
 class JsonReport(ABC):
     """Nominal boundary for declarations that project to JSON objects."""
 
+    @classmethod
     @abstractmethod
-    def to_dict(self) -> JsonObject:
+    def project_json_object(cls, report: Self) -> JsonObject:
+        """Project one instance through its nominal declaration's JSON policy."""
+
         raise NotImplementedError
 
 
@@ -100,7 +103,7 @@ class JsonReportValueProjection:
 
     @project.register
     def _project_report(self, value: JsonReport) -> JsonObject:
-        return value.to_dict()
+        return json_report_object(value)
 
 
 JSON_REPORT_VALUE_PROJECTION = JsonReportValueProjection()
@@ -168,7 +171,7 @@ def json_report_property(
     flattened: bool = False,
     omit_none: bool = False,
 ) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportProperty]:
-    """Declare a computed JSON field without restating it in ``to_dict``."""
+    """Declare a computed JSON field on its typed report owner."""
 
     def declare(
         getter: Callable[[ReportOwnerT], ReportValueT],
@@ -229,12 +232,19 @@ class DataclassJsonReport(JsonReport, ABC):
     def report_bindings(cls) -> JsonReportBindingSet:
         return JsonReportBindingSet.from_dataclass(cls)
 
-    def to_dict(self) -> JsonObject:
-        return type(self).report_bindings().payload(self)
+    @classmethod
+    def project_json_object(cls, report: Self) -> JsonObject:
+        return cls.report_bindings().payload(report)
 
 
 class SemanticRecord(DataclassJsonReport, ABC):
     """Semantic record whose JSON projection is derived from its declaration."""
+
+
+def json_report_object(report: JsonReport) -> JsonObject:
+    """Erase one typed report only at an explicit JSON-object boundary."""
+
+    return type(report).project_json_object(report)
 
 
 def declared_dataclass_field(

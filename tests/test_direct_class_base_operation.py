@@ -16,6 +16,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot
+from nominal_refactor_advisor.json_reports import json_report_object
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
@@ -69,7 +70,7 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
-    replayed = RefactorRecipeOperation.from_dict(operation.to_dict())
+    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
 
     simulation = (
         RefactorRecipe(recipe_id="replace-direct-class-base")
@@ -77,7 +78,7 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
         .simulate(snapshot)
     )
     rewritten = simulation.simulation.rewritten_sources[consumer_path.as_posix()]
-    payload = operation.to_dict()
+    payload = json_report_object(operation)
 
     assert simulation.is_clean is True
     assert payload["operation"] == "replace_direct_class_base"

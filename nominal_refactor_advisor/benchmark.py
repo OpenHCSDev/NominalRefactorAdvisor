@@ -14,7 +14,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
-from .json_reports import DataclassJsonReport
+from .json_reports import DataclassJsonReport, json_report_object
 
 
 @dataclass(frozen=True)
@@ -307,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             scan_budget_seconds=args.scan_budget_seconds,
         ).run()
-        print(json.dumps(report.to_dict(), indent=2))
+        print(json.dumps(json_report_object(report), indent=2))
         return 1 if _report_failed(report, args) else 0
 
 

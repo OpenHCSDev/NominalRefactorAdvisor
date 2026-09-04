@@ -121,6 +121,7 @@ from .json_reports import (
     JsonReport,
     JsonValue,
     json_report_field,
+    json_report_object,
     json_report_property,
 )
 from .lean_export import LeanExportError
@@ -657,19 +658,19 @@ class JsonFindingPayloadProjection:
         mode: JsonFindingPayloadMode,
     ) -> list[JsonObject]:
         if mode is JsonFindingPayloadMode.full:
-            return [finding.to_dict() for finding in findings]
+            return [json_report_object(finding) for finding in findings]
         return []
 
 
 def _full_execution_plan_payload(report: RefactorExecutionPlanReport) -> JsonObject:
-    return report.to_dict()
+    return json_report_object(report)
 
 
 def _count_only_execution_plan_payload(
     report: RefactorExecutionPlanReport,
 ) -> JsonObject:
     return {
-        **report.to_dict(),
+        **json_report_object(report),
         "edges": (),
         "edge_payload_mode": "count_only",
         "edge_count": len(report.edges),
@@ -1119,19 +1120,25 @@ class JsonLoopCachePayloadBuilder:
 
     def build(self) -> JsonObject:
         payload_started = perf_counter()
-        payload = JsonFindingPayloadEnvelope(
-            summary=self.summary,
-            section_policy=JsonPayloadProfile.loop.sections,
-            finding_payload=[],
-        ).to_dict()
-        payload["scan_status"] = JsonScanStatus.exact_compact_global(
-            len(default_detector_types_for_analysis())
-        ).to_dict()
+        payload = json_report_object(
+            JsonFindingPayloadEnvelope(
+                summary=self.summary,
+                section_policy=JsonPayloadProfile.loop.sections,
+                finding_payload=[],
+            )
+        )
+        payload["scan_status"] = json_report_object(
+            JsonScanStatus.exact_compact_global(
+                len(default_detector_types_for_analysis())
+            )
+        )
         payload["active_finding_surface"] = "raw_findings"
-        payload["timing"] = self.timing.to_dict()
-        payload["payload_timing"] = JsonPayloadBuildTiming(
-            total_seconds=round(perf_counter() - payload_started, 3),
-        ).to_dict()
+        payload["timing"] = json_report_object(self.timing)
+        payload["payload_timing"] = json_report_object(
+            JsonPayloadBuildTiming(
+                total_seconds=round(perf_counter() - payload_started, 3),
+            )
+        )
         return payload
 
 
@@ -1178,17 +1185,19 @@ class JsonPayloadBuilder:
         payload_started = perf_counter()
         sections = self.payload_sections
         finding_tuple = tuple(self.findings)
-        payload = JsonFindingPayloadEnvelope(
-            summary=FindingSummary.from_findings(finding_tuple),
-            section_policy=sections,
-            finding_payload=JsonFindingPayloadProjection.payload(
-                self.findings,
-                sections.finding_payload_mode,
-            ),
-            plan_payload=tuple(plan.to_dict() for plan in self.plans),
-        ).to_dict()
+        payload = json_report_object(
+            JsonFindingPayloadEnvelope(
+                summary=FindingSummary.from_findings(finding_tuple),
+                section_policy=sections,
+                finding_payload=JsonFindingPayloadProjection.payload(
+                    self.findings,
+                    sections.finding_payload_mode,
+                ),
+                plan_payload=tuple(json_report_object(plan) for plan in self.plans),
+            )
+        )
         if self.scan_status is not None:
-            payload["scan_status"] = self.scan_status.to_dict()
+            payload["scan_status"] = json_report_object(self.scan_status)
         snapshot_demand = JsonPayloadSourceSnapshotDemand(sections=sections)
         observation_graph_seconds = 0.0
         if sections.needs_observation_graph:
@@ -1197,10 +1206,10 @@ class JsonPayloadBuilder:
             observation_graph_seconds = round(perf_counter() - started, 3)
             if sections.observation_graph:
                 payload["observations"] = [
-                    item.to_dict() for item in graph.observations
+                    json_report_object(item) for item in graph.observations
                 ]
             if sections.observation_fibers:
-                payload["fibers"] = [item.to_dict() for item in graph.fibers]
+                payload["fibers"] = [json_report_object(item) for item in graph.fibers]
         semantic_descent_graph_seconds = 0.0
         semantic_descent_source = (
             self.semantic_descent_source
@@ -1213,13 +1222,13 @@ class JsonPayloadBuilder:
             and semantic_descent_source.available
         ):
             started = perf_counter()
-            payload["semantic_descent_graph"] = (
+            payload["semantic_descent_graph"] = json_report_object(
                 SemanticDescentGraphPayloadReport.from_graphs(
                     semantic_descent_source.repository_graph(),
                     finding_backed_graph=build_finding_backed_semantic_descent_graph(
                         ssot_authority_findings(finding_tuple),
                     ),
-                ).to_dict()
+                )
             )
             semantic_descent_graph_seconds = round(perf_counter() - started, 3)
         source_snapshot = self.source_snapshot
@@ -1234,7 +1243,7 @@ class JsonPayloadBuilder:
         source_index_payload_seconds = 0.0
         if sections.source_index and source_snapshot is not None:
             started = perf_counter()
-            payload["source_index"] = source_snapshot.source_index.to_dict()
+            payload["source_index"] = json_report_object(source_snapshot.source_index)
             source_index_payload_seconds = round(perf_counter() - started, 3)
         timing = self.timing
         if timing is not None and built_source_index_seconds:
@@ -1246,17 +1255,17 @@ class JsonPayloadBuilder:
                 analysis_cache_status=timing.analysis_cache_status,
             )
         if timing is not None:
-            payload["timing"] = timing.to_dict()
+            payload["timing"] = json_report_object(timing)
         if self.economics is not None:
-            payload["economics"] = self.economics.to_dict()
+            payload["economics"] = json_report_object(self.economics)
         if self.change_budget is not None:
-            payload["change_budget"] = self.change_budget.to_dict()
+            payload["change_budget"] = json_report_object(self.change_budget)
         if self.execution_plan is not None:
             payload["execution_plan"] = sections.execution_plan_payload_mode.payload(
                 self.execution_plan
             )
         if self.structural_overlap is not None:
-            payload["structural_overlap"] = self.structural_overlap.to_dict()
+            payload["structural_overlap"] = json_report_object(self.structural_overlap)
         semantic_refactor_gate_seconds = 0.0
         semantic_gate_report = SemanticRefactorGateReport.inactive()
         if sections.semantic_refactor_gate:
@@ -1264,9 +1273,12 @@ class JsonPayloadBuilder:
             semantic_gate_report = SemanticRefactorGateReport.from_findings(
                 tuple(self.findings)
             )
-            payload["semantic_refactor_gate"] = semantic_gate_report.to_dict()
+            payload["semantic_refactor_gate"] = json_report_object(semantic_gate_report)
             if semantic_gate_report.active:
-                payload["findings"] = semantic_gate_report.finding_payload()
+                payload["findings"] = [
+                    json_report_object(report)
+                    for report in semantic_gate_report.finding_reports
+                ]
                 payload["finding_payload_mode"] = (
                     JsonFindingPayloadMode.semantic_boundary_evidence.value
                 )
@@ -1279,7 +1291,7 @@ class JsonPayloadBuilder:
                 payload["supporting_raw_finding_count"] = len(self.findings)
                 if self.raw_findings:
                     payload["supporting_raw_findings"] = [
-                        finding.to_dict() for finding in self.findings
+                        json_report_object(finding) for finding in self.findings
                     ]
             semantic_refactor_gate_seconds = round(perf_counter() - started, 3)
         if not semantic_gate_report.active:
@@ -1287,22 +1299,26 @@ class JsonPayloadBuilder:
         finding_recipe_plan_seconds = 0.0
         if sections.finding_recipe_plan and source_snapshot is not None:
             started = perf_counter()
-            payload["finding_recipe_plan"] = source_snapshot.plan_from_findings(
-                self.findings,
-            ).to_dict()
+            payload["finding_recipe_plan"] = json_report_object(
+                source_snapshot.plan_from_findings(self.findings)
+            )
             finding_recipe_plan_seconds = round(perf_counter() - started, 3)
         if self.scan_guard_report is not None:
-            payload["architecture_guard_report"] = self.scan_guard_report.to_dict()
+            payload["architecture_guard_report"] = json_report_object(
+                self.scan_guard_report
+            )
         if sections.payload_timing:
-            payload["payload_timing"] = JsonPayloadBuildTiming(
-                observation_graph_seconds=observation_graph_seconds,
-                semantic_descent_graph_seconds=semantic_descent_graph_seconds,
-                source_snapshot_seconds=built_source_index_seconds,
-                source_index_payload_seconds=source_index_payload_seconds,
-                semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
-                finding_recipe_plan_seconds=finding_recipe_plan_seconds,
-                total_seconds=round(perf_counter() - payload_started, 3),
-            ).to_dict()
+            payload["payload_timing"] = json_report_object(
+                JsonPayloadBuildTiming(
+                    observation_graph_seconds=observation_graph_seconds,
+                    semantic_descent_graph_seconds=semantic_descent_graph_seconds,
+                    source_snapshot_seconds=built_source_index_seconds,
+                    source_index_payload_seconds=source_index_payload_seconds,
+                    semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
+                    finding_recipe_plan_seconds=finding_recipe_plan_seconds,
+                    total_seconds=round(perf_counter() - payload_started, 3),
+                )
+            )
         return payload
 
 
@@ -1389,7 +1405,9 @@ def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
 def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
     """Load a codemod document or sequence and return its normalized JSON shape."""
 
-    return CodemodPlanRoot.from_json_value(JsonDocumentSource(path).load()).to_dict()
+    return json_report_object(
+        CodemodPlanRoot.from_json_value(JsonDocumentSource(path).load())
+    )
 
 
 def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
@@ -1462,7 +1480,7 @@ class CodemodContinuationPlanArtifact:
     def write(self, report: CodemodProjectedFindingReport) -> None:
         write_cli_json_artifact(
             self.path,
-            report.continuation_report.continuation_sequence.to_dict(),
+            json_report_object(report.continuation_report.continuation_sequence),
         )
 
 
@@ -2159,7 +2177,7 @@ class CodemodComposePlansCliCommand(
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
-        payload = document.to_dict()
+        payload = json_report_object(document)
         write_cli_json_artifact(self.args.codemod_plan_out, payload)
         print(json.dumps(payload, indent=2))
         return 0
@@ -2188,7 +2206,7 @@ class CodemodComposeSequenceCliCommand(
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
-        payload = sequence.to_dict()
+        payload = json_report_object(sequence)
         write_cli_json_artifact(self.args.codemod_plan_out, payload)
         print(json.dumps(payload, indent=2))
         return 0
@@ -2490,7 +2508,7 @@ class CodemodCliExecution(
         if self.execution_request.json_report_requested(self.args.json):
             print(
                 json.dumps(
-                    CodemodPreflightFailurePayload(report).to_dict(),
+                    json_report_object(CodemodPreflightFailurePayload(report)),
                     indent=2,
                 )
             )
@@ -2503,7 +2521,7 @@ class CodemodCliExecution(
     ) -> None:
         print(
             json.dumps(
-                CodemodPlanPreflightPayload(report).to_dict(),
+                json_report_object(CodemodPlanPreflightPayload(report)),
                 indent=2,
             )
         )
@@ -2519,12 +2537,14 @@ class CodemodCliExecution(
         if self.execution_request.json_report_requested(self.args.json):
             print(
                 json.dumps(
-                    CodemodSimulationPayload(
-                        simulation,
-                        applied=False,
-                        post_guard_report=architecture_guard_report,
-                        unified_diff=self.unified_diff(snapshot, simulation),
-                    ).to_dict(),
+                    json_report_object(
+                        CodemodSimulationPayload(
+                            simulation,
+                            applied=False,
+                            post_guard_report=architecture_guard_report,
+                            unified_diff=self.unified_diff(snapshot, simulation),
+                        )
+                    ),
                     indent=2,
                 )
             )
@@ -2540,12 +2560,14 @@ class CodemodCliExecution(
         plan_sequence_simulation: CodemodPlanSequenceSimulation,
     ) -> None:
         if self.execution_request.json_report_requested(self.args.json):
-            payload = CodemodSimulationPayload(
-                simulation,
-                applied=applied,
-                post_guard_report=architecture_guard_report,
-                unified_diff=self.optional_unified_diff(snapshot, simulation),
-            ).to_dict()
+            payload = json_report_object(
+                CodemodSimulationPayload(
+                    simulation,
+                    applied=applied,
+                    post_guard_report=architecture_guard_report,
+                    unified_diff=self.optional_unified_diff(snapshot, simulation),
+                )
+            )
             payload["plan_sequence_simulation"] = (
                 plan_sequence_simulation.execution_payload()
             )
@@ -2555,7 +2577,7 @@ class CodemodCliExecution(
                 source_sequence=plan_sequence_simulation.sequence,
             )
             if projected_findings is not None:
-                payload["projected_findings"] = projected_findings.to_dict()
+                payload["projected_findings"] = json_report_object(projected_findings)
             print(
                 json.dumps(
                     payload,
@@ -2964,7 +2986,7 @@ class CodemodSynthesisExecution(
     ) -> JsonObject:
         return {
             **self.unexecuted_payload(),
-            **CodemodPreflightFailurePayload(report).to_dict(),
+            **json_report_object(CodemodPreflightFailurePayload(report)),
         }
 
     def with_projected_findings(
@@ -2974,7 +2996,7 @@ class CodemodSynthesisExecution(
     ) -> JsonObject:
         return {
             **payload,
-            "projected_findings": report.to_dict(),
+            "projected_findings": json_report_object(report),
         }
 
     def run(self) -> int:
@@ -2982,7 +3004,7 @@ class CodemodSynthesisExecution(
         if not synthesis_report.application_blocked:
             write_cli_json_artifact(
                 self.plan_out,
-                self.finding_plan.document.to_dict(),
+                json_report_object(self.finding_plan.document),
             )
         if (
             self.execution_request.mode.applies_changes or self.plan_out is not None
@@ -3060,22 +3082,24 @@ class FindingRecipePlanSynthesisExecution(CodemodSynthesisExecution):
         return self.plan
 
     def unexecuted_payload(self) -> JsonObject:
-        return self.plan.to_dict()
+        return json_report_object(self.plan)
 
     def preflight_payload(
         self,
         report: CodemodPlanPreflightReport,
     ) -> JsonObject:
-        return FindingRecipePlanPreflight(
-            plan=self.plan,
-            preflight_report=report,
-        ).to_dict()
+        return json_report_object(
+            FindingRecipePlanPreflight(
+                plan=self.plan,
+                preflight_report=report,
+            )
+        )
 
     def simulation_result_payload(
         self,
         simulation: FindingRecipePlanSimulation,
     ) -> JsonObject:
-        return simulation.to_dict()
+        return json_report_object(simulation)
 
 
 @dataclass(frozen=True)
@@ -3089,15 +3113,15 @@ class FindingRecipeClassPlanSynthesisExecution(CodemodSynthesisExecution):
         return self.report.finding_plan
 
     def unexecuted_payload(self) -> JsonObject:
-        return self.report.to_dict()
+        return json_report_object(self.report)
 
     def preflight_payload(
         self,
         report: CodemodPlanPreflightReport,
     ) -> JsonObject:
         return {
-            **self.report.to_dict(),
-            "preflight_report": report.to_dict(),
+            **json_report_object(self.report),
+            "preflight_report": json_report_object(report),
             "is_clean": report.is_clean,
         }
 
@@ -3106,8 +3130,8 @@ class FindingRecipeClassPlanSynthesisExecution(CodemodSynthesisExecution):
         simulation: FindingRecipePlanSimulation,
     ) -> JsonObject:
         return {
-            **self.report.to_dict(),
-            "simulation_result": simulation.to_dict(),
+            **json_report_object(self.report),
+            "simulation_result": json_report_object(simulation),
         }
 
     def with_projected_findings(
@@ -3117,9 +3141,9 @@ class FindingRecipeClassPlanSynthesisExecution(CodemodSynthesisExecution):
     ) -> JsonObject:
         return {
             **super().with_projected_findings(payload, report),
-            "class_plan_projected_deltas": report.class_plan_delta_report(
-                self.report
-            ).to_dict(),
+            "class_plan_projected_deltas": json_report_object(
+                report.class_plan_delta_report(self.report)
+            ),
         }
 
 
@@ -3139,7 +3163,9 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
     def run(self) -> int:
         print(
             json.dumps(
-                self.required_source_snapshot().source_index_report().to_dict(),
+                json_report_object(
+                    self.required_source_snapshot().source_index_report()
+                ),
                 indent=2,
             )
         )
@@ -3181,7 +3207,7 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
                 f"{type(self).__name__} must declare a report factory or override "
                 "payload_for_selector"
             )
-        return self.report_factory(snapshot, selector).to_dict()
+        return json_report_object(self.report_factory(snapshot, selector))
 
 
 class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
@@ -3263,11 +3289,11 @@ class CodemodRefactorGoalCliCommand(
                 ),
             ),
         ).run()
-        replay_plan_payload = report.replay_sequence.to_dict()
+        replay_plan_payload = json_report_object(report.replay_sequence)
         if report.stop_reason.completed:
             write_cli_json_artifact(self.args.codemod_plan_out, replay_plan_payload)
         if self.args.json:
-            print(json.dumps(report.to_dict(), indent=2))
+            print(json.dumps(json_report_object(report), indent=2))
         else:
             print(format_codemod_refactor_goal_markdown(report))
         return 0 if report.stop_reason.completed else 1
@@ -3367,7 +3393,7 @@ def _main_without_deadline() -> int:
             parse_workers=args.parse_workers,
         )
         if args.json:
-            print(json.dumps(calibration_report.to_dict(), indent=2))
+            print(json.dumps(json_report_object(calibration_report), indent=2))
         else:
             print(format_calibration_markdown(calibration_report))
         return CalibrationExitCodeAuthority(
@@ -3444,7 +3470,7 @@ def _main_without_deadline() -> int:
             parse_workers=args.parse_workers,
         )
         if args.json:
-            print(json.dumps(prediction_report.to_dict(), indent=2))
+            print(json.dumps(json_report_object(prediction_report), indent=2))
         else:
             print(MARKDOWN_RENDERER.scan_prediction(prediction_report))
         return 0
@@ -3465,7 +3491,7 @@ def _main_without_deadline() -> int:
             parse_workers=args.parse_workers,
         )
         if args.json:
-            print(json.dumps(proof_report.to_dict(), indent=2))
+            print(json.dumps(json_report_object(proof_report), indent=2))
         else:
             print(MARKDOWN_RENDERER.economics_proof(proof_report))
         return ProofExitCodeAuthority(
