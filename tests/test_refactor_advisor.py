@@ -32,6 +32,7 @@ import nominal_refactor_advisor.codemod_module_declarations as codemod_module_de
 import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
 import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_preflight as codemod_preflight_module
+import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
 import nominal_refactor_advisor.codemod_workflow as codemod_workflow_module
@@ -5669,6 +5670,71 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
         )
     )
     assert snapshot.source_state_id != other_identity_snapshot.source_state_id
+
+
+def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alpha_path = tmp_path / "pkg/alpha.py"
+    beta_path = tmp_path / "pkg/beta.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/alpha.py", "class Base:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        "from .alpha import Base\n\n\nclass Beta(Base):\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    beta_source = snapshot.sources_by_file_path[beta_path.as_posix()]
+    monkeypatch.setattr(
+        codemod_runtime_module,
+        "build_class_family_index",
+        lambda _modules: pytest.fail("projected snapshots must overlay the class index"),
+    )
+
+    projected = snapshot.with_virtual_sources(
+        {beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")}
+    )
+
+    assert (
+        projected.module_nodes_by_file_path[alpha_path.as_posix()]
+        is snapshot.module_nodes_by_file_path[alpha_path.as_posix()]
+    )
+    assert projected.required_class_family_index.classes_by_symbol[
+        "pkg.beta.Beta"
+    ].resolved_base_symbols == ()
+    assert snapshot.with_virtual_sources({beta_path.as_posix(): beta_source}) is snapshot
+
+
+def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
+    tmp_path: Path,
+) -> None:
+    alpha_path = tmp_path / "pkg/alpha.py"
+    beta_path = tmp_path / "pkg/beta.py"
+    competing_alpha_path = tmp_path / "other/alpha.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/alpha.py", "class Shared:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        "from alpha import Shared\n\n\nclass Consumer(Shared):\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    assert snapshot.required_class_family_index.classes_by_symbol[
+        "pkg.beta.Consumer"
+    ].resolved_base_symbols == ("pkg.alpha.Shared",)
+
+    projected = snapshot.with_virtual_sources(
+        {competing_alpha_path.as_posix(): "class Shared:\n    pass\n"}
+    )
+
+    assert alpha_path.as_posix() in projected.sources_by_file_path
+    assert beta_path.as_posix() in projected.sources_by_file_path
+    assert projected.required_class_family_index.classes_by_symbol[
+        "pkg.beta.Consumer"
+    ].resolved_base_symbols == ()
 
 
 def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:

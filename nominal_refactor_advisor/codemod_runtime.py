@@ -288,17 +288,32 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         module_tuple = tuple(modules)
         finding_tuple = tuple(findings)
-        source_index_artifacts = build_source_index_artifacts(
+        return cls._from_modules_with_class_family_index(
             module_tuple,
             finding_tuple,
+            build_class_family_index(module_tuple),
         )
-        module_node_cache = {module.file_path: module.module for module in module_tuple}
+
+    @classmethod
+    def _from_modules_with_class_family_index(
+        cls,
+        modules: tuple[ParsedModule, ...],
+        findings: tuple[RefactorFinding, ...],
+        class_family_index: ClassFamilyIndex,
+    ) -> "CodemodSourceSnapshot":
+        """Build from source and a class index proved for that exact source."""
+
+        source_index_artifacts = build_source_index_artifacts(
+            modules,
+            findings,
+        )
+        module_node_cache = {module.file_path: module.module for module in modules}
         return cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
-                module.file_path: module.source for module in module_tuple
+                module.file_path: module.source for module in modules
             },
-            class_family_index=build_class_family_index(module_tuple),
+            class_family_index=class_family_index,
             module_node_cache=module_node_cache,
             ast_target_node_cache=(
                 source_index_artifacts.target_artifacts.node_index.nodes_by_target_id
@@ -313,10 +328,26 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         source_overlay: Mapping[str, str],
     ) -> "CodemodSourceSnapshot":
-        if not source_overlay:
+        effective_overlay = {
+            file_path: source
+            for file_path, source in source_overlay.items()
+            if self.sources_by_file_path.get(file_path) != source
+        }
+        if not effective_overlay:
             return self
-        return CodemodSourceSnapshot.from_modules(
-            self.modules_with_source_overlay(source_overlay)
+        projected_modules = self.modules_with_source_overlay(effective_overlay)
+        changed_modules = tuple(
+            module
+            for module in projected_modules
+            if module.file_path in effective_overlay
+        )
+        return type(self)._from_modules_with_class_family_index(
+            projected_modules,
+            (),
+            self.required_class_family_index.projected_with_module_overlay(
+                projected_modules,
+                changed_modules,
+            ),
         )
 
     def with_source_file_creations(

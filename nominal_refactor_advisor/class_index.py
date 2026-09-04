@@ -2545,6 +2545,33 @@ class ClassFamilyIndex:
             if resolved_source_path_text(indexed_class.file_path) not in file_paths
         )
 
+    def projected_with_module_overlay(
+        self,
+        projected_modules: Iterable[ParsedModule],
+        changed_modules: Iterable[ParsedModule],
+    ) -> "ClassFamilyIndex":
+        """Derive an exact projected index using an overlay only when closed."""
+
+        projected_module_tuple = tuple(projected_modules)
+        changed_module_tuple = tuple(changed_modules)
+        changed_path_texts = _resolved_module_path_texts(changed_module_tuple)
+        retained_records = self.class_records_excluding_files(changed_path_texts)
+        replaced_symbols = frozenset(self.classes_by_symbol).difference(
+            record.symbol for record in retained_records
+        )
+        projected_symbols = frozenset(
+            record.symbol
+            for record in ClassFamilyIndexBuilder(
+                changed_module_tuple
+            ).module_class_records()
+        )
+        if replaced_symbols != projected_symbols:
+            return build_class_family_index(list(projected_module_tuple))
+        return ClassFamilyIndexBuilder(
+            changed_module_tuple,
+            base_records=retained_records,
+        ).build()
+
 
 def iter_class_definitions(
     statements: list[ast.stmt],
