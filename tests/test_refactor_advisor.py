@@ -9033,6 +9033,87 @@ def test_cancelable_composition_kind_executes_direct_product_leaf(
 
 
 @pytest.mark.parametrize(
+    "returned_expression",
+    (
+        "(carried.alpha, carried.beta)",
+        "[carried.alpha, carried.beta]",
+    ),
+)
+def test_cancelable_composition_pack_unpack_leaf_supports_product_sequences(
+    tmp_path: Path,
+    returned_expression: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Planner:\n"
+        "    def adapt(self, payload):\n"
+        "        carried = Intermediate(alpha=payload.alpha, beta=payload.beta)\n"
+        f"        return {returned_expression}\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+
+    signals = detect_cancelable_composition_signals(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    assert len(signals) == 1
+    assert signals[0].composition_kind is (
+        CancelableCompositionKind.PACK_UNPACK_FORWARD
+    )
+    assert signals[0].field_names == ("alpha", "beta")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "        return Destination(alpha=payload.alpha)\n",
+        (
+            "        return Destination(\n"
+            "            alpha=payload.alpha, beta=other.beta\n"
+            "        )\n"
+        ),
+        (
+            "        carried = Intermediate(\n"
+            "            alpha=payload.alpha, beta=payload.beta\n"
+            "        )\n"
+            "        return Destination(alpha=carried.alpha)\n"
+        ),
+        (
+            "        carried = Intermediate(\n"
+            "            alpha=payload.alpha, beta=payload.beta\n"
+            "        )\n"
+            "        return Destination(alpha=carried.alpha, beta=other.beta)\n"
+        ),
+    ),
+)
+def test_cancelable_composition_rejects_incomplete_product_identity(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Planner:\n"
+        "    def adapt(self, payload):\n"
+        f"{body}",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+
+    signals = detect_cancelable_composition_signals(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    assert signals == ()
+
+
+@pytest.mark.parametrize(
     ("source", "expected_name"),
     (
         ("factory", "factory"),

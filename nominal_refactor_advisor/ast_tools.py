@@ -93,32 +93,27 @@ class AstExpressionProjection:
     def qualified_name(self) -> str | None:
         """Return the complete spelling of a name or attribute expression."""
 
-        if not isinstance(self.node, (ast.Name, ast.Attribute)):
-            return None
-        return ast.unparse(self.node)
+        match self.node:
+            case ast.Name() | ast.Attribute():
+                return ast.unparse(self.node)
+            case _:
+                return None
 
     def base_name(self) -> str | None:
-        if isinstance(self.node, ast.Name):
-            return self.node.id
-        if isinstance(self.node, ast.Attribute):
-            return self.node.attr
-        if isinstance(self.node, ast.Subscript):
-            return AstExpressionProjection(self.node.value).base_name()
-        return None
+        match self.node:
+            case ast.Name(id=name) | ast.Attribute(attr=name):
+                return name
+            case ast.Subscript(value=value):
+                return AstExpressionProjection(value).base_name()
+            case _:
+                return None
 
     def attribute_projection(self) -> tuple[str, str] | None:
-        if not isinstance(self.node, ast.Attribute):
-            return None
-        return ast.unparse(self.node.value), self.node.attr
-
-    def field_from_carrier_attribute(self, carrier_variable_name: str) -> str | None:
-        projected = self.attribute_projection()
-        if projected is None:
-            return None
-        source_name, field_name = projected
-        if source_name != carrier_variable_name:
-            return None
-        return field_name
+        match self.node:
+            case ast.Attribute(value=owner, attr=field_name):
+                return ast.unparse(owner), field_name
+            case _:
+                return None
 
 
 _TYPE_BUILTIN = "type"

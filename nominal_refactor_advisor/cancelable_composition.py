@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import reduce
 from typing import ClassVar
 
 from .ast_tools import AstExpressionProjection, FunctionDefinitionNode
@@ -39,6 +40,45 @@ class ProductForwardIdentity:
 class _ProductForward(ProductForwardIdentity):
     """AST-local product-forward projection fact."""
 
+    @classmethod
+    def from_fields(
+        cls,
+        *,
+        carrier_name: str,
+        source_name: str,
+        field_names: tuple[str, ...],
+    ) -> "_ProductForward | None":
+        """Construct one meaningful product projection from unique fields."""
+
+        return (
+            Maybe.of(sorted_tuple(set(field_names)))
+            .filter(lambda unique_fields: len(unique_fields) >= 2)
+            .map(
+                lambda unique_fields: cls(
+                    carrier_name=carrier_name,
+                    source_name=source_name,
+                    field_names=unique_fields,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    @classmethod
+    def from_intersection(
+        cls,
+        packed: "_ProductForward",
+        unpacked: "ProductForwardFieldProjection",
+    ) -> "_ProductForward | None":
+        """Retain only fields preserved by both sides of a composition."""
+
+        return cls.from_fields(
+            carrier_name=packed.carrier_name,
+            source_name=packed.source_name,
+            field_names=tuple(
+                set(packed.field_names) & set(unpacked.product_fields)
+            ),
+        )
+
 
 class _CancelableCompositionProjectionABC(ABC):
     """Leaf execution owned by one cancelable-composition kind."""
@@ -64,7 +104,11 @@ class _ProductPackForwardProjection(_CancelableCompositionProjectionABC):
         self,
         node: FunctionDefinitionNode,
     ) -> _ProductForward | None:
-        return _return_pack_forward(node)
+        match node.body:
+            case [ast.Return(value=ast.Call() as call)]:
+                return ProductForwardCallAuthority(call).product_forward()
+            case _:
+                return None
 
 
 class _PackUnpackForwardProjection(_CancelableCompositionProjectionABC):
@@ -76,7 +120,29 @@ class _PackUnpackForwardProjection(_CancelableCompositionProjectionABC):
         self,
         node: FunctionDefinitionNode,
     ) -> _ProductForward | None:
-        return _pack_then_unpack_forward(node)
+        match node.body:
+            case [
+                ast.Assign(
+                    targets=[ast.Name(id=carrier_variable_name)],
+                    value=ast.Call() as pack_call,
+                ),
+                ast.Return(value=ast.expr() as returned_value),
+            ]:
+                return (
+                    Maybe.of(
+                        ProductForwardCallAuthority(pack_call).product_forward()
+                    )
+                    .combine(
+                        lambda _packed: ProductForwardFieldProjection.from_return_value(
+                            returned_value,
+                            carrier_variable_name,
+                        ),
+                        _ProductForward.from_intersection,
+                    )
+                    .unwrap_or_none()
+                )
+            case _:
+                return None
 
 
 class CancelableCompositionKind(StrEnum):
@@ -219,45 +285,6 @@ class CancelableCompositionSignalTargetAuthority:
         )
 
 
-def _return_pack_forward(node: FunctionDefinitionNode) -> _ProductForward | None:
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-        return None
-    value = node.body[0].value
-    if not isinstance(value, ast.Call):
-        return None
-    return ProductForwardCallAuthority(value).product_forward()
-
-
-def _pack_then_unpack_forward(node: FunctionDefinitionNode) -> _ProductForward | None:
-    if len(node.body) != 2:
-        return None
-    assignment, returned = node.body
-    if not isinstance(assignment, ast.Assign) or len(assignment.targets) != 1:
-        return None
-    assigned_name = assignment.targets[0]
-    if not isinstance(assigned_name, ast.Name):
-        return None
-    if not isinstance(assignment.value, ast.Call):
-        return None
-    if not isinstance(returned, ast.Return) or returned.value is None:
-        return None
-
-    pack = ProductForwardCallAuthority(assignment.value).product_forward()
-    if pack is None:
-        return None
-    unpacked_fields = _unpacked_fields_from_return(returned.value, assigned_name.id)
-    if len(unpacked_fields) < 2:
-        return None
-    common_fields = sorted_tuple(set(pack.field_names) & set(unpacked_fields))
-    if len(common_fields) < 2:
-        return None
-    return _ProductForward(
-        carrier_name=pack.carrier_name,
-        source_name=pack.source_name,
-        field_names=common_fields,
-    )
-
-
 @dataclass(frozen=True)
 class ProductForwardFieldProjection:
     """Fields projected from one product carrier construction call."""
@@ -266,8 +293,52 @@ class ProductForwardFieldProjection:
     field_names: tuple[str, ...] = ()
 
     @classmethod
-    def empty(cls) -> "ProductForwardFieldProjection":
-        return cls()
+    def from_arguments(
+        cls,
+        arguments: Sequence[ast.expr],
+        keywords: Sequence[ast.keyword] = (),
+        *,
+        source_name: str | None = None,
+    ) -> "ProductForwardFieldProjection | None":
+        """Project one argument list through the shared optional-effect algebra."""
+
+        positional_projection = reduce(
+            lambda projection, argument: projection.project(
+                lambda fields: fields.with_positional_argument(argument)
+            ),
+            arguments,
+            Maybe.of(cls(source_name=source_name)),
+        )
+        return reduce(
+            lambda projection, keyword: projection.project(
+                lambda fields: fields.with_keyword(keyword)
+            ),
+            keywords,
+            positional_projection,
+        ).unwrap_or_none()
+
+    @classmethod
+    def from_return_value(
+        cls,
+        value: ast.AST,
+        carrier_variable_name: str,
+    ) -> "ProductForwardFieldProjection | None":
+        """Project supported unpack-return syntax from one product carrier."""
+
+        match value:
+            case ast.Call(args=arguments, keywords=keywords):
+                return cls.from_arguments(
+                    arguments,
+                    keywords,
+                    source_name=carrier_variable_name,
+                )
+            case ast.Tuple(elts=arguments) | ast.List(elts=arguments):
+                return cls.from_arguments(
+                    arguments,
+                    source_name=carrier_variable_name,
+                )
+            case _:
+                return None
 
     @property
     def product_fields(self) -> tuple[str, ...]:
@@ -277,48 +348,66 @@ class ProductForwardFieldProjection:
         self,
         argument: ast.expr,
     ) -> "ProductForwardFieldProjection | None":
-        projected = AstExpressionProjection(argument).attribute_projection()
-        if projected is None:
-            return None
-        return self.with_projected_field(*projected)
+        return (
+            Maybe.of(AstExpressionProjection(argument).attribute_projection())
+            .project(lambda projected: self.with_projected_field(*projected))
+            .unwrap_or_none()
+        )
 
     def with_keyword(
         self,
         keyword: ast.keyword,
     ) -> "ProductForwardFieldProjection | None":
-        if keyword.arg is None:
-            return None
-        projected = AstExpressionProjection(keyword.value).attribute_projection()
-        if projected is None:
-            return None
-        candidate_source_name, field_name = projected
-        if keyword.arg != field_name:
-            return None
-        return self.with_projected_field(candidate_source_name, field_name)
+        return (
+            Maybe.of(keyword.arg)
+            .combine(
+                lambda _keyword_name: AstExpressionProjection(
+                    keyword.value
+                ).attribute_projection(),
+                lambda keyword_name, projected: (keyword_name, *projected),
+            )
+            .filter(
+                lambda projection: projection[0] == projection[2]
+            )
+            .project(
+                lambda projection: self.with_projected_field(
+                    projection[1],
+                    projection[2],
+                )
+            )
+            .unwrap_or_none()
+        )
 
     def with_projected_field(
         self,
         candidate_source_name: str,
         field_name: str,
     ) -> "ProductForwardFieldProjection | None":
-        source_name = _consistent_source_name(self.source_name, candidate_source_name)
-        if source_name is None:
-            return None
-        return ProductForwardFieldProjection(
-            source_name=source_name,
-            field_names=(*self.field_names, field_name),
+        return (
+            Maybe.of(candidate_source_name)
+            .filter(
+                lambda source_name: self.source_name in (None, source_name)
+            )
+            .map(
+                lambda source_name: ProductForwardFieldProjection(
+                    source_name=source_name,
+                    field_names=(*self.field_names, field_name),
+                )
+            )
+            .unwrap_or_none()
         )
 
     def product_forward(self, carrier_name: str) -> _ProductForward | None:
-        if self.source_name is None:
-            return None
-        unique_fields = self.product_fields
-        if len(unique_fields) < 2:
-            return None
-        return _ProductForward(
-            carrier_name=carrier_name,
-            source_name=self.source_name,
-            field_names=unique_fields,
+        return (
+            Maybe.of(self.source_name)
+            .project(
+                lambda source_name: _ProductForward.from_fields(
+                    carrier_name=carrier_name,
+                    source_name=source_name,
+                    field_names=self.product_fields,
+                )
+            )
+            .unwrap_or_none()
         )
 
 
@@ -341,57 +430,7 @@ class ProductForwardCallAuthority:
         )
 
     def field_projection(self) -> ProductForwardFieldProjection | None:
-        projection = ProductForwardFieldProjection.empty()
-        for argument in self.call.args:
-            projection = projection.with_positional_argument(argument)
-            if projection is None:
-                return None
-        for keyword in self.call.keywords:
-            projection = projection.with_keyword(keyword)
-            if projection is None:
-                return None
-        return projection
-
-
-def _unpacked_fields_from_return(
-    value: ast.expr, carrier_variable_name: str
-) -> tuple[str, ...]:
-    if isinstance(value, ast.Call):
-        fields: list[str] = []
-        for argument in value.args:
-            field_name = AstExpressionProjection(argument).field_from_carrier_attribute(
-                carrier_variable_name
-            )
-            if field_name is None:
-                return ()
-            fields.append(field_name)
-        for keyword in value.keywords:
-            if keyword.arg is None:
-                return ()
-            field_name = AstExpressionProjection(
-                keyword.value
-            ).field_from_carrier_attribute(carrier_variable_name)
-            if field_name is None or keyword.arg != field_name:
-                return ()
-            fields.append(field_name)
-        return sorted_tuple(set(fields))
-
-    if isinstance(value, (ast.Tuple, ast.List)):
-        fields = []
-        for element in value.elts:
-            field_name = AstExpressionProjection(element).field_from_carrier_attribute(
-                carrier_variable_name
-            )
-            if field_name is None:
-                return ()
-            fields.append(field_name)
-        return sorted_tuple(set(fields))
-    return ()
-
-
-def _consistent_source_name(current: str | None, candidate: str) -> str | None:
-    if current is None:
-        return candidate
-    if current == candidate:
-        return current
-    return None
+        return ProductForwardFieldProjection.from_arguments(
+            self.call.args,
+            self.call.keywords,
+        )
