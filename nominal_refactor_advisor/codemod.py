@@ -85,7 +85,7 @@ from .class_authority_collapse import (
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
-from .class_authority_rename import LocalClassAuthorityRenameProof
+from .class_authority_rename import ClassAuthorityRenameProof
 from .class_index import (
     ClassFamilyIndex,
     ClassHeaderSourceSpan,
@@ -1835,8 +1835,8 @@ class ReplaceTargetOperation(SourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RenameLocalClassAuthorityOperation(RepositorySourceReprovedOperation):
-    """Rename a class whose complete consumer surface is local to its module."""
+class RenameClassAuthorityOperation(RepositorySourceReprovedOperation):
+    """Rename one top-level class across its proved repository consumers."""
 
     new_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
@@ -1847,9 +1847,9 @@ class RenameLocalClassAuthorityOperation(RepositorySourceReprovedOperation):
     def proof(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> LocalClassAuthorityRenameProof:
+    ) -> ClassAuthorityRenameProof:
         target = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
-        return LocalClassAuthorityRenameProof.require(
+        return ClassAuthorityRenameProof.require(
             snapshot.parsed_modules,
             snapshot.required_class_family_index,
             target_symbol=target.required_symbol(snapshot),
@@ -1861,14 +1861,22 @@ class RenameLocalClassAuthorityOperation(RepositorySourceReprovedOperation):
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         proof = self.proof(snapshot)
-        return SourceTextGeometry(proof.source_module.source).physical_edits(
-            file_path=proof.source_module.file_path,
-            replacements=proof.source_replacements(self.new_name),
-            rationale=self.rationale
-            or (
-                f"Rename local class authority {proof.target.simple_name!r} to "
-                f"{self.new_name!r}."
-            ),
+        rationale = self.rationale or (
+            f"Rename class authority {proof.target.simple_name!r} to "
+            f"{self.new_name!r}."
+        )
+        return tuple(
+            edit
+            for module in proof.modules
+            if module.has_replacements
+            for edit in SourceTextGeometry(module.module.source).physical_edits(
+                file_path=module.module.file_path,
+                replacements=module.source_replacements(
+                    old_name=proof.target.simple_name,
+                    new_name=self.new_name,
+                ),
+                rationale=rationale,
+            )
         )
 
 

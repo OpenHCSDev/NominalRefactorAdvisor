@@ -2662,24 +2662,78 @@ def _module_scope_name_references(
     return tuple(collector.references)
 
 
-def _public_export_assignment(
-    statement: ast.stmt,
-) -> tuple[ast.Name, ast.expr] | None:
-    if (
-        isinstance(statement, ast.Assign)
-        and len(statement.targets) == 1
-        and isinstance(statement.targets[0], ast.Name)
-        and statement.targets[0].id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-    ):
-        return statement.targets[0], statement.value
-    if (
-        isinstance(statement, ast.AnnAssign)
-        and isinstance(statement.target, ast.Name)
-        and statement.target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-        and statement.value is not None
-    ):
-        return statement.target, statement.value
-    return None
+@dataclass(frozen=True)
+class PublicExportNameReference:
+    """One exact string literal in a static public-export declaration."""
+
+    literal: ast.Constant
+
+    def renamed_source(self, literal_source: str, new_name: str) -> str:
+        if not isinstance(self.literal.value, str):
+            raise ValueError("Public export reference must contain a string")
+        if literal_source.count(self.literal.value) != 1:
+            raise ValueError("Public export reference cannot be reconstructed")
+        return literal_source.replace(self.literal.value, new_name, 1)
+
+
+@dataclass(frozen=True)
+class ModulePublicExportSourceAuthority:
+    """Exact source declaration from which a module export contract is derived."""
+
+    statement: ast.Assign | ast.AnnAssign
+    target: ast.Name
+    value: ast.expr
+
+    @classmethod
+    def from_statement(
+        cls,
+        statement: ast.stmt,
+    ) -> "ModulePublicExportSourceAuthority | None":
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+        ):
+            return cls(statement, statement.targets[0], statement.value)
+        if (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+            and statement.value is not None
+        ):
+            return cls(statement, statement.target, statement.value)
+        return None
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ast.Module,
+    ) -> "ModulePublicExportSourceAuthority | None":
+        declarations = tuple(
+            declaration
+            for statement in module.body
+            if (declaration := cls.from_statement(statement)) is not None
+        )
+        if len(declarations) != 1:
+            return None
+        declaration = declarations[0]
+        references = _module_scope_name_references(
+            module,
+            PYTHON_PUBLIC_EXPORT_ASSIGNMENT,
+        )
+        return declaration if references == (declaration.target,) else None
+
+    def name_references(self, name: str) -> tuple[PublicExportNameReference, ...]:
+        if not isinstance(self.value, ast.List | ast.Tuple | ast.Set):
+            return ()
+        return tuple(
+            PublicExportNameReference(element)
+            for element in self.value.elts
+            if isinstance(element, ast.Constant)
+            and isinstance(element.value, str)
+            and element.value == name
+        )
 
 
 def _literal_public_export_names(value: ast.expr) -> tuple[str, ...] | None:
@@ -2701,31 +2755,15 @@ def module_public_export_contract(
         LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
     ):
         return CompactImplicitPublicExportContract()
-    assignments = tuple(
-        assignment
-        for statement in module.body
-        if (assignment := _public_export_assignment(statement)) is not None
-    )
-    if len(assignments) != 1:
+    declaration = ModulePublicExportSourceAuthority.from_module(module)
+    if declaration is None:
         return CompactUnresolvedPublicExportContract()
-    target, value = assignments[0]
-    references = _module_scope_name_references(
-        module,
-        PYTHON_PUBLIC_EXPORT_ASSIGNMENT,
-    )
-    if references != (target,):
-        return CompactUnresolvedPublicExportContract()
-    assignment_statement = next(
-        statement
-        for statement in module.body
-        if _public_export_assignment(statement) == assignments[0]
-    )
     preceding_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-        module.body[: module.body.index(assignment_statement)]
+        module.body[: module.body.index(declaration.statement)]
     )
     return (
         CompactExplicitPublicExportContract.from_expression(
-            value,
+            declaration.value,
             preceding_bound_names,
         )
         or CompactUnresolvedPublicExportContract()

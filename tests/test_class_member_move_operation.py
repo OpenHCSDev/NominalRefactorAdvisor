@@ -17,7 +17,7 @@ from nominal_refactor_advisor.codemod import (
     PromoteClassMembersToAncestorOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RenameLocalClassAuthorityOperation,
+    RenameClassAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -136,7 +136,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     rename = CodemodPlanDocument(
         recipes=(
             RefactorRecipe(recipe_id="rename-surviving-authority").with_operation(
-                RenameLocalClassAuthorityOperation(
+                RenameClassAuthorityOperation(
                     target=_operation(tmp_path).destination,
                     new_name="CanonicalAuthority",
                 )
@@ -157,7 +157,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     ) == (
         "promote_class_members_to_ancestor",
         "collapse_intermediate_class_authority",
-        "rename_local_class_authority",
+        "rename_class_authority",
     )
     assert all(
         "child_classes" not in stage["recipes"][0]["operations"][0]

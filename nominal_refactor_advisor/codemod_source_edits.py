@@ -862,15 +862,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
         return self._line_span_offsets(span.start_line, span.end_line)
 
-    def node_offsets(self, node: ast.expr | ast.stmt) -> tuple[int, int] | None:
+    def node_offsets(self, node: ast.AST) -> tuple[int, int] | None:
         span = SourceByteSpan.from_node(node)
         if span is None or not span.fits_lines(self.lines):
             return None
         return self.byte_span_offsets(span)
 
     def required_node_offsets(self, node: ast.AST) -> tuple[int, int]:
-        if not isinstance(node, ast.expr | ast.stmt):
-            raise ValueError("AST node lacks source offsets")
         offsets = self.node_offsets(node)
         if offsets is None:
             raise ValueError("AST node lacks source offsets")

@@ -13,7 +13,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RenameLocalClassAuthorityOperation,
+    RenameClassAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -48,8 +48,8 @@ def _write_fixture(root: Path, *, trailing_source: str = "") -> Path:
     )
 
 
-def _operation(root: Path) -> RenameLocalClassAuthorityOperation:
-    return RenameLocalClassAuthorityOperation(
+def _operation(root: Path) -> RenameClassAuthorityOperation:
+    return RenameClassAuthorityOperation(
         target=SourceRewriteTarget(
             file_path=(root / "pkg/family.py").as_posix(),
             qualname="Legacy",
@@ -58,7 +58,7 @@ def _operation(root: Path) -> RenameLocalClassAuthorityOperation:
     )
 
 
-def test_renames_local_class_authority_without_touching_shadowed_names(
+def test_renames_class_authority_without_touching_shadowed_names(
     tmp_path: Path,
 ) -> None:
     module_path = _write_fixture(tmp_path)
@@ -67,7 +67,7 @@ def test_renames_local_class_authority_without_touching_shadowed_names(
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
     result = (
-        RefactorRecipe(recipe_id="rename-local-authority")
+        RefactorRecipe(recipe_id="rename-class-authority")
         .with_operation(replayed)
         .simulate(snapshot)
     )
@@ -76,7 +76,7 @@ def test_renames_local_class_authority_without_touching_shadowed_names(
 
     assert result.is_clean is True
     assert payload == {
-        "operation": "rename_local_class_authority",
+        "operation": "rename_class_authority",
         "file_path": module_path.as_posix(),
         "target_qualname": "Legacy",
         "rationale": "",
@@ -113,7 +113,49 @@ def test_renames_local_class_authority_without_touching_shadowed_names(
     assert json.loads(completed.stdout) == [3, True, 4, 6, True, 5]
 
 
-def test_rejects_imported_repository_consumer(tmp_path: Path) -> None:
+def test_renames_repository_imports_aliases_and_annotations(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    consumer_path = _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .family import (\n"
+        "    Legacy,\n"
+        "    Legacy as KeptAlias,\n"
+        ")\n\n"
+        "__all__ = ('Legacy', 'consume')\n\n"
+        "def consume(value: 'Legacy') -> Legacy:\n"
+        "    return KeptAlias(value.value + 1)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    result = RefactorRecipe(recipe_id="repository-consumer").with_operation(
+        _operation(tmp_path)
+    ).simulate(snapshot)
+    rewritten = result.simulation.rewritten_sources[consumer_path.as_posix()]
+
+    assert "    Canonical," in rewritten
+    assert "    Canonical as KeptAlias," in rewritten
+    assert "__all__ = ('Canonical', 'consume')" in rewritten
+    assert "def consume(value: 'Canonical') -> Canonical:" in rewritten
+
+    for file_path, source in result.simulation.rewritten_sources.items():
+        Path(file_path).write_text(source, encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumer import Canonical, consume; "
+            "print(consume(Canonical(2)).value)",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "3"
+
+
+def test_rejects_rebound_repository_import(tmp_path: Path) -> None:
     _write_fixture(tmp_path)
     _write_module(
         tmp_path,
@@ -124,11 +166,36 @@ def test_rejects_imported_repository_consumer(tmp_path: Path) -> None:
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    with pytest.raises(
-        CodemodOperationPreflightError,
-        match="imported repository consumer",
-    ):
-        RefactorRecipe(recipe_id="external-consumer").with_operation(
+    with pytest.raises(CodemodOperationPreflightError, match="binding.*is rebound"):
+        RefactorRecipe(recipe_id="rebound-consumer").with_operation(
+            _operation(tmp_path)
+        ).simulate(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("trailing_source", "message"),
+    (
+        ("Canonical = object\n", "Canonical.*collides"),
+        ("__all__ = exported_names\n", "unresolved export policy"),
+    ),
+)
+def test_rejects_unproved_import_binding_rename(
+    tmp_path: Path,
+    trailing_source: str,
+    message: str,
+) -> None:
+    _write_fixture(tmp_path)
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from pkg.family import Legacy\n\n"
+        "VALUE = Legacy(1)\n"
+        f"{trailing_source}",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(CodemodOperationPreflightError, match=message):
+        RefactorRecipe(recipe_id="unproved-consumer").with_operation(
             _operation(tmp_path)
         ).simulate(snapshot)
 
@@ -147,6 +214,49 @@ def test_rejects_used_star_import_consumer(tmp_path: Path) -> None:
         match="star-import consumer",
     ):
         RefactorRecipe(recipe_id="star-consumer").with_operation(
+            _operation(tmp_path)
+        ).simulate(snapshot)
+
+
+def test_rejects_nested_import_consumer(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "def authority():\n"
+        "    from pkg.family import Legacy\n\n"
+        "    return Legacy\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(CodemodOperationPreflightError, match="nested import"):
+        RefactorRecipe(recipe_id="nested-consumer").with_operation(
+            _operation(tmp_path)
+        ).simulate(snapshot)
+
+
+@pytest.mark.parametrize(
+    "consumer_source",
+    (
+        "from pkg.reexport import Legacy\n\nVALUE = Legacy(1)\n",
+        "import pkg.reexport as exported\n\nVALUE = exported.Legacy(1)\n",
+    ),
+)
+def test_rejects_indirect_repository_consumer(
+    tmp_path: Path,
+    consumer_source: str,
+) -> None:
+    _write_fixture(tmp_path)
+    _write_module(
+        tmp_path,
+        "pkg/reexport.py",
+        "from pkg.family import Legacy\n",
+    )
+    _write_module(tmp_path, "pkg/consumer.py", consumer_source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(CodemodOperationPreflightError, match="indirect"):
+        RefactorRecipe(recipe_id="indirect-consumer").with_operation(
             _operation(tmp_path)
         ).simulate(snapshot)
 

@@ -1,4 +1,4 @@
-"""Repository proof for renaming one module-local class authority."""
+"""Repository proof for renaming one top-level class authority."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from .class_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleNominalBindingAuthority,
+    ModulePublicExportSourceAuthority,
+    PublicExportNameReference,
     module_public_export_contract,
     module_star_import_origins,
     nominal_reference_root,
@@ -25,14 +27,416 @@ from .declaration_dependencies import ModuleLexicalDependencyProjection
 
 
 @dataclass(frozen=True)
-class LocalClassAuthorityRenameProof:
-    """Closed proof that one class name has no repository-external consumers."""
+class ClassAuthorityImportReference:
+    """One direct import of the renamed authority."""
 
-    target: IndexedClass
-    source_module: ParsedModule
+    statement: ast.ImportFrom
+    alias: ast.alias
+
+    @property
+    def local_name(self) -> str:
+        return self.alias.asname or self.alias.name
+
+    @property
+    def changes_local_binding(self) -> bool:
+        return self.local_name == self.alias.name
+
+    def renamed_source(self, new_name: str) -> str:
+        alias_name = new_name if self.changes_local_binding else self.local_name
+        return (
+            new_name
+            if self.alias.asname is None
+            else f"{new_name} as {alias_name}"
+        )
+
+
+@dataclass(frozen=True)
+class ClassAuthorityModuleRenameProof:
+    """Exact rename surfaces proved inside one repository module."""
+
+    module: ParsedModule
+    declaration: ast.ClassDef | None
+    imports: tuple[ClassAuthorityImportReference, ...]
+    public_exports: tuple[PublicExportNameReference, ...]
     direct_references: tuple[ast.Name, ...]
     qualified_references: tuple[ast.Attribute, ...]
     annotation_references: tuple[StringizedAnnotationSurface, ...]
+
+    @classmethod
+    def require(
+        cls,
+        module: ParsedModule,
+        target: IndexedClass,
+        new_name: str,
+        known_module_names: frozenset[str],
+    ) -> "ClassAuthorityModuleRenameProof":
+        imports = cls._direct_imports(module, target)
+        cls._require_supported_import_surfaces(
+            module,
+            target,
+            imports,
+            known_module_names,
+        )
+        cls._require_import_binding_collisions_absent(
+            module,
+            target,
+            new_name,
+            imports,
+        )
+        lexical_dependencies = ModuleLexicalDependencyProjection.from_module(
+            module.module
+        )
+        public_export_source = ModulePublicExportSourceAuthority.from_module(
+            module.module
+        )
+        public_exports = (
+            ()
+            if public_export_source is None
+            else public_export_source.name_references(target.simple_name)
+        )
+        binding_authority = ModuleNominalBindingAuthority(module)
+        direct_references = tuple(
+            reference
+            for reference in lexical_dependencies.external_references_named(
+                target.simple_name
+            )
+            if binding_authority.qualified_name_at(
+                reference,
+                line=reference.lineno,
+            )
+            == target.symbol
+        )
+        external_reference_ids = frozenset(
+            id(reference)
+            for reference in lexical_dependencies.external_name_references
+        )
+        qualified_candidates = tuple(
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.Attribute)
+            if node.attr == target.simple_name
+            if (root_reference := nominal_reference_root(node)) is not None
+            and id(root_reference) in external_reference_ids
+        )
+        qualified_names = tuple(
+            (
+                node,
+                binding_authority.qualified_name_at(node, line=node.lineno),
+            )
+            for node in qualified_candidates
+        )
+        indirect_qualified_names = tuple(
+            qualified_name
+            for _node, qualified_name in qualified_names
+            if qualified_name is not None
+            if qualified_name != target.symbol
+            if qualified_name.rpartition(".")[0] in known_module_names
+        )
+        if indirect_qualified_names:
+            raise ValueError(
+                f"Class authority {target.qualname!r} has an indirect qualified "
+                "repository consumer"
+            )
+        annotation_references = tuple(
+            surface
+            for surface in lexical_dependencies.stringized_annotations
+            if surface.reference_count(target.simple_name)
+            and surface.resolves_module_name(target.simple_name, target.node)
+            and binding_authority.qualified_name_at(
+                ast.Name(id=target.simple_name, ctx=ast.Load()),
+                line=surface.literal.lineno,
+            )
+            == target.symbol
+        )
+        if (
+            any(
+                origin.module_name in known_module_names
+                for origin in module_star_import_origins(module)
+            )
+            and lexical_dependencies.external_references_named(target.simple_name)
+        ):
+            raise ValueError(
+                f"Class authority {target.qualname!r} has a star-import consumer"
+            )
+        return cls(
+            module=module,
+            declaration=target.node if module.file_path == target.file_path else None,
+            imports=imports,
+            public_exports=public_exports,
+            direct_references=direct_references,
+            qualified_references=tuple(
+                node
+                for node, qualified_name in qualified_names
+                if qualified_name == target.symbol
+            ),
+            annotation_references=annotation_references,
+        )
+
+    @staticmethod
+    def _direct_imports(
+        module: ParsedModule,
+        target: IndexedClass,
+    ) -> tuple[ClassAuthorityImportReference, ...]:
+        return tuple(
+            ClassAuthorityImportReference(statement, alias)
+            for statement in module.module.body
+            if isinstance(statement, ast.ImportFrom)
+            if module.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module,
+                level=statement.level,
+            )
+            == target.module_name
+            for alias in statement.names
+            if alias.name == target.simple_name
+        )
+
+    @staticmethod
+    def _require_supported_import_surfaces(
+        module: ParsedModule,
+        target: IndexedClass,
+        imports: tuple[ClassAuthorityImportReference, ...],
+        known_module_names: frozenset[str],
+    ) -> None:
+        supported_alias_ids = frozenset(id(reference.alias) for reference in imports)
+        unsupported_imports = tuple(
+            alias
+            for statement in ast.walk(module.module)
+            if isinstance(statement, ast.ImportFrom)
+            if module.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module,
+                level=statement.level,
+            )
+            == target.module_name
+            for alias in statement.names
+            if alias.name == target.simple_name
+            if id(alias) not in supported_alias_ids
+        )
+        if unsupported_imports:
+            raise ValueError(
+                f"Class authority {target.qualname!r} has a nested import consumer"
+            )
+        indirect_imports = tuple(
+            alias
+            for statement in ast.walk(module.module)
+            if isinstance(statement, ast.ImportFrom)
+            if (
+                imported_module
+                := module.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
+            )
+            in known_module_names
+            if imported_module != target.module_name
+            for alias in statement.names
+            if alias.name == target.simple_name
+        )
+        if indirect_imports:
+            raise ValueError(
+                f"Class authority {target.qualname!r} has an indirect import consumer"
+            )
+
+    @staticmethod
+    def _require_import_binding_collisions_absent(
+        module: ParsedModule,
+        target: IndexedClass,
+        new_name: str,
+        imports: tuple[ClassAuthorityImportReference, ...],
+    ) -> None:
+        changing_imports = tuple(
+            reference for reference in imports if reference.changes_local_binding
+        )
+        if not changing_imports:
+            return
+        declaration_index = SourceTopLevelDeclarationIndex(
+            source_path=module.file_path,
+            module=module.module,
+        )
+        old_name_bindings = declaration_index.binding_statements_by_name.get(
+            target.simple_name,
+            (),
+        )
+        import_statements = tuple(
+            dict.fromkeys(reference.statement for reference in changing_imports)
+        )
+        if old_name_bindings != import_statements:
+            raise ValueError(
+                f"Imported class binding {target.simple_name!r} is rebound"
+            )
+        if new_name in declaration_index.binding_statements_by_name:
+            raise ValueError(
+                f"Replacement class name {new_name!r} collides in {module.file_path!r}"
+            )
+        if module_public_export_contract(module).exposure_for(
+            target.simple_name
+        ).introduces_uncertainty:
+            raise ValueError(
+                f"Imported class binding {target.simple_name!r} has unresolved "
+                "export policy"
+            )
+
+    @property
+    def has_replacements(self) -> bool:
+        return self.declaration is not None or bool(
+            self.imports
+            or self.public_exports
+            or self.direct_references
+            or self.qualified_references
+            or self.annotation_references
+        )
+
+    def source_replacements(
+        self,
+        *,
+        old_name: str,
+        new_name: str,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = SourceTextGeometry(self.module.source)
+        declaration_replacements = (
+            ()
+            if self.declaration is None
+            else (
+                self._declaration_replacement(
+                    geometry,
+                    self.declaration,
+                    new_name,
+                ),
+            )
+        )
+        import_replacements = tuple(
+            self._import_replacement(geometry, reference, new_name)
+            for reference in self.imports
+        )
+        public_export_replacements = tuple(
+            self._public_export_replacement(geometry, reference, new_name)
+            for reference in self.public_exports
+        )
+        direct_replacements = tuple(
+            self._name_replacement(
+                geometry.required_node_offsets(reference),
+                new_name,
+            )
+            for reference in self.direct_references
+        )
+        qualified_replacements = tuple(
+            self._name_replacement(
+                self._qualified_name_offsets(geometry, reference),
+                new_name,
+            )
+            for reference in self.qualified_references
+        )
+        annotation_replacements = tuple(
+            self._annotation_replacement(
+                geometry,
+                reference,
+                old_name=old_name,
+                new_name=new_name,
+            )
+            for reference in self.annotation_references
+        )
+        return (
+            *declaration_replacements,
+            *import_replacements,
+            *public_export_replacements,
+            *direct_replacements,
+            *qualified_replacements,
+            *annotation_replacements,
+        )
+
+    def _declaration_replacement(
+        self,
+        geometry: SourceTextGeometry,
+        declaration: ast.ClassDef,
+        new_name: str,
+    ) -> SourceTextSpanReplacement:
+        span = ClassHeaderSpanSourceAuthority(
+            declaration,
+            self.module.source,
+        ).name_span
+        return self._name_replacement(
+            (span.start_offset, span.end_offset),
+            new_name,
+        )
+
+    @staticmethod
+    def _import_replacement(
+        geometry: SourceTextGeometry,
+        reference: ClassAuthorityImportReference,
+        new_name: str,
+    ) -> SourceTextSpanReplacement:
+        start_offset, end_offset = geometry.required_node_offsets(reference.alias)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=reference.renamed_source(new_name),
+        )
+
+    @staticmethod
+    def _public_export_replacement(
+        geometry: SourceTextGeometry,
+        reference: PublicExportNameReference,
+        new_name: str,
+    ) -> SourceTextSpanReplacement:
+        start_offset, end_offset = geometry.required_node_offsets(reference.literal)
+        literal_source = geometry.source[start_offset:end_offset]
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=reference.renamed_source(literal_source, new_name),
+        )
+
+    @staticmethod
+    def _name_replacement(
+        offsets: tuple[int, int],
+        new_name: str,
+    ) -> SourceTextSpanReplacement:
+        start_offset, end_offset = offsets
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=new_name,
+        )
+
+    @staticmethod
+    def _annotation_replacement(
+        geometry: SourceTextGeometry,
+        reference: StringizedAnnotationSurface,
+        *,
+        old_name: str,
+        new_name: str,
+    ) -> SourceTextSpanReplacement:
+        start_offset, end_offset = geometry.required_node_offsets(reference.literal)
+        literal_source = geometry.source[start_offset:end_offset]
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=reference.renamed_source(
+                literal_source,
+                old_name=old_name,
+                new_name=new_name,
+            ),
+        )
+
+    @staticmethod
+    def _qualified_name_offsets(
+        geometry: SourceTextGeometry,
+        reference: ast.Attribute,
+    ) -> tuple[int, int]:
+        _start_offset, end_offset = geometry.required_node_offsets(reference)
+        start_offset = end_offset - len(reference.attr)
+        if geometry.source[start_offset:end_offset] != reference.attr:
+            raise ValueError(
+                f"Cannot resolve qualified class name token {reference.attr!r}"
+            )
+        return start_offset, end_offset
+
+
+@dataclass(frozen=True)
+class ClassAuthorityRenameProof:
+    """Closed repository proof for one top-level class-authority rename."""
+
+    target: IndexedClass
+    modules: tuple[ClassAuthorityModuleRenameProof, ...]
 
     @classmethod
     def require(
@@ -42,12 +446,41 @@ class LocalClassAuthorityRenameProof:
         *,
         target_symbol: str,
         new_name: str,
-    ) -> "LocalClassAuthorityRenameProof":
+    ) -> "ClassAuthorityRenameProof":
+        target = cls._required_target(
+            parsed_modules,
+            class_index,
+            target_symbol=target_symbol,
+            new_name=new_name,
+        )
+        known_module_names = frozenset(
+            module.module_name for module in parsed_modules
+        )
+        modules = tuple(
+            ClassAuthorityModuleRenameProof.require(
+                module,
+                target,
+                new_name,
+                known_module_names,
+            )
+            for module in parsed_modules
+        )
+        cls._require_no_dynamic_name_surfaces(parsed_modules, target, modules)
+        return cls(target=target, modules=modules)
+
+    @staticmethod
+    def _required_target(
+        parsed_modules: tuple[ParsedModule, ...],
+        class_index: ClassFamilyIndex,
+        *,
+        target_symbol: str,
+        new_name: str,
+    ) -> IndexedClass:
         target = class_index.class_for(target_symbol)
         if target is None:
             raise ValueError(f"Class authority {target_symbol!r} is unavailable")
         if "." in target.qualname:
-            raise ValueError("Local class-authority rename requires a top-level class")
+            raise ValueError("Class-authority rename requires a top-level class")
         if target.simple_name == new_name:
             raise ValueError("Class-authority rename requires a distinct name")
         modules_by_path = {module.file_path: module for module in parsed_modules}
@@ -72,139 +505,26 @@ class LocalClassAuthorityRenameProof:
             target.simple_name
         ).introduces_uncertainty:
             raise ValueError("Class-authority export policy is unresolved")
-        lexical_dependencies = ModuleLexicalDependencyProjection.from_module(
-            source_module.module
-        )
-        binding_authority = ModuleNominalBindingAuthority(source_module)
-        direct_references = tuple(
-            reference
-            for reference in lexical_dependencies.external_references_named(
-                target.simple_name
-            )
-            if binding_authority.qualified_name_at(
-                reference,
-                line=reference.lineno,
-            )
-            == target.symbol
-        )
-        external_reference_ids = frozenset(
-            id(reference)
-            for reference in lexical_dependencies.external_name_references
-        )
-        qualified_references = tuple(
-            node
-            for node in ast.walk(source_module.module)
-            if isinstance(node, ast.Attribute)
-            if (
-                root_reference := nominal_reference_root(node)
-            ) is not None
-            and id(root_reference) in external_reference_ids
-            and binding_authority.qualified_name_at(
-                node,
-                line=node.lineno,
-            )
-            == target.symbol
-        )
-        annotation_references = tuple(
-            surface
-            for surface in lexical_dependencies.stringized_annotations
-            if surface.reference_count(target.simple_name)
-            and surface.resolves_module_name(target.simple_name, target.node)
-        )
-        cls._require_no_dynamic_name_surfaces(
-            parsed_modules,
-            target,
-            annotation_references,
-        )
-        cls._require_no_external_consumers(
-            parsed_modules,
-            target,
-        )
-        return cls(
-            target=target,
-            source_module=source_module,
-            direct_references=direct_references,
-            qualified_references=qualified_references,
-            annotation_references=annotation_references,
-        )
-
-    def source_replacements(
-        self,
-        new_name: str,
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        geometry = SourceTextGeometry(self.source_module.source)
-        declaration_span = ClassHeaderSpanSourceAuthority(
-            self.target.node,
-            self.source_module.source,
-        ).name_span
-        direct_spans = tuple(
-            geometry.required_node_offsets(reference)
-            for reference in self.direct_references
-        )
-        qualified_spans = tuple(
-            self._qualified_name_offsets(geometry, reference)
-            for reference in self.qualified_references
-        )
-        name_replacements = tuple(
-            SourceTextSpanReplacement.from_offsets(
-                start_offset=start_offset,
-                end_offset=end_offset,
-                replacement_source=new_name,
-            )
-            for start_offset, end_offset in (
-                (declaration_span.start_offset, declaration_span.end_offset),
-                *direct_spans,
-                *qualified_spans,
-            )
-        )
-        annotation_replacements = tuple(
-            self._annotation_replacement(geometry, reference, new_name)
-            for reference in self.annotation_references
-        )
-        return (*name_replacements, *annotation_replacements)
-
-    def _annotation_replacement(
-        self,
-        geometry: SourceTextGeometry,
-        reference: StringizedAnnotationSurface,
-        new_name: str,
-    ) -> SourceTextSpanReplacement:
-        start_offset, end_offset = geometry.required_node_offsets(reference.literal)
-        literal_source = geometry.source[start_offset:end_offset]
-        return SourceTextSpanReplacement.from_offsets(
-            start_offset=start_offset,
-            end_offset=end_offset,
-            replacement_source=reference.renamed_source(
-                literal_source,
-                old_name=self.target.simple_name,
-                new_name=new_name,
-            ),
-        )
-
-    @staticmethod
-    def _qualified_name_offsets(
-        geometry: SourceTextGeometry,
-        reference: ast.Attribute,
-    ) -> tuple[int, int]:
-        _start_offset, end_offset = geometry.required_node_offsets(reference)
-        start_offset = end_offset - len(reference.attr)
-        if geometry.source[start_offset:end_offset] != reference.attr:
-            raise ValueError(
-                f"Cannot resolve qualified class name token {reference.attr!r}"
-            )
-        return start_offset, end_offset
+        return target
 
     @staticmethod
     def _require_no_dynamic_name_surfaces(
         parsed_modules: tuple[ParsedModule, ...],
         target: IndexedClass,
-        annotation_references: tuple[StringizedAnnotationSurface, ...],
+        modules: tuple[ClassAuthorityModuleRenameProof, ...],
     ) -> None:
         name_pattern = re.compile(
             rf"(?<![\w]){re.escape(target.simple_name)}(?![\w])"
         )
         annotation_literal_ids = frozenset(
-            id(reference.literal) for reference in annotation_references
+            id(reference.literal)
+            for module in modules
+            for reference in module.annotation_references
+        )
+        public_export_literal_ids = frozenset(
+            id(reference.literal)
+            for module in modules
+            for reference in module.public_exports
         )
         for parsed_module in parsed_modules:
             for node in ast.walk(parsed_module.module):
@@ -213,6 +533,7 @@ class LocalClassAuthorityRenameProof:
                     and isinstance(node.value, str)
                     and name_pattern.search(node.value)
                     and id(node) not in annotation_literal_ids
+                    and id(node) not in public_export_literal_ids
                 ):
                     raise ValueError(
                         f"Class authority {target.qualname!r} has a string name surface"
@@ -231,49 +552,3 @@ class LocalClassAuthorityRenameProof:
                     raise ValueError(
                         f"Class authority {target.qualname!r} has a comment name surface"
                     )
-
-    @staticmethod
-    def _require_no_external_consumers(
-        parsed_modules: tuple[ParsedModule, ...],
-        target: IndexedClass,
-    ) -> None:
-        known_module_names = frozenset(
-            parsed_module.module_name for parsed_module in parsed_modules
-        )
-        for parsed_module in parsed_modules:
-            if parsed_module.file_path == target.file_path:
-                continue
-            if any(
-                alias.name == target.simple_name
-                and parsed_module.module_path_identity.resolve_import_from_module(
-                    imported_module=node.module,
-                    level=node.level,
-                )
-                in known_module_names
-                for node in ast.walk(parsed_module.module)
-                if isinstance(node, ast.ImportFrom)
-                for alias in node.names
-            ):
-                raise ValueError(
-                    f"Class authority {target.qualname!r} has an imported repository "
-                    "consumer"
-                )
-            if module_star_import_origins(
-                parsed_module
-            ) and ModuleLexicalDependencyProjection.from_module(
-                parsed_module.module
-            ).external_references_named(
-                target.simple_name
-            ):
-                raise ValueError(
-                    f"Class authority {target.qualname!r} has a star-import consumer"
-                )
-            if any(
-                isinstance(node, ast.Attribute)
-                and node.attr == target.simple_name
-                for node in ast.walk(parsed_module.module)
-            ):
-                raise ValueError(
-                    f"Class authority {target.qualname!r} has a qualified repository "
-                    "consumer"
-                )
