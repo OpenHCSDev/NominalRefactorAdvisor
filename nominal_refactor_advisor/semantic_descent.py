@@ -82,10 +82,12 @@ from .models import (
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
-from .semantic_identity import SemanticRoleIdentityToken
+from .semantic_identity import (
+    SemanticIdentifierTokenProjection,
+    SemanticRoleIdentityToken,
+)
 from .source_identity import resolved_source_path_text
 
-_NAME_TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+|[0-9]+")
 _SEMANTIC_STRING_LITERAL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 _CLASS_SUFFIXES = (
     "Detector",
@@ -5919,13 +5921,7 @@ class NormalizeNameProjection:
 
     @staticmethod
     def normalize(raw_name: str) -> str:
-        if not raw_name:
-            return ""
-        parts: list[str] = []
-        for segment in re.split(r"[_\-.:]+", raw_name):
-            if segment:
-                parts.extend(_NAME_TOKEN_PATTERN.findall(segment))
-        return "_".join(part.lower() for part in parts if part)
+        return "_".join(SemanticIdentifierTokenProjection.project(raw_name))
 
 
 def normalized_name_variants(raw_name: str) -> tuple[str, ...]:

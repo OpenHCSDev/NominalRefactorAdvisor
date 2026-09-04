@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
+from functools import lru_cache
+
+_SEMANTIC_IDENTIFIER_TOKEN_PATTERN = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+[0-9]*|[0-9]+"
+)
+
+
+class SemanticIdentifierTokenProjection:
+    """Project identifier-like text into stable lowercase semantic tokens."""
+
+    @staticmethod
+    @lru_cache(maxsize=16_384)
+    def project(text: str) -> tuple[str, ...]:
+        return tuple(
+            token.lower()
+            for segment in re.split(r"[^0-9A-Za-z]+", text)
+            if segment
+            for token in _SEMANTIC_IDENTIFIER_TOKEN_PATTERN.findall(segment)
+        )
 
 
 class SemanticRoleIdentityToken(StrEnum):
@@ -99,12 +119,6 @@ class SemanticRoleIdentityToken(StrEnum):
     @classmethod
     def pluralized_string_identifier_values(cls) -> frozenset[str]:
         return cls._pluralized_values(cls.string_identifier_values())
-
-    @classmethod
-    def runtime_semantic_branch_axis_values(cls) -> frozenset[str]:
-        return frozenset(
-            token.value for token in (cls.FAMILY_TOKEN, cls.KIND_TOKEN, cls.MODE_TOKEN)
-        )
 
     @classmethod
     def relation_comparison_axis_values(cls) -> frozenset[str]:

@@ -77,7 +77,10 @@ from ..models import (
     SourceLocation,
 )
 from ..patterns import PatternId
-from ..semantic_identity import SemanticRoleIdentityToken
+from ..semantic_identity import (
+    SemanticIdentifierTokenProjection,
+    SemanticRoleIdentityToken,
+)
 from ..source_index import build_source_index_artifacts
 from ..source_index import (
     STABLE_ID_AUTHORITY,
@@ -269,13 +272,6 @@ _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS = frozenset(
 )
 
 
-def _private_boundary_identifier_tokens(text: str) -> tuple[str, ...]:
-    normalized = "".join(
-        (character.lower() if character.isalnum() else "_") for character in text
-    )
-    return tuple((token for token in normalized.split("_") if token))
-
-
 def _is_exact_object_annotation(annotation: ast.AST) -> bool:
     return (isinstance(annotation, ast.Name) and annotation.id == "object") or (
         isinstance(annotation, ast.Attribute) and annotation.attr == "object"
@@ -313,7 +309,9 @@ def _private_object_boundary_fields(
                 continue
             if not _is_exact_object_annotation(statement.annotation):
                 continue
-            field_tokens = frozenset(_private_boundary_identifier_tokens(field_name))
+            field_tokens = frozenset(
+                SemanticIdentifierTokenProjection.project(field_name)
+            )
             if not (field_tokens & _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS):
                 continue
             fields_by_class.setdefault(node.name, []).append(
@@ -406,46 +404,10 @@ class FormalBoundaryStringRegistryConstant:
     line: int
 
 
-def _is_formal_boundary_literal_registry_call(node: ast.Call) -> bool:
-    call_name = ast.unparse(node.func).lower()
-    return any(
-        token in call_name for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-    )
-
-
-def _formal_boundary_registry_target_names(target: ast.AST) -> tuple[str, ...]:
-    if isinstance(target, ast.Name):
-        return (target.id,)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return tuple(
-            element.id for element in target.elts if isinstance(element, ast.Name)
-        )
-    return ()
-
-
-def _formal_boundary_registry_target_tokens(target_name: str) -> frozenset[str]:
-    return frozenset(_runtime_semantic_identifier_tokens(target_name))
-
-
-def _formal_boundary_registry_value_tokens(value: str) -> frozenset[str]:
-    return frozenset(_runtime_semantic_identifier_tokens(value))
-
-
-def _is_formal_boundary_string_registry_constant(
-    target_name: str,
-    value: str,
-) -> bool:
-    target_tokens = _formal_boundary_registry_target_tokens(target_name)
-    value_tokens = _formal_boundary_registry_value_tokens(value)
-    boundary_tokens = target_tokens | value_tokens
-    return bool(
-        boundary_tokens & _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-    ) and bool((target_tokens | value_tokens) & _FORMAL_BOUNDARY_STRING_ID_TOKENS)
-
-
 class FormalBoundaryStringRegistryAuthority:
-    @staticmethod
+    @classmethod
     def module_constants(
+        cls,
         module: ParsedModule,
     ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
         statements = tuple(
@@ -453,26 +415,21 @@ class FormalBoundaryStringRegistryAuthority:
             for statement in module.module.body
             if isinstance(statement, (ast.Assign, ast.AnnAssign))
         )
-        constants = FormalBoundaryStringRegistryAuthority.constants_from_statements(
-            statements
-        )
+        constants = cls.constants_from_statements(statements)
         if not constants:
             return ()
         calls = tuple(
             node
             for node in ast.walk(module.module)
-            if isinstance(node, ast.Call)
-            and _is_formal_boundary_literal_registry_call(node)
+            if isinstance(node, ast.Call) and cls.is_registry_call(node)
         )
-        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
-            calls,
-            constants,
-        ):
+        if not cls.has_formal_boundary_consumer(calls, constants):
             return ()
         return constants
 
-    @staticmethod
+    @classmethod
     def constants_from_statements(
+        cls,
         statements: Sequence[ast.stmt],
     ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
         constants: list[FormalBoundaryStringRegistryConstant] = []
@@ -493,8 +450,8 @@ class FormalBoundaryStringRegistryAuthority:
             if value is None:
                 continue
             for target in assignment_targets:
-                for target_name in _formal_boundary_registry_target_names(target):
-                    if _is_formal_boundary_string_registry_constant(target_name, value):
+                for target_name in cls.target_names(target):
+                    if cls.is_registry_constant(target_name, value):
                         constants.append(
                             FormalBoundaryStringRegistryConstant(
                                 target_name=target_name,
@@ -504,8 +461,9 @@ class FormalBoundaryStringRegistryAuthority:
                         )
         return tuple(constants)
 
-    @staticmethod
+    @classmethod
     def has_formal_boundary_consumer(
+        cls,
         calls: Sequence[ast.Call],
         constants: tuple[FormalBoundaryStringRegistryConstant, ...],
     ) -> bool:
@@ -513,12 +471,39 @@ class FormalBoundaryStringRegistryAuthority:
         if not constant_names:
             return False
         return any(
-            FormalBoundaryStringRegistryAuthority.call_consumes_constant(
-                node,
-                constant_names,
-            )
+            cls.call_consumes_constant(node, constant_names)
             for node in calls
         )
+
+    @staticmethod
+    def is_registry_call(node: ast.Call) -> bool:
+        call_name = ast.unparse(node.func).lower()
+        return any(
+            token in call_name
+            for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+        )
+
+    @staticmethod
+    def target_names(target: ast.AST) -> tuple[str, ...]:
+        if isinstance(target, ast.Name):
+            return (target.id,)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return tuple(
+                element.id for element in target.elts if isinstance(element, ast.Name)
+            )
+        return ()
+
+    @staticmethod
+    def is_registry_constant(target_name: str, value: str) -> bool:
+        boundary_tokens = frozenset(
+            (
+                *SemanticIdentifierTokenProjection.project(target_name),
+                *SemanticIdentifierTokenProjection.project(value),
+            )
+        )
+        return bool(
+            boundary_tokens & _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+        ) and bool(boundary_tokens & _FORMAL_BOUNDARY_STRING_ID_TOKENS)
 
     @staticmethod
     def call_consumes_constant(
@@ -528,6 +513,81 @@ class FormalBoundaryStringRegistryAuthority:
         return any(
             isinstance(child, ast.Name) and child.id in constant_names
             for child in ast.walk(node)
+        )
+
+    @classmethod
+    def source_constants(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[FormalBoundaryPythonStringConstant] | None:
+        """Collect formal-boundary constants without materializing a module AST."""
+
+        if not syntax_index.is_complete:
+            return None
+        try:
+            statements = tuple(
+                syntax_index.statement_for(node)
+                for node in syntax_index.top_level_assignment_statements()
+                if cls.native_assignment_may_declare_constant(syntax_index, node)
+            )
+            constants = cls.constants_from_statements(statements)
+            if not constants:
+                return []
+            constant_names = frozenset(
+                constant.target_name for constant in constants
+            )
+            calls: list[ast.Call] = []
+            for call_node in sorted(
+                syntax_index.common_captures().get("call", ()),
+                key=lambda node: (node.start_byte, -node.end_byte),
+            ):
+                function = call_node.child_by_field_name("function")
+                if function is None:
+                    continue
+                function_source = (
+                    syntax_index.source_for(function).decode("utf-8").lower()
+                )
+                if not any(
+                    token in function_source
+                    for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+                ):
+                    continue
+                expression = syntax_index.expression_for(call_node)
+                if not isinstance(expression, ast.Call):
+                    return None
+                if cls.is_registry_call(expression) and cls.call_consumes_constant(
+                    expression,
+                    constant_names,
+                ):
+                    calls.append(expression)
+                    break
+            if not cls.has_formal_boundary_consumer(calls, constants):
+                return []
+            return [
+                FormalBoundaryPythonStringConstant(
+                    file_path=source_module.file_path,
+                    target_name=constant.target_name,
+                    value=constant.value,
+                    line=constant.line,
+                )
+                for constant in constants
+            ]
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def native_assignment_may_declare_constant(
+        syntax_index: NativePythonSyntaxIndex,
+        statement: Node,
+    ) -> bool:
+        statement_source = syntax_index.source_for(statement).decode("utf-8")
+        lowered_source = statement_source.lower()
+        return bool(statement_source) and any(
+            token in lowered_source
+            for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+        ) and any(
+            token in lowered_source for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
         )
 
 
@@ -592,12 +652,7 @@ class FormalBoundaryPythonStringConstantFamily(
     item_type = FormalBoundaryPythonStringConstant
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
-        lambda source_module, syntax_index: (
-            _native_formal_boundary_python_string_constants(
-                source_module,
-                syntax_index,
-            )
-        )
+        FormalBoundaryStringRegistryAuthority.source_constants
     )
 
     @classmethod
@@ -617,81 +672,6 @@ class FormalBoundaryPythonStringConstantFamily(
                 parsed_module
             )
         ]
-
-
-def _native_formal_boundary_python_string_constants(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[FormalBoundaryPythonStringConstant] | None:
-    """Collect formal-boundary constants from native-selected fragments."""
-
-    if not syntax_index.is_complete:
-        return None
-    try:
-        statements = tuple(
-            syntax_index.statement_for(node)
-            for node in syntax_index.top_level_assignment_statements()
-            if (
-                (statement_source := syntax_index.source_for(node).decode("utf-8"))
-                and any(
-                    token in statement_source.lower()
-                    for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-                )
-                and any(
-                    token in statement_source.lower()
-                    for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
-                )
-            )
-        )
-        constants = FormalBoundaryStringRegistryAuthority.constants_from_statements(
-            statements
-        )
-        if not constants:
-            return []
-        constant_names = frozenset(constant.target_name for constant in constants)
-        calls: list[ast.Call] = []
-        for call_node in sorted(
-            syntax_index.common_captures().get("call", ()),
-            key=lambda node: (node.start_byte, -node.end_byte),
-        ):
-            function = call_node.child_by_field_name("function")
-            if function is None:
-                continue
-            function_source = syntax_index.source_for(function).decode("utf-8").lower()
-            if not any(
-                token in function_source
-                for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-            ):
-                continue
-            expression = syntax_index.expression_for(call_node)
-            if not isinstance(expression, ast.Call):
-                return None
-            if _is_formal_boundary_literal_registry_call(
-                expression
-            ) and FormalBoundaryStringRegistryAuthority.call_consumes_constant(
-                expression,
-                constant_names,
-            ):
-                calls.append(expression)
-                break
-        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
-            calls,
-            constants,
-        ):
-            return []
-        return [
-            FormalBoundaryPythonStringConstant(
-                file_path=source_module.file_path,
-                target_name=constant.target_name,
-                value=constant.value,
-                line=constant.line,
-            )
-            for constant in constants
-        ]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
 FormalBoundaryStringConstantRecord: TypeAlias = FormalBoundaryPythonStringConstant
 FormalBoundaryStringConstantRecords: TypeAlias = tuple[
     FormalBoundaryStringConstantRecord,
@@ -755,7 +735,7 @@ def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
     path_tokens = frozenset(
         token
         for part in path.with_suffix("").parts
-        for token in _runtime_semantic_identifier_tokens(part)
+        for token in SemanticIdentifierTokenProjection.project(part)
     )
     return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
 
@@ -992,6 +972,56 @@ class GeneratedBoundarySemanticConstantSite:
 
 class GeneratedBoundarySemanticConstantAuthority:
     @classmethod
+    def source_sites(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[GeneratedBoundarySemanticConstantSite] | None:
+        """Collect top-level semantic constants without materializing an AST."""
+
+        if not syntax_index.is_complete:
+            return None
+        try:
+            statements = tuple(
+                syntax_index.statement_for(node)
+                for node in syntax_index.top_level_assignment_statements()
+                if cls.native_assignment_may_declare_constant(syntax_index, node)
+            )
+            return list(
+                cls.sites_from_statements(
+                    source_module.file_path,
+                    statements,
+                    cls.source_is_generated_boundary(
+                        source_module.module_name,
+                        source_module.path,
+                        source_module.source,
+                    ),
+                )
+            )
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
+
+    @classmethod
+    def native_assignment_may_declare_constant(
+        cls,
+        syntax_index: NativePythonSyntaxIndex,
+        statement: Node,
+    ) -> bool:
+        """Return whether native syntax can contain an owned constant site."""
+
+        pending = list(statement.named_children)
+        while pending:
+            node = pending.pop()
+            if node.type == "assignment":
+                target = node.child_by_field_name("left")
+                if target is not None and target.type == "identifier":
+                    name = syntax_index.source_for(target).decode("utf-8")
+                    if cls.is_semantic_constant_name(name):
+                        return True
+            pending.extend(node.named_children)
+        return False
+
+    @classmethod
     def findings(
         cls,
         detector: IssueDetector,
@@ -1076,9 +1106,9 @@ class GeneratedBoundarySemanticConstantAuthority:
     def is_semantic_constant_name(name: str) -> bool:
         return name.isupper() and "_" in name
 
-    @staticmethod
-    def module_is_generated_boundary(module: ParsedModule) -> bool:
-        return GeneratedBoundarySemanticConstantAuthority.source_is_generated_boundary(
+    @classmethod
+    def module_is_generated_boundary(cls, module: ParsedModule) -> bool:
+        return cls.source_is_generated_boundary(
             module.module_name,
             module.path,
             module.source,
@@ -1093,14 +1123,14 @@ class GeneratedBoundarySemanticConstantAuthority:
         path_tokens = frozenset(
             token
             for part in (*module_name.split("."), path.stem)
-            for token in _runtime_semantic_identifier_tokens(part)
+            for token in SemanticIdentifierTokenProjection.project(part)
         )
         if path_tokens & _GENERATED_BOUNDARY_TOKENS:
             return True
         return any(
             line.lstrip().startswith("#")
             and bool(
-                frozenset(_runtime_semantic_identifier_tokens(line))
+                frozenset(SemanticIdentifierTokenProjection.project(line))
                 & _GENERATED_BOUNDARY_TOKENS
             )
             for line in source.splitlines()[:8]
@@ -1149,12 +1179,7 @@ class GeneratedBoundarySemanticConstantSiteFamily(
     item_type = GeneratedBoundarySemanticConstantSite
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
-        lambda source_module, syntax_index: (
-            _native_generated_boundary_semantic_constant_sites(
-                source_module,
-                syntax_index,
-            )
-        )
+        GeneratedBoundarySemanticConstantAuthority.source_sites
     )
 
     @classmethod
@@ -1166,62 +1191,6 @@ class GeneratedBoundarySemanticConstantSiteFamily(
         return list(
             GeneratedBoundarySemanticConstantAuthority.module_sites(parsed_module)
         )
-
-
-def _native_generated_boundary_semantic_constant_sites(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[GeneratedBoundarySemanticConstantSite] | None:
-    """Collect top-level semantic constants from native-selected assignments."""
-
-    if not syntax_index.is_complete:
-        return None
-    try:
-        statements = tuple(
-            syntax_index.statement_for(node)
-            for node in syntax_index.top_level_assignment_statements()
-            if _native_assignment_may_declare_semantic_constant(
-                syntax_index,
-                node,
-            )
-        )
-        generated_boundary = (
-            GeneratedBoundarySemanticConstantAuthority.source_is_generated_boundary(
-                source_module.module_name,
-                source_module.path,
-                source_module.source,
-            )
-        )
-        return list(
-            GeneratedBoundarySemanticConstantAuthority.sites_from_statements(
-                source_module.file_path,
-                statements,
-                generated_boundary,
-            )
-        )
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
-def _native_assignment_may_declare_semantic_constant(
-    syntax_index: NativePythonSyntaxIndex,
-    statement: Node,
-) -> bool:
-    """Cheap necessary filter for uppercase named assignment targets."""
-
-    pending = list(statement.named_children)
-    while pending:
-        node = pending.pop()
-        if node.type == "assignment":
-            target = node.child_by_field_name("left")
-            if target is not None and target.type == "identifier":
-                name = syntax_index.source_for(target).decode("utf-8")
-                if GeneratedBoundarySemanticConstantAuthority.is_semantic_constant_name(
-                    name
-                ):
-                    return True
-        pending.extend(node.named_children)
-    return False
 
 
 class GeneratedBoundarySemanticConstantMirrorDetector(
@@ -1432,43 +1401,6 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         ]
 
 
-_RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
-    (
-        *SemanticRoleIdentityToken.runtime_semantic_branch_axis_values(),
-        "action",
-        "basis",
-        "budget",
-        "certified",
-        "frontier",
-        "formal",
-        "materialization",
-        "policy",
-        "profile",
-        "projection",
-        "repair",
-        "request",
-        "residual",
-        "runtime",
-        "selection",
-        "semantic",
-        "source",
-        "theorem",
-    )
-)
-
-
-def _runtime_semantic_identifier_tokens(text: str) -> tuple[str, ...]:
-    normalized = "".join(
-        (character.lower() if character.isalnum() else "_") for character in text
-    )
-    return tuple((token for token in normalized.split("_") if token))
-
-
-def _runtime_semantic_axis_is_interesting(dispatch_axis_expression: str) -> bool:
-    tokens = set(_runtime_semantic_identifier_tokens(dispatch_axis_expression))
-    return bool(tokens & _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
-
-
 def _stable_text_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
@@ -1524,14 +1456,14 @@ _RELATION_ARTIFACT_RESULT_TOKENS = frozenset(
 
 def _relation_text_has_axis(text: str) -> bool:
     return bool(
-        set(_runtime_semantic_identifier_tokens(text))
+        set(SemanticIdentifierTokenProjection.project(text))
         & _RELATION_COMPARISON_AXIS_TOKENS
     )
 
 
 def _relation_result_has_artifact(text: str) -> bool:
     return bool(
-        set(_runtime_semantic_identifier_tokens(text))
+        set(SemanticIdentifierTokenProjection.project(text))
         & _RELATION_ARTIFACT_RESULT_TOKENS
     )
 
@@ -3775,28 +3707,15 @@ class _VariantMethodFamilyCandidate:
         return tuple(evidence[:8])
 
 
-class SemanticTokenAuthority:
-    """Normalize candidate relation strings into comparable semantic tokens."""
-
-    @staticmethod
-    def identifier_tokens(value: str) -> tuple[str, ...]:
-        tokens: list[str] = []
-        for chunk in re.split(r"[^0-9A-Za-z]+", value):
-            if not chunk:
-                continue
-            matches = re.findall(
-                r"[A-Z]+(?=[A-Z][a-z]|[0-9]|\b)|[A-Z]?[a-z]+|[0-9]+",
-                chunk,
-            )
-            tokens.extend(match.lower() for match in matches if match)
-        return tuple(tokens)
+class AlgebraicVariantSemanticTokenAuthority:
+    """Own the filtered token vocabulary for algebraic variant candidates."""
 
     @staticmethod
     def tokens(*values: str) -> frozenset[str]:
         tokens = {
             token
             for value in values
-            for token in SemanticTokenAuthority.identifier_tokens(value)
+            for token in SemanticIdentifierTokenProjection.project(value)
             if len(token) >= 3 and token not in _IDENTIFIER_STOP_TOKENS
         }
         return frozenset(tokens)
@@ -4112,7 +4031,7 @@ def _native_variant_method_surfaces(
         )
         if len(statement_nodes) > 8:
             continue
-        if len(SemanticTokenAuthority.identifier_tokens(method_name)) < 2:
+        if len(SemanticIdentifierTokenProjection.project(method_name)) < 2:
             continue
         arguments = syntax_index.arguments_for(function_node)
         parameter_names = {
@@ -4233,13 +4152,13 @@ class RelatedCompositionSignalsAuthority:
         token_sources: tuple[str, ...],
         field_names: tuple[str, ...] = (),
     ) -> tuple[CancelableCompositionSignal, ...]:
-        source_tokens = SemanticTokenAuthority.tokens(*token_sources)
+        source_tokens = AlgebraicVariantSemanticTokenAuthority.tokens(*token_sources)
         field_name_set = set(field_names)
         related = []
         for signal in signals:
             if signal.file_path != file_path:
                 continue
-            signal_tokens = SemanticTokenAuthority.tokens(
+            signal_tokens = AlgebraicVariantSemanticTokenAuthority.tokens(
                 signal.qualname,
                 signal.carrier_name,
                 signal.source_name,
@@ -4351,7 +4270,7 @@ def _variant_method_surface_from_owner_facts(
     construction_shape = _construction_shape(method)
     if construction_shape is None:
         return None
-    method_tokens = SemanticTokenAuthority.identifier_tokens(method.name)
+    method_tokens = SemanticIdentifierTokenProjection.project(method.name)
     if len(method_tokens) < 2:
         return None
     forwarded_field_names = sorted_tuple(
