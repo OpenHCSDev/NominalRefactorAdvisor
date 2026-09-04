@@ -187,6 +187,77 @@ class ArchitectureGuardDispatchSubject:
     def matches_dispatch_expression(self, expression: ast.AST) -> bool:
         return self.matches(expression) or self.matches_runtime_type_call(expression)
 
+    @classmethod
+    def accepts_value_case(cls, expression: ast.AST) -> bool:
+        return (
+            (isinstance(expression, ast.Constant) and expression.value is not None)
+            or isinstance(expression, ast.Attribute)
+            or (
+                isinstance(expression, (ast.Tuple, ast.List, ast.Set))
+                and any(cls.accepts_value_case(item) for item in expression.elts)
+            )
+        )
+
+    @classmethod
+    def accepts_runtime_type_case(cls, expression: ast.AST) -> bool:
+        return isinstance(expression, (ast.Name, ast.Attribute)) or (
+            isinstance(expression, ast.Tuple)
+            and any(cls.accepts_runtime_type_case(item) for item in expression.elts)
+        )
+
+    def comparison_relation_matches(
+        self,
+        left: ast.AST,
+        right: ast.AST,
+    ) -> bool:
+        return (
+            (self.matches(left) and self.accepts_value_case(right))
+            or (self.matches(right) and self.accepts_value_case(left))
+            or (
+                self.matches_runtime_type_call(left)
+                and self.accepts_runtime_type_case(right)
+            )
+            or (
+                self.matches_runtime_type_call(right)
+                and self.accepts_runtime_type_case(left)
+            )
+        )
+
+    def comparison_matches(self, comparison: ast.Compare) -> bool:
+        operands = (comparison.left, *comparison.comparators)
+        return any(
+            isinstance(
+                operator,
+                (ast.Eq, ast.NotEq, ast.Is, ast.IsNot, ast.In, ast.NotIn),
+            )
+            and self.comparison_relation_matches(left, right)
+            for left, operator, right in zip(
+                operands,
+                comparison.ops,
+                operands[1:],
+            )
+        )
+
+    def isinstance_call_matches(self, call: ast.Call) -> bool:
+        return (
+            isinstance(call.func, ast.Name)
+            and call.func.id == "isinstance"
+            and len(call.args) >= 2
+            and self.matches(call.args[0])
+        )
+
+    def conditional_matches(self, test: ast.AST) -> bool:
+        candidates = tuple(ast.walk(test))
+        return any(
+            self.comparison_matches(candidate)
+            for candidate in candidates
+            if isinstance(candidate, ast.Compare)
+        ) or any(
+            self.isinstance_call_matches(candidate)
+            for candidate in candidates
+            if isinstance(candidate, ast.Call)
+        )
+
 
 class ArchitectureGuardDispatchSiteKind(StrEnum):
     """Syntax forms that recover a forbidden semantic case downstream."""
@@ -197,87 +268,6 @@ class ArchitectureGuardDispatchSiteKind(StrEnum):
 
     def message(self, subject: ArchitectureGuardDispatchSubject) -> str:
         return f"Forbidden {self.value} dispatch over {subject.source!r}"
-
-
-def _semantic_dispatch_case_expression(expression: ast.AST) -> bool:
-    return (
-        (isinstance(expression, ast.Constant) and expression.value is not None)
-        or isinstance(expression, ast.Attribute)
-        or (
-            isinstance(expression, (ast.Tuple, ast.List, ast.Set))
-            and any(
-                _semantic_dispatch_case_expression(item) for item in expression.elts
-            )
-        )
-    )
-
-
-def _runtime_type_dispatch_case_expression(expression: ast.AST) -> bool:
-    return isinstance(expression, (ast.Name, ast.Attribute)) or (
-        isinstance(expression, ast.Tuple)
-        and any(
-            _runtime_type_dispatch_case_expression(item) for item in expression.elts
-        )
-    )
-
-
-def _comparison_relation_dispatches_subject(
-    left: ast.AST,
-    right: ast.AST,
-    subject: ArchitectureGuardDispatchSubject,
-) -> bool:
-    return (
-        (subject.matches(left) and _semantic_dispatch_case_expression(right))
-        or (subject.matches(right) and _semantic_dispatch_case_expression(left))
-        or (
-            subject.matches_runtime_type_call(left)
-            and _runtime_type_dispatch_case_expression(right)
-        )
-        or (
-            subject.matches_runtime_type_call(right)
-            and _runtime_type_dispatch_case_expression(left)
-        )
-    )
-
-
-def _comparison_dispatches_subject(
-    comparison: ast.Compare,
-    subject: ArchitectureGuardDispatchSubject,
-) -> bool:
-    operands = (comparison.left, *comparison.comparators)
-    return any(
-        isinstance(operator, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot, ast.In, ast.NotIn))
-        and _comparison_relation_dispatches_subject(left, right, subject)
-        for left, operator, right in zip(operands, comparison.ops, operands[1:])
-    )
-
-
-def _isinstance_dispatches_subject(
-    call: ast.Call,
-    subject: ArchitectureGuardDispatchSubject,
-) -> bool:
-    return (
-        isinstance(call.func, ast.Name)
-        and call.func.id == "isinstance"
-        and len(call.args) >= 2
-        and subject.matches(call.args[0])
-    )
-
-
-def _conditional_dispatches_subject(
-    test: ast.AST,
-    subject: ArchitectureGuardDispatchSubject,
-) -> bool:
-    candidates = tuple(ast.walk(test))
-    return any(
-        _comparison_dispatches_subject(candidate, subject)
-        for candidate in candidates
-        if isinstance(candidate, ast.Compare)
-    ) or any(
-        _isinstance_dispatches_subject(candidate, subject)
-        for candidate in candidates
-        if isinstance(candidate, ast.Call)
-    )
 
 
 class _ForbiddenDispatchCollector(ast.NodeVisitor):
@@ -309,7 +299,7 @@ class _ForbiddenDispatchCollector(ast.NodeVisitor):
 
     def visit_If(self, node: ast.If) -> None:
         for subject in self.subjects:
-            if _conditional_dispatches_subject(node.test, subject):
+            if subject.conditional_matches(node.test):
                 self._append(
                     node,
                     subject,
