@@ -274,6 +274,9 @@ them, and are not published as compatibility aliases.
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
+.. automodule:: nominal_refactor_advisor.codemod_declaration_source
+   :members: ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, ClassBaseRewriteTarget, FunctionSignatureSourceAuthority
+
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
 
