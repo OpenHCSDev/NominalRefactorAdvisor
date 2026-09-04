@@ -3003,11 +3003,58 @@ class FindingBackedSemanticDescentGraphRequest:
 
 
 @dataclass(frozen=True)
-class FindingBackedAuthorityEvidence:
+class FindingBackedAuthorityEvidence(ABC):
     """Authority location plus whether the detector actually observed its source."""
 
     location: SourceLocation
-    claim_provenance: AuthorityClaimProvenance
+    claim_provenance: ClassVar[AuthorityClaimProvenance]
+
+    @abstractmethod
+    def prioritized_authority_candidates(
+        self,
+        *,
+        metric_candidates: tuple[str | None, ...],
+        evidence_candidates: tuple[str, ...],
+        location_candidates: tuple[str, ...],
+    ) -> tuple[str | None, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class DetectorSourceFindingAuthorityEvidence(FindingBackedAuthorityEvidence):
+    """Detector evidence naming an observed source authority."""
+
+    claim_provenance = AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
+
+    def prioritized_authority_candidates(
+        self,
+        *,
+        metric_candidates: tuple[str | None, ...],
+        evidence_candidates: tuple[str, ...],
+        location_candidates: tuple[str, ...],
+    ) -> tuple[str | None, ...]:
+        return (*location_candidates, *evidence_candidates)
+
+
+@dataclass(frozen=True)
+class InferredProjectionFindingAuthorityEvidence(FindingBackedAuthorityEvidence):
+    """Presentation evidence requiring metric-first authority inference."""
+
+    claim_provenance = AuthorityClaimProvenance.INFERRED_FROM_PROJECTION
+
+    def prioritized_authority_candidates(
+        self,
+        *,
+        metric_candidates: tuple[str | None, ...],
+        evidence_candidates: tuple[str, ...],
+        location_candidates: tuple[str, ...],
+    ) -> tuple[str | None, ...]:
+        return (
+            *metric_candidates[:1],
+            *evidence_candidates,
+            *location_candidates,
+            *metric_candidates[1:],
+        )
 
 
 class FindingBackedAuthorityProjection:
@@ -3022,8 +3069,7 @@ class FindingBackedAuthorityProjection:
         authority_id = semantic_descent_finding_authority_id(finding)
         authority_name = FindingBackedAuthorityNameProjection.authority_name(
             finding,
-            authority_evidence.location,
-            prefer_metric_authority=finding.authority_evidence is None,
+            authority_evidence,
         )
         return SemanticAuthority(
             authority_id=authority_id,
@@ -3045,13 +3091,9 @@ class FindingBackedAuthorityProjection:
         finding: RefactorFinding,
     ) -> FindingBackedAuthorityEvidence:
         if finding.authority_evidence is not None:
-            return FindingBackedAuthorityEvidence(
-                location=finding.authority_evidence,
-                claim_provenance=(AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE),
-            )
-        return FindingBackedAuthorityEvidence(
+            return DetectorSourceFindingAuthorityEvidence(finding.authority_evidence)
+        return InferredProjectionFindingAuthorityEvidence(
             location=FindingBackedPresentationProjection.projection_location(finding),
-            claim_provenance=AuthorityClaimProvenance.INFERRED_FROM_PROJECTION,
         )
 
 
@@ -3062,33 +3104,21 @@ class FindingBackedAuthorityNameProjection:
     def authority_name(
         cls,
         finding: RefactorFinding,
-        location: SourceLocation,
-        *,
-        prefer_metric_authority: bool,
+        authority_evidence: FindingBackedAuthorityEvidence,
     ) -> str:
-        metric_candidates = (
-            cls._metric_authority_candidates(finding.metrics)
-            if prefer_metric_authority
-            else ()
-        )
+        metric_candidates = finding.metrics.semantic_authority_name_candidates()
         evidence_candidates = cls._evidence_owner_candidates(finding)
-        location_candidates = cls._authority_name_candidates(location.symbol)
-        authority_candidates = (
-            (
-                *metric_candidates[:1],
-                *evidence_candidates,
-                *location_candidates,
-                *metric_candidates[1:],
-            )
-            if prefer_metric_authority
-            else (
-                *location_candidates,
-                *evidence_candidates,
-            )
+        location_candidates = cls._authority_name_candidates(
+            authority_evidence.location.symbol
+        )
+        authority_candidates = authority_evidence.prioritized_authority_candidates(
+            metric_candidates=metric_candidates,
+            evidence_candidates=evidence_candidates,
+            location_candidates=location_candidates,
         )
         return (
             FindingAuthorityNamePolicy.first_specific_name(*authority_candidates)
-            or location.symbol
+            or authority_evidence.location.symbol
         )
 
     @staticmethod
@@ -3097,12 +3127,6 @@ class FindingBackedAuthorityNameProjection:
             return (symbol,)
         owner, _member = symbol.split(".", 1)
         return (owner, symbol)
-
-    @staticmethod
-    def _metric_authority_candidates(
-        metrics: FindingMetrics,
-    ) -> tuple[str | None, ...]:
-        return metrics.semantic_authority_name_candidates()
 
     @classmethod
     def _evidence_owner_candidates(

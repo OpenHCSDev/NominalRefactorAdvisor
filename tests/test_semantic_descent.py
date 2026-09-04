@@ -943,9 +943,18 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     authority = graph.authorities[0]
     projection = graph.projections[0]
     certificate = graph.missing_descent_certificates[0]
+    authority_evidence = (
+        semantic_descent_module.FindingBackedAuthorityProjection.authority_evidence(
+            finding
+        )
+    )
 
     assert authority.name == "Step"
     assert finding.authority_evidence == finding.evidence[1]
+    assert isinstance(
+        authority_evidence,
+        semantic_descent_module.DetectorSourceFindingAuthorityEvidence,
+    )
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
     assert (
         authority.claim_provenance is AuthorityClaimProvenance.DETECTOR_SOURCE_EVIDENCE
@@ -1018,8 +1027,17 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     graph = build_finding_backed_semantic_descent_graph((finding,))
     authority = graph.authorities[0]
     certificate = graph.missing_descent_certificates[0]
+    authority_evidence = (
+        semantic_descent_module.FindingBackedAuthorityProjection.authority_evidence(
+            finding
+        )
+    )
 
     assert authority.name == "AxisRoleAuthority"
+    assert isinstance(
+        authority_evidence,
+        semantic_descent_module.InferredProjectionFindingAuthorityEvidence,
+    )
     assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
     assert (
         authority.claim_provenance is AuthorityClaimProvenance.INFERRED_FROM_PROJECTION
