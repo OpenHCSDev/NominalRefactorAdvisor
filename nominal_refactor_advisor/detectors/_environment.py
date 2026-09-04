@@ -851,30 +851,17 @@ class EnvironmentValueNormalizationAuthority:
 
 
 @dataclass(frozen=True)
-class _EnvironmentBooleanParserSite(SourceLocation):
-    read_kind: EnvironmentReadKind
-    environment_key: str
-    token_values: tuple[str, ...]
-    matched_decision: bool
-    absent_decision: bool | None
-    absent_source: str | None
+class _EnvironmentAbsentSemantics:
+    decision: bool | None
+    source: str | None
 
-
-def _absent_semantics(
-    read: _EnvironmentRead,
-    source_names: tuple[str, ...],
-    value_expression: ast.AST,
-    overrides: dict[str, _MissingOverride],
-    token_values: tuple[str, ...],
-    matched_decision: bool,
-) -> tuple[bool | None, str | None]:
-    method_chain = EnvironmentValueNormalizationAuthority.method_chain(
-        value_expression,
-        frozenset(source_names),
-        read,
-    )
-
-    def decision_for_literal(literal: str) -> bool | None:
+    @staticmethod
+    def decision_for_literal(
+        literal: str,
+        method_chain: tuple[EnvironmentValueNormalizer, ...] | None,
+        token_values: tuple[str, ...],
+        matched_decision: bool,
+    ) -> bool | None:
         if method_chain is None:
             return None
         normalized = EnvironmentValueNormalizationAuthority.apply(
@@ -883,33 +870,75 @@ def _absent_semantics(
         )
         return matched_decision if normalized in token_values else not matched_decision
 
-    for source_name in source_names:
-        override = overrides.get(source_name)
-        if override is None:
-            continue
-        if override.decision is not None:
-            return override.decision, f"explicit `{source_name} is None` return"
-        if override.literal is not None:
-            decision = decision_for_literal(override.literal)
-            if decision is not None:
-                return (
-                    decision,
-                    f"`{source_name} is None` fallback {override.literal!r}",
+    @classmethod
+    def from_parser_context(
+        cls,
+        read: _EnvironmentRead,
+        source_names: tuple[str, ...],
+        value_expression: ast.AST,
+        overrides: dict[str, _MissingOverride],
+        token_values: tuple[str, ...],
+        matched_decision: bool,
+    ) -> "_EnvironmentAbsentSemantics":
+        method_chain = EnvironmentValueNormalizationAuthority.method_chain(
+            value_expression,
+            frozenset(source_names),
+            read,
+        )
+        for source_name in source_names:
+            override = overrides.get(source_name)
+            if override is None:
+                continue
+            if override.decision is not None:
+                return cls(
+                    override.decision,
+                    f"explicit `{source_name} is None` return",
                 )
-    literal_decision = (
-        None
-        if read.missing_literal is None
-        else decision_for_literal(read.missing_literal)
-    )
-    implicit_none_decision = not matched_decision if method_chain == () else None
-    read_decision = read.environment_read_missing_mode.select_absent_decision(
-        literal_decision=literal_decision,
-        implicit_none_decision=implicit_none_decision,
-    )
-    read_source = read.environment_read_missing_mode.absent_source(read.missing_literal)
-    if read_decision is not None and read_source is not None:
-        return read_decision, read_source
-    return None, None
+            if override.literal is not None:
+                decision = cls.decision_for_literal(
+                    override.literal,
+                    method_chain,
+                    token_values,
+                    matched_decision,
+                )
+                if decision is not None:
+                    return cls(
+                        decision,
+                        f"`{source_name} is None` fallback {override.literal!r}",
+                    )
+        literal_decision = (
+            None
+            if read.missing_literal is None
+            else cls.decision_for_literal(
+                read.missing_literal,
+                method_chain,
+                token_values,
+                matched_decision,
+            )
+        )
+        read_decision = read.environment_read_missing_mode.select_absent_decision(
+            literal_decision=literal_decision,
+            implicit_none_decision=(
+                not matched_decision if method_chain == () else None
+            ),
+        )
+        read_source = read.environment_read_missing_mode.absent_source(
+            read.missing_literal
+        )
+        return (
+            cls(read_decision, read_source)
+            if read_decision is not None and read_source is not None
+            else cls(None, None)
+        )
+
+
+@dataclass(frozen=True)
+class _EnvironmentBooleanParserSite(SourceLocation):
+    read_kind: EnvironmentReadKind
+    environment_key: str
+    token_values: tuple[str, ...]
+    matched_decision: bool
+    absence: _EnvironmentAbsentSemantics
 
 
 def _environment_boolean_parser_sites(
@@ -943,7 +972,7 @@ def _environment_boolean_parser_sites(
         seen.add(identity)
         matched_decision = isinstance(operator, ast.In)
         source_names = _expression_lineage_names(node.left, read, lineage)
-        absent_decision, absent_source = _absent_semantics(
+        absence = _EnvironmentAbsentSemantics.from_parser_context(
             read,
             source_names,
             node.left,
@@ -960,8 +989,7 @@ def _environment_boolean_parser_sites(
                 environment_key=read.key,
                 token_values=token_values,
                 matched_decision=matched_decision,
-                absent_decision=absent_decision,
-                absent_source=absent_source,
+                absence=absence,
             )
         )
     return tuple(sites)
@@ -1203,9 +1231,9 @@ def _parser_candidate(
         f"interprets `{site.read_kind.value}` through local {token_role}-token "
         f"values {site.token_values}"
     )
-    if site.absent_decision is not None:
-        absent_state = EnvironmentFlagDecision(site.absent_decision).label
-        detail += f"; {site.absent_source} makes absence {absent_state}"
+    if site.absence.decision is not None:
+        absent_state = EnvironmentFlagDecision(site.absence.decision).label
+        detail += f"; {site.absence.source} makes absence {absent_state}"
     if authority is not None:
         detail += f" despite existing declared authority `{authority.symbol}`"
     return _EnvironmentBooleanDriftCandidate(
@@ -1217,8 +1245,8 @@ def _parser_candidate(
             read_kind=site.read_kind,
             token_values=site.token_values,
             matched_decision=site.matched_decision,
-            absent_decision=site.absent_decision,
-            absent_source=site.absent_source,
+            absent_decision=site.absence.decision,
+            absent_source=site.absence.source,
         ),
         summary_detail=detail,
         authority=authority,

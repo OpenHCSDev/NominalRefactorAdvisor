@@ -3153,7 +3153,11 @@ class CandidateCollectionAuthority:
             if CLASS_NODE_AUTHORITY.is_abstract(node):
                 continue
             field_names = _annassign_field_names(node)
-            normalized_role_fields = _normalized_semantic_role_fields(field_names)
+            normalized_role_fields = (
+                SUPPORT_PROJECTION_AUTHORITY.normalized_semantic_role_fields(
+                    field_names
+                )
+            )
             normalized_roles = tuple(
                 role_name for role_name, _ in normalized_role_fields
             )
@@ -6947,23 +6951,6 @@ def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
-def _normalized_semantic_role_fields(
-    field_names: tuple[str, ...],
-) -> NormalizedRoleFieldMap:
-    role_to_fields: dict[str, set[str]] = defaultdict(set)
-    for field_name in field_names:
-        for role_name in SUPPORT_PROJECTION_AUTHORITY.normalize_semantic_field_roles(
-            field_name
-        ):
-            role_to_fields[role_name].add(field_name)
-    return tuple(
-        (
-            (role_name, sorted_tuple(field_names))
-            for role_name, field_names in sorted(role_to_fields.items())
-        )
-    )
-
-
 _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
     {
         "candidate",
@@ -7347,6 +7334,19 @@ class SupportProjectionAuthority:
         if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
             roles.append(_NAME_FAMILY_FIELD)
         return tuple(dict.fromkeys(roles))
+
+    def normalized_semantic_role_fields(
+        self,
+        field_names: tuple[str, ...],
+    ) -> NormalizedRoleFieldMap:
+        role_to_fields: dict[str, set[str]] = defaultdict(set)
+        for field_name in field_names:
+            for role_name in self.normalize_semantic_field_roles(field_name):
+                role_to_fields[role_name].add(field_name)
+        return tuple(
+            (role_name, sorted_tuple(role_fields))
+            for role_name, role_fields in sorted(role_to_fields.items())
+        )
 
     def materialize_observations(
         self,

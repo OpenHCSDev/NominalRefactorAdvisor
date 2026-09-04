@@ -4074,12 +4074,9 @@ declare_candidate_rule_detector(
         field_names=candidate.index_expressions,
         source_name="carrier_tuple_context",
     ),
-    candidate_collector=_tuple_index_semantic_opacity_candidates,
-    source_candidate_collector=lambda module, syntax_index, config: (
-        None
-        if any(token in module.source for token in _TUPLE_INDEX_OPACITY_CARRIER_CALLS)
-        and re.search(r"\[[^\]]*\d[^\]]*\]", module.source) is not None
-        else ()
+    candidate_collector=TupleIndexSemanticOpacityCandidateCollector.collect,
+    source_candidate_collector=(
+        TupleIndexSemanticOpacityCandidateCollector.collect_source
     ),
     detector_base=SourceModuleCollectorCandidateDetector,
 )

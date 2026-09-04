@@ -37,7 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import combinations
-from typing import Callable, TypeAlias, TypeVar
+from typing import Callable, ClassVar, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
@@ -3820,33 +3820,6 @@ def _compact_method_family_specific_method_plans(
     return _method_family_more_specific_method_plans(method_plans, class_index)
 
 
-def _compact_semantic_overlap_method_candidates(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
-) -> tuple[SemanticOverlapMethodCandidate, ...]:
-    candidates: list[SemanticOverlapMethodCandidate] = []
-    seen: set[tuple[str, str, tuple[str, ...]]] = set()
-    for method_plan in method_plans:
-        family_plan = family_plans[(method_plan.base_symbol, method_plan.class_names)]
-        candidate = _method_family_candidate_from_method_plan_path(
-            method_plan.file_paths[0], method_plan, family_plan
-        )
-        key = (candidate.base_name, candidate.method_name, candidate.class_names)
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-            candidate.method_name,
-        ),
-    )
-
-
 def _compact_method_family_candidates(
     method_plans: tuple[_MethodFamilyMethodPlan, ...],
     family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
@@ -3915,6 +3888,35 @@ class CompactMethodFamilyContext:
     global_candidates: tuple[OverlappingInheritanceFamiliesCandidate, ...]
     residue_axis_candidates: tuple[SemanticOverlapResidueAxisCandidate, ...]
 
+    @staticmethod
+    def semantic_overlap_method_candidates(
+        method_plans: tuple[_MethodFamilyMethodPlan, ...],
+        family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
+    ) -> tuple[SemanticOverlapMethodCandidate, ...]:
+        candidates: list[SemanticOverlapMethodCandidate] = []
+        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+        for method_plan in method_plans:
+            family_plan = family_plans[
+                (method_plan.base_symbol, method_plan.class_names)
+            ]
+            candidate = _method_family_candidate_from_method_plan_path(
+                method_plan.file_paths[0], method_plan, family_plan
+            )
+            key = (candidate.base_name, candidate.method_name, candidate.class_names)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+        return sorted_tuple(
+            candidates,
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.base_name,
+                candidate.method_name,
+            ),
+        )
+
     @classmethod
     def from_projections(
         cls,
@@ -3941,7 +3943,7 @@ class CompactMethodFamilyContext:
             exact_ancestor_promotion_candidates=(
                 exact_promotion_builder.proven_components
             ),
-            method_candidates=_compact_semantic_overlap_method_candidates(
+            method_candidates=cls.semantic_overlap_method_candidates(
                 method_plans, family_plans
             ),
             family_candidates=_compact_method_family_candidates(
@@ -5382,80 +5384,100 @@ def _enum_metadata_table_candidates(
     return tuple(candidates)
 
 
-_TUPLE_INDEX_OPACITY_CARRIER_CALLS = frozenset(
-    {"Maybe.of", "project", "map", "filter", "with_projection", "bind_all"}
-)
+class TupleIndexSemanticOpacityCandidateCollector:
+    """Collect tuple-index opacity under one named detector grammar."""
 
+    carrier_calls: ClassVar[frozenset[str]] = frozenset(
+        {"Maybe.of", "project", "map", "filter", "with_projection", "bind_all"}
+    )
 
-def _numeric_subscript_path(node: ast.AST) -> tuple[str, tuple[int, ...]] | None:
-    indexes: list[int] = []
-    current = node
-    while isinstance(current, ast.Subscript):
-        if not isinstance(current.slice, ast.Constant) or not isinstance(
-            current.slice.value, int
-        ):
+    @classmethod
+    def collect(
+        cls,
+        module: ParsedModule,
+    ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
+        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+            module,
+            cls.for_function,
+            sort_key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.function_name,
+            ),
+        )
+
+    @classmethod
+    def collect_source(
+        cls,
+        module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        config: DetectorConfig,
+    ) -> tuple[TupleIndexSemanticOpacityCandidate, ...] | None:
+        del syntax_index, config
+        may_contain_candidate = any(
+            token in module.source for token in cls.carrier_calls
+        ) and re.search(r"\[[^\]]*\d[^\]]*\]", module.source) is not None
+        return None if may_contain_candidate else ()
+
+    @classmethod
+    def for_function(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        function: NamedFunctionNode,
+    ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
+        body_nodes = walk_function_body_nodes(function)
+        carrier_call_names = sorted_tuple(
+            {
+                call_name
+                for node in body_nodes
+                if isinstance(node, ast.Call)
+                for call_name in (AstExpressionProjection.terminal_name(node.func),)
+                if call_name in cls.carrier_calls
+            }
+        )
+        index_paths = sorted_tuple(
+            {
+                f"{root}[{']['.join(str(index) for index in indexes)}]"
+                for node in body_nodes
+                if isinstance(node, ast.Subscript)
+                for path in (cls.numeric_subscript_path(node),)
+                if path is not None
+                for root, indexes in (path,)
+                if root not in {"args", "body", "items"}
+                if len(indexes) >= 2 or root in {"pair", "pairs", "call_pair"}
+            }
+        )
+        if not carrier_call_names or not index_paths:
+            return ()
+        return (
+            TupleIndexSemanticOpacityCandidate(
+                file_path=module.file_path,
+                line=function.lineno,
+                function_name=qualname,
+                index_expressions=index_paths,
+                nested_index_count=len(index_paths),
+                carrier_call_names=carrier_call_names,
+            ),
+        )
+
+    @staticmethod
+    def numeric_subscript_path(
+        node: ast.AST,
+    ) -> tuple[str, tuple[int, ...]] | None:
+        indexes: list[int] = []
+        current = node
+        while isinstance(current, ast.Subscript):
+            if not isinstance(current.slice, ast.Constant) or not isinstance(
+                current.slice.value, int
+            ):
+                return None
+            indexes.append(current.slice.value)
+            current = current.value
+        root_name = name_id(current)
+        if root_name is None:
             return None
-        indexes.append(current.slice.value)
-        current = current.value
-    root_name = name_id(current)
-    if root_name is None:
-        return None
-    return root_name, tuple(reversed(indexes))
-
-
-def _tuple_index_semantic_opacity_candidates(
-    module: ParsedModule,
-) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _tuple_index_semantic_opacity_candidate_for_function,
-        sort_key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.function_name,
-        ),
-    )
-
-
-def _tuple_index_semantic_opacity_candidate_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-    body_nodes = walk_function_body_nodes(function)
-    carrier_call_names = sorted_tuple(
-        {
-            call_name
-            for node in body_nodes
-            if isinstance(node, ast.Call)
-            for call_name in (AstExpressionProjection.terminal_name(node.func),)
-            if call_name in _TUPLE_INDEX_OPACITY_CARRIER_CALLS
-        }
-    )
-    index_paths = sorted_tuple(
-        {
-            f"{root}[{']['.join(str(index) for index in indexes)}]"
-            for node in body_nodes
-            if isinstance(node, ast.Subscript)
-            for path in (_numeric_subscript_path(node),)
-            if path is not None
-            for root, indexes in (path,)
-            if root not in {"args", "body", "items"}
-            if len(indexes) >= 2 or root in {"pair", "pairs", "call_pair"}
-        }
-    )
-    if not carrier_call_names or not index_paths:
-        return ()
-    return (
-        TupleIndexSemanticOpacityCandidate(
-            file_path=module.file_path,
-            line=function.lineno,
-            function_name=qualname,
-            index_expressions=index_paths,
-            nested_index_count=len(index_paths),
-            carrier_call_names=carrier_call_names,
-        ),
-    )
+        return root_name, tuple(reversed(indexes))
 
 
 def _dataclass_config_field_names(node: ast.ClassDef) -> tuple[str, ...]:
