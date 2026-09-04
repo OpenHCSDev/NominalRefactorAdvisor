@@ -29,6 +29,7 @@ from .ast_tools import AstExpressionProjection
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
+    DataclassJsonReport,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     JsonObject,
@@ -461,7 +462,7 @@ class ArchitectureGuardRuleResolution:
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardViolationTarget:
+class ArchitectureGuardViolationTarget(DataclassJsonReport):
     """Source-index target context for one architecture guard violation."""
 
     target_id: str | None = None
@@ -481,13 +482,6 @@ class ArchitectureGuardViolationTarget:
             qualname=target.qualname,
             file_path=target.file_path,
         )
-
-    def violation_payload(self) -> JsonObject:
-        return {
-            "target_id": self.target_id,
-            "file_path": self.file_path,
-            "qualname": self.qualname,
-        }
 
 
 @dataclass(frozen=True)
@@ -510,7 +504,7 @@ class ArchitectureGuardViolation:
             "violation_kind": self.violation_kind,
             "line": self.location.line,
             "symbol": self.location.symbol,
-            **self.target_context.violation_payload(),
+            **self.target_context.to_dict(),
             "detail": self.detail,
         }
 

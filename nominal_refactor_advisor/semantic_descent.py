@@ -136,7 +136,7 @@ class SemanticAuthorityKind(StrEnum):
         "dataclass-schema-derived projection",
         False,
         "fields",
-        "derive it from dataclass fields or move the projection onto the record",
+        "derive it from dataclass fields through a declaration-owned projection",
     )
     ENUM = (
         "enum",

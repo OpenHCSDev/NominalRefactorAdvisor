@@ -34,7 +34,22 @@ class CodemodJsonReport(ABC):
         raise NotImplementedError
 
 
-class DataclassPayloadProjection(CodemodJsonReport, ABC):
+class DataclassJsonReport(CodemodJsonReport, ABC):
+    """Shallow JSON projection derived from nominal dataclass fields."""
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                record_field.name: cast(
+                    JsonValue,
+                    getattr(self, record_field.name),
+                )
+                for record_field in dataclass_fields(self)
+            }
+        )
+
+
+class DataclassPayloadProjection(DataclassJsonReport, ABC):
     """JSON projection derived completely from nominal dataclass fields."""
 
     @classmethod

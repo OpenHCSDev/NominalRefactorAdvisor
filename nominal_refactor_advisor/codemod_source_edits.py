@@ -30,6 +30,7 @@ from typing import (
 
 from .codemod_payload import (
     CodemodPayloadRecord,
+    DataclassJsonReport,
     DataclassPayloadProjection,
     JsonObject,
     RequiredIntegerPayloadValueCodec,
@@ -1274,7 +1275,7 @@ def _joined_rationales(rationales: Iterable[str]) -> str:
 
 
 @dataclass(frozen=True)
-class CodemodSourceRevision:
+class CodemodSourceRevision(DataclassJsonReport):
     """Full-source revision required before one simulated file write."""
 
     file_path: str
@@ -1323,12 +1324,6 @@ class CodemodSourceRevision:
             raise CodemodSourceRevisionError(
                 f"Codemod source changed after simulation: {self.file_path}"
             )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "file_path": self.file_path,
-            "source_hash": self.source_hash,
-        }
 
 
 class CodemodSourceRevisionError(ValueError):

@@ -148,7 +148,7 @@ from .codemod_preflight import (
     CodemodOperationPreflightReport,
     CodemodPlanPreflightReport,
 )
-
+from .codemod_payload import DataclassJsonReport
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -1008,7 +1008,7 @@ class SourceSnapshotCacheEligibility:
 
 
 @dataclass(frozen=True)
-class JsonPayloadBuildTiming:
+class JsonPayloadBuildTiming(DataclassJsonReport):
     """Wall-clock time spent in optional JSON payload sections."""
 
     observation_graph_seconds: float = 0.0
@@ -1018,17 +1018,6 @@ class JsonPayloadBuildTiming:
     semantic_refactor_gate_seconds: float = 0.0
     finding_recipe_plan_seconds: float = 0.0
     total_seconds: float = 0.0
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "observation_graph_seconds": self.observation_graph_seconds,
-            "semantic_descent_graph_seconds": self.semantic_descent_graph_seconds,
-            "source_snapshot_seconds": self.source_snapshot_seconds,
-            "source_index_payload_seconds": self.source_index_payload_seconds,
-            "semantic_refactor_gate_seconds": self.semantic_refactor_gate_seconds,
-            "finding_recipe_plan_seconds": self.finding_recipe_plan_seconds,
-            "total_seconds": self.total_seconds,
-        }
 
 
 @dataclass(frozen=True)
@@ -1051,7 +1040,7 @@ class JsonFindingPayloadEnvelope:
 
 
 @dataclass(frozen=True)
-class JsonScanStatus:
+class JsonScanStatus(DataclassJsonReport):
     """Machine-readable completeness contract for a scan result."""
 
     complete: bool
@@ -1071,15 +1060,6 @@ class JsonScanStatus:
             omitted_detector_count=0,
             reason="all_context_detectors_use_compact_global_projections",
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "complete": self.complete,
-            "mode": self.mode,
-            "analyzed_detector_count": self.analyzed_detector_count,
-            "omitted_detector_count": self.omitted_detector_count,
-            "reason": self.reason,
-        }
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 
 import pytest
 
@@ -19,6 +20,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     CodemodPayloadRecord,
+    DataclassJsonReport,
     DefaultedStringPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
@@ -68,6 +70,18 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
 
     assert not hasattr(codemod_module, "selector_payload_bindings")
     assert not hasattr(codemod_module, "operation_payload_bindings")
+
+
+def test_dataclass_json_report_derives_shallow_payload_from_declared_fields() -> None:
+    @dataclass(frozen=True)
+    class ScanStatus(DataclassJsonReport):
+        complete: bool
+        mode: str
+
+    assert ScanStatus(complete=True, mode="exact").to_dict() == {
+        "complete": True,
+        "mode": "exact",
+    }
 
 
 def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:

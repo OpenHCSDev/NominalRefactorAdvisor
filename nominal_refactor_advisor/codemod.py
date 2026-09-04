@@ -82,6 +82,7 @@ from .codemod_payload import (
     BooleanPayloadValueCodec,
     CodemodJsonReport,
     CodemodPayloadRecord,
+    DataclassJsonReport,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
@@ -11505,19 +11506,13 @@ class CodemodPlanSequenceContinuationReport:
 
 
 @dataclass(frozen=True)
-class FindingRecipeActionIdentity(CodemodJsonReport):
+class FindingRecipeActionIdentity(DataclassJsonReport):
     """Detector-independent identity of one source semantic action."""
 
     subject_separator: ClassVar[str] = "::"
 
     file_path: str
     subject_name: str
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "file_path": self.file_path,
-            "subject_name": self.subject_name,
-        }
 
     @classmethod
     def child_subject(cls, parent_subject: str, child_subject: str) -> str:
@@ -11731,7 +11726,7 @@ class FindingRecipeSetSimulation:
 
 
 @dataclass(frozen=True)
-class FindingRecipeFrontierBudget(CodemodJsonReport):
+class FindingRecipeFrontierBudget(DataclassJsonReport):
     """Explicit finite budget for exact current-state branch enumeration."""
 
     max_candidate_batches: int = 256
@@ -11739,9 +11734,6 @@ class FindingRecipeFrontierBudget(CodemodJsonReport):
     def __post_init__(self) -> None:
         if self.max_candidate_batches < 1:
             raise ValueError("trajectory branch budget must be at least 1")
-
-    def to_dict(self) -> JsonObject:
-        return {"max_candidate_batches": self.max_candidate_batches}
 
 
 class FindingRecipeTrajectoryObstacleKind(StrEnum):
