@@ -1116,7 +1116,7 @@ class JsonLoopCachePayloadBuilder:
     summary: FindingSummary
     timing: ScanTiming
 
-    def to_dict(self) -> JsonObject:
+    def build(self) -> JsonObject:
         payload_started = perf_counter()
         payload = JsonFindingPayloadEnvelope(
             summary=self.summary,
@@ -1173,7 +1173,7 @@ class JsonPayloadBuilder:
     raw_findings: bool = False
     scan_status: JsonScanStatus | None = None
 
-    def to_dict(self) -> JsonObject:
+    def build(self) -> JsonObject:
         payload_started = perf_counter()
         sections = self.payload_sections
         finding_tuple = tuple(self.findings)
@@ -3590,7 +3590,7 @@ def _main_without_deadline() -> int:
                             JsonLoopCachePayloadBuilder(
                                 summary_cache_result,
                                 timing,
-                            ).to_dict(),
+                            ).build(),
                             indent=2,
                         )
                     )
@@ -3935,7 +3935,7 @@ def _main_without_deadline() -> int:
                     payload_sections=json_payload_profile.sections,
                     raw_findings=args.raw_findings,
                     scan_status=scan_status,
-                ).to_dict(),
+                ).build(),
                 indent=2,
             )
         )

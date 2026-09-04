@@ -40,6 +40,7 @@ from nominal_refactor_advisor.codemod_payload import (
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonReportValueProjection,
+    json_report_alias,
     json_report_cached_property,
     json_report_field,
     json_report_property,
@@ -127,6 +128,16 @@ def test_dataclass_json_report_omits_declared_absent_values() -> None:
         "required": "present",
         "optional": "value",
     }
+
+
+def test_dataclass_json_report_derives_alias_bindings() -> None:
+    @dataclass(frozen=True)
+    class AliasedReport(DataclassJsonReport):
+        source_value: str = json_report_field(included=False)
+
+        projected_value = json_report_alias("source_value")
+
+    assert AliasedReport("derived").to_dict() == {"projected_value": "derived"}
 
 
 def test_dataclass_json_report_properties_follow_mro_declarations() -> None:

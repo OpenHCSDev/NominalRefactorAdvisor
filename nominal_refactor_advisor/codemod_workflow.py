@@ -35,6 +35,7 @@ from .codemod import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeFrontierBudget,
+    FindingRecipePlan,
     FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
     RefactorConcept,
@@ -47,7 +48,9 @@ from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueD
 from .json_reports import (
     DataclassJsonReport,
     JsonObject,
-    JsonReport,
+    JsonReportAliasProperty,
+    json_report_alias,
+    json_report_cached_property,
     json_report_field,
     json_report_property,
 )
@@ -320,11 +323,8 @@ class CodemodIdentityTransition(Generic[IdentityT]):
 
 
 @dataclass(frozen=True)
-class CodemodFindingIdTransition(
-    CodemodIdentityTransition[str],
-    JsonReport,
-):
-    """Finding identity transition for codemod delta reports."""
+class CodemodFindingIdTransition(CodemodIdentityTransition[str]):
+    """Finding identity transition independent of any report vocabulary."""
 
     @classmethod
     def from_findings(
@@ -339,25 +339,29 @@ class CodemodFindingIdTransition(
             after_ids=tuple(finding.stable_id for finding in after_findings),
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "before_finding_ids": self.before_ids,
-            "after_finding_ids": self.after_ids,
-            "removed_finding_ids": self.removed_ids,
-            "added_finding_ids": self.added_ids,
-            "before_finding_count": self.before_count,
-            "after_finding_count": self.after_count,
-            "removed_finding_count": self.removed_count,
-            "added_finding_count": self.added_count,
-        }
-
 
 @dataclass(frozen=True)
 class CodemodDetectorIdTransition(
     CodemodIdentityTransition[str],
-    JsonReport,
+    DataclassJsonReport,
 ):
     """Detector provenance before and after one semantic obligation transition."""
+
+    before_ids: tuple[str, ...] = json_report_field(included=False)
+    after_ids: tuple[str, ...] = json_report_field(included=False)
+
+    before_detector_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("before_ids")
+    )
+    after_detector_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("after_ids")
+    )
+    removed_detector_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("removed_ids")
+    )
+    added_detector_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("added_ids")
+    )
 
     @classmethod
     def from_findings(
@@ -374,22 +378,41 @@ class CodemodDetectorIdTransition(
             ),
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "before_detector_ids": self.before_ids,
-            "after_detector_ids": self.after_ids,
-            "removed_detector_ids": self.removed_ids,
-            "added_detector_ids": self.added_ids,
-        }
-
 
 @dataclass(frozen=True)
-class CodemodFindingDelta(CodemodFindingIdTransition):
+class CodemodFindingDelta(CodemodFindingIdTransition, DataclassJsonReport):
     """Before/after finding transition for one codemod batch."""
 
+    before_ids: tuple[str, ...] = json_report_field(included=False)
+    after_ids: tuple[str, ...] = json_report_field(included=False)
     expected_removed_finding_ids: tuple[str, ...] = field(
         default=(),
         kw_only=True,
+    )
+
+    before_finding_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("before_ids")
+    )
+    after_finding_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("after_ids")
+    )
+    removed_finding_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("removed_ids")
+    )
+    added_finding_ids: ClassVar[JsonReportAliasProperty[tuple[str, ...]]] = (
+        json_report_alias("added_ids")
+    )
+    before_finding_count: ClassVar[JsonReportAliasProperty[int]] = json_report_alias(
+        "before_count"
+    )
+    after_finding_count: ClassVar[JsonReportAliasProperty[int]] = json_report_alias(
+        "after_count"
+    )
+    removed_finding_count: ClassVar[JsonReportAliasProperty[int]] = json_report_alias(
+        "removed_count"
+    )
+    added_finding_count: ClassVar[JsonReportAliasProperty[int]] = json_report_alias(
+        "added_count"
     )
 
     def __post_init__(self) -> None:
@@ -423,11 +446,11 @@ class CodemodFindingDelta(CodemodFindingIdTransition):
             expected_removed_finding_ids=expected_removed_finding_ids,
         )
 
-    @property
+    @json_report_property()
     def expected_removed_finding_count(self) -> int:
         return len(self.expected_removed_finding_ids)
 
-    @property
+    @json_report_property()
     def confirmed_expected_removed_finding_ids(self) -> tuple[str, ...]:
         removed_ids = frozenset(self.removed_ids)
         return tuple(
@@ -436,7 +459,7 @@ class CodemodFindingDelta(CodemodFindingIdTransition):
             if finding_id in removed_ids
         )
 
-    @property
+    @json_report_property()
     def surviving_expected_removed_finding_ids(self) -> tuple[str, ...]:
         after_ids = frozenset(self.after_ids)
         return tuple(
@@ -445,37 +468,17 @@ class CodemodFindingDelta(CodemodFindingIdTransition):
             if finding_id in after_ids
         )
 
-    @property
+    @json_report_property()
     def confirmed_expected_removed_finding_count(self) -> int:
         return len(self.confirmed_expected_removed_finding_ids)
 
-    @property
+    @json_report_property()
     def surviving_expected_removed_finding_count(self) -> int:
         return len(self.surviving_expected_removed_finding_ids)
 
-    @property
+    @json_report_property()
     def fulfilled_expected_removals(self) -> bool:
         return self.surviving_expected_removed_finding_count == 0
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            **super().to_dict(),
-            expected_removed_finding_ids=self.expected_removed_finding_ids,
-            expected_removed_finding_count=self.expected_removed_finding_count,
-            confirmed_expected_removed_finding_ids=(
-                self.confirmed_expected_removed_finding_ids
-            ),
-            surviving_expected_removed_finding_ids=(
-                self.surviving_expected_removed_finding_ids
-            ),
-            confirmed_expected_removed_finding_count=(
-                self.confirmed_expected_removed_finding_count
-            ),
-            surviving_expected_removed_finding_count=(
-                self.surviving_expected_removed_finding_count
-            ),
-            fulfilled_expected_removals=self.fulfilled_expected_removals,
-        )
 
 
 @dataclass(frozen=True)
@@ -483,7 +486,9 @@ class CodemodFindingClassChange(CodemodFindingDelta):
     """Before/after membership for one semantic finding class."""
 
     obligation_class: FindingObligationClass
-    detector_ids: CodemodDetectorIdTransition
+    detector_ids: CodemodDetectorIdTransition = json_report_field(
+        field_name="detector_transition"
+    )
 
     @classmethod
     def from_findings(
@@ -509,24 +514,15 @@ class CodemodFindingClassChange(CodemodFindingDelta):
             ),
         )
 
-    @property
+    @json_report_property()
     def status(self) -> CodemodFindingClassStatus:
         return CodemodFindingClassStatus.from_change(self)
 
-    @property
+    @json_report_property()
     def finding_count_increase(self) -> int:
         """Return newly introduced obligations in this semantic class."""
 
         return max(self.after_count - self.before_count, 0)
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            **super().to_dict(),
-            obligation_class=self.obligation_class.to_dict(),
-            detector_transition=self.detector_ids.to_dict(),
-            status=self.status.value,
-            finding_count_increase=self.finding_count_increase,
-        )
 
 
 @dataclass(frozen=True)
@@ -635,29 +631,43 @@ class CodemodFindingClassDelta(DataclassJsonReport):
             if selected_ids.intersection(change.before_ids)
         )
 
+
 @dataclass(frozen=True)
-class CodemodRefactorGoalProgress(CodemodFindingIdTransition):
+class CodemodRefactorGoalProgress(
+    CodemodFindingIdTransition,
+    DataclassJsonReport,
+):
     """Before/after target-finding progress for one goal stage."""
 
-    @property
+    before_ids: tuple[str, ...] = json_report_field(included=False)
+    after_ids: tuple[str, ...] = json_report_field(included=False)
+
+    before_target_finding_ids: ClassVar[
+        JsonReportAliasProperty[tuple[str, ...]]
+    ] = json_report_alias("before_ids")
+    after_target_finding_ids: ClassVar[
+        JsonReportAliasProperty[tuple[str, ...]]
+    ] = json_report_alias("after_ids")
+    removed_target_finding_ids: ClassVar[
+        JsonReportAliasProperty[tuple[str, ...]]
+    ] = json_report_alias("removed_ids")
+    surviving_target_finding_ids: ClassVar[
+        JsonReportAliasProperty[tuple[str, ...]]
+    ] = json_report_alias("surviving_ids")
+    removed_target_finding_count: ClassVar[JsonReportAliasProperty[int]] = (
+        json_report_alias("removed_count")
+    )
+    surviving_target_finding_count: ClassVar[JsonReportAliasProperty[int]] = (
+        json_report_alias("after_count")
+    )
+
+    @json_report_property()
     def achieved(self) -> bool:
         return not self.after_ids
 
-    @property
+    @json_report_property()
     def made_progress(self) -> bool:
         return self.removed_count > 0
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "before_target_finding_ids": self.before_ids,
-            "after_target_finding_ids": self.after_ids,
-            "removed_target_finding_ids": self.removed_ids,
-            "surviving_target_finding_ids": self.surviving_ids,
-            "removed_target_finding_count": self.removed_count,
-            "surviving_target_finding_count": len(self.surviving_ids),
-            "achieved": self.achieved,
-            "made_progress": self.made_progress,
-        }
 
 
 @dataclass(frozen=True)
@@ -990,37 +1000,45 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
         return "\n".join(lines)
 
 @dataclass(frozen=True)
-class CodemodProjectedFindingReport:
+class CodemodProjectedFindingReport(DataclassJsonReport):
     """Before/after advisor findings for one simulated codemod source state."""
 
-    before_findings: tuple[RefactorFinding, ...]
-    after_scan: "CodemodWorkflowScan"
-    source_sequence: CodemodPlanSequence | None = None
-    expected_removed_finding_ids: tuple[str, ...] = ()
-    include_source_index: bool = False
-    include_continuation: bool = False
+    before_findings: tuple[RefactorFinding, ...] = json_report_field(included=False)
+    after_scan: "CodemodWorkflowScan" = json_report_field(included=False)
+    source_sequence: CodemodPlanSequence | None = json_report_field(
+        included=False,
+        default=None,
+    )
+    expected_removed_finding_ids: tuple[str, ...] = json_report_field(
+        included=False,
+        default=(),
+    )
+    include_source_index: bool = json_report_field(included=False, default=False)
+    include_continuation: bool = json_report_field(included=False, default=False)
 
-    @property
+    @json_report_property()
     def scan_mode(self) -> CodemodProjectedScanMode:
         return self.after_scan.scan_mode
 
-    @property
+    @json_report_property()
     def before_finding_count(self) -> int:
         return len(self.before_findings)
 
-    @property
+    @json_report_property()
     def after_findings(self) -> tuple[RefactorFinding, ...]:
         return tuple(self.after_scan.findings)
 
-    @property
+    @json_report_property()
     def after_finding_count(self) -> int:
         return len(self.after_findings)
 
-    @property
-    def projected_source_index(self) -> SourceIndex:
-        return self.after_scan.source_index
+    @json_report_property(omit_none=True)
+    def projected_source_index(self) -> SourceIndex | None:
+        if self.include_source_index:
+            return self.after_scan.source_index
+        return None
 
-    @cached_property
+    @json_report_cached_property()
     def finding_delta(self) -> CodemodFindingDelta:
         return CodemodFindingDelta.from_findings(
             self.before_findings,
@@ -1028,7 +1046,7 @@ class CodemodProjectedFindingReport:
             expected_removed_finding_ids=self.expected_removed_finding_ids,
         )
 
-    @cached_property
+    @json_report_cached_property()
     def finding_class_delta(self) -> CodemodFindingClassDelta:
         return CodemodFindingClassDelta.from_findings(
             self.before_findings,
@@ -1047,6 +1065,20 @@ class CodemodProjectedFindingReport:
             plan=projected_snapshot.plan_from_findings(after_findings),
         )
 
+    @json_report_property(omit_none=True)
+    def projected_finding_recipe_plan(self) -> FindingRecipePlan | None:
+        if self.include_continuation:
+            return self.continuation_report.plan
+        return None
+
+    @json_report_property(omit_none=True)
+    def projected_finding_continuation(
+        self,
+    ) -> CodemodPlanSequenceContinuationReport | None:
+        if self.include_continuation:
+            return self.continuation_report
+        return None
+
     def class_plan_delta_report(
         self,
         class_plan_report: FindingRecipeClassPlanReport,
@@ -1056,36 +1088,12 @@ class CodemodProjectedFindingReport:
             projected_finding_report=self,
         )
 
-    def to_dict(self) -> JsonObject:
-        after_findings = self.after_findings
-        payload = {
-            "scan_mode": self.scan_mode.value,
-            "before_finding_count": self.before_finding_count,
-            "after_finding_count": self.after_finding_count,
-            "finding_delta": self.finding_delta.to_dict(),
-            "finding_class_delta": self.finding_class_delta.to_dict(),
-            "after_findings": tuple(finding.to_dict() for finding in after_findings),
-        }
-        if self.include_source_index:
-            payload["projected_source_index"] = (
-                self.after_scan.source_snapshot.source_index.to_dict()
-            )
-        if self.include_continuation:
-            continuation_report = self.continuation_report
-            payload.update(
-                {
-                    "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
-                    "projected_finding_continuation": continuation_report.to_dict(),
-                }
-            )
-        return payload
-
-
 @dataclass(frozen=True)
 class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
     """Projected before/after finding-class result for one execution class plan."""
 
-    class_plan: FindingRecipeClassPlan
+    changes: tuple[CodemodFindingClassChange, ...]
+    class_plan: FindingRecipeClassPlan = json_report_field(included=False)
 
     @classmethod
     def from_class_plan(
@@ -1098,7 +1106,7 @@ class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
             changes=finding_class_delta.changes_for_before_ids(class_plan.finding_ids),
         )
 
-    @property
+    @json_report_property()
     def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
         return tuple(
             CodemodClassPlanSiteProjectedDelta.from_synthesis_record(
@@ -1111,30 +1119,27 @@ class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
             for synthesis_record in self.class_plan.synthesis_records
         )
 
-    @property
+    @json_report_property()
     def fulfilled_expected_removals(self) -> bool:
         return self.fulfills_expected_removals(
             self.class_plan.expected_removed_finding_ids
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "class_id": self.class_plan.execution_class.class_id,
-            "fulfilled_expected_removals": self.fulfilled_expected_removals,
-            "status_counts": self.status_counts,
-            "changes": tuple(change.to_dict() for change in self.changes),
-            "site_deltas": tuple(
-                site_delta.to_dict() for site_delta in self.site_deltas
-            ),
-        }
+    @json_report_property()
+    def class_id(self) -> str:
+        return self.class_plan.execution_class.class_id
 
 
 @dataclass(frozen=True)
 class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
     """Projected finding-class status for one planned site inside a class plan."""
 
-    synthesis_record: FindingRecipeSynthesisRecord
-    expected_removed_finding_ids: tuple[str, ...] = ()
+    changes: tuple[CodemodFindingClassChange, ...]
+    synthesis_record: FindingRecipeSynthesisRecord = json_report_field(included=False)
+    expected_removed_finding_ids: tuple[str, ...] = json_report_field(
+        included=False,
+        default=(),
+    )
 
     @classmethod
     def from_synthesis_record(
@@ -1158,17 +1163,13 @@ class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
             ),
         )
 
-    @property
+    @json_report_property()
     def fulfilled_expected_removal(self) -> bool:
         return self.fulfills_expected_removals(self.expected_removed_finding_ids)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "finding_id": self.synthesis_record.finding_id,
-            "fulfilled_expected_removal": self.fulfilled_expected_removal,
-            "status_counts": self.status_counts,
-            "changes": tuple(change.to_dict() for change in self.changes),
-        }
+    @json_report_property()
+    def finding_id(self) -> str:
+        return self.synthesis_record.finding_id
 
 
 @dataclass(frozen=True)

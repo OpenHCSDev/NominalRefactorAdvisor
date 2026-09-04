@@ -33,6 +33,8 @@ from typing import (
     cast,
 )
 
+from .descriptor_algebra import AliasProperty
+
 JsonScalar: TypeAlias = str | int | float | bool | None
 
 
@@ -151,6 +153,15 @@ class JsonReportCachedProperty(cached_property):
         self.omit_none = omit_none
 
 
+@dataclass(frozen=True)
+class JsonReportAliasProperty(AliasProperty[ReportValueT]):
+    """Report binding that derives its value from another owned attribute."""
+
+    field_name: str | None = None
+    flattened: bool = False
+    omit_none: bool = False
+
+
 def json_report_property(
     *,
     field_name: str | None = None,
@@ -191,6 +202,23 @@ def json_report_cached_property(
         )
 
     return declare
+
+
+def json_report_alias(
+    source_name: str,
+    *,
+    field_name: str | None = None,
+    flattened: bool = False,
+    omit_none: bool = False,
+) -> JsonReportAliasProperty[ReportValueT]:
+    """Declare a JSON field as a derived alias of an owned attribute."""
+
+    return JsonReportAliasProperty(
+        source_name=source_name,
+        field_name=field_name,
+        flattened=flattened,
+        omit_none=omit_none,
+    )
 
 
 class DataclassJsonReport(JsonReport, ABC):
@@ -357,7 +385,11 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
             for member_name, member in owner.__dict__.items():
                 if member_name in declared_property_names or not isinstance(
                     member,
-                    (JsonReportProperty, JsonReportCachedProperty),
+                    (
+                        JsonReportProperty,
+                        JsonReportCachedProperty,
+                        JsonReportAliasProperty,
+                    ),
                 ):
                     continue
                 declared_property_names.add(member_name)

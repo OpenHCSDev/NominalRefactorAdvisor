@@ -34,6 +34,7 @@ import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_preflight as codemod_preflight_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
+import nominal_refactor_advisor.codemod_workflow as codemod_workflow_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
 import nominal_refactor_advisor.observation_families as observation_families_module
@@ -123,6 +124,7 @@ from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.cli import main as cli_main
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodProjectedScanMode,
     CodemodRefactorGoalRunner,
@@ -10007,7 +10009,7 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert finding.to_dict()["stable_id"] == finding.stable_id
     assert (
-        JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).to_dict()[
+        JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).build()[
             "findings"
         ][0]["stable_id"]
         == finding.stable_id
@@ -10645,7 +10647,7 @@ def test_economics_markdown_and_json_expose_evidence_proof() -> None:
         plans=[],
         modules=[],
         economics=economics,
-    ).to_dict()
+    ).build()
 
     assert "Evidence economics:" in markdown
     assert "Observed backend LOC savings: 0-0" in markdown
@@ -20638,6 +20640,21 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
     )
 
 
+def test_codemod_workflow_reports_derive_json_from_declarations() -> None:
+    workflow_report_types = tuple(
+        member
+        for _, member in inspect.getmembers(codemod_workflow_module, inspect.isclass)
+        if member.__module__ == codemod_workflow_module.__name__
+        and issubclass(member, DataclassJsonReport)
+    )
+
+    assert workflow_report_types
+    assert all(
+        "to_dict" not in report_type.__dict__
+        for report_type in workflow_report_types
+    )
+
+
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     import nominal_refactor_advisor as nra
 
@@ -22687,7 +22704,7 @@ def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:
         findings=findings,
         plans=[],
         modules=modules,
-    ).to_dict()
+    ).build()
     observations = cast(list[dict[str, object]], payload["observations"])
     fibers = cast(list[dict[str, object]], payload["fibers"])
     assert "observations" in payload
@@ -22720,7 +22737,7 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
         findings=[finding],
         plans=[],
         modules=modules,
-    ).to_dict()
+    ).build()
     source_index = cast(dict[str, object], payload["source_index"])
     files = cast(tuple[dict[str, object], ...], source_index["files"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
@@ -22756,7 +22773,7 @@ def test_json_payload_reuses_supplied_source_index(
         modules=modules,
         timing=ScanTiming(source_index_seconds=0.123),
         source_snapshot=source_snapshot,
-    ).to_dict()
+    ).build()
     timing = cast(dict[str, object], payload["timing"])
 
     assert payload["source_index"] == source_index.to_dict()
@@ -22791,7 +22808,7 @@ def test_json_payload_summary_skips_source_backed_sections(
         plans=[],
         modules=modules,
         payload_sections=JsonPayloadProfile.summary.sections,
-    ).to_dict()
+    ).build()
 
     assert "findings" in payload
     assert "observations" not in payload
@@ -22836,7 +22853,7 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
         plans=[],
         modules=modules,
         payload_sections=JsonPayloadProfile.loop.sections,
-    ).to_dict()
+    ).build()
     finding_counts = cast(dict[str, object], payload["finding_counts"])
 
     assert payload["finding_payload_mode"] == "counts_only"
@@ -22906,7 +22923,7 @@ def test_json_payload_profiles_compact_execution_plan_edges(
         modules=modules,
         execution_plan=execution_plan,
         payload_sections=payload_profile.sections,
-    ).to_dict()
+    ).build()
     execution_plan_payload = cast(dict[str, object], payload["execution_plan"])
 
     assert execution_plan.edges
@@ -23143,7 +23160,7 @@ def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
         plans=[],
         modules=modules,
         payload_sections=JsonPayloadProfile.agent.sections,
-    ).to_dict()
+    ).build()
 
     assert "observations" not in payload
     assert "fibers" not in payload
@@ -23179,7 +23196,7 @@ def test_json_payload_agent_reports_semantic_descent_graph_for_mirrors(
         plans=[],
         modules=modules,
         payload_sections=JsonPayloadProfile.agent.sections,
-    ).to_dict()
+    ).build()
     graph_payload = cast(dict[str, object], payload["semantic_descent_graph"])
     repository_graph_payload = cast(
         dict[str, object],
@@ -23669,7 +23686,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
         plans=[],
         modules=modules,
         structural_overlap=structural_overlap,
-    ).to_dict()
+    ).build()
 
     gated_markdown = MARKDOWN_RENDERER.report(
         [finding],
@@ -23734,7 +23751,7 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
         plans=[],
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
-    ).to_dict()
+    ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
 
     assert boundary_evidence[0]["label"] == "LargeBoundary semantic descent boundary"
@@ -23795,7 +23812,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         plans=[],
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
-    ).to_dict()
+    ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
 
     assert boundary_evidence[0]["label"] == "BroadAuthority semantic descent boundary"
@@ -23837,14 +23854,14 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
         plans=[],
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
-    ).to_dict()
+    ).build()
     raw_payload = JsonPayloadBuilder(
         findings=[critical],
         plans=[],
         modules=[],
         payload_sections=JsonPayloadProfile.agent.sections,
         raw_findings=True,
-    ).to_dict()
+    ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
     gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
     gate_evidence = cast(
@@ -23968,7 +23985,7 @@ def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
             analysis_seconds=0.2,
             analysis_cache_status=AnalysisCacheStatus.HIT,
         ),
-    ).to_dict()
+    ).build()
     timing = cast(dict[str, object], payload["timing"])
     assert timing["parse_seconds"] == 0.1
     assert timing["analysis_seconds"] == 0.2
@@ -24561,7 +24578,7 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
         plans=[],
         modules=[],
         execution_plan=execution_plan,
-    ).to_dict()
+    ).build()
 
     assert "Graph evidence classes (structural evidence only):" in output
     assert "First batch move:" not in output
@@ -24775,7 +24792,7 @@ def test_detects_semantic_overlap_method(tmp_path: Path) -> None:
             findings=findings,
             plans=[],
             modules=modules,
-        ).to_dict()["source_index"],
+        ).build()["source_index"],
     )
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
     evidence = cast(tuple[dict[str, object], ...], source_index["evidence"])
