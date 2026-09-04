@@ -89,9 +89,9 @@ from .codemod_workflow import (
     CodemodWorkflowStopReason,
     ProjectedScanModuleSet,
 )
-from .detector_contributions import (
-    DetectorRefactorContribution,
-    DetectorRefactorContributionReport,
+from .detector_capabilities import (
+    DetectorRefactorCapability,
+    DetectorRefactorCapabilityReport,
 )
 from .models import (
     AnalysisReport,

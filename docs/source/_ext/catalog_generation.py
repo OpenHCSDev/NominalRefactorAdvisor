@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from nominal_refactor_advisor.detector_contributions import (
-    DetectorRefactorContribution,
-    DetectorRefactorContributionReport,
+from nominal_refactor_advisor.detector_capabilities import (
+    DetectorRefactorCapability,
+    DetectorRefactorCapabilityReport,
 )
 from nominal_refactor_advisor.detectors import IssueDetector
 from nominal_refactor_advisor.models import NominalDeclarationIdentity
@@ -87,8 +87,8 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
 
 
 def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) -> str:
-    contribution_report = DetectorRefactorContributionReport(
-        tuple(DetectorRefactorContribution(item) for item in detector_types)
+    capability_report = DetectorRefactorCapabilityReport(
+        tuple(DetectorRefactorCapability(item) for item in detector_types)
     )
     lines = [
         ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
@@ -102,10 +102,10 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "-------",
         "",
         f"- Total detectors: ``{len(detector_types)}``",
-        f"- Authority-boundary detectors: ``{contribution_report.authority_boundary_count}``",
-        f"- Semantic-mirror detectors: ``{contribution_report.semantic_mirror_count}``",
-        f"- Direct recipe evaluators: ``{contribution_report.direct_recipe_evaluator_count}``",
-        f"- Direct executable refactors: ``{contribution_report.direct_executable_refactor_count}``",
+        f"- Authority-boundary detectors: ``{capability_report.authority_boundary_count}``",
+        f"- Semantic-mirror detectors: ``{capability_report.semantic_mirror_count}``",
+        f"- Direct recipe evaluators: ``{capability_report.direct_recipe_evaluator_count}``",
+        f"- Direct executable refactors: ``{capability_report.direct_executable_refactor_count}``",
         "",
         ".. list-table::",
         "   :header-rows: 1",
@@ -117,28 +117,28 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "     - Direct recipe evaluation",
         "     - Direct executable concept",
     ]
-    for contribution in contribution_report.contributions:
-        detector_type = contribution.detector_type
+    for capability in capability_report.capabilities:
+        detector_type = capability.detector_type
         finding_spec = detector_type.required_relation_finding_spec()
         authority_contract = (
-            contribution.semantic_mirror_contract
-            or contribution.ssot_authority_boundary
+            capability.semantic_mirror_contract
+            or capability.ssot_authority_boundary
         )
         lines.extend(
             [
                 f"   * - ``{detector_type.detector_id}``",
                 f"     - ``{finding_spec.pattern_id.value}``",
-                f"     - ``{contribution.required_relation.qualname}``",
+                f"     - ``{capability.required_relation.qualname}``",
                 f"     - {_declaration_reference(authority_contract)}",
-                f"     - {_declaration_reference(contribution.direct_recipe_evaluator)}",
-                f"     - {_declaration_reference(contribution.direct_refactor_concept)}",
+                f"     - {_declaration_reference(capability.direct_recipe_evaluator)}",
+                f"     - {_declaration_reference(capability.direct_refactor_concept)}",
             ]
         )
     lines.extend(["", "Detectors", "---------", ""])
     for detector_type in detector_types:
         title = detector_type.__name__
         finding_spec = detector_type.required_relation_finding_spec()
-        contribution = DetectorRefactorContribution(detector_type)
+        capability = DetectorRefactorCapability(detector_type)
         lines.extend(
             [
                 title,
@@ -149,12 +149,12 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
                 f":Base: ``{_detector_base_name(detector_type)}``",
                 f":Reference: :doc:`detector_reference/{detector_type.detector_id}`",
                 f":Summary: {_detector_summary(detector_type)}",
-                f":Required-relation owner: ``{contribution.required_relation.qualname}``",
-                f":SSOT authority boundary: {_declaration_reference(contribution.ssot_authority_boundary)}",
-                f":Semantic-mirror contract: {_declaration_reference(contribution.semantic_mirror_contract)}",
-                f":Direct recipe evaluator: {_declaration_reference(contribution.direct_recipe_evaluator)}",
-                f":Direct executable refactor: {_declaration_reference(contribution.direct_executable_refactor)}",
-                f":Direct refactor concept: {_declaration_reference(contribution.direct_refactor_concept)}",
+                f":Required-relation owner: ``{capability.required_relation.qualname}``",
+                f":SSOT authority boundary: {_declaration_reference(capability.ssot_authority_boundary)}",
+                f":Semantic-mirror contract: {_declaration_reference(capability.semantic_mirror_contract)}",
+                f":Direct recipe evaluator: {_declaration_reference(capability.direct_recipe_evaluator)}",
+                f":Direct executable refactor: {_declaration_reference(capability.direct_executable_refactor)}",
+                f":Direct refactor concept: {_declaration_reference(capability.direct_refactor_concept)}",
                 "",
             ]
         )
@@ -189,7 +189,7 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
     qualified_name = f"nominal_refactor_advisor.detectors.{detector_type.__name__}"
     title = detector_type.__name__
     finding_spec = detector_type.required_relation_finding_spec()
-    contribution = DetectorRefactorContribution(detector_type)
+    capability = DetectorRefactorCapability(detector_type)
     lines = [
         ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
         ".. Do not edit manually.",
@@ -203,15 +203,15 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
         "",
         f"{_detector_summary(detector_type)}",
         "",
-        "Refactoring Contribution",
-        "------------------------",
+        "Declared Refactoring Capabilities",
+        "---------------------------------",
         "",
-        f":Required-relation owner: ``{contribution.required_relation.qualname}``",
-        f":SSOT authority boundary: {_declaration_reference(contribution.ssot_authority_boundary)}",
-        f":Semantic-mirror contract: {_declaration_reference(contribution.semantic_mirror_contract)}",
-        f":Direct recipe evaluator: {_declaration_reference(contribution.direct_recipe_evaluator)}",
-        f":Direct executable refactor: {_declaration_reference(contribution.direct_executable_refactor)}",
-        f":Direct refactor concept: {_declaration_reference(contribution.direct_refactor_concept)}",
+        f":Required-relation owner: ``{capability.required_relation.qualname}``",
+        f":SSOT authority boundary: {_declaration_reference(capability.ssot_authority_boundary)}",
+        f":Semantic-mirror contract: {_declaration_reference(capability.semantic_mirror_contract)}",
+        f":Direct recipe evaluator: {_declaration_reference(capability.direct_recipe_evaluator)}",
+        f":Direct executable refactor: {_declaration_reference(capability.direct_executable_refactor)}",
+        f":Direct refactor concept: {_declaration_reference(capability.direct_refactor_concept)}",
         "",
     ]
     lines.extend(

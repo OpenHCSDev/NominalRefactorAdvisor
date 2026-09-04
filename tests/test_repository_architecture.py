@@ -8,8 +8,8 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeEvaluator,
     FindingRecipeSynthesizer,
 )
-from nominal_refactor_advisor.detector_contributions import (
-    DetectorRefactorContributionReport,
+from nominal_refactor_advisor.detector_capabilities import (
+    DetectorRefactorCapabilityReport,
 )
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -118,12 +118,12 @@ def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:
         )
 
 
-def test_detector_refactor_contributions_are_derived_from_nominal_mro() -> None:
+def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
     detector_types = IssueDetector.registered_detector_types()
-    report = DetectorRefactorContributionReport.from_registered_detectors()
+    report = DetectorRefactorCapabilityReport.from_registered_detectors()
 
     assert tuple(
-        contribution.detector_type for contribution in report.contributions
+        capability.detector_type for capability in report.capabilities
     ) == detector_types
     assert report.required_relation_count == len(detector_types)
     assert report.authority_boundary_count == sum(
@@ -143,24 +143,24 @@ def test_detector_refactor_contributions_are_derived_from_nominal_mro() -> None:
         for detector_type in detector_types
     )
     assert all(
-        contribution.required_relation
-        == contribution.detector_type.required_relation_declaration_type().required_relation_identity()
-        for contribution in report.contributions
+        capability.required_relation
+        == capability.detector_type.required_relation_declaration_type().required_relation_identity()
+        for capability in report.capabilities
     )
     assert all(
-        contribution.direct_recipe_evaluator is not None
-        for contribution in report.contributions
-        if contribution.direct_executable_refactor is not None
+        capability.direct_recipe_evaluator is not None
+        for capability in report.capabilities
+        if capability.direct_executable_refactor is not None
     )
     assert all(
-        contribution.direct_refactor_concept is not None
-        for contribution in report.contributions
-        if contribution.direct_executable_refactor is not None
+        capability.direct_refactor_concept is not None
+        for capability in report.capabilities
+        if capability.direct_executable_refactor is not None
     )
 
     payload = json_report_object(report)
-    assert len(payload["contributions"]) == len(detector_types)
+    assert len(payload["capabilities"]) == len(detector_types)
     assert all(
-        {"required_relation", "required_relation_pattern"} <= contribution.keys()
-        for contribution in payload["contributions"]
+        {"required_relation", "required_relation_pattern"} <= capability.keys()
+        for capability in payload["capabilities"]
     )

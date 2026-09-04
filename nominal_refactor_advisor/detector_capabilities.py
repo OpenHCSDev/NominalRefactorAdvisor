@@ -1,4 +1,4 @@
-"""Declaration-derived evidence of each detector's refactoring contribution."""
+"""Declaration-derived refactoring capabilities of registered detectors."""
 
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ def _inherited_declaration_identity(
 
 
 @dataclass(frozen=True)
-class DetectorRefactorContribution(DataclassJsonReport):
-    """MRO-derived proof and execution capabilities of one detector leaf."""
+class DetectorRefactorCapability(DataclassJsonReport):
+    """MRO-derived capabilities of one detector leaf, not execution evidence."""
 
     detector_type: type[IssueDetector] = json_report_field(included=False)
 
@@ -103,48 +103,48 @@ class DetectorRefactorContribution(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class DetectorRefactorContributionReport(DataclassJsonReport):
-    """Complete contribution inventory derived from registered detector leaves."""
+class DetectorRefactorCapabilityReport(DataclassJsonReport):
+    """Complete capability inventory derived from registered detector leaves."""
 
-    contributions: tuple[DetectorRefactorContribution, ...]
+    capabilities: tuple[DetectorRefactorCapability, ...]
 
     @classmethod
-    def from_registered_detectors(cls) -> "DetectorRefactorContributionReport":
+    def from_registered_detectors(cls) -> "DetectorRefactorCapabilityReport":
         return cls(
             tuple(
-                DetectorRefactorContribution(detector_type)
+                DetectorRefactorCapability(detector_type)
                 for detector_type in IssueDetector.registered_detector_types()
             )
         )
 
     @json_report_property()
     def required_relation_count(self) -> int:
-        return len(self.contributions)
+        return len(self.capabilities)
 
     @json_report_property()
     def authority_boundary_count(self) -> int:
         return sum(
-            contribution.ssot_authority_boundary is not None
-            for contribution in self.contributions
+            capability.ssot_authority_boundary is not None
+            for capability in self.capabilities
         )
 
     @json_report_property()
     def semantic_mirror_count(self) -> int:
         return sum(
-            contribution.semantic_mirror_contract is not None
-            for contribution in self.contributions
+            capability.semantic_mirror_contract is not None
+            for capability in self.capabilities
         )
 
     @json_report_property()
     def direct_recipe_evaluator_count(self) -> int:
         return sum(
-            contribution.direct_recipe_evaluator is not None
-            for contribution in self.contributions
+            capability.direct_recipe_evaluator is not None
+            for capability in self.capabilities
         )
 
     @json_report_property()
     def direct_executable_refactor_count(self) -> int:
         return sum(
-            contribution.direct_executable_refactor is not None
-            for contribution in self.contributions
+            capability.direct_executable_refactor is not None
+            for capability in self.capabilities
         )

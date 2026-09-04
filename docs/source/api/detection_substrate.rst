@@ -20,9 +20,12 @@ exactly one inference declaration supports the finding.
 
 The generated :doc:`detector_catalog` derives each detector's required-relation
 owner, authority-boundary contract, evaluation capability, executable
-capability, and refactor concept directly from those declarations. These are
-the direct MRO capabilities; metric-driven inferred synthesis remains a
-finding-level decision.
+capability, and refactor concept directly from those declarations. This is a
+capability inventory, not evidence that a detector contributed a valid refactor
+for a particular repository. Source-specific authority evidence belongs to the
+semantic refactor gate, while evaluation, proof obstacles, executable recipes,
+and planning horizon belong to finding recipe synthesis. Metric-driven inferred
+synthesis also remains a finding-level decision.
 
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the
