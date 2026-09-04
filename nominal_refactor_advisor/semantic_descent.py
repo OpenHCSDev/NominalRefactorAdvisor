@@ -82,7 +82,10 @@ from .json_reports import (
 )
 from .models import (
     FindingMetrics,
+    MappingMetrics,
     RefactorFinding,
+    RegistrationMetrics,
+    SemanticMirrorMetricRelation,
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
@@ -123,7 +126,6 @@ class SemanticAuthorityKind(StrEnum):
         "class_family",
         True,
         "derived class-family registry or polymorphic dispatch",
-        True,
         "members",
         "derive it by iterating the authority registry or subclass family instead "
         "of maintaining a parallel presentation surface",
@@ -132,7 +134,6 @@ class SemanticAuthorityKind(StrEnum):
         "autoregister_family",
         True,
         "derived class-family registry or polymorphic dispatch",
-        True,
         "members",
         "derive it by iterating the AutoRegisterMeta registry instead of "
         "maintaining a parallel presentation surface",
@@ -141,7 +142,6 @@ class SemanticAuthorityKind(StrEnum):
         "dataclass_schema",
         False,
         "dataclass-schema-derived projection",
-        False,
         "fields",
         "derive it from dataclass fields through a declaration-owned projection",
     )
@@ -149,7 +149,6 @@ class SemanticAuthorityKind(StrEnum):
         "enum",
         False,
         "enum-derived case table or enum-owned behavior",
-        False,
         "members",
         "derive it by iterating enum members or move behavior onto the enum cases",
     )
@@ -157,7 +156,6 @@ class SemanticAuthorityKind(StrEnum):
         "finding_declared_authority",
         False,
         "detector-declared semantic mirror authority",
-        False,
         "facts",
         "replace the detector-observed mirror with a graph-certified derivation path",
     )
@@ -167,7 +165,6 @@ class SemanticAuthorityKind(StrEnum):
         value: str,
         is_class_family_like: bool,
         reporting_capability_gap: str,
-        uses_registration_metrics: bool,
         mirrored_fact_label: str,
         missing_derivation_instruction: str,
     ) -> "SemanticAuthorityKind":
@@ -175,7 +172,6 @@ class SemanticAuthorityKind(StrEnum):
         member._value_ = value
         member._is_class_family_like = is_class_family_like
         member._reporting_capability_gap = reporting_capability_gap
-        member._uses_registration_metrics = uses_registration_metrics
         member._mirrored_fact_label = mirrored_fact_label
         member._missing_derivation_instruction = missing_derivation_instruction
         return member
@@ -187,10 +183,6 @@ class SemanticAuthorityKind(StrEnum):
     @property
     def reporting_capability_gap(self) -> str:
         return self._reporting_capability_gap
-
-    @property
-    def uses_registration_metrics(self) -> bool:
-        return self._uses_registration_metrics
 
     @property
     def mirrored_fact_label(self) -> str:
@@ -1852,11 +1844,26 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
         cls,
         authority: SemanticAuthority,
     ) -> "SemanticAuthorityMirrorPolicy":
-        return cls.__registry__[authority.kind]()
+        return cls.for_authority_kind(authority.kind)
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def for_authority_kind(
+        cls,
+        authority_kind: SemanticAuthorityKind,
+    ) -> "SemanticAuthorityMirrorPolicy":
+        return cls.__registry__[authority_kind]()
 
     @classmethod
     def registered_authority_kinds(cls) -> frozenset[SemanticAuthorityKind]:
         return frozenset(cls.__registry__)
+
+    @abstractmethod
+    def semantic_mirror_metrics(
+        self,
+        relation: SemanticMirrorMetricRelation,
+    ) -> FindingMetrics:
+        raise NotImplementedError
 
     def edge_is_admissible(
         self,
@@ -1888,6 +1895,17 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
     """Shared policy for class-family authorities and AutoRegister families."""
 
     foreign_qualified_attribute_token_reference_admitted = True
+
+    def semantic_mirror_metrics(
+        self,
+        relation: SemanticMirrorMetricRelation,
+    ) -> FindingMetrics:
+        return RegistrationMetrics.from_class_names(
+            registration_site_count=len(relation.fact_names),
+            class_names=relation.fact_names,
+            registry_name=relation.projection_name,
+            class_key_pairs=relation.class_key_pairs,
+        )
 
     @staticmethod
     def call_projection_is_inadmissible(
@@ -1983,7 +2001,23 @@ class AutoRegisterFamilyMirrorPolicy(ClassFamilyLikeMirrorPolicy):
     authority_kind = SemanticAuthorityKind.AUTOREGISTER_FAMILY
 
 
-class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
+class MappingSemanticAuthorityMirrorPolicy(SemanticAuthorityMirrorPolicy):
+    """Shared finding-metric projection for field-like authorities."""
+
+    def semantic_mirror_metrics(
+        self,
+        relation: SemanticMirrorMetricRelation,
+    ) -> FindingMetrics:
+        return MappingMetrics.from_field_names(
+            mapping_site_count=max(2, len(relation.fact_names)),
+            field_names=relation.fact_names,
+            mapping_name=relation.projection_name,
+            source_name=relation.authority_name,
+            identity_field_names=relation.identity_field_names,
+        )
+
+
+class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
     """Mirror policy for dataclass schema authorities."""
 
     authority_kind = SemanticAuthorityKind.DATACLASS_SCHEMA
@@ -2088,7 +2122,7 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         return SemanticAuthorityProjectionResolution.mirrored(candidate)
 
 
-class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
+class EnumMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
     """Mirror policy for enum authorities."""
 
     authority_kind = SemanticAuthorityKind.ENUM
@@ -2115,7 +2149,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
         )
 
 
-class FindingDeclaredAuthorityMirrorPolicy(SemanticAuthorityMirrorPolicy):
+class FindingDeclaredAuthorityMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
     """Mirror policy for detector findings projected into the descent graph."""
 
     authority_kind = SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY

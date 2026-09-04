@@ -40,6 +40,8 @@ from nominal_refactor_advisor.models import (
     ConstructorOwnedMappingMetrics,
     MappingMetrics,
     RefactorFinding,
+    RegistrationMetrics,
+    SemanticMirrorMetricRelation,
     SourceLocation,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
@@ -120,6 +122,29 @@ def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> N
     assert SemanticAuthorityMirrorPolicy.registered_authority_kinds() == frozenset(
         SemanticAuthorityKind
     )
+
+
+def test_semantic_authority_mirror_policy_mro_owns_metric_projection() -> None:
+    relation = SemanticMirrorMetricRelation(
+        fact_names=("Alpha", "Beta"),
+        projection_name="HANDLERS",
+        authority_name="Handler",
+        identity_field_names=("alpha", "beta"),
+        class_key_pairs=("Alpha='alpha'", "Beta='beta'"),
+    )
+    metric_types_by_kind = {
+        authority_kind: type(policy_type().semantic_mirror_metrics(relation))
+        for authority_kind, policy_type in SemanticAuthorityMirrorPolicy.__registry__.items()
+    }
+
+    assert metric_types_by_kind == {
+        SemanticAuthorityKind.CLASS_FAMILY: RegistrationMetrics,
+        SemanticAuthorityKind.AUTOREGISTER_FAMILY: RegistrationMetrics,
+        SemanticAuthorityKind.DATACLASS_SCHEMA: MappingMetrics,
+        SemanticAuthorityKind.ENUM: MappingMetrics,
+        SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY: MappingMetrics,
+    }
+    assert not hasattr(SemanticAuthorityKind.CLASS_FAMILY, "uses_registration_metrics")
 
 
 def test_authority_claim_status_owns_actionability_and_resolution_shape() -> None:
@@ -792,14 +817,14 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
             for evidence in finding.evidence
         )
     ]
-    rendered_certificates = []
-    original_renderer = detector._finding_for_certificate
+    rendered_candidates = []
+    original_renderer = detector._finding_for_candidate
 
-    def counted_renderer(graph, certificate):
-        rendered_certificates.append(certificate)
-        return original_renderer(graph, certificate)
+    def counted_renderer(candidate):
+        rendered_candidates.append(candidate)
+        return original_renderer(candidate)
 
-    monkeypatch.setattr(detector, "_finding_for_certificate", counted_renderer)
+    monkeypatch.setattr(detector, "_finding_for_candidate", counted_renderer)
     focused_findings = detector._collect_focused_findings_from_graph(
         graph,
         modules,
@@ -810,8 +835,8 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
     assert [item.stable_id for item in focused_findings] == [
         item.stable_id for item in expected_findings
     ]
-    assert len(rendered_certificates) == len(focused_findings)
-    assert len(rendered_certificates) < len(graph.missing_descent_certificates)
+    assert len(rendered_candidates) == len(focused_findings)
+    assert len(rendered_candidates) < len(graph.missing_descent_certificates)
 
 
 def test_semantic_mirror_detector_uses_semantic_descent_context_signature(

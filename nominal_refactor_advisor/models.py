@@ -331,6 +331,17 @@ class FindingMetrics(SemanticRecord, ABC):
         )
 
 
+@dataclass(frozen=True)
+class SemanticMirrorMetricRelation:
+    """One authority-to-projection relation rendered as finding metrics."""
+
+    fact_names: tuple[str, ...]
+    projection_name: str
+    authority_name: str
+    identity_field_names: tuple[str, ...]
+    class_key_pairs: tuple[str, ...]
+
+
 BehaviorFindingMetrics = CompositeClassSpec(
     "BehaviorFindingMetrics", (FindingMetrics, ABC)
 ).build(__name__)
