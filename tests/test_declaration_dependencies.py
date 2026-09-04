@@ -7,6 +7,7 @@ import pytest
 
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyProjection,
+    ModuleLexicalDependencyProjection,
 )
 
 
@@ -126,6 +127,27 @@ def test_comprehension_walrus_binding_belongs_to_containing_function() -> None:
     )
 
     assert projection.execution_names == frozenset(("lookup", "tuple"))
+
+
+def test_external_reference_projection_preserves_lexical_name_identity() -> None:
+    module = ast.parse(
+        "class Authority:\n"
+        "    pass\n\n"
+        "def external() -> Authority:\n"
+        "    return Authority()\n\n"
+        "def shadowed(Authority):\n"
+        "    return Authority\n\n"
+        "class Consumer:\n"
+        "    before = Authority\n"
+        "    Authority = object\n"
+        "    after = Authority\n"
+    )
+
+    references = ModuleLexicalDependencyProjection.from_module(
+        module
+    ).external_references_named("Authority")
+
+    assert tuple(reference.lineno for reference in references) == (4, 5, 11)
 
 
 def test_assignment_dependencies_preserve_value_and_annotation_contexts() -> None:

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
+from functools import cached_property
+
+from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
 @dataclass(frozen=True)
@@ -119,3 +123,61 @@ class NominalAnnotationSourceAuthority:
 
 
 NOMINAL_ANNOTATION_SOURCE_AUTHORITY = NominalAnnotationSourceAuthority()
+
+
+@dataclass(frozen=True)
+class StringizedAnnotationSurface:
+    """One string literal parsed as annotation syntax in its class scope."""
+
+    literal: ast.Constant
+    owner_classes: tuple[ast.ClassDef, ...]
+
+    @cached_property
+    def expression(self) -> ast.expr | None:
+        try:
+            expression = ast.parse(self.literal.value, mode="eval").body
+        except SyntaxError:
+            return None
+        return expression
+
+    def reference_count(self, name: str) -> int:
+        expression = self.expression
+        if expression is None:
+            return 0
+        return sum(
+            isinstance(node, ast.Name) and node.id == name
+            for node in ast.walk(expression)
+        )
+
+    def resolves_module_name(
+        self,
+        name: str,
+        target_class: ast.ClassDef,
+    ) -> bool:
+        return all(
+            owner is target_class
+            or name
+            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
+            for owner in self.owner_classes
+        )
+
+    def renamed_source(
+        self,
+        literal_source: str,
+        *,
+        old_name: str,
+        new_name: str,
+    ) -> str:
+        """Rename exactly the parsed name references in one literal token."""
+
+        expected_count = self.reference_count(old_name)
+        if expected_count == 0:
+            raise ValueError(
+                f"Stringized annotation does not reference {old_name!r}"
+            )
+        name_pattern = re.compile(rf"(?<![\w]){re.escape(old_name)}(?![\w])")
+        if len(tuple(name_pattern.finditer(literal_source))) != expected_count:
+            raise ValueError(
+                "Stringized annotation source does not reconstruct its parsed names"
+            )
+        return name_pattern.sub(new_name, literal_source)

@@ -85,6 +85,7 @@ from .class_authority_collapse import (
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
+from .class_authority_rename import LocalClassAuthorityRenameProof
 from .class_index import (
     ClassFamilyIndex,
     ClassHeaderSourceSpan,
@@ -1830,6 +1831,44 @@ class ReplaceTargetOperation(SourceReprovedOperation):
             context,
             recipe_id=recipe_id,
             plan_item_index=plan_item_index,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenameLocalClassAuthorityOperation(RepositorySourceReprovedOperation):
+    """Rename a class whose complete consumer surface is local to its module."""
+
+    new_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        if not self.new_name.isidentifier() or keyword_module.iskeyword(self.new_name):
+            raise ValueError("Class-authority rename requires a Python identifier")
+
+    def proof(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> LocalClassAuthorityRenameProof:
+        target = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
+        return LocalClassAuthorityRenameProof.require(
+            snapshot.parsed_modules,
+            snapshot.required_class_family_index,
+            target_symbol=target.required_symbol(snapshot),
+            new_name=self.new_name,
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        proof = self.proof(snapshot)
+        return SourceTextGeometry(proof.source_module.source).physical_edits(
+            file_path=proof.source_module.file_path,
+            replacements=proof.source_replacements(self.new_name),
+            rationale=self.rationale
+            or (
+                f"Rename local class authority {proof.target.simple_name!r} to "
+                f"{self.new_name!r}."
+            ),
         )
 
 

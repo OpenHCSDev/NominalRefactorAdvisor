@@ -589,6 +589,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.FactorParallelMirroredLeafFamilyOperation,
         codemod.PromoteExactLeafMethodsToAncestorOperation,
         codemod.PromoteClassMembersToAncestorOperation,
+        codemod.RenameLocalClassAuthorityOperation,
     )
 
     assert all(

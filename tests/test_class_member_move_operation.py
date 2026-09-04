@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     PromoteClassMembersToAncestorOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
+    RenameLocalClassAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -132,8 +133,18 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
             ),
         ),
     )
+    rename = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe(recipe_id="rename-surviving-authority").with_operation(
+                RenameLocalClassAuthorityOperation(
+                    target=_operation(tmp_path).destination,
+                    new_name="CanonicalAuthority",
+                )
+            ),
+        ),
+    )
 
-    sequence = CodemodPlanSequence(documents=(promotion, collapse))
+    sequence = CodemodPlanSequence(documents=(promotion, collapse, rename))
     replayed = CodemodPlanSequence.from_json_value(json_report_object(sequence))
     result = replayed.simulate(snapshot)
     rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
@@ -146,21 +157,23 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     ) == (
         "promote_class_members_to_ancestor",
         "collapse_intermediate_class_authority",
+        "rename_local_class_authority",
     )
     assert all(
         "child_classes" not in stage["recipes"][0]["operations"][0]
         for stage in payload["stages"]
     )
     assert "class Intermediate" not in rewritten
-    assert "class Leaf(Authority):" in rewritten
+    assert "class CanonicalAuthority(ABC):" in rewritten
+    assert "class Leaf(CanonicalAuthority):" in rewritten
 
     module_path.write_text(rewritten, encoding="utf-8")
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
-            "import json; from pkg.family import Authority, Leaf; "
-            "print(json.dumps([Authority.describe(), Leaf.payload]))",
+            "import json; from pkg.family import CanonicalAuthority, Leaf; "
+            "print(json.dumps([CanonicalAuthority.describe(), Leaf.payload]))",
         ],
         cwd=tmp_path,
         check=True,

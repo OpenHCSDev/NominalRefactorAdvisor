@@ -199,6 +199,17 @@ base edge, removes obsolete imports, and deletes the empty declaration.  A
 ``CodemodPlanSequence`` can therefore express member promotion followed by
 family collapse while each stage is re-proved against the previous stage's
 projected source.
+``RenameLocalClassAuthorityOperation`` completes the local family-edit chain.
+It carries one exact class target and the new semantic name, then derives the
+declaration token and every lexically resolved direct or qualified reference
+inside the defining module.  Function parameters, assignments, and sequential
+class-body bindings that shadow the old spelling remain untouched.  Parsed
+forward-reference annotations are renamed through their annotation authority.
+Imported repository consumers, star imports, unresolved export policy,
+reflective strings, comments, explicit global/nonlocal declarations, and
+binding collisions fail preflight.  Cross-module class renaming therefore
+remains an explicit future proof domain rather than a text replacement
+disguised as a semantic operation.
 
 The ``closed_parameter_conveyor`` detector exposes a recipe only for a complete
 private call component that transports every field of one existing dataclass
@@ -333,10 +344,13 @@ them, and are not published as compatibility aliases.
    :members:
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CollapseIntermediateClassAuthorityOperation, PromoteClassMembersToAncestorOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, RenameLocalClassAuthorityOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CollapseIntermediateClassAuthorityOperation, PromoteClassMembersToAncestorOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
    :members: ClassMethodBehaviorAuthority, ClassAuthorityCollapseProofContext, RedundantClassAuthorityCollapseProof, IntermediateClassAuthorityCollapseProof
+
+.. automodule:: nominal_refactor_advisor.class_authority_rename
+   :members: LocalClassAuthorityRenameProof
 
 Goal Trajectory Surface
 -----------------------

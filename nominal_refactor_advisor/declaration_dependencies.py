@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Iterator, TypeAlias
 
+from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ImportBoundNameProjection
 
 MovableDeclaration: TypeAlias = (
@@ -56,6 +57,34 @@ class DeclarationDependencyProjection:
     @property
     def annotation_only_names(self) -> frozenset[str]:
         return self.annotation_names - self.execution_names
+
+
+@dataclass(frozen=True)
+class ModuleLexicalDependencyProjection:
+    """Reference-bearing dependency surfaces from one lexical traversal."""
+
+    external_name_references: tuple[ast.Name, ...]
+    stringized_annotations: tuple[StringizedAnnotationSurface, ...]
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ast.Module,
+    ) -> "ModuleLexicalDependencyProjection":
+        collector = _DeclarationDependencyCollector()
+        for statement in module.body:
+            collector.visit(statement)
+        return cls(
+            external_name_references=tuple(collector.external_name_references),
+            stringized_annotations=tuple(collector.stringized_annotation_surfaces),
+        )
+
+    def external_references_named(self, name: str) -> tuple[ast.Name, ...]:
+        return tuple(
+            reference
+            for reference in self.external_name_references
+            if reference.id == name
+        )
 
 
 @dataclass(frozen=True)
@@ -184,6 +213,9 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self.use = DeclarationDependencyUse.EXECUTION
         self.scopes: list[_DependencyScope] = []
         self.annotation_count = 0
+        self.external_name_references: list[ast.Name] = []
+        self.owner_classes: list[ast.ClassDef] = []
+        self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
 
     def visit_declaration(self, node: MovableDeclaration) -> None:
         self.visit(node)
@@ -191,6 +223,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and not self._is_internal(node.id):
             self.names_by_use[self.use].add(node.id)
+            self.external_name_references.append(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -278,9 +311,11 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
                 nonlocal_names=frozenset(bindings.nonlocal_names),
             )
             self.scopes.append(scope)
+            self.owner_classes.append(node)
             for statement in node.body:
                 self.visit(statement)
                 self._apply_class_binding(statement, scope)
+            self.owner_classes.pop()
             self.scopes.pop()
 
     def _visit_argument_defaults(self, arguments: ast.arguments) -> None:
@@ -320,6 +355,14 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
     ) -> None:
         if evaluation_sensitive:
             self.annotation_count += 1
+        self.stringized_annotation_surfaces.extend(
+            StringizedAnnotationSurface(
+                literal=node,
+                owner_classes=tuple(self.owner_classes),
+            )
+            for node in ast.walk(expression)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
         with self._dependency_use(DeclarationDependencyUse.ANNOTATION):
             self.visit(expression)
 

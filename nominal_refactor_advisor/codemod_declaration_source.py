@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import tokenize
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module as import_module_by_name
@@ -11,7 +12,7 @@ from typing import ClassVar
 
 from .ast_tools import AstKeywordSourceProjection, is_docstring_statement
 from .class_index import ClassHeaderSourceSpan
-from .codemod_source_edits import SourceTextGeometry
+from .codemod_source_edits import SourceTextGeometry, SourceTextSpan
 from .source_geometry import SourceLineSegmentAuthority
 
 
@@ -166,6 +167,41 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
             self.source_span.is_reconstructible
             and 1 <= self.start_line <= self.end_line <= len(self.source_lines)
             and self.rendered_header_is_parseable
+        )
+
+    @cached_property
+    def name_span(self) -> SourceTextSpan:
+        """Return the exact identifier token that declares this class name."""
+
+        geometry = SourceTextGeometry(self.source)
+        header_tokens = tuple(
+            token
+            for token in geometry.tokens
+            if self.start_line <= token.start[0] <= self.end_line
+        )
+        class_token_index = next(
+            (
+                index
+                for index, token in enumerate(header_tokens)
+                if token.type == tokenize.NAME and token.string == "class"
+            ),
+            None,
+        )
+        if class_token_index is None:
+            raise ValueError(f"Cannot resolve class token for {self.node.name!r}")
+        name_token = next(
+            (
+                token
+                for token in header_tokens[class_token_index + 1 :]
+                if token.type == tokenize.NAME
+            ),
+            None,
+        )
+        if name_token is None or name_token.string != self.node.name:
+            raise ValueError(f"Cannot resolve class name token for {self.node.name!r}")
+        return SourceTextSpan(
+            start_offset=geometry.token_position_offset(name_token.start),
+            end_offset=geometry.token_position_offset(name_token.end),
         )
 
     @property
