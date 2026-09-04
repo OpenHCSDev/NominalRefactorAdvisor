@@ -2713,7 +2713,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
     assert detector_id is not None
     before_finding = RefactorFinding(
         detector_id=detector_id,
-        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        pattern_id=per_module_detector_type.finding_spec.pattern_id,
         title="Changed file finding",
         summary="changed file before finding",
         why="changed file requires a rerun",
@@ -18276,7 +18276,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
+        _FindingRecipeTestDetector.finding_spec.pattern_id,
         "Semantic fact repeats outside nominal boundary",
         "Duplicated encoding should move behind the named owner.",
         "one nominal authority for the semantic fact",
@@ -18455,7 +18455,7 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
+        _FindingRecipeTestDetector.finding_spec.pattern_id,
         "Semantic fact repeats outside nominal boundary",
         "Duplicated encoding should move behind the named owner.",
         "one nominal authority for the semantic fact",
@@ -19345,7 +19345,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     modules = parse_python_modules(tmp_path)
 
     finding_spec = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
+        _FindingRecipeTestDetector.finding_spec.pattern_id,
         "Semantic fact repeats outside nominal boundary",
         "Duplicated encoding should move behind the named owner.",
         "one nominal authority for the semantic fact",
@@ -19748,14 +19748,14 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
 
     moved_spec = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
+        PatternId.NOMINAL_BOUNDARY,
         "Semantic fact mirrors outside owner",
         "Semantic fact should be owned once.",
         "single nominal owner",
         "parallel declaration mirrors one fact",
     )
     eliminated_spec = _finding_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
+        PatternId.AUTO_REGISTER_META,
         "Manual registry mirrors class family",
         "Class family should own its registry.",
         "derive registry from class family",
@@ -19786,18 +19786,22 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
         ),
     )
     payload = delta.to_dict()
-    statuses_by_gap = {
-        change["obligation_class"]["capability_gap"]: change["status"]
-        for change in payload["changes"]
+    statuses_by_declaration = {
+        change.obligation_class.declaration: change.status.value
+        for change in delta.changes
     }
 
     assert payload["moved_class_count"] == 1
     assert payload["eliminated_class_count"] == 1
-    assert statuses_by_gap["single nominal owner"] == "moved"
-    assert statuses_by_gap["derive registry from class family"] == "eliminated"
+    assert statuses_by_declaration[
+        SemanticMirrorWithoutDescentDetector.required_relation_identity()
+    ] == "moved"
+    assert statuses_by_declaration[
+        runtime_detectors.ManualClassRegistrationDetector.required_relation_identity()
+    ] == "eliminated"
 
 
-def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
+def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
@@ -19809,13 +19813,20 @@ def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
         "one source-derived projection",
         "projection repeats a nominal authority without descent",
     )
+    revised_presentation = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Reworded finding title",
+        "Reworded rationale.",
+        "reworded capability gap",
+        "reworded relation context",
+    )
     source_path = tmp_path / "projection.py"
     before = spec.build(
         "semantic_mirror_without_descent",
         "Stable projection mirrors Authority.",
         (SourceLocation(source_path.as_posix(), 12, "project:return"),),
     )
-    after = spec.build(
+    after = revised_presentation.build(
         "semantic_mirror_without_descent",
         "Stable projection mirrors Authority.",
         (SourceLocation(source_path.as_posix(), 18, "project:return"),),
@@ -19828,7 +19839,28 @@ def test_codemod_finding_class_delta_treats_coordinate_only_change_as_moved(
     assert delta.to_dict()["status_counts"] == {"moved": 1}
 
 
-def test_codemod_finding_class_delta_separates_obligation_from_detector_provenance(
+def test_codemod_finding_class_delta_rejects_unknown_relation_declaration(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
+
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Unknown detector",
+        "The producer is not declared.",
+        "unknown",
+        "unknown",
+    ).build(
+        "unregistered_detector",
+        "Unknown detector emitted a finding.",
+        (SourceLocation((tmp_path / "unknown.py").as_posix(), 1, "unknown"),),
+    )
+
+    with pytest.raises(ValueError, match="required relation is unknown"):
+        CodemodFindingClassDelta.from_findings((finding,), ())
+
+
+def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
@@ -19850,38 +19882,42 @@ def test_codemod_finding_class_delta_separates_obligation_from_detector_provenan
     )
     source_path = tmp_path / "projection.py"
     before = before_spec.build(
-        "projection_detector",
+        "semantic_mirror_without_descent",
         "Alpha exposes the unresolved relation.",
         (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
     )
     after = after_spec.build(
-        "authority_detector",
+        "sentinel_attribute_simulation",
         "Beta exposes the unresolved relation.",
         (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
     )
 
     delta = CodemodFindingClassDelta.from_findings((before,), (after,))
 
-    assert before.obligation_class == after.obligation_class
-    assert len(delta.changes) == 1
-    change = delta.changes[0]
-    assert change.obligation_class == before.obligation_class
-    assert change.status is CodemodFindingClassStatus.MOVED
-    assert change.detector_ids.before_ids == ("projection_detector",)
-    assert change.detector_ids.after_ids == ("authority_detector",)
-    assert change.detector_ids.removed_ids == ("projection_detector",)
-    assert change.detector_ids.added_ids == ("authority_detector",)
-    payload = change.to_dict()
-    assert payload["obligation_class"] == {
-        "pattern_id": PatternId.NOMINAL_BOUNDARY.value,
-        "capability_gap": "one nominal owner",
-        "relation_context": "projection repeats a nominal authority without descent",
+    before_obligation = IssueDetector.required_relation_for_finding(before)
+    after_obligation = IssueDetector.required_relation_for_finding(after)
+    assert before_obligation != after_obligation
+    assert len(delta.changes) == 2
+    changes_by_declaration = {
+        change.obligation_class.declaration: change for change in delta.changes
     }
-    assert payload["detector_transition"] == {
-        "before_detector_ids": ("projection_detector",),
-        "after_detector_ids": ("authority_detector",),
-        "removed_detector_ids": ("projection_detector",),
-        "added_detector_ids": ("authority_detector",),
+    before_change = changes_by_declaration[
+        SemanticMirrorWithoutDescentDetector.required_relation_identity()
+    ]
+    after_change = changes_by_declaration[
+        runtime_detectors.SentinelAttributeSimulationDetector.required_relation_identity()
+    ]
+    assert before_change.status is CodemodFindingClassStatus.ELIMINATED
+    assert after_change.status is CodemodFindingClassStatus.INTRODUCED
+    assert delta.to_dict()["status_counts"] == {
+        "eliminated": 1,
+        "introduced": 1,
+    }
+    assert before_change.to_dict()["obligation_class"] == {
+        "declaration": {
+            "module_name": SemanticMirrorWithoutDescentDetector.__module__,
+            "qualname": SemanticMirrorWithoutDescentDetector.__qualname__,
+        }
     }
 
 

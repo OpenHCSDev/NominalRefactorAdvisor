@@ -303,10 +303,11 @@ Target-free states that increase any complete-scan finding class relative to
 the starting state are recorded as unjustified-debt terminals rather than
 accepted as successful refactors.  The search may pass through intermediate
 states with additional obligations, but a proved terminal must discharge them.
-``FindingObligationClass`` derives that identity from the finding's pattern,
-capability gap, and required-relation context.  Detector provenance is reported
-separately, so a relation observed by a different detector is not mistaken for
-a newly introduced obligation.
+``FindingObligationClass`` derives that identity from the detector class in the
+MRO that physically declares the executed ``finding_spec``.  Capability-gap and
+relation-context prose remain presentation only.  A relation observed by a
+different detector is therefore treated as newly introduced unless both
+detectors genuinely inherit the same nominal spec owner.
 Caller-supplied architecture guards are evaluated at terminal states and stored
 on the final replay document; recipe-owned guards remain transition-local.
 ``ArchitectureGuardRule.constraints`` is a registered discriminated family.

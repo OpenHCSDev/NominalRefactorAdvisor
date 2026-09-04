@@ -42,6 +42,34 @@ class SemanticRecord(ABC):
         return asdict(record)
 
 
+@dataclass(frozen=True, order=True)
+class RequiredRelationIdentity(SemanticRecord):
+    """Structured identity derived from one nominal relation declaration."""
+
+    module_name: str
+    qualname: str
+
+
+class RequiredRelationDeclaration(ABC):
+    """Nominal declaration that owns one executable required relation."""
+
+    @classmethod
+    @abstractmethod
+    def required_relation_pattern_id(cls) -> PatternId:
+        """Return the pattern whose relation this declaration executes."""
+
+        raise NotImplementedError
+
+    @classmethod
+    def required_relation_identity(cls) -> RequiredRelationIdentity:
+        """Project the nominal declaration as a structured immutable identity."""
+
+        return RequiredRelationIdentity(
+            module_name=cls.__module__,
+            qualname=cls.__qualname__,
+        )
+
+
 class SemanticFieldRole(StrEnum):
     SOURCE_PATH = "source_path"
     SOURCE_LINE = "source_line"
@@ -759,12 +787,6 @@ class FindingSemantics(SemanticRecord):
     capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
     observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
 
-    @property
-    def obligation_class(self) -> "FindingObligationClass":
-        """Project the required relation independently of detector provenance."""
-
-        return FindingObligationClass.from_semantics(self)
-
 
 class FindingBuildContextKwargs(TypedDict, total=False):
     """Typed per-finding values that can refine a reusable finding spec."""
@@ -840,20 +862,23 @@ class FindingBuildContext:
 class FindingObligationClass(SemanticRecord):
     """Canonical identity of one unresolved required-relation obligation."""
 
-    pattern_id: PatternId
-    capability_gap: str
-    relation_context: str
+    declaration: RequiredRelationIdentity
 
     @classmethod
     def from_semantics(
         cls,
         semantics: FindingSemantics,
+        *,
+        declaration: type[RequiredRelationDeclaration],
     ) -> "FindingObligationClass":
-        return cls(
-            pattern_id=semantics.pattern_id,
-            capability_gap=semantics.capability_gap,
-            relation_context=semantics.relation_context,
-        )
+        pattern_id = declaration.required_relation_pattern_id()
+        if semantics.pattern_id is not pattern_id:
+            raise ValueError(
+                f"{declaration.required_relation_identity()} owns "
+                f"{pattern_id.name}, but the finding reports "
+                f"{semantics.pattern_id.name}."
+            )
+        return cls(declaration=declaration.required_relation_identity())
 
 
 @dataclass(frozen=True)

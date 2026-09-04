@@ -595,7 +595,8 @@ class CodemodFindingClassDelta:
     ) -> dict[FindingObligationClass, tuple[RefactorFinding, ...]]:
         grouped_findings: dict[FindingObligationClass, list[RefactorFinding]] = {}
         for finding in findings:
-            grouped_findings.setdefault(finding.obligation_class, []).append(finding)
+            obligation_class = IssueDetector.required_relation_for_finding(finding)
+            grouped_findings.setdefault(obligation_class, []).append(finding)
         return {
             obligation_class: tuple(class_findings)
             for obligation_class, class_findings in grouped_findings.items()

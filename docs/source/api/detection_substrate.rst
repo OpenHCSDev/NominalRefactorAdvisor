@@ -33,7 +33,10 @@ through shared source evidence without selecting an application order.
 
 For maintainers, the important split is:
 
-- each ``PatternId`` member owns its identity, required relation, and witness capabilities
+- each ``PatternId`` member owns its broad pattern identity, descriptive required
+  relation, and witness capabilities
+- each detector derives its executable obligation identity from the class in its
+  MRO that physically declares the selected ``finding_spec``
 - ``build_refactor_plans`` preserves every observed pattern in stable identity order
 - pattern evidence states the missing relation without prescribing a normal form
 - graph execution classes expose structural evidence only; they do not rank or

@@ -157,6 +157,7 @@ from ..models import (
     FindingMetrics,
     FindingBuildContext,
     FindingBuildContextKwargs,
+    FindingObligationClass,
     FindingSemantics,
     FindingSpec,
     HighConfidenceCertifiedFindingSpec,
@@ -168,6 +169,7 @@ from ..models import (
     ParameterThreadMetrics,
     ProbeCountMetrics,
     RefactorFinding,
+    RequiredRelationDeclaration,
     RegistrationMetrics,
     RepeatedMethodMetrics,
     ResolutionAxisMetrics,
@@ -474,7 +476,7 @@ class DetectorCacheGranularity(StrEnum):
         )
 
 
-class IssueDetector(ABC, metaclass=AutoRegisterMeta):
+class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     """Metaclass-registered detector base class."""
 
     __registry_key__ = "detector_id"
@@ -514,6 +516,48 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     ) -> type["IssueDetector"] | None:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return detector_registry.get(detector_id)
+
+    @classmethod
+    def required_relation_declaration_type(
+        cls,
+    ) -> type[RequiredRelationDeclaration]:
+        """Return the MRO declaration that supplies the executed finding spec."""
+
+        for declaration_type in cls.__mro__:
+            if "finding_spec" in vars(declaration_type):
+                if not issubclass(declaration_type, RequiredRelationDeclaration):
+                    raise TypeError(
+                        f"{declaration_type.__name__} supplies finding_spec outside "
+                        "the required-relation declaration hierarchy"
+                    )
+                return declaration_type
+        raise TypeError(f"{cls.__name__} has no finding_spec declaration")
+
+    @classmethod
+    def required_relation_pattern_id(cls) -> PatternId:
+        """Derive the required pattern from the MRO-selected spec owner."""
+
+        declaration_type = cls.required_relation_declaration_type()
+        finding_spec = cast(FindingSpec, vars(declaration_type)["finding_spec"])
+        return finding_spec.pattern_id
+
+    @classmethod
+    def required_relation_for_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> FindingObligationClass:
+        """Resolve a finding's wire id to its nominal required-relation owner."""
+
+        detector_type = cls.registered_detector_type_for_id(finding.detector_id)
+        if detector_type is None:
+            raise ValueError(
+                f"Finding {finding.stable_id} names unregistered detector "
+                f"{finding.detector_id!r}; its required relation is unknown."
+            )
+        return FindingObligationClass.from_semantics(
+            finding,
+            declaration=detector_type.required_relation_declaration_type(),
+        )
 
     @classmethod
     def detector_family_base_names(cls) -> frozenset[str]:

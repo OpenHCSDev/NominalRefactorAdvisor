@@ -1,11 +1,14 @@
 import ast
+from dataclasses import fields
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     ExternalEnumCaseRecoveryDetector,
+    IssueDetector,
 )
+from nominal_refactor_advisor.models import FindingObligationClass
 
 
 def test_repository_has_no_external_enum_case_recovery() -> None:
@@ -30,3 +33,16 @@ def test_repository_has_no_function_local_imports() -> None:
     )
 
     assert nested_imports == ()
+
+
+def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:
+    assert tuple(
+        record_field.name for record_field in fields(FindingObligationClass)
+    ) == ("declaration",)
+    for detector_type in IssueDetector.registered_detector_types():
+        declaration = detector_type.required_relation_declaration_type()
+        assert vars(declaration)["finding_spec"] is detector_type.finding_spec
+        assert (
+            declaration.required_relation_pattern_id()
+            is detector_type.finding_spec.pattern_id
+        )
