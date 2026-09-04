@@ -28,6 +28,7 @@ from metaclass_registry import AutoRegisterMeta
 from .ast_tools import AstExpressionProjection
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
+    CodemodJsonReport,
     CodemodPayloadRecord,
     DataclassJsonReport,
     DiscriminatedPayloadRecord,
@@ -40,6 +41,7 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
+    json_report_property,
 )
 from .collection_algebra import sorted_tuple
 from .models import SourceLocation
@@ -485,7 +487,7 @@ class ArchitectureGuardViolationTarget(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardViolation:
+class ArchitectureGuardViolation(CodemodJsonReport):
     """One concrete source location that violates an architecture guard rule."""
 
     rule_id: str
@@ -510,27 +512,19 @@ class ArchitectureGuardViolation:
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardReport:
+class ArchitectureGuardReport(DataclassJsonReport):
     """Result of checking caller-supplied codemod architecture invariants."""
 
     rules: tuple[ArchitectureGuardRule, ...]
     violations: tuple[ArchitectureGuardViolation, ...]
 
-    @property
+    @json_report_property()
     def is_clean(self) -> bool:
         return not self.violations
 
-    @property
+    @json_report_property()
     def violation_count(self) -> int:
         return len(self.violations)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "is_clean": self.is_clean,
-            "violation_count": self.violation_count,
-            "rules": tuple(rule.to_dict() for rule in self.rules),
-            "violations": tuple(violation.to_dict() for violation in self.violations),
-        }
 
 
 @dataclass(frozen=True)

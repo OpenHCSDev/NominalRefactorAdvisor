@@ -25,6 +25,7 @@ from nominal_refactor_advisor.codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
+    JsonReportValueProjection,
     ObjectPayloadValueCodec,
     OptionalStrEnumPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -37,6 +38,8 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
+    json_report_field,
+    json_report_property,
 )
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
@@ -82,6 +85,57 @@ def test_dataclass_json_report_derives_shallow_payload_from_declared_fields() ->
         "complete": True,
         "mode": "exact",
     }
+
+
+def test_dataclass_json_report_derives_nested_and_computed_output_bindings() -> None:
+    @dataclass(frozen=True)
+    class NestedReport(DataclassJsonReport):
+        nested_value: str
+
+    @dataclass(frozen=True)
+    class ReportEnvelope(DataclassJsonReport):
+        omitted: str = json_report_field(included=False)
+        renamed: str = json_report_field(field_name="label")
+        nested: NestedReport = json_report_field(flattened=True)
+
+        @json_report_property()
+        def complete(self) -> bool:
+            return True
+
+    assert ReportEnvelope(
+        omitted="hidden",
+        renamed="visible",
+        nested=NestedReport(nested_value="nested"),
+    ).to_dict() == {
+        "label": "visible",
+        "nested_value": "nested",
+        "complete": True,
+    }
+
+
+def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
+    @dataclass(frozen=True)
+    class BaseReport(DataclassJsonReport):
+        base_value: str
+
+        @json_report_property()
+        def status(self) -> str:
+            return "base"
+
+    @dataclass(frozen=True)
+    class LeafReport(BaseReport):
+        leaf_value: str
+
+    assert LeafReport(base_value="base", leaf_value="leaf").to_dict() == {
+        "base_value": "base",
+        "leaf_value": "leaf",
+        "status": "base",
+    }
+
+
+def test_json_report_projection_rejects_undeclared_runtime_values() -> None:
+    with pytest.raises(TypeError, match="No JSON report projection"):
+        JsonReportValueProjection().project(object())
 
 
 def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:

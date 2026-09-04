@@ -11962,26 +11962,13 @@ class FindingRecipeCandidateBatchEnumeration:
 
 
 @dataclass(frozen=True)
-class CurrentSnapshotRecipeConflictEvidence(CodemodJsonReport):
+class CurrentSnapshotRecipeConflictEvidence(DataclassJsonReport):
     """Non-selecting evidence for one connected recipe conflict."""
 
     component_candidate_indices: tuple[int, ...]
     component_finding_ids: tuple[str, ...]
     candidate_assessments: tuple[FindingRecipeSetAssessment, ...]
     pair_assessments: tuple[FindingRecipeCandidatePairAssessment, ...]
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "component_candidate_indices": self.component_candidate_indices,
-            "component_finding_ids": self.component_finding_ids,
-            "candidate_assessments": tuple(
-                assessment.to_dict() for assessment in self.candidate_assessments
-            ),
-            "pair_assessments": tuple(
-                assessment.to_dict() for assessment in self.pair_assessments
-            ),
-        }
-
 
 @dataclass(frozen=True)
 class FindingRecipeSynthesisReport(CodemodJsonReport):

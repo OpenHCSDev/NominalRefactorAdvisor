@@ -17,8 +17,9 @@ from typing import Iterable
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
+from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
-from .models import ImpactDelta, RefactorFinding, RefactorPlan, SemanticRecord
+from .models import ImpactDelta, RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
 
 _DEFAULT_SCAN_BUDGET_SECONDS = 20.0
@@ -96,7 +97,7 @@ def _git_root(start_path: Path) -> Path:
 
 
 @dataclass(frozen=True)
-class RefactorEvidenceEconomics(SemanticRecord):
+class RefactorEvidenceEconomics(DataclassJsonReport):
     """Aggregate the payoff evidence carried by structural findings."""
 
     finding_count: int = 0
@@ -215,7 +216,7 @@ class RefactorEvidenceEconomics(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class ScanEconomicsProof(SemanticRecord):
+class ScanEconomicsProof(DataclassJsonReport):
     """One timed scan summarized as an economics gate."""
 
     label: str
@@ -269,23 +270,27 @@ class ScanEconomicsProof(SemanticRecord):
             ),
         )
 
-    @property
+    @json_report_property()
     def scan_budget_passes(self) -> bool:
         return self.elapsed_seconds <= self.scan_budget_seconds
 
-    @property
+    @json_report_property()
     def production_scan_clean(self) -> bool:
         return self.production_finding_count == 0
 
-    @property
+    @json_report_property()
+    def evidence_guard_passes(self) -> bool:
+        return self.economics.evidence_guard_passes
+
+    @json_report_property()
     def proof_passes(self) -> bool:
         return (
             self.production_scan_clean
             and self.scan_budget_passes
-            and self.economics.evidence_guard_passes
+            and self.evidence_guard_passes
         )
 
-    @property
+    @json_report_property()
     def regression_reasons(self) -> tuple[str, ...]:
         reasons: list[str] = []
         if not self.production_scan_clean:
@@ -296,27 +301,15 @@ class ScanEconomicsProof(SemanticRecord):
             reasons.append(f"{self.label}_payoff_guard")
         return tuple(reasons)
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "scan_budget_passes": self.scan_budget_passes,
-            "production_scan_clean": self.production_scan_clean,
-            "evidence_guard_passes": self.economics.evidence_guard_passes,
-            "proof_passes": self.proof_passes,
-            "regression_reasons": self.regression_reasons,
-            "economics": self.economics.to_dict(),
-        }
-
-
 @dataclass(frozen=True)
-class EconomicsProofReport(SemanticRecord):
+class EconomicsProofReport(DataclassJsonReport):
     """Two-scan proof that separates cleanliness, payoff, timing, and LOC budget."""
 
     package_scan: ScanEconomicsProof
     repository_scan: ScanEconomicsProof
     change_budget: "RepositoryChangeBudget"
 
-    @property
+    @json_report_property()
     def proof_passes(self) -> bool:
         return (
             self.package_scan.proof_passes
@@ -324,7 +317,7 @@ class EconomicsProofReport(SemanticRecord):
             and self.change_budget.unavailable_reason is None
         )
 
-    @property
+    @json_report_property()
     def regression_reasons(self) -> tuple[str, ...]:
         reasons = [
             *self.package_scan.regression_reasons,
@@ -334,37 +327,20 @@ class EconomicsProofReport(SemanticRecord):
             reasons.append("change_budget_unavailable")
         return tuple(reasons)
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "proof_passes": self.proof_passes,
-            "regression_reasons": self.regression_reasons,
-            "package_scan": self.package_scan.to_dict(),
-            "repository_scan": self.repository_scan.to_dict(),
-            "change_budget": self.change_budget.to_dict(),
-        }
-
-
 @dataclass(frozen=True)
-class LineChangeBudget(SemanticRecord):
+class LineChangeBudget(DataclassJsonReport):
     """Added/deleted line budget for one repository category."""
 
     added: int = 0
     deleted: int = 0
 
-    @property
+    @json_report_property()
     def net_added(self) -> int:
         return self.added - self.deleted
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "net_added": self.net_added,
-        }
-
 
 @dataclass(frozen=True)
-class RepositoryChangeBudget(SemanticRecord):
+class RepositoryChangeBudget(DataclassJsonReport):
     """Working-tree line budget split by role instead of one misleading total."""
 
     advisor_backend: LineChangeBudget = field(default_factory=LineChangeBudget)
@@ -463,18 +439,6 @@ class RepositoryChangeBudget(SemanticRecord):
         ):
             return "generated"
         return "other"
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "advisor_backend": self.advisor_backend.to_dict(),
-            "detectors": self.detectors.to_dict(),
-            "tests": self.tests.to_dict(),
-            "docs": self.docs.to_dict(),
-            "generated": self.generated.to_dict(),
-            "other": self.other.to_dict(),
-        }
-
 
 def _scan_modules_for_proof(
     label: str,
