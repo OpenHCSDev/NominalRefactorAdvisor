@@ -67,7 +67,6 @@ from .calibration import (
 )
 from .codemod import (
     ArchitectureGuardReport,
-    ArchitectureGuardRule,
     CodemodJsonReport,
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
@@ -144,6 +143,7 @@ from .semantic_descent import (
     build_finding_backed_semantic_descent_graph,
 )
 from .source_index import build_source_index
+from .codemod_architecture_guards import ArchitectureGuardRule
 
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
@@ -1519,7 +1519,7 @@ def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
         lines.append(
             (
                 f"   - {index}. {violation.rule_id} "
-                f"{violation.violation_kind.value} at "
+                f"{violation.violation_kind} at "
                 f"{violation.location.file_path}:{violation.location.line} "
                 f"`{violation.location.symbol}`"
             )

@@ -82,6 +82,7 @@ from .class_index import (
     build_compact_class_family_index,
     build_class_family_index,
     declared_nominal_base_count,
+    module_public_export_contract,
 )
 from .codemod_payload import (
     BooleanPayloadValueCodec,
@@ -209,7 +210,6 @@ from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
 from .codemod_semantics import (
-    ArchitectureGuardViolationKind as ArchitectureGuardViolationKind,
     CancelableCompositionKind as CancelableCompositionKind,
     CodemodBackend as CodemodBackend,
     CodemodPreflightStatus as CodemodPreflightStatus,
@@ -294,6 +294,18 @@ from .codemod_module_declarations import (
     ModuleSymbolTable as ModuleSymbolTable,
     _AVAILABLE_WITHOUT_IMPORT as _AVAILABLE_WITHOUT_IMPORT,
     _PYTHON_RUNTIME_GLOBAL_NAMES as _PYTHON_RUNTIME_GLOBAL_NAMES,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardConstraint as ArchitectureGuardConstraint,
+    ArchitectureGuardDispatchSiteKind as ArchitectureGuardDispatchSiteKind,
+    ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
+    ArchitectureGuardMatch as ArchitectureGuardMatch,
+    ArchitectureGuardRule as ArchitectureGuardRule,
+    ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
+    ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
+    ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
+    ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
+    _call_name as _call_name,
 )
 
 
@@ -607,51 +619,23 @@ class PlannedSourceRewrite(SourceRewriteDelta):
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardRule(CodemodPayloadRecord):
-    """Caller-supplied invariant for a completed authority-boundary refactor."""
-
-    rule_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    forbidden_attribute_names: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    forbidden_call_names: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    forbidden_literal_dispatch_subjects: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    file_path_suffixes: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
-        default=(),
-    )
-    reason: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(),
-        default="",
-    )
-
-    def applies_to_file(self, file_path: str) -> bool:
-        return not self.file_path_suffixes or any(
-            file_path.endswith(suffix) for suffix in self.file_path_suffixes
-        )
-
-
-@dataclass(frozen=True)
 class ArchitectureGuardViolation:
     """One concrete source location that violates an architecture guard rule."""
 
     rule_id: str
-    violation_kind: ArchitectureGuardViolationKind
+    constraint_type: type[ArchitectureGuardConstraint]
     location: SourceLocation
     target_context: "ArchitectureGuardViolationTarget"
     detail: str = ""
 
+    @property
+    def violation_kind(self) -> str:
+        return self.constraint_type.discriminator_key()
+
     def to_dict(self) -> JsonObject:
         return {
             "rule_id": self.rule_id,
-            "violation_kind": self.violation_kind.value,
+            "violation_kind": self.violation_kind,
             "line": self.location.line,
             "symbol": self.location.symbol,
             **self.target_context.violation_payload(),
@@ -8175,7 +8159,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
     source_blocks: tuple[MovedTopLevelDeclarationSource, ...]
     dependency_report: ModuleMoveDependencyReport
-    source_reexport_import_sources: tuple[str, ...]
+    source_binding_import_sources: tuple[str, ...]
     consumer_import_mutations: tuple[ModuleImportMutation, ...]
 
     @classmethod
@@ -8215,8 +8199,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_table,
             declarations,
         )
-        source_reexport_import_sources = cls._source_reexport_import_sources(
+        source_binding_import_sources = cls._source_binding_import_sources(
             context,
+            source_table=source_table,
             source_path=request.source_path,
             destination_path=request.destination_path,
             moved_symbol_names=moved_symbol_names,
@@ -8234,27 +8219,43 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 sorted(source_blocks, key=lambda block: block.source_start_line)
             ),
             dependency_report=report,
-            source_reexport_import_sources=source_reexport_import_sources,
+            source_binding_import_sources=source_binding_import_sources,
             consumer_import_mutations=consumer_import_mutations,
             rationale=request.rationale,
         )
 
     @staticmethod
-    def _source_reexport_import_sources(
+    def _source_binding_import_sources(
         context: CodemodSelectorContext,
         *,
+        source_table: ModuleSymbolTable,
         source_path: str,
         destination_path: str,
         moved_symbol_names: tuple[str, ...],
     ) -> tuple[str, ...]:
         import_graph = context.module_import_graph
+        export_contract = module_public_export_contract(
+            context.parsed_module_for_source_path(source_path)
+        )
+        retained_reference_names = source_table.referenced_names_excluding(
+            moved_symbol_names,
+            moved_symbol_names,
+        )
         return tuple(
-            import_graph.required_reexport_source(
+            (
+                import_graph.required_reexport_source
+                if export_contract.exposure_for(symbol_name).blocks_closed_boundary
+                else import_graph.required_import_source
+            )(
                 importing_file_path=source_path,
                 imported_file_path=destination_path,
                 imported_name=symbol_name,
             )
             for symbol_name in moved_symbol_names
+            if (
+                export_contract.exposure_for(symbol_name).blocks_closed_boundary
+                or symbol_name in retained_reference_names
+            )
         )
 
     @staticmethod
@@ -8576,7 +8577,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     f"{self.dependency_report.moved_symbol_names!r}."
                 ),
             )
-            for import_source in self.source_reexport_import_sources
+            for import_source in self.source_binding_import_sources
         )
         edits.extend(self.consumer_import_mutations)
         return tuple(edits)
@@ -11364,8 +11365,16 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
         )
         guard = ArchitectureGuardRule(
             rule_id=rule_id or f"{target_qualname}-no-residual-compat-calls",
-            forbidden_attribute_names=tuple(forbidden_attribute_names),
-            forbidden_call_names=call_names,
+            constraints=tuple(
+                constraint
+                for constraint in (
+                    ForbiddenAttributeArchitectureGuardConstraint(
+                        tuple(forbidden_attribute_names)
+                    ),
+                    ForbiddenCallArchitectureGuardConstraint(call_names),
+                )
+                if constraint.names
+            ),
             reason=eraser_reason,
         )
         return cls(
@@ -22183,13 +22192,31 @@ def evaluate_architecture_guards(
         if not active_rules:
             continue
         module = ast.parse(source, filename=file_path)
-        visitor = _ArchitectureGuardVisitor(
-            source_index,
-            file_path,
-            active_rules,
-        )
-        visitor.visit(module)
-        violations.extend(visitor.violations)
+        for rule in active_rules:
+            for match in rule.matches(module):
+                location = SourceLocation(file_path, match.node.lineno, match.symbol)
+                violations.append(
+                    ArchitectureGuardViolation(
+                        rule_id=rule.rule_id,
+                        constraint_type=match.constraint_type,
+                        location=location,
+                        target_context=(
+                            ArchitectureGuardViolationTarget.from_location_target(
+                                location,
+                                _source_index_target_for_line(
+                                    source_index,
+                                    file_path,
+                                    match.node.lineno,
+                                ),
+                            )
+                        ),
+                        detail=(
+                            f"{match.message}: {rule.reason}"
+                            if rule.reason
+                            else match.message
+                        ),
+                    )
+                )
     return ArchitectureGuardReport(
         rules=rule_tuple,
         violations=sorted_tuple(
@@ -22932,182 +22959,12 @@ def _unpacked_fields_from_return(
     return ()
 
 
-def _call_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return ast.unparse(node)
-    return None
-
-
 def _consistent_source_name(current: str | None, candidate: str) -> str | None:
     if current is None:
         return candidate
     if current == candidate:
         return current
     return None
-
-
-class _ArchitectureGuardVisitor(ast.NodeVisitor):
-    def __init__(
-        self,
-        source_index: SourceIndex,
-        file_path: str,
-        rules: tuple[ArchitectureGuardRule, ...],
-    ) -> None:
-        self.source_index = source_index
-        self.source_path = file_path
-        self.rules = rules
-        self.violations: list[ArchitectureGuardViolation] = []
-
-    def visit_Call(self, node: ast.Call) -> None:
-        call_name = _call_name(node.func)
-        if call_name is not None:
-            self._append_forbidden_call_violations(node, call_name)
-            self._visit_inline_dict_get_dispatch(node)
-        self.generic_visit(node)
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        self._append_forbidden_attribute_violations(node, node.attr)
-        self.generic_visit(node)
-
-    def visit_If(self, node: ast.If) -> None:
-        for rule in self.rules:
-            for subject in rule.forbidden_literal_dispatch_subjects:
-                if _test_has_literal_dispatch(node.test, subject):
-                    self._append_literal_dispatch_violation(
-                        node,
-                        subject,
-                        "comparison",
-                        rule,
-                    )
-        self.generic_visit(node)
-
-    def visit_Match(self, node: ast.Match) -> None:
-        subject = ast.unparse(node.subject)
-        for rule in self.rules:
-            if subject in rule.forbidden_literal_dispatch_subjects and any(
-                _match_case_has_literal_pattern(case) for case in node.cases
-            ):
-                self._append_literal_dispatch_violation(
-                    node,
-                    subject,
-                    "match/case",
-                    rule,
-                )
-        self.generic_visit(node)
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        if isinstance(node.value, ast.Dict) and _dict_has_literal_key(node.value):
-            self._append_literal_dispatch_violations(
-                node,
-                ast.unparse(node.slice),
-                "inline literal dict",
-            )
-        self.generic_visit(node)
-
-    def _visit_inline_dict_get_dispatch(self, node: ast.Call) -> None:
-        if not isinstance(node.func, ast.Attribute):
-            return
-        if node.func.attr != "get" or not isinstance(node.func.value, ast.Dict):
-            return
-        if not _dict_has_literal_key(node.func.value) or not node.args:
-            return
-        self._append_literal_dispatch_violations(
-            node,
-            ast.unparse(node.args[0]),
-            "inline literal dict",
-        )
-
-    def _append_forbidden_call_violations(
-        self,
-        node: ast.Call,
-        call_name: str,
-    ) -> None:
-        for rule in self.rules:
-            if call_name in rule.forbidden_call_names:
-                self._append_violation(
-                    rule,
-                    node,
-                    ArchitectureGuardViolationKind.FORBIDDEN_CALL,
-                    call_name,
-                    f"Forbidden call {call_name!r}: {rule.reason}",
-                )
-
-    def _append_forbidden_attribute_violations(
-        self,
-        node: ast.Attribute,
-        attribute_name: str,
-    ) -> None:
-        for rule in self.rules:
-            if attribute_name in rule.forbidden_attribute_names:
-                self._append_violation(
-                    rule,
-                    node,
-                    ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE,
-                    attribute_name,
-                    f"Forbidden attribute {attribute_name!r}: {rule.reason}",
-                )
-
-    def _append_literal_dispatch_violations(
-        self,
-        node: ast.expr | ast.stmt,
-        subject: str,
-        dispatch_kind: str,
-    ) -> None:
-        for rule in self.rules:
-            if subject in rule.forbidden_literal_dispatch_subjects:
-                self._append_literal_dispatch_violation(
-                    node,
-                    subject,
-                    dispatch_kind,
-                    rule,
-                )
-
-    def _append_literal_dispatch_violation(
-        self,
-        node: ast.expr | ast.stmt,
-        subject: str,
-        dispatch_kind: str,
-        rule: ArchitectureGuardRule,
-    ) -> None:
-        self._append_violation(
-            rule,
-            node,
-            ArchitectureGuardViolationKind.FORBIDDEN_LITERAL_DISPATCH,
-            subject,
-            (
-                f"Forbidden {dispatch_kind} literal dispatch over "
-                f"{subject!r}: {rule.reason}"
-            ),
-        )
-
-    def _append_violation(
-        self,
-        rule: ArchitectureGuardRule,
-        node: ast.expr | ast.stmt,
-        violation_kind: ArchitectureGuardViolationKind,
-        symbol: str,
-        detail: str,
-    ) -> None:
-        line = node.lineno
-        target = _source_index_target_for_line(
-            self.source_index, self.source_path, line
-        )
-        location = SourceLocation(self.source_path, line, symbol)
-        target_context = ArchitectureGuardViolationTarget.from_location_target(
-            location,
-            target,
-        )
-        self.violations.append(
-            ArchitectureGuardViolation(
-                rule_id=rule.rule_id,
-                violation_kind=violation_kind,
-                location=location,
-                target_context=target_context,
-                detail=detail,
-            )
-        )
 
 
 def _source_index_target_for_line(
@@ -23122,69 +22979,3 @@ def _source_index_target_for_line(
         line,
         line,
     )
-
-
-def _test_has_literal_dispatch(test: ast.AST, subject: str) -> bool:
-    for node in ast.walk(test):
-        if isinstance(node, ast.Compare) and _compare_is_literal_dispatch(
-            node,
-            subject,
-        ):
-            return True
-    return False
-
-
-def _compare_is_literal_dispatch(compare: ast.Compare, subject: str) -> bool:
-    left_is_subject = ast.unparse(compare.left) == subject
-    if left_is_subject:
-        return any(
-            _operator_compares_to_literal(operator, comparator)
-            for operator, comparator in zip(compare.ops, compare.comparators)
-        )
-    return any(
-        isinstance(operator, (ast.Eq, ast.NotEq))
-        and ast.unparse(comparator) == subject
-        and _literal_dispatch_value(compare.left)
-        for operator, comparator in zip(compare.ops, compare.comparators)
-    )
-
-
-def _operator_compares_to_literal(operator: ast.cmpop, comparator: ast.expr) -> bool:
-    if isinstance(operator, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
-        return _literal_dispatch_value(comparator)
-    if isinstance(operator, (ast.In, ast.NotIn)):
-        return _literal_dispatch_collection(comparator)
-    return False
-
-
-def _literal_dispatch_value(node: ast.AST) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(
-        node.value,
-        (str, int, float),
-    )
-
-
-def _literal_dispatch_collection(node: ast.AST) -> bool:
-    return isinstance(node, (ast.Tuple, ast.List, ast.Set)) and all(
-        _literal_dispatch_value(element) for element in node.elts
-    )
-
-
-def _match_case_has_literal_pattern(case: ast.match_case) -> bool:
-    return _match_pattern_has_literal(case.pattern)
-
-
-def _match_pattern_has_literal(pattern: ast.pattern) -> bool:
-    if isinstance(pattern, ast.MatchValue):
-        return _literal_dispatch_value(pattern.value)
-    if isinstance(pattern, ast.MatchSingleton):
-        return pattern.value is not None
-    if isinstance(pattern, ast.MatchOr):
-        return any(_match_pattern_has_literal(item) for item in pattern.patterns)
-    if isinstance(pattern, ast.MatchSequence):
-        return any(_match_pattern_has_literal(item) for item in pattern.patterns)
-    return False
-
-
-def _dict_has_literal_key(node: ast.Dict) -> bool:
-    return any(key is not None and _literal_dispatch_value(key) for key in node.keys)

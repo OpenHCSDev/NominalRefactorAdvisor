@@ -16,7 +16,6 @@ from .cli import (
 )
 from .codemod import (
     ArchitectureGuardReport,
-    ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardViolation,
     AstTargetNodeIndex,
@@ -62,7 +61,6 @@ from .codemod import (
     simulate_planned_rewrites,
 )
 from .codemod_semantics import (
-    ArchitectureGuardViolationKind,
     CancelableCompositionKind,
     CodemodBackend,
     FindingRecipePlanningHorizon,
@@ -162,6 +160,14 @@ from .taxonomy import (
     ConfidenceLevel,
     ObservationTag,
 )
+from .codemod_architecture_guards import (
+    ArchitectureGuardConstraint,
+    ArchitectureGuardRule,
+    ForbiddenAttributeArchitectureGuardConstraint,
+    ForbiddenCallArchitectureGuardConstraint,
+    ForbiddenDispatchArchitectureGuardConstraint,
+)
+
 
 __all__ = _export_tools.derive_public_exports(
     globals(),

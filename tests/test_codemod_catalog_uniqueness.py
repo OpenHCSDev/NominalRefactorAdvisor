@@ -6,6 +6,7 @@ from dataclasses import dataclass, fields
 import pytest
 
 from nominal_refactor_advisor.codemod import (
+    ArchitectureGuardConstraint,
     ArchitectureGuardRule,
     CodemodPlanDocument,
     CodemodPlanSequence,
@@ -121,6 +122,7 @@ def test_registered_operation_payload_bindings_are_unique() -> None:
 
 def test_discriminated_record_families_inherit_wire_mechanics_once() -> None:
     for record_family, discriminator_field_name in (
+        (ArchitectureGuardConstraint, "constraint"),
         (CodemodTargetSelector, "selector"),
         (RefactorRecipeOperation, "operation"),
     ):
@@ -131,6 +133,29 @@ def test_discriminated_record_families_inherit_wire_mechanics_once() -> None:
             "from_dict",
             "to_dict",
         }.intersection(record_family.__dict__)
+
+
+def test_architecture_guard_constraint_registry_owns_the_complete_family() -> None:
+    registered_constraints = dict(ArchitectureGuardConstraint.__registry__.items())
+    pending = list(ArchitectureGuardConstraint.__subclasses__())
+    concrete_constraints: set[type[ArchitectureGuardConstraint]] = set()
+    while pending:
+        constraint_type = pending.pop()
+        pending.extend(constraint_type.__subclasses__())
+        if not inspect.isabstract(constraint_type):
+            concrete_constraints.add(constraint_type)
+
+    assert len(registered_constraints) == len(concrete_constraints)
+    assert {
+        constraint_type.constraint_key_value: constraint_type
+        for constraint_type in concrete_constraints
+    } == registered_constraints
+    for constraint_key, constraint_type in registered_constraints.items():
+        binding_set = constraint_type.payload_bindings()
+        assert isinstance(binding_set, PayloadBindingSet), constraint_key
+        assert frozenset(
+            binding.constructor_argument_name for binding in binding_set
+        ) == frozenset(record_field.name for record_field in fields(constraint_type))
 
 
 def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> None:
@@ -225,12 +250,7 @@ def test_payload_records_own_their_wire_schema() -> None:
         ),
         ArchitectureGuardRule: (
             ("rule_id", "rule_id"),
-            ("forbidden_attribute_names", "forbidden_attribute_names"),
-            ("forbidden_call_names", "forbidden_call_names"),
-            (
-                "forbidden_literal_dispatch_subjects",
-                "forbidden_literal_dispatch_subjects",
-            ),
+            ("constraints", "constraints"),
             ("file_path_suffixes", "file_path_suffixes"),
             ("reason", "reason"),
         ),

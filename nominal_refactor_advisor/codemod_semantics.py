@@ -225,14 +225,6 @@ class CancelableCompositionKind(StrEnum):
         return self._load_bearing_bonus
 
 
-class ArchitectureGuardViolationKind(StrEnum):
-    """Kinds of post-refactor architecture guard violations."""
-
-    FORBIDDEN_ATTRIBUTE = "forbidden_attribute"
-    FORBIDDEN_CALL = "forbidden_call"
-    FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
-
-
 class CodemodPreflightStatus(StrEnum):
     """Machine-readable codemod preflight outcome."""
 

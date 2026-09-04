@@ -243,10 +243,12 @@ rows.
 Repository-local explicit ``from`` imports are redirected to the declaration
 owner while mixed imports retain their unmoved aliases.  Generated imports
 preserve future, absolute, and relative source groups; the source-module
-reexports remain as an external compatibility boundary.
+reexports preserve names on the module's declared public surface.  Private
+closure helpers are imported back only when retained source still references
+them, and are not published as compatibility aliases.
 
 .. automodule:: nominal_refactor_advisor.codemod_semantics
-   :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, ArchitectureGuardViolationKind, CodemodPreflightStatus
+   :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, CodemodPreflightStatus
 
 .. automodule:: nominal_refactor_advisor.codemod_import_scopes
    :members: ModuleImportScope, TypeCheckingGuardReference, TypeCheckingGuardProjection
@@ -275,8 +277,11 @@ reexports remain as an external compatibility boundary.
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
 
+.. automodule:: nominal_refactor_advisor.codemod_architecture_guards
+   :members: ArchitectureGuardConstraint, ForbiddenCallArchitectureGuardConstraint, ForbiddenAttributeArchitectureGuardConstraint, ForbiddenDispatchArchitectureGuardConstraint, ArchitectureGuardRule
+
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: ArchitectureGuardSuite, ArchitectureGuardViolation, ArchitectureGuardReport, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
    :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof
@@ -298,6 +303,28 @@ separately, so a relation observed by a different detector is not mistaken for
 a newly introduced obligation.
 Caller-supplied architecture guards are evaluated at terminal states and stored
 on the final replay document; recipe-owned guards remain transition-local.
+``ArchitectureGuardRule.constraints`` is a registered discriminated family.
+Each constraint declaration owns its JSON key, payload fields, source
+observation, violation kind, and diagnostic.  The supported constraint keys are
+``forbidden_calls``, ``forbidden_attributes``, and ``forbidden_dispatch``.
+Dispatch subjects are parsed Python expressions.  The dispatch constraint
+matches literal and enum-member comparisons, ``isinstance`` and ``type`` case
+recovery, ``match`` statements, and inline mapping dispatch.  An optionality
+check against ``None`` is not classified as semantic case dispatch.
+
+.. code-block:: json
+
+   {
+     "architecture_guards": [{
+       "rule_id": "declaration-owned-status",
+       "constraints": [{
+         "constraint": "forbidden_dispatch",
+         "subjects": ["status.phase", "declaration"]
+       }],
+       "file_path_suffixes": ["presenter.py"],
+       "reason": "semantic cases execute on their nominal leaves"
+     }]
+   }
 
 .. automodule:: nominal_refactor_advisor.codemod_workflow
    :members: CodemodRefactorGoalRunner, CodemodRefactorGoalReport, CodemodRefactorTrajectoryBudget, CodemodRefactorTrajectoryProof, CodemodRefactorTrajectoryStatus, CodemodRefactorTrajectoryObstacle, CodemodRefactorUnjustifiedDebtTerminal

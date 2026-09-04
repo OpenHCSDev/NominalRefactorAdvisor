@@ -21,6 +21,7 @@ import pytest
 import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
+import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
 import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
@@ -129,7 +130,6 @@ from nominal_refactor_advisor.exact_method_authority import (
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
-    ArchitectureGuardViolationKind,
     AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
     AstTargetNodeIndex,
@@ -187,6 +187,9 @@ from nominal_refactor_advisor.codemod import (
     ExtractSymbolsToNewModuleOperation,
     FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
+    ForbiddenAttributeArchitectureGuardConstraint,
+    ForbiddenCallArchitectureGuardConstraint,
+    ForbiddenDispatchArchitectureGuardConstraint,
     InheritanceEdgeTargetSelector,
     InsertAfterImportsOperation,
     InsertAfterTargetOperation,
@@ -1036,7 +1039,9 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
             (
                 ArchitectureGuardRule(
                     rule_id="no-old-alpha-call",
-                    forbidden_call_names=("old_alpha",),
+                    constraints=(
+                        ForbiddenCallArchitectureGuardConstraint(("old_alpha",)),
+                    ),
                     file_path_suffixes=("pkg/mod.py",),
                 ),
             )
@@ -1085,7 +1090,9 @@ def test_codemod_source_snapshot_executes_recipe_document(
             (
                 ArchitectureGuardRule(
                     rule_id="no-old-alpha-call",
-                    forbidden_call_names=("old_alpha",),
+                    constraints=(
+                        ForbiddenCallArchitectureGuardConstraint(("old_alpha",)),
+                    ),
                     file_path_suffixes=("pkg/mod.py",),
                 ),
             )
@@ -2285,7 +2292,9 @@ def test_finding_recipe_batch_isolates_dirty_disjoint_recipe(
             (
                 ArchitectureGuardRule(
                     rule_id="forbid-dirty-call",
-                    forbidden_call_names=("forbidden_call",),
+                    constraints=(
+                        ForbiddenCallArchitectureGuardConstraint(("forbidden_call",)),
+                    ),
                     file_path_suffixes=("pkg/mod.py",),
                 ),
             )
@@ -6807,6 +6816,59 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_preserves_only_public_and_still_referenced_source_bindings(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class _ClosureHelper:\n"
+        "    pass\n\n\n"
+        "class _UsedHelper:\n"
+        "    pass\n\n\n"
+        "class PublicRoot(_ClosureHelper):\n"
+        "    pass\n\n\n"
+        "def build_used():\n"
+        "    return _UsedHelper()\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("_ClosureHelper", "_UsedHelper", "PublicRoot"),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("move-private-closure").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
+
+    assert simulation.is_clean
+    assert "PublicRoot as PublicRoot" in rewritten_source
+    assert "_UsedHelper" in rewritten_source
+    assert "_UsedHelper as _UsedHelper" not in rewritten_source
+    assert "_ClosureHelper" not in rewritten_source
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import PublicRoot, build_used; "
+            "assert PublicRoot.__module__ == 'pkg.destination'; "
+            "assert type(build_used()).__module__ == 'pkg.destination'",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
     tmp_path: Path,
 ) -> None:
@@ -8348,7 +8410,9 @@ def test_exact_recipe_fast_snapshot_rejects_unbounded_proof_dependencies(
                 (
                     ArchitectureGuardRule(
                         rule_id="repository-wide-guard",
-                        forbidden_call_names=("legacy_call",),
+                        constraints=(
+                            ForbiddenCallArchitectureGuardConstraint(("legacy_call",)),
+                        ),
                     ),
                 )
             )
@@ -8523,7 +8587,7 @@ def test_codemod_plan_document_simulates_and_applies_recipes(
     assert "HelperAuthority.normalize(value)" in rewritten
 
 
-def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
+def test_architecture_guard_reports_declaration_owned_constraints(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -8548,8 +8612,14 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
         (
             ArchitectureGuardRule(
                 rule_id="cellprofiler-declaration-boundary",
-                forbidden_call_names=("_ModuleSettingsBindingStrategy.for_module",),
-                forbidden_literal_dispatch_subjects=("module.name", "module_name"),
+                constraints=(
+                    ForbiddenCallArchitectureGuardConstraint(
+                        ("_ModuleSettingsBindingStrategy.for_module",)
+                    ),
+                    ForbiddenDispatchArchitectureGuardConstraint(
+                        ("module.name", "module_name")
+                    ),
+                ),
                 file_path_suffixes=("pkg/mod.py",),
                 reason="module semantics must route through declarations",
             ),
@@ -8561,11 +8631,8 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
 
     assert report.is_clean is False
     assert report.violation_count == 4
-    assert violation_kinds.count(ArchitectureGuardViolationKind.FORBIDDEN_CALL) == 1
-    assert (
-        violation_kinds.count(ArchitectureGuardViolationKind.FORBIDDEN_LITERAL_DISPATCH)
-        == 3
-    )
+    assert violation_kinds.count("forbidden_calls") == 1
+    assert violation_kinds.count("forbidden_dispatch") == 3
     assert "_ModuleSettingsBindingStrategy.for_module" in symbols
     assert symbols.count("module_name") == 2
     assert all(
@@ -8574,6 +8641,59 @@ def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
     )
     assert all(item.target_context.target_id is not None for item in report.violations)
     assert report.to_dict()["violation_count"] == 4
+
+
+def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Phase:\n"
+        "    CONNECTED = object()\n\n\n"
+        "class Named:\n"
+        "    pass\n\n\n"
+        "class Assigned:\n"
+        "    pass\n\n\n"
+        "def present(status, declaration):\n"
+        "    if status.phase is Phase.CONNECTED:\n"
+        "        return 'connected'\n"
+        "    if isinstance(declaration, Named):\n"
+        "        return declaration.name\n"
+        "    if type(declaration) is Assigned:\n"
+        "        return declaration.name\n"
+        "    if declaration is None:\n"
+        "        return None\n"
+        "    return declaration.present()\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    report = evaluate_architecture_guards(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        (
+            ArchitectureGuardRule(
+                rule_id="declaration-owned-dispatch",
+                constraints=(
+                    ForbiddenDispatchArchitectureGuardConstraint(
+                        ("status.phase", "declaration")
+                    ),
+                ),
+                reason="semantic cases must execute on their nominal leaves",
+            ),
+        ),
+    )
+
+    assert report.violation_count == 3
+    assert {
+        violation.location.symbol for violation in report.violations
+    } == {"status.phase", "declaration"}
+    assert all(
+        violation.constraint_type is ForbiddenDispatchArchitectureGuardConstraint
+        for violation in report.violations
+    )
+    assert not any("None" in violation.detail for violation in report.violations)
 
 
 def test_detects_generic_cancelable_product_composition_signal(
@@ -14856,7 +14976,9 @@ def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
             (
                 ArchitectureGuardRule(
                     rule_id="no-legacy-call",
-                    forbidden_call_names=("legacy",),
+                    constraints=(
+                        ForbiddenCallArchitectureGuardConstraint(("legacy",)),
+                    ),
                 ),
             )
         ),
@@ -14918,8 +15040,16 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
             "architecture_guards": [
                 {
                     "rule_id": "alpha-boundary",
-                    "forbidden_attribute_names": ["legacy_alpha_value"],
-                    "forbidden_call_names": ["legacy_alpha"],
+                    "constraints": [
+                        {
+                            "constraint": "forbidden_attributes",
+                            "names": ["legacy_alpha_value"],
+                        },
+                        {
+                            "constraint": "forbidden_calls",
+                            "names": ["legacy_alpha"],
+                        },
+                    ],
                     "file_path_suffixes": ["alpha.py"],
                 }
             ],
@@ -14936,7 +15066,12 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
                     "architecture_guards": [
                         {
                             "rule_id": "alpha-recipe-boundary",
-                            "forbidden_attribute_names": ["legacy_recipe_value"],
+                            "constraints": [
+                                {
+                                    "constraint": "forbidden_attributes",
+                                    "names": ["legacy_recipe_value"],
+                                }
+                            ],
                         }
                     ],
                     "operations": [
@@ -14958,12 +15093,22 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.has_recipes is True
     assert document.has_architecture_guards is True
     assert document.guard_suite.rules[0].rule_id == "alpha-boundary"
-    assert document.guard_suite.rules[0].forbidden_attribute_names == (
+    alpha_constraint = document.guard_suite.rules[0].constraints[0]
+    assert isinstance(
+        alpha_constraint,
+        ForbiddenAttributeArchitectureGuardConstraint,
+    )
+    assert alpha_constraint.names == (
         "legacy_alpha_value",
     )
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].guard_suite.rules[0].rule_id == "alpha-recipe-boundary"
-    assert document.recipes[0].guard_suite.rules[0].forbidden_attribute_names == (
+    recipe_constraint = document.recipes[0].guard_suite.rules[0].constraints[0]
+    assert isinstance(
+        recipe_constraint,
+        ForbiddenAttributeArchitectureGuardConstraint,
+    )
+    assert recipe_constraint.names == (
         "legacy_recipe_value",
     )
     assert "target_shape" not in document.recipes[0].to_dict()
@@ -14980,6 +15125,37 @@ def test_codemod_plan_document_rejects_parallel_authority_boundary_lane() -> Non
         match="Unsupported CodemodPlanDocument payload field",
     ):
         CodemodPlanDocument.from_json_value({"authority_boundaries": []})
+
+
+def test_architecture_guard_rule_rejects_parallel_constraint_fields() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Unsupported ArchitectureGuardRule payload field",
+    ):
+        ArchitectureGuardRule.from_json_value(
+            {
+                "rule_id": "legacy-parallel-field",
+                "forbidden_call_names": ["legacy_call"],
+            }
+        )
+
+
+def test_architecture_guard_rule_rejects_unknown_constraint_declaration() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Unsupported architecture guard constraint",
+    ):
+        ArchitectureGuardRule.from_json_value(
+            {
+                "rule_id": "unknown-constraint",
+                "constraints": [
+                    {
+                        "constraint": "mystery_dispatch",
+                        "subjects": ["status"],
+                    }
+                ],
+            }
+        )
 
 
 def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
@@ -15015,7 +15191,12 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 "architecture_guards": [
                     {
                         "rule_id": "alpha-boundary",
-                        "forbidden_call_names": ["legacy"],
+                        "constraints": [
+                            {
+                                "constraint": "forbidden_calls",
+                                "names": ["legacy"],
+                            }
+                        ],
                         "file_path_suffixes": ["pkg/mod.py"],
                     }
                 ],
@@ -16762,12 +16943,17 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                 "architecture_guards": [
                     {
                         "rule_id": "cellprofiler-declaration-boundary",
-                        "forbidden_call_names": [
-                            "_ModuleSettingsBindingStrategy.for_module"
-                        ],
-                        "forbidden_literal_dispatch_subjects": [
-                            "module.name",
-                            "module_name",
+                        "constraints": [
+                            {
+                                "constraint": "forbidden_calls",
+                                "names": [
+                                    "_ModuleSettingsBindingStrategy.for_module"
+                                ],
+                            },
+                            {
+                                "constraint": "forbidden_dispatch",
+                                "subjects": ["module.name", "module_name"],
+                            },
                         ],
                         "file_path_suffixes": ["generator.py"],
                         "reason": "module semantics must route through declarations",
@@ -16893,7 +17079,12 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.guard_suite.rules[0].rule_id == (
         "cellprofiler-declaration-boundary"
     )
-    assert document.guard_suite.rules[0].forbidden_literal_dispatch_subjects == (
+    dispatch_constraint = document.guard_suite.rules[0].constraints[1]
+    assert isinstance(
+        dispatch_constraint,
+        ForbiddenDispatchArchitectureGuardConstraint,
+    )
+    assert dispatch_constraint.subjects == (
         "module.name",
         "module_name",
     )
@@ -17033,9 +17224,7 @@ def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
     assert simulation.is_clean is False
     assert simulation.architecture_guard_report.violation_count == 1
     violation = simulation.architecture_guard_report.violations[0]
-    assert (
-        violation.violation_kind is ArchitectureGuardViolationKind.FORBIDDEN_ATTRIBUTE
-    )
+    assert violation.constraint_type is ForbiddenAttributeArchitectureGuardConstraint
     assert "ligand_coords" in violation.detail
 
 
@@ -18310,7 +18499,11 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         (
             ArchitectureGuardRule(
                 rule_id="no-residual-temporary-call",
-                forbidden_call_names=("temporary_call", "forbidden_call"),
+                constraints=(
+                    ForbiddenCallArchitectureGuardConstraint(
+                        ("temporary_call", "forbidden_call")
+                    ),
+                ),
                 file_path_suffixes=("pkg/mod.py",),
             ),
         )
@@ -18516,7 +18709,9 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
         (
             ArchitectureGuardRule(
                 rule_id="no-terminal-legacy-call",
-                forbidden_call_names=("legacy_call",),
+                constraints=(
+                    ForbiddenCallArchitectureGuardConstraint(("legacy_call",)),
+                ),
                 file_path_suffixes=("pkg/mod.py",),
             ),
         )
@@ -19969,7 +20164,12 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
                 "architecture_guards": [
                     {
                         "rule_id": "module-declaration-boundary",
-                        "forbidden_literal_dispatch_subjects": ["module_name"],
+                        "constraints": [
+                            {
+                                "constraint": "forbidden_dispatch",
+                                "subjects": ["module_name"],
+                            }
+                        ],
                         "file_path_suffixes": ["pkg/mod.py"],
                         "reason": "module semantics must route through declarations",
                     }
@@ -24240,7 +24440,6 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
     import nominal_refactor_advisor as public_api
 
     public_names = (
-        "ArchitectureGuardViolationKind",
         "CancelableCompositionKind",
         "CodemodBackend",
         "FindingRecipePlanningHorizon",
@@ -24256,6 +24455,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 @pytest.mark.parametrize(
     "declaration_owner",
     (
+        codemod_architecture_guards_module,
         codemod_import_bindings_module,
         codemod_import_graph_module,
         codemod_import_scopes_module,
@@ -24275,7 +24475,11 @@ def test_codemod_facade_reexports_declaration_owned_types(
     owner_declarations = {
         name: value
         for name, value in vars(declaration_owner).items()
-        if isinstance(value, type) and value.__module__ == declaration_owner.__name__
+        if (
+            not name.startswith("_")
+            and isinstance(value, type)
+            and value.__module__ == declaration_owner.__name__
+        )
     }
 
     assert owner_declarations
