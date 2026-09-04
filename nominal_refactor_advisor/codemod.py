@@ -11751,15 +11751,13 @@ class FindingRecipeSynthesisReport(DataclassJsonReport):
         )
 
     @json_report_property()
-    def status_counts(self) -> JsonObject:
+    def status_counts(self) -> dict[FindingRecipeSynthesisStatus, int]:
         statuses = Counter(record.status for record in self.records)
-        return JsonObject(
-            {
-                status.value: statuses[status]
-                for status in FindingRecipeSynthesisStatus
-                if statuses[status]
-            }
-        )
+        return {
+            status: statuses[status]
+            for status in FindingRecipeSynthesisStatus
+            if statuses[status]
+        }
 
 
 @dataclass(frozen=True, kw_only=True)

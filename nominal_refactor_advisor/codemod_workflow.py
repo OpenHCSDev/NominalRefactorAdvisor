@@ -47,7 +47,6 @@ from .codemod_architecture_guards import (
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .json_reports import (
     DataclassJsonReport,
-    JsonObject,
     JsonReportAliasProperty,
     json_report_alias,
     json_report_cached_property,
@@ -268,10 +267,10 @@ class CodemodFindingClassStatus(StrEnum):
     def counts(
         cls,
         changes: tuple["CodemodFindingClassChange", ...],
-    ) -> JsonObject:
+    ) -> dict["CodemodFindingClassStatus", int]:
         change_counts = Counter(change.status for change in changes)
         return {
-            status.value: change_counts[status]
+            status: change_counts[status]
             for status in cls
             if change_counts[status]
         }
@@ -605,7 +604,7 @@ class CodemodFindingClassDelta(DataclassJsonReport):
         return sum(1 for change in self.changes if change.status is status)
 
     @json_report_property()
-    def status_counts(self) -> JsonObject:
+    def status_counts(self) -> dict[CodemodFindingClassStatus, int]:
         return CodemodFindingClassStatus.counts(self.changes)
 
     @property

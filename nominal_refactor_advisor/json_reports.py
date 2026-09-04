@@ -95,11 +95,20 @@ class JsonReportValueProjection:
 
     @project.register
     def _project_mapping(self, value: Mapping) -> JsonObject:
-        if not all(isinstance(key, str) for key in value):
-            raise TypeError("JSON report mappings require string keys")
         return JsonObject(
-            {cast(str, key): self.project(item) for key, item in value.items()}
+            {
+                self.mapping_key(key): self.project(item)
+                for key, item in value.items()
+            }
         )
+
+    @staticmethod
+    def mapping_key(key: object) -> str:
+        if isinstance(key, StrEnum):
+            return key.value
+        if isinstance(key, str):
+            return key
+        raise TypeError("JSON report mappings require string or StrEnum keys")
 
     @project.register
     def _project_report(self, value: JsonReport) -> JsonObject:

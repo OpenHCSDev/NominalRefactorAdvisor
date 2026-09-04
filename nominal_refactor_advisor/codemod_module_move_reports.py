@@ -15,7 +15,6 @@ from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
 from .codemod_module_declarations import SourceTopLevelSymbolMoveSelection
 from .json_reports import (
     DataclassJsonReport,
-    JsonObject,
     json_report_field,
     json_report_property,
 )
@@ -270,7 +269,10 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
         return "; ".join(parts)
 
     @json_report_property(flattened=True)
-    def obstacle_payload(self) -> JsonObject:
-        return JsonObject(
-            {kind.value: self.obstacle_details(kind) for kind in ModuleMoveObstacleKind}
-        )
+    def obstacle_details_by_kind(
+        self,
+    ) -> dict[ModuleMoveObstacleKind, tuple[str, ...]]:
+        return {
+            kind: self.obstacle_details(kind)
+            for kind in ModuleMoveObstacleKind
+        }
