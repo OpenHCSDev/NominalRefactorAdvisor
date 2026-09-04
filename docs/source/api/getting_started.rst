@@ -154,6 +154,26 @@ rewrites from that state.  Review the combined diff, then replace
 ``--codemod-simulate`` with ``--codemod-apply`` to write the sequence as one
 revision-checked batch.
 
+Renaming a Top-Level Binding Authority
+--------------------------------------
+
+Use ``rename_top_level_binding_authority`` when the authority is declared by a
+module assignment rather than a class or function definition:
+
+.. code-block:: json
+
+   {
+     "operation": "rename_top_level_binding_authority",
+     "file_path": "package/monolith.py",
+     "binding_name": "_LegacyNode",
+     "new_name": "AstNode"
+   }
+
+The operation proves one unambiguous assignment declaration, then derives its
+repository imports, exports, direct references, qualified references, and
+annotations.  Put a subsequent deletion, import, or extraction in the next
+stage when it must resolve the renamed binding.
+
 Extracting a Declaration Closure
 --------------------------------
 

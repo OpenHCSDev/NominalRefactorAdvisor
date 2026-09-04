@@ -126,11 +126,28 @@ NOMINAL_ANNOTATION_SOURCE_AUTHORITY = NominalAnnotationSourceAuthority()
 
 
 @dataclass(frozen=True)
-class StringizedAnnotationSurface:
+class ModuleNameReferenceScope:
+    """Class scopes governing whether a name resolves from a module."""
+
+    owner_classes: tuple[ast.ClassDef, ...]
+
+    def resolves_module_name(
+        self,
+        name: str,
+        self_binding_owner: ast.ClassDef | None,
+    ) -> bool:
+        return all(
+            owner is self_binding_owner
+            or name not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
+            for owner in self.owner_classes
+        )
+
+
+@dataclass(frozen=True)
+class StringizedAnnotationSurface(ModuleNameReferenceScope):
     """One string literal parsed as annotation syntax in its class scope."""
 
     literal: ast.Constant
-    owner_classes: tuple[ast.ClassDef, ...]
 
     @classmethod
     def from_annotation(
@@ -159,18 +176,6 @@ class StringizedAnnotationSurface:
         if expression is None:
             return 0
         return _StringizedAnnotationNameCollector.count(expression, name)
-
-    def resolves_module_name(
-        self,
-        name: str,
-        self_binding_owner: ast.ClassDef | None,
-    ) -> bool:
-        return all(
-            owner is self_binding_owner
-            or name
-            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
-            for owner in self.owner_classes
-        )
 
     def renamed_source(
         self,

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import cached_property
 
 from .annotation_semantics import StringizedAnnotationSurface
-from .ast_tools import ParsedModule
+from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from .class_index import (
     ModuleNominalBindingAuthority,
     ModulePublicExportSourceAuthority,
@@ -21,22 +21,25 @@ from .class_index import (
     module_star_import_origins,
     nominal_reference_root,
 )
-from .codemod_declaration_source import NamedDeclarationSourceAuthority
 from .codemod_module_declarations import (
-    NamedSourceTopLevelDeclaration,
+    SourceTopLevelDeclaration,
     SourceTopLevelDeclarationIndex,
 )
 from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement
-from .declaration_dependencies import ModuleLexicalDependencyProjection
+from .declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+    ModuleNameReferenceSurface,
+    MovableDeclaration,
+)
 from .source_index import AstTargetDigest
 
 
 @dataclass(frozen=True)
-class TopLevelDeclarationRenameTarget:
-    """One exact top-level declaration selected for repository-wide renaming."""
+class TopLevelBindingRenameTarget:
+    """One exact top-level binding selected for repository-wide renaming."""
 
     source_module: ParsedModule
-    declaration: NamedSourceTopLevelDeclaration
+    declaration: SourceTopLevelDeclaration
 
     @classmethod
     def require(
@@ -46,7 +49,28 @@ class TopLevelDeclarationRenameTarget:
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         new_name: str,
-    ) -> "TopLevelDeclarationRenameTarget":
+    ) -> "TopLevelBindingRenameTarget":
+        if target.qualname != target.name:
+            raise ValueError("Declaration rename requires a top-level target")
+        rename_target = cls.require_binding(
+            parsed_modules,
+            source_path=target.file_path,
+            binding_name=target.name,
+            new_name=new_name,
+        )
+        if rename_target.declaration.node is not node:
+            raise ValueError("Declaration rename target is not one exact binding")
+        return rename_target
+
+    @classmethod
+    def require_binding(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        *,
+        source_path: str,
+        binding_name: str,
+        new_name: str,
+    ) -> "TopLevelBindingRenameTarget":
         modules_by_path = {module.file_path: module for module in parsed_modules}
         if len(modules_by_path) != len(parsed_modules):
             raise ValueError("Declaration rename requires unique source modules")
@@ -54,35 +78,28 @@ class TopLevelDeclarationRenameTarget:
             parsed_modules
         ):
             raise ValueError("Declaration rename requires unique module identities")
-        source_module = modules_by_path.get(target.file_path)
+        source_module = modules_by_path.get(source_path)
         if source_module is None:
-            raise ValueError(f"Source module {target.file_path!r} is unavailable")
-        if target.qualname != target.name:
-            raise ValueError("Declaration rename requires a top-level target")
+            raise ValueError(f"Source module {source_path!r} is unavailable")
         declaration_index = SourceTopLevelDeclarationIndex(
-            source_path=target.file_path,
+            source_path=source_path,
             module=source_module.module,
         )
-        declaration = declaration_index.required_declaration(target.name)
-        if (
-            not isinstance(declaration, NamedSourceTopLevelDeclaration)
-            or declaration.node is not node
-        ):
-            raise ValueError("Declaration rename target is not one exact binding")
-        if target.name == new_name:
+        declaration = declaration_index.required_declaration(binding_name)
+        if binding_name == new_name:
             raise ValueError("Declaration rename requires a distinct name")
         if new_name in declaration_index.binding_statements_by_name:
             raise ValueError(f"Replacement name {new_name!r} is already bound")
         if (
             module_public_export_contract(source_module)
-            .exposure_for(target.name)
+            .exposure_for(binding_name)
             .introduces_uncertainty
         ):
             raise ValueError("Declaration export policy is unresolved")
         return cls(source_module, declaration)
 
     @property
-    def node(self) -> ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef:
+    def node(self) -> MovableDeclaration:
         return self.declaration.node
 
     @property
@@ -149,7 +166,7 @@ class DeclarationAuthorityImportReference:
 class DeclarationAuthorityRenameBindingClosure:
     """Import-propagated repository bindings changed by one declaration rename."""
 
-    target: TopLevelDeclarationRenameTarget
+    target: TopLevelBindingRenameTarget
     import_references: tuple[DeclarationAuthorityImportReference, ...]
     renamed_module_names: frozenset[str]
 
@@ -157,7 +174,7 @@ class DeclarationAuthorityRenameBindingClosure:
     def from_modules(
         cls,
         parsed_modules: tuple[ParsedModule, ...],
-        target: TopLevelDeclarationRenameTarget,
+        target: TopLevelBindingRenameTarget,
     ) -> "DeclarationAuthorityRenameBindingClosure":
         import_references = tuple(
             reference
@@ -212,11 +229,102 @@ class DeclarationAuthorityRenameBindingClosure:
 
 
 @dataclass(frozen=True)
+class DeclarationAuthorityModuleReferenceProof:
+    """Binding-derived reference proof for one repository module."""
+
+    target: TopLevelBindingRenameTarget
+    binding_closure: DeclarationAuthorityRenameBindingClosure
+    binding_authority: ModuleNominalBindingAuthority
+    lexical_dependencies: ModuleLexicalDependencyProjection
+    annotation_mode: ModuleAnnotationEvaluationMode
+
+    @cached_property
+    def final_binding_is_renamed(self) -> bool:
+        binding = self.binding_authority.snapshot_before().binding_for(self.target.name)
+        return (
+            binding is not None
+            and binding.qualified_name in self.binding_closure.renamed_symbols
+        )
+
+    def proves_direct_surface_binding(
+        self,
+        surface: ModuleNameReferenceSurface,
+    ) -> bool:
+        return (
+            self.binding_authority.qualified_name_at(
+                surface.reference,
+                line=surface.binding_snapshot_line,
+            )
+            in self.binding_closure.renamed_symbols
+        )
+
+    def proves_direct_reference(self, surface: ModuleNameReferenceSurface) -> bool:
+        return self.proves_direct_surface_binding(surface) or (
+            surface.is_direct_annotation
+            and not self.annotation_mode.annotations_execute_at_declaration
+            and self.final_binding_is_renamed
+            and surface.resolves_module_name(
+                self.target.name,
+                self.target.self_binding_owner,
+            )
+        )
+
+    def proves_qualified_reference(
+        self,
+        reference: ast.Attribute,
+        root_surface: ModuleNameReferenceSurface,
+    ) -> bool:
+        return (
+            self.binding_authority.qualified_name_at(
+                reference,
+                line=root_surface.binding_snapshot_line,
+            )
+            in self.binding_closure.renamed_symbols
+        )
+
+    def proves_stringized_annotation(
+        self,
+        surface: StringizedAnnotationSurface,
+    ) -> bool:
+        return (
+            self.final_binding_is_renamed
+            and surface.reference_count(self.target.name) > 0
+            and surface.resolves_module_name(
+                self.target.name,
+                self.target.self_binding_owner,
+            )
+        )
+
+    def require_complete_eager_annotations(self) -> None:
+        if not self.annotation_mode.annotations_execute_at_declaration:
+            return
+        for surface in self.lexical_dependencies.direct_annotation_name_surfaces:
+            reference = surface.reference
+            if (
+                reference.id != self.target.name
+                or not self.final_binding_is_renamed
+                or self.proves_direct_surface_binding(surface)
+                or not surface.resolves_module_name(
+                    self.target.name,
+                    self.target.self_binding_owner,
+                )
+                or self.binding_authority.snapshot_before(
+                    surface.binding_snapshot_line
+                ).resolves_unshadowed_builtin(reference.id)
+            ):
+                continue
+            raise ValueError(
+                f"Declaration authority {self.target.name!r} has an unresolved "
+                "eager annotation reference"
+            )
+
+
+@dataclass(frozen=True)
 class DeclarationAuthorityModuleRenameProof:
     """Exact rename surfaces proved inside one repository module."""
 
     module: ParsedModule
-    declaration: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | None
+    declaration: SourceTopLevelDeclaration | None
     imports: tuple[DeclarationAuthorityImportReference, ...]
     public_exports: tuple[PublicExportNameReference, ...]
     stable_public_exports: tuple[PublicExportNameReference, ...]
@@ -271,44 +379,48 @@ class DeclarationAuthorityModuleRenameProof:
             ).binding_statements_by_name
             else named_public_exports
         )
-        binding_authority = ModuleNominalBindingAuthority(module)
+        binding_authority = ModuleNominalBindingAuthority(
+            module,
+            declared_assignment_authority_names=(
+                target.declaration.assigned_binding_names
+                if module.file_path == target.file_path
+                else frozenset()
+            ),
+        )
+        reference_proof = DeclarationAuthorityModuleReferenceProof(
+            target=target,
+            binding_closure=binding_closure,
+            binding_authority=binding_authority,
+            lexical_dependencies=lexical_dependencies,
+            annotation_mode=ModuleAnnotationEvaluationMode.from_module(module.module),
+        )
+        reference_proof.require_complete_eager_annotations()
         direct_references = tuple(
-            reference
-            for reference in lexical_dependencies.external_references_named(target.name)
-            if binding_authority.qualified_name_at(
-                reference,
-                line=reference.lineno,
-            )
-            in binding_closure.renamed_symbols
+            surface.reference
+            for surface in lexical_dependencies.external_surfaces_named(target.name)
+            if reference_proof.proves_direct_reference(surface)
         )
-        external_reference_ids = frozenset(
-            id(reference) for reference in lexical_dependencies.external_name_references
-        )
+        external_surfaces_by_reference_id = {
+            id(surface.reference): surface
+            for surface in lexical_dependencies.direct_name_surfaces
+        }
         qualified_candidates = tuple(
-            node
+            (node, root_surface)
             for node in ast.walk(module.module)
             if isinstance(node, ast.Attribute)
             if node.attr == target.name
             if (root_reference := nominal_reference_root(node)) is not None
-            and id(root_reference) in external_reference_ids
-        )
-        qualified_names = tuple(
-            (
-                node,
-                binding_authority.qualified_name_at(node, line=node.lineno),
+            if (
+                root_surface := external_surfaces_by_reference_id.get(
+                    id(root_reference)
+                )
             )
-            for node in qualified_candidates
+            is not None
         )
         annotation_references = tuple(
             surface
             for surface in lexical_dependencies.stringized_annotations
-            if surface.reference_count(target.name)
-            and surface.resolves_module_name(target.name, target.self_binding_owner)
-            and binding_authority.qualified_name_at(
-                ast.Name(id=target.name, ctx=ast.Load()),
-                line=surface.literal.lineno,
-            )
-            in binding_closure.renamed_symbols
+            if reference_proof.proves_stringized_annotation(surface)
         )
         cls._require_no_affected_star_imports(
             module,
@@ -319,15 +431,17 @@ class DeclarationAuthorityModuleRenameProof:
         )
         return cls(
             module=module,
-            declaration=target.node if module.file_path == target.file_path else None,
+            declaration=(
+                target.declaration if module.file_path == target.file_path else None
+            ),
             imports=imports,
             public_exports=public_exports,
             stable_public_exports=stable_public_exports,
             direct_references=direct_references,
             qualified_references=tuple(
                 node
-                for node, qualified_name in qualified_names
-                if qualified_name in binding_closure.renamed_symbols
+                for node, root_surface in qualified_candidates
+                if reference_proof.proves_qualified_reference(node, root_surface)
             ),
             annotation_references=annotation_references,
         )
@@ -335,7 +449,7 @@ class DeclarationAuthorityModuleRenameProof:
     @staticmethod
     def _require_supported_import_surfaces(
         module: ParsedModule,
-        target: TopLevelDeclarationRenameTarget,
+        target: TopLevelBindingRenameTarget,
         imports: tuple[DeclarationAuthorityImportReference, ...],
         binding_closure: DeclarationAuthorityRenameBindingClosure,
     ) -> None:
@@ -361,7 +475,7 @@ class DeclarationAuthorityModuleRenameProof:
     @staticmethod
     def _require_no_affected_star_imports(
         module: ParsedModule,
-        target: TopLevelDeclarationRenameTarget,
+        target: TopLevelBindingRenameTarget,
         new_name: str,
         binding_closure: DeclarationAuthorityRenameBindingClosure,
         repository_bindings: RepositoryModuleBindingProof,
@@ -387,7 +501,7 @@ class DeclarationAuthorityModuleRenameProof:
     @staticmethod
     def _require_import_binding_collisions_absent(
         module: ParsedModule,
-        target: TopLevelDeclarationRenameTarget,
+        target: TopLevelBindingRenameTarget,
         new_name: str,
         imports: tuple[DeclarationAuthorityImportReference, ...],
     ) -> None:
@@ -445,7 +559,6 @@ class DeclarationAuthorityModuleRenameProof:
             if self.declaration is None
             else (
                 self._declaration_replacement(
-                    geometry,
                     self.declaration,
                     new_name,
                 ),
@@ -493,14 +606,10 @@ class DeclarationAuthorityModuleRenameProof:
 
     def _declaration_replacement(
         self,
-        geometry: SourceTextGeometry,
-        declaration: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+        declaration: SourceTopLevelDeclaration,
         new_name: str,
     ) -> SourceTextSpanReplacement:
-        span = NamedDeclarationSourceAuthority(
-            declaration,
-            self.module.source,
-        ).name_span
+        span = declaration.name_span(self.module.source)
         return self._name_replacement(
             (span.start_offset, span.end_offset),
             new_name,
@@ -587,7 +696,7 @@ class DeclarationAuthorityRenameProof:
     modules: tuple[DeclarationAuthorityModuleRenameProof, ...]
 
     @property
-    def target(self) -> TopLevelDeclarationRenameTarget:
+    def target(self) -> TopLevelBindingRenameTarget:
         return self.binding_closure.target
 
     @classmethod
@@ -599,12 +708,39 @@ class DeclarationAuthorityRenameProof:
         *,
         new_name: str,
     ) -> "DeclarationAuthorityRenameProof":
-        rename_target = TopLevelDeclarationRenameTarget.require(
+        rename_target = TopLevelBindingRenameTarget.require(
             parsed_modules,
             target,
             node,
             new_name=new_name,
         )
+        return cls._from_target(parsed_modules, rename_target, new_name=new_name)
+
+    @classmethod
+    def require_binding(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        *,
+        source_path: str,
+        binding_name: str,
+        new_name: str,
+    ) -> "DeclarationAuthorityRenameProof":
+        rename_target = TopLevelBindingRenameTarget.require_binding(
+            parsed_modules,
+            source_path=source_path,
+            binding_name=binding_name,
+            new_name=new_name,
+        )
+        return cls._from_target(parsed_modules, rename_target, new_name=new_name)
+
+    @classmethod
+    def _from_target(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        rename_target: TopLevelBindingRenameTarget,
+        *,
+        new_name: str,
+    ) -> "DeclarationAuthorityRenameProof":
         binding_closure = DeclarationAuthorityRenameBindingClosure.from_modules(
             parsed_modules,
             rename_target,
@@ -629,7 +765,7 @@ class DeclarationAuthorityRenameProof:
     @staticmethod
     def _require_no_dynamic_name_surfaces(
         parsed_modules: tuple[ParsedModule, ...],
-        target: TopLevelDeclarationRenameTarget,
+        target: TopLevelBindingRenameTarget,
         modules: tuple[DeclarationAuthorityModuleRenameProof, ...],
     ) -> None:
         name_pattern = re.compile(rf"(?<![\w]){re.escape(target.name)}(?![\w])")

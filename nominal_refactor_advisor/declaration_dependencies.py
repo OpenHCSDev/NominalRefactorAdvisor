@@ -8,9 +8,12 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
-from .annotation_semantics import StringizedAnnotationSurface
+from .annotation_semantics import (
+    ModuleNameReferenceScope,
+    StringizedAnnotationSurface,
+)
 from .ast_tools import ImportBoundNameProjection
 
 MovableDeclaration: TypeAlias = (
@@ -24,6 +27,45 @@ class DeclarationDependencyUse(StrEnum):
     EXECUTION = "execution"
     EVALUATED_ANNOTATION = "evaluated_annotation"
     DEFERRED_ANNOTATION = "deferred_annotation"
+
+
+class ModuleBindingResolutionPhase(StrEnum):
+    """Module snapshot from which one direct source reference resolves."""
+
+    SOURCE_POSITION = "source_position", lambda reference: reference.lineno
+    FINAL_MODULE = "final_module", lambda _reference: None
+
+    snapshot_line_resolver: Callable[[ast.Name], int | None]
+
+    def __new__(
+        cls,
+        value: str,
+        snapshot_line_resolver: Callable[[ast.Name], int | None],
+    ) -> "ModuleBindingResolutionPhase":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.snapshot_line_resolver = snapshot_line_resolver
+        return member
+
+    def snapshot_line_for(self, reference: ast.Name) -> int | None:
+        return self.snapshot_line_resolver(reference)
+
+
+@dataclass(frozen=True)
+class ModuleNameReferenceSurface(ModuleNameReferenceScope):
+    """One direct source name and its module-binding evaluation phase."""
+
+    reference: ast.Name
+    use: DeclarationDependencyUse
+    binding_phase: ModuleBindingResolutionPhase
+
+    @property
+    def binding_snapshot_line(self) -> int | None:
+        return self.binding_phase.snapshot_line_for(self.reference)
+
+    @property
+    def is_direct_annotation(self) -> bool:
+        return self.use is DeclarationDependencyUse.EVALUATED_ANNOTATION
 
 
 @dataclass(frozen=True)
@@ -68,11 +110,12 @@ class DeclarationDependencyProjection:
     def annotation_only_names(self) -> frozenset[str]:
         return self.annotation_names - self.execution_names
 
+
 @dataclass(frozen=True)
 class ModuleLexicalDependencyProjection:
     """Reference-bearing dependency surfaces from one lexical traversal."""
 
-    external_name_references: tuple[ast.Name, ...]
+    direct_name_surfaces: tuple[ModuleNameReferenceSurface, ...]
     stringized_annotations: tuple[StringizedAnnotationSurface, ...]
 
     @classmethod
@@ -84,15 +127,37 @@ class ModuleLexicalDependencyProjection:
         for statement in module.body:
             collector.visit(statement)
         return cls(
-            external_name_references=tuple(collector.external_name_references),
+            direct_name_surfaces=tuple(collector.direct_name_surfaces),
             stringized_annotations=tuple(collector.stringized_annotation_surfaces),
+        )
+
+    @property
+    def external_name_references(self) -> tuple[ast.Name, ...]:
+        return tuple(surface.reference for surface in self.direct_name_surfaces)
+
+    @property
+    def direct_annotation_name_surfaces(
+        self,
+    ) -> tuple[ModuleNameReferenceSurface, ...]:
+        return tuple(
+            surface
+            for surface in self.direct_name_surfaces
+            if surface.is_direct_annotation
+        )
+
+    def external_surfaces_named(
+        self,
+        name: str,
+    ) -> tuple[ModuleNameReferenceSurface, ...]:
+        return tuple(
+            surface
+            for surface in self.direct_name_surfaces
+            if surface.reference.id == name
         )
 
     def external_references_named(self, name: str) -> tuple[ast.Name, ...]:
         return tuple(
-            reference
-            for reference in self.external_name_references
-            if reference.id == name
+            surface.reference for surface in self.external_surfaces_named(name)
         )
 
     def referenced_names_among(self, names: Iterable[str]) -> frozenset[str]:
@@ -100,9 +165,9 @@ class ModuleLexicalDependencyProjection:
 
         candidates = frozenset(names)
         direct_names = frozenset(
-            reference.id
-            for reference in self.external_name_references
-            if reference.id in candidates
+            surface.reference.id
+            for surface in self.direct_name_surfaces
+            if surface.reference.id in candidates
         )
         deferred_names = frozenset(
             name
@@ -240,10 +305,11 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             use: set() for use in DeclarationDependencyUse
         }
         self.use = DeclarationDependencyUse.EXECUTION
+        self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
         self.scopes: list[_DependencyScope] = []
         self.annotation_count = 0
-        self.external_name_references: list[ast.Name] = []
         self.owner_classes: list[ast.ClassDef] = []
+        self.direct_name_surfaces: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
 
     def visit_declaration(self, node: MovableDeclaration) -> None:
@@ -252,7 +318,15 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and not self._is_internal(node.id):
             self.names_by_use[self.use].add(node.id)
-            self.external_name_references.append(node)
+            if self.use is not DeclarationDependencyUse.DEFERRED_ANNOTATION:
+                self.direct_name_surfaces.append(
+                    ModuleNameReferenceSurface(
+                        owner_classes=tuple(self.owner_classes),
+                        reference=node,
+                        use=self.use,
+                        binding_phase=self.binding_phase,
+                    )
+                )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -263,7 +337,8 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._visit_argument_defaults(node.args)
         self.scopes.append(FunctionBindingProjection.from_function(node))
-        self.visit(node.body)
+        with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
+            self.visit(node.body)
         self.scopes.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -304,7 +379,15 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self._visit_comprehension(node, (node.key, node.value))
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node, (node.elt,))
+        first, *remaining = node.generators
+        self.visit(first.iter)
+        with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
+            self._visit_comprehension_tail(
+                node,
+                first,
+                remaining,
+                (node.elt,),
+            )
 
     def _visit_function(
         self,
@@ -319,8 +402,9 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             if node.returns is not None:
                 self._visit_annotation(node.returns)
             self.scopes.append(FunctionBindingProjection.from_function(node))
-            for statement in node.body:
-                self.visit(statement)
+            with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
+                for statement in node.body:
+                    self.visit(statement)
             self.scopes.pop()
 
     def _visit_class(self, node: ast.ClassDef) -> None:
@@ -426,11 +510,25 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
 
     def _visit_comprehension(
         self,
-        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        node: ast.ListComp | ast.SetComp | ast.DictComp,
         result_expressions: tuple[ast.expr, ...],
     ) -> None:
         first, *remaining = node.generators
         self.visit(first.iter)
+        self._visit_comprehension_tail(
+            node,
+            first,
+            remaining,
+            result_expressions,
+        )
+
+    def _visit_comprehension_tail(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        first: ast.comprehension,
+        remaining: list[ast.comprehension],
+        result_expressions: tuple[ast.expr, ...],
+    ) -> None:
         local_names = {
             name
             for generator in node.generators
@@ -511,6 +609,18 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             yield
         finally:
             self.use = previous
+
+    @contextmanager
+    def _binding_phase(
+        self,
+        phase: ModuleBindingResolutionPhase,
+    ) -> Iterator[None]:
+        previous = self.binding_phase
+        self.binding_phase = phase
+        try:
+            yield
+        finally:
+            self.binding_phase = previous
 
 
 def _argument_names(arguments: ast.arguments) -> set[str]:

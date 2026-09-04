@@ -28,6 +28,7 @@ from .class_index import (
     ModulePublicExportSourceAuthority,
     module_public_export_contract,
 )
+from .codemod_declaration_source import NamedDeclarationSourceAuthority
 from .codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
@@ -57,6 +58,8 @@ from .codemod_source_edits import (
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceSpanDeletion,
+    SourceTextGeometry,
+    SourceTextSpan,
 )
 from .declaration_dependencies import (
     DeclarationDependencyProjection,
@@ -662,6 +665,18 @@ class SourceTopLevelDeclaration(
     def name(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def name_span(self, source: str) -> SourceTextSpan:
+        """Return the exact source span that declares this binding name."""
+
+        raise NotImplementedError
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        """Return binding names introduced through assignment syntax."""
+
+        return frozenset()
+
     @cached_property
     def source_span(self) -> SourceNodeSpan:
         return SourceNodeSpan(
@@ -693,6 +708,8 @@ class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     def name(self) -> str:
         return self.node.name
 
+    def name_span(self, source: str) -> SourceTextSpan:
+        return NamedDeclarationSourceAuthority(self.node, source).name_span
 
 @dataclass(frozen=True)
 class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
@@ -716,6 +733,22 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     @property
     def name(self) -> str:
         return SingleAssignmentAndValueNameProjection(self.node).required_name
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        target = (
+            self.node.targets[0]
+            if isinstance(self.node, ast.Assign)
+            else self.node.target
+        )
+        if not isinstance(target, ast.Name):
+            raise ValueError("Assigned declaration does not have one direct name")
+        return SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(target)
+        )
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return frozenset((self.name,))
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
+    RenameTopLevelBindingAuthorityOperation,
     RenameTopLevelDeclarationAuthorityOperation,
     SourceRewriteTarget,
 )
@@ -218,6 +219,188 @@ def test_renames_async_function_declaration(tmp_path: Path) -> None:
 
     assert "async def canonical(value: int) -> int:" in rewritten
     assert "REFERENCE = canonical" in rewritten
+
+
+def test_renames_assignment_authority_across_repository_consumers(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    declaration_path = _write_module(
+        tmp_path,
+        "pkg/types.py",
+        "from __future__ import annotations\n\n"
+        "import ast\n\n"
+        "__all__ = ('_TargetNode', 'identity')\n\n"
+        "_TargetNode = ast.ClassDef | ast.FunctionDef\n\n\n"
+        "def identity(value: '_TargetNode') -> _TargetNode:\n"
+        "    return value\n",
+    )
+    reexport_path = _write_module(
+        tmp_path,
+        "pkg/api.py",
+        "from .types import _TargetNode as _TargetNode\n\n"
+        "__all__ = ('_TargetNode',)\n",
+    )
+    consumer_path = _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .api import _TargetNode\n"
+        "import pkg.api as api\n\n"
+        "ALIASES = (_TargetNode, api._TargetNode)\n",
+    )
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=declaration_path.as_posix()),
+        binding_name="_TargetNode",
+        new_name="AstTargetNode",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
+
+    result = RefactorRecipe("rename-assignment-authority").with_operation(
+        replayed
+    ).simulate(snapshot)
+    rewritten = result.simulation.rewritten_sources
+
+    assert json_report_object(operation) == {
+        "operation": "rename_top_level_binding_authority",
+        "file_path": declaration_path.as_posix(),
+        "rationale": "",
+        "new_name": "AstTargetNode",
+        "binding_name": "_TargetNode",
+    }
+    assert "AstTargetNode = ast.ClassDef | ast.FunctionDef" in rewritten[
+        declaration_path.as_posix()
+    ]
+    assert "__all__ = ('AstTargetNode', 'identity')" in rewritten[
+        declaration_path.as_posix()
+    ]
+    assert "value: 'AstTargetNode'" in rewritten[declaration_path.as_posix()]
+    assert "-> AstTargetNode:" in rewritten[declaration_path.as_posix()]
+    assert "from .types import AstTargetNode as AstTargetNode" in rewritten[
+        reexport_path.as_posix()
+    ]
+    assert "from .api import AstTargetNode" in rewritten[consumer_path.as_posix()]
+    assert "api.AstTargetNode" in rewritten[consumer_path.as_posix()]
+    for file_path, source in rewritten.items():
+        Path(file_path).write_text(source, encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import ast; from pkg.consumer import ALIASES; "
+            "assert ALIASES == (ast.ClassDef | ast.FunctionDef,) * 2",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_renames_annotated_assignment_authority(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/types.py",
+        "LegacyType: object = int\n\nREFERENCE = LegacyType\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        binding_name="LegacyType",
+        new_name="CanonicalType",
+    )
+
+    result = RefactorRecipe("rename-annotated-assignment").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert "CanonicalType: object = int" in rewritten
+    assert "REFERENCE = CanonicalType" in rewritten
+
+
+def test_renames_forward_annotations_from_final_assignment_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/types.py",
+        "from __future__ import annotations\n\n"
+        "def identity(value: 'LegacyType') -> LegacyType:\n"
+        "    return LegacyType(value)\n\n\n"
+        "LegacyType = int\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        binding_name="LegacyType",
+        new_name="CanonicalType",
+    )
+
+    result = RefactorRecipe("rename-forward-annotations").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert "value: 'CanonicalType'" in rewritten
+    assert "-> CanonicalType:" in rewritten
+    assert "return CanonicalType(value)" in rewritten
+    assert "CanonicalType = int" in rewritten
+
+
+def test_binding_rename_rejects_unresolved_eager_forward_annotation(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/types.py",
+        "def identity(value: LegacyType) -> int:\n"
+        "    return value\n\n\n"
+        "LegacyType = int\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        binding_name="LegacyType",
+        new_name="CanonicalType",
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="unresolved eager annotation reference",
+    ):
+        RefactorRecipe("reject-eager-forward-annotation").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
+def test_binding_rename_rejects_ambiguous_assignment_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/types.py",
+        "LegacyType = AliasType = int\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+        binding_name="LegacyType",
+        new_name="CanonicalType",
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="one unambiguous movable top-level declaration",
+    ):
+        RefactorRecipe("reject-ambiguous-assignment").with_operation(
+            operation
+        ).simulate(snapshot)
 
 
 def test_chains_declaration_renames_against_each_prior_source_state(

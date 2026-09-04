@@ -543,13 +543,14 @@ from .source_geometry import SourceByteSpan
 from .source_identity import canonical_source_mapping
 from .source_index import (
     AstTargetDigest,
+    AstTargetNode,
     AstTargetNodeIndex,
     AstTargetNodeKind,
+    CodemodSourceIndexReport as CodemodSourceIndexReport,
+    IndexedSourceAuthority as IndexedSourceAuthority,
     SourceFileDigest,
     SourceIndex,
     build_source_index_artifacts,
-    CodemodSourceIndexReport as CodemodSourceIndexReport,
-    IndexedSourceAuthority as IndexedSourceAuthority,
 )
 from .source_index import (
     AstTargetGeometryKey as AstTargetGeometryKey,
@@ -719,7 +720,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_by_path: Mapping[str, str],
         *,
         class_family_index: ClassFamilyIndex | None = None,
-        ast_target_node_cache: Mapping[str, "_TargetNode"] | None = None,
+        ast_target_node_cache: Mapping[str, "AstTargetNode"] | None = None,
     ) -> "CodemodSourceSnapshot":
         """Build the complete execution context for an existing source index."""
 
@@ -1096,7 +1097,7 @@ class RefactorRecipeOperation(
     def target_node_from_context(
         self,
         context: CodemodSelectorContext,
-    ) -> tuple[str, AstTargetDigest, _TargetNode]:
+    ) -> tuple[str, AstTargetDigest, AstTargetNode]:
         return context.target_node_for_rewrite_target(self.target)
 
 
@@ -1210,7 +1211,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
     )
 
     @cached_property
-    def replacement_declaration(self) -> _TargetNode:
+    def replacement_declaration(self) -> AstTargetNode:
         """Parse the one declaration represented by the replacement source."""
 
         try:
@@ -1223,7 +1224,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
                 f"Replacement source is not valid Python: {error}"
             ) from error
         if len(replacement_module.body) != 1 or not isinstance(
-            replacement_module.body[0], _TargetNode
+            replacement_module.body[0], AstTargetNode
         ):
             raise ValueError(
                 "Replacement source must contain exactly one class or function "
@@ -1278,8 +1279,11 @@ class ReplaceTargetOperation(SourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RenameTopLevelDeclarationAuthorityOperation(RepositorySourceReprovedOperation):
-    """Rename one top-level declaration across its proved repository consumers."""
+class RenameTopLevelBindingAuthorityOperationABC(
+    RepositorySourceReprovedOperation,
+    ABC,
+):
+    """Rename one top-level binding across its proved repository consumers."""
 
     new_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
@@ -1287,17 +1291,12 @@ class RenameTopLevelDeclarationAuthorityOperation(RepositorySourceReprovedOperat
         if not self.new_name.isidentifier() or keyword_module.iskeyword(self.new_name):
             raise ValueError("Declaration rename requires a Python identifier")
 
+    @abstractmethod
     def proof(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> DeclarationAuthorityRenameProof:
-        _target_id, target, node = self.target_node_from_context(snapshot)
-        return DeclarationAuthorityRenameProof.require(
-            snapshot.parsed_modules,
-            target,
-            node,
-            new_name=self.new_name,
-        )
+        raise NotImplementedError
 
     def source_edits_from_snapshot(
         self,
@@ -1320,6 +1319,55 @@ class RenameTopLevelDeclarationAuthorityOperation(RepositorySourceReprovedOperat
                 ),
                 rationale=rationale,
             )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenameTopLevelDeclarationAuthorityOperation(
+    RenameTopLevelBindingAuthorityOperationABC
+):
+    """Rename one indexed class or function declaration authority."""
+
+    def proof(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> DeclarationAuthorityRenameProof:
+        _target_id, target, node = self.target_node_from_context(snapshot)
+        return DeclarationAuthorityRenameProof.require(
+            snapshot.parsed_modules,
+            target,
+            node,
+            new_name=self.new_name,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenameTopLevelBindingAuthorityOperation(
+    RenameTopLevelBindingAuthorityOperationABC
+):
+    """Rename one unambiguous movable top-level assignment authority."""
+
+    binding_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.binding_name.isidentifier() or keyword_module.iskeyword(
+            self.binding_name
+        ):
+            raise ValueError("Binding rename requires a Python identifier")
+
+    def proof(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> DeclarationAuthorityRenameProof:
+        return DeclarationAuthorityRenameProof.require_binding(
+            snapshot.parsed_modules,
+            source_path=self.required_source_path(
+                snapshot,
+                self.operation_key(),
+            ),
+            binding_name=self.binding_name,
+            new_name=self.new_name,
         )
 
 
@@ -2312,7 +2360,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
     @staticmethod
     def class_target(
         source_index: SourceIndex,
-        nodes_by_target_id: Mapping[str, _TargetNode],
+        nodes_by_target_id: Mapping[str, AstTargetNode],
         *,
         source_path: str | None,
         class_name: str,
@@ -2333,7 +2381,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
     @staticmethod
     def optional_class_target(
         source_index: SourceIndex,
-        nodes_by_target_id: Mapping[str, _TargetNode],
+        nodes_by_target_id: Mapping[str, AstTargetNode],
         *,
         source_path: str | None,
         class_name: str,
@@ -2354,7 +2402,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
     @staticmethod
     def optional_class_target_rejection_reason(
         source_index: SourceIndex,
-        nodes_by_target_id: Mapping[str, _TargetNode],
+        nodes_by_target_id: Mapping[str, AstTargetNode],
         *,
         source_path: str | None,
         class_name: str,
@@ -7949,7 +7997,7 @@ class ManualRegistryConversionTargets:
         cls,
         snapshot: CodemodSourceSnapshot,
         anchor_target: AstTargetDigest,
-        anchor_node: _TargetNode,
+        anchor_node: AstTargetNode,
     ) -> "ManualRegistryConversionTargets":
         if not anchor_target.is_class or not isinstance(anchor_node, ast.ClassDef):
             raise ValueError("Manual registry conversion target must be a class")
@@ -8797,7 +8845,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         context: CodemodSelectorContext,
         target_identifier: str,
         target_digest: AstTargetDigest,
-        node: _TargetNode,
+        node: AstTargetNode,
     ) -> tuple[NominalSourceEdit, ...]:
         del target_identifier
         source = self.required_source(target_digest, node)
@@ -8831,7 +8879,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
     @staticmethod
     def required_source(
         target_digest: AstTargetDigest,
-        node: _TargetNode,
+        node: AstTargetNode,
     ) -> DispatchPolymorphismSource:
         if not isinstance(node, ast.FunctionDef):
             raise ValueError("dispatch_to_polymorphism requires a function target")
@@ -19949,4 +19997,3 @@ def simulate_planned_rewrites(
         sources_by_file_path=source_by_path,
         backend=backend or CodemodBackend.AST_SPAN,
     ).simulate(rewrites)
-_TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef

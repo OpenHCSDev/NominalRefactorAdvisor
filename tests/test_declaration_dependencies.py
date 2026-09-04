@@ -7,6 +7,7 @@ import pytest
 
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyProjection,
+    ModuleBindingResolutionPhase,
     ModuleLexicalDependencyProjection,
 )
 
@@ -173,6 +174,49 @@ def test_external_reference_projection_preserves_lexical_name_identity() -> None
     ).external_references_named("Authority")
 
     assert tuple(reference.lineno for reference in references) == (4, 5, 11)
+
+
+def test_direct_reference_surfaces_carry_module_binding_resolution_phase() -> None:
+    module = ast.parse(
+        "IMMEDIATE = source_line()\n\n"
+        "def build(value=default_at_line()):\n"
+        "    return final_from_body(value)\n\n"
+        "GENERATED = (final_from_generator(item) for item in first_iter_at_line())\n"
+    )
+
+    surfaces_by_name = {
+        surface.reference.id: surface
+        for surface in ModuleLexicalDependencyProjection.from_module(
+            module
+        ).direct_name_surfaces
+    }
+
+    assert surfaces_by_name["source_line"].binding_phase is (
+        ModuleBindingResolutionPhase.SOURCE_POSITION
+    )
+    assert surfaces_by_name["default_at_line"].binding_phase is (
+        ModuleBindingResolutionPhase.SOURCE_POSITION
+    )
+    assert surfaces_by_name["first_iter_at_line"].binding_phase is (
+        ModuleBindingResolutionPhase.SOURCE_POSITION
+    )
+    assert surfaces_by_name["final_from_body"].binding_phase is (
+        ModuleBindingResolutionPhase.FINAL_MODULE
+    )
+    assert surfaces_by_name["final_from_generator"].binding_phase is (
+        ModuleBindingResolutionPhase.FINAL_MODULE
+    )
+
+
+def test_stringized_annotation_names_are_not_direct_source_surfaces() -> None:
+    projection = ModuleLexicalDependencyProjection.from_module(
+        ast.parse("def identity(value: 'DeferredType'):\n    return value\n")
+    )
+
+    assert projection.external_references_named("DeferredType") == ()
+    assert projection.referenced_names_among(("DeferredType",)) == frozenset(
+        ("DeferredType",)
+    )
 
 
 def test_assignment_dependencies_preserve_value_and_annotation_contexts() -> None:

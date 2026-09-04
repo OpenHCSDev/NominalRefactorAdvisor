@@ -2853,6 +2853,7 @@ class ModuleNominalBindingAuthority:
     """Resolve nominal module bindings at an exact source position, fail closed."""
 
     parsed_module: ParsedModule
+    declared_assignment_authority_names: frozenset[str] = frozenset()
 
     def snapshot_before(
         self,
@@ -2864,13 +2865,13 @@ class ModuleNominalBindingAuthority:
     ) -> ModuleNominalBindingSnapshot:
         if line is None:
             return _module_nominal_binding_snapshots(
-                self.parsed_module,
+                self,
                 (),
                 include_final=True,
                 policy=policy,
             )[None]
         return _module_nominal_binding_snapshots(
-            self.parsed_module,
+            self,
             (line,),
             include_final=False,
             policy=policy,
@@ -2890,7 +2891,7 @@ class ModuleNominalBindingAuthority:
         return {
             line: snapshot
             for line, snapshot in _module_nominal_binding_snapshots(
-                self.parsed_module,
+                self,
                 requested_lines,
                 include_final=False,
                 policy=policy,
@@ -2902,7 +2903,7 @@ class ModuleNominalBindingAuthority:
         self,
         reference: ast.AST,
         *,
-        line: int,
+        line: int | None,
         policy: ModuleNominalBindingSnapshotPolicy = (
             ModuleNominalBindingSnapshotPolicy.EXACT
         ),
@@ -2975,6 +2976,13 @@ class ModuleNominalBindingAuthority:
         value = statement.value
         if local_name is None or value is None:
             return {}
+        if local_name in self.declared_assignment_authority_names:
+            return {
+                local_name: CompactNominalBinding(
+                    qualified_name=f"{self.parsed_module.module_name}.{local_name}",
+                    kind=CompactNominalBindingKind.LOCAL_DECLARATION,
+                )
+            }
         parts = AstExpressionProjection.attribute_chain(
             ClassSymbolResolutionAuthority.reference_node(value)
         )
@@ -3273,7 +3281,7 @@ def _direct_statement_bound_names(statement: ast.stmt) -> frozenset[str]:
 
 
 def _module_nominal_binding_snapshots(
-    parsed_module: ParsedModule,
+    authority: ModuleNominalBindingAuthority,
     lines: tuple[int, ...],
     *,
     include_final: bool,
@@ -3282,7 +3290,7 @@ def _module_nominal_binding_snapshots(
     ),
     star_import_excluded_names: frozenset[str] = frozenset(),
 ) -> dict[int | None, ModuleNominalBindingSnapshot]:
-    authority = ModuleNominalBindingAuthority(parsed_module)
+    parsed_module = authority.parsed_module
     bindings: dict[str, CompactNominalBinding] = {}
     unresolved_bound_names: set[str] = set()
     star_import_ambiguity = False
@@ -3346,7 +3354,7 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     return {
         local_name: binding.qualified_name
         for local_name, binding in _module_nominal_binding_snapshots(
-            parsed_module,
+            ModuleNominalBindingAuthority(parsed_module),
             (),
             include_final=True,
             policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
@@ -3566,7 +3574,7 @@ def _compact_indexed_classes(
 ) -> tuple[CompactIndexedClass, ...]:
     file_path = parsed_module.file_path
     binding_snapshots = _module_nominal_binding_snapshots(
-        parsed_module,
+        ModuleNominalBindingAuthority(parsed_module),
         tuple(node.lineno for _qualname, node in indexed_class_nodes),
         include_final=False,
     )
@@ -3719,7 +3727,7 @@ def _repository_refined_class_projection(
         iter_class_definitions(list(parsed_module.module.body))
     )
     binding_snapshots = _module_nominal_binding_snapshots(
-        parsed_module,
+        ModuleNominalBindingAuthority(parsed_module),
         tuple(node.lineno for node in class_nodes_by_qualname.values()),
         include_final=False,
         star_import_excluded_names=star_import_excluded_names,
@@ -6662,7 +6670,7 @@ class ClassFamilyIndexBuilder:
                 list(parsed_module.module.body)
             )
             binding_snapshots = _module_nominal_binding_snapshots(
-                parsed_module,
+                ModuleNominalBindingAuthority(parsed_module),
                 tuple(node.lineno for _qualname, node in indexed_class_nodes),
                 include_final=False,
             )
