@@ -1172,17 +1172,19 @@ class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
 
 
 @dataclass(frozen=True)
-class CodemodClassPlanProjectedDeltaReport(JsonReport):
+class CodemodClassPlanProjectedDeltaReport(DataclassJsonReport):
     """Join simulated finding-class deltas back onto synthesized class plans."""
 
-    class_plan_report: FindingRecipeClassPlanReport
-    projected_finding_report: CodemodProjectedFindingReport
+    class_plan_report: FindingRecipeClassPlanReport = json_report_field(included=False)
+    projected_finding_report: CodemodProjectedFindingReport = json_report_field(
+        included=False
+    )
 
     @property
     def finding_class_delta(self) -> CodemodFindingClassDelta:
         return self.projected_finding_report.finding_class_delta
 
-    @property
+    @json_report_property(field_name="classes")
     def class_deltas(self) -> tuple[CodemodClassPlanProjectedDelta, ...]:
         return tuple(
             CodemodClassPlanProjectedDelta.from_class_plan(
@@ -1191,14 +1193,6 @@ class CodemodClassPlanProjectedDeltaReport(JsonReport):
             )
             for class_plan in self.class_plan_report.classes
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "classes": tuple(
-                class_delta.to_dict() for class_delta in self.class_deltas
-            ),
-        }
-
 
 @dataclass(frozen=True)
 class CodemodWorkflowScan:

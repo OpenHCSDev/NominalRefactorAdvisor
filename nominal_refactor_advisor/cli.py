@@ -1407,22 +1407,17 @@ def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
 
 
 @dataclass(frozen=True)
-class CodemodSimulationPayload:
+class CodemodSimulationPayload(DataclassJsonReport):
     """JSON-ready metadata for a codemod simulation/apply run."""
 
-    simulation: CodemodSimulationReport
+    simulation: CodemodSimulationReport = json_report_field(flattened=True)
     applied: bool = False
-    post_guard_report: ArchitectureGuardReport | None = None
-    unified_diff: str | None = None
-
-    def to_dict(self) -> JsonObject:
-        payload = self.simulation.to_dict()
-        payload["applied"] = self.applied
-        if self.post_guard_report is not None:
-            payload["architecture_guard_report"] = self.post_guard_report.to_dict()
-        if self.unified_diff is not None:
-            payload["unified_diff"] = self.unified_diff
-        return payload
+    post_guard_report: ArchitectureGuardReport | None = json_report_field(
+        field_name="architecture_guard_report",
+        omit_none=True,
+        default=None,
+    )
+    unified_diff: str | None = json_report_field(omit_none=True, default=None)
 
 
 @dataclass(frozen=True)

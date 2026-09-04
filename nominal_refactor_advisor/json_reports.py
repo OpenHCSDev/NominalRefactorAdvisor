@@ -111,6 +111,7 @@ class JsonReportFieldDeclaration:
     field_name: str | None = None
     included: bool = True
     flattened: bool = False
+    omit_none: bool = False
 
 
 _JSON_REPORT_FIELD_DECLARATION = object()
@@ -125,10 +126,12 @@ class JsonReportProperty(property):
         *,
         field_name: str | None = None,
         flattened: bool = False,
+        omit_none: bool = False,
     ) -> None:
         super().__init__(getter)
         self.field_name = field_name
         self.flattened = flattened
+        self.omit_none = omit_none
 
 
 class JsonReportCachedProperty(cached_property):
@@ -140,16 +143,19 @@ class JsonReportCachedProperty(cached_property):
         *,
         field_name: str | None = None,
         flattened: bool = False,
+        omit_none: bool = False,
     ) -> None:
         super().__init__(getter)
         self.field_name = field_name
         self.flattened = flattened
+        self.omit_none = omit_none
 
 
 def json_report_property(
     *,
     field_name: str | None = None,
     flattened: bool = False,
+    omit_none: bool = False,
 ) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportProperty]:
     """Declare a computed JSON field without restating it in ``to_dict``."""
 
@@ -160,6 +166,7 @@ def json_report_property(
             getter,
             field_name=field_name,
             flattened=flattened,
+            omit_none=omit_none,
         )
 
     return declare
@@ -169,6 +176,7 @@ def json_report_cached_property(
     *,
     field_name: str | None = None,
     flattened: bool = False,
+    omit_none: bool = False,
 ) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportCachedProperty]:
     """Declare a computed JSON field whose runtime value is cached once."""
 
@@ -179,6 +187,7 @@ def json_report_cached_property(
             getter,
             field_name=field_name,
             flattened=flattened,
+            omit_none=omit_none,
         )
 
     return declare
@@ -244,6 +253,7 @@ def json_report_field(
     field_name: str | None = None,
     included: bool = True,
     flattened: bool = False,
+    omit_none: bool = False,
     default: DataclassFieldValueT | object = MISSING,
     default_factory: Callable[[], DataclassFieldValueT] | object = MISSING,
     compare: bool = True,
@@ -257,6 +267,7 @@ def json_report_field(
                 field_name=field_name,
                 included=included,
                 flattened=flattened,
+                omit_none=omit_none,
             )
         },
         default=default,
@@ -273,9 +284,13 @@ class JsonReportBinding:
     source_name: str
     field_name: str
     flattened: bool = False
+    omit_none: bool = False
 
     def payload_items(self, owner: object) -> tuple[tuple[str, JsonValue], ...]:
-        value = JSON_REPORT_VALUE_PROJECTION.project(getattr(owner, self.source_name))
+        source_value = getattr(owner, self.source_name)
+        if self.omit_none and source_value is None:
+            return ()
+        value = JSON_REPORT_VALUE_PROJECTION.project(source_value)
         if not self.flattened:
             return ((self.field_name, value),)
         if not isinstance(value, Mapping):
@@ -324,14 +339,17 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
                     continue
                 field_name = declaration.field_name or record_field.name
                 flattened = declaration.flattened
+                omit_none = declaration.omit_none
             else:
                 field_name = record_field.name
                 flattened = False
+                omit_none = False
             bindings.append(
                 JsonReportBinding(
                     source_name=record_field.name,
                     field_name=field_name,
                     flattened=flattened,
+                    omit_none=omit_none,
                 )
             )
         declared_property_names: set[str] = set()
@@ -348,6 +366,7 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
                         source_name=member_name,
                         field_name=member.field_name or member_name,
                         flattened=member.flattened,
+                        omit_none=member.omit_none,
                     )
                 )
         return cls(bindings)

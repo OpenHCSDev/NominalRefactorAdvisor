@@ -116,6 +116,19 @@ def test_dataclass_json_report_derives_nested_and_computed_output_bindings() -> 
     }
 
 
+def test_dataclass_json_report_omits_declared_absent_values() -> None:
+    @dataclass(frozen=True)
+    class OptionalReport(DataclassJsonReport):
+        required: str
+        optional: str | None = json_report_field(omit_none=True, default=None)
+
+    assert OptionalReport(required="present").to_dict() == {"required": "present"}
+    assert OptionalReport(required="present", optional="value").to_dict() == {
+        "required": "present",
+        "optional": "value",
+    }
+
+
 def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
     @dataclass(frozen=True)
     class BaseReport(DataclassJsonReport):
