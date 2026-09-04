@@ -3334,6 +3334,7 @@ declare_typed_observation_detector(
 class ConcreteConfigFieldProbeDetector(
     ConfiguredModuleCollectorCandidateDetector[ConcreteConfigFieldProbeCandidate]
 ):
+    candidate_collector = staticmethod(_concrete_config_field_probe_candidates)
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Concrete config backend is probing fields outside its declared contract",
@@ -4585,6 +4586,7 @@ def _mirrored_import_fallback_candidates(
 class MirroredImportFallbackDetector(
     ModuleCollectorCandidateDetector[MirroredImportFallbackCandidate]
 ):
+    candidate_collector = staticmethod(_mirrored_import_fallback_candidates)
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Mirrored import fallback should collapse to one import authority",
@@ -4734,6 +4736,7 @@ def _repeated_local_regex_bundle_candidates(
 class RepeatedLocalRegexBundleDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedLocalRegexBundleCandidate]
 ):
+    candidate_collector = staticmethod(_repeated_local_regex_bundle_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated local regex bundles should become a typed syntax authority",

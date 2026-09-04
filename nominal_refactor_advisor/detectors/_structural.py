@@ -794,6 +794,7 @@ class ExportPolicyPredicateDetector(
 class DerivedIndexedSurfaceDetector(
     ModuleCollectorCandidateDetector[DerivedIndexedSurfaceCandidate]
 ):
+    candidate_collector = staticmethod(_derived_indexed_surface_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Manual indexed module surfaces should derive from the authoritative type family",

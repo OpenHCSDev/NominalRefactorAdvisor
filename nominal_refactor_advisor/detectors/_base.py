@@ -13,7 +13,6 @@ import hashlib
 import inspect
 from pathlib import Path
 import re
-import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Hashable, Iterator, MutableMapping
@@ -226,22 +225,6 @@ def _detector_id_from_class_name(name: str, cls: type[object]) -> str | None:
     if not _has_finding_spec_contract(cls):
         return None
     return _detector_id_value_from_class_name(name)
-
-
-def _candidate_collector_name_from_class_name(name: str) -> str | None:
-    detector_id = _detector_id_value_from_class_name(name)
-    return None if detector_id is None else f"_{detector_id}_candidates"
-
-
-def _derive_candidate_collector(cls: type[object]) -> None:
-    if "candidate_collector" in cls.__dict__:
-        return
-    collector_name = _candidate_collector_name_from_class_name(cls.__name__)
-    if collector_name is None:
-        return
-    collector = vars(sys.modules[cls.__module__]).get(collector_name)
-    if collector is not None:
-        cls.candidate_collector = collector
 
 
 FindingSpecT = TypeVar("FindingSpecT", bound=FindingSpec)
@@ -1605,7 +1588,10 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-        _derive_candidate_collector(cls)
+        if _has_finding_spec_contract(cls) and "candidate_collector" not in vars(cls):
+            raise TypeError(
+                f"{cls.__name__} must own its candidate_collector declaration"
+            )
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:

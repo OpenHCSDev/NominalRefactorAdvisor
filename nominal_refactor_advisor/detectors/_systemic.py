@@ -1236,6 +1236,7 @@ class SuffixAxisCompatibilitySurfaceDetector(
 class ResidualClosedAxisIndirectionDetector(
     ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]
 ):
+    candidate_collector = staticmethod(_residual_closed_axis_indirection_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Enum-keyed table with residual branching should become a nominal strategy family",
@@ -1277,6 +1278,7 @@ class ResidualClosedAxisIndirectionDetector(
 class ClosedConstantSelectorDetector(
     ModuleCollectorCandidateDetector[ClosedConstantSelectorCandidate]
 ):
+    candidate_collector = staticmethod(_closed_constant_selector_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Closed selector over sibling constants should derive from one selector table",
@@ -1334,6 +1336,7 @@ class ClosedConstantSelectorDetector(
 class DerivedWrapperSpecShadowDetector(
     ModuleCollectorCandidateDetector[DerivedWrapperSpecShadowCandidate]
 ):
+    candidate_collector = staticmethod(_derived_wrapper_spec_shadow_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Generated wrapper spec family should collapse into the authoritative spec family",
@@ -2439,6 +2442,7 @@ class NominalInstanceExplicitOrderingDetector(
 class EnumKeyedTableClassAxisShadowDetector(
     ModuleCollectorCandidateDetector[EnumKeyedTableClassAxisShadowCandidate]
 ):
+    candidate_collector = staticmethod(_enum_keyed_table_class_axis_shadow_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Enum-keyed table should derive from auto-registered class-declared axis keys",
@@ -2484,6 +2488,7 @@ class EnumKeyedTableClassAxisShadowDetector(
 class ParallelRegistryProjectionFamilyDetector(
     ModuleCollectorCandidateDetector[ParallelRegistryProjectionFamilyCandidate]
 ):
+    candidate_collector = staticmethod(_parallel_registry_projection_family_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel registry projection builders should collapse into one family spec",
@@ -3501,6 +3506,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         RepeatedConcreteTypeCaseAnalysisCandidate
     ],
 ):
+    candidate_collector = staticmethod(_repeated_concrete_type_case_analysis_candidates)
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3589,6 +3595,7 @@ class ImplicitSelfContractMixinDetector(
     CompactClassIndexMultiProjectionDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
+    candidate_collector = staticmethod(_implicit_self_contract_mixin_candidates)
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3653,6 +3660,7 @@ class ImplicitSelfContractMixinDetector(
 class RepeatedGuardValidatorFamilyDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedGuardValidatorFamilyCandidate]
 ):
+    candidate_collector = staticmethod(_repeated_guard_validator_family_candidates)
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated guard validators should collapse into one case-policy authority",
@@ -3699,6 +3707,7 @@ class RepeatedGuardValidatorFamilyDetector(
 class AllMissingAxisPredicateDetector(
     ConfiguredModuleCollectorCandidateDetector[AllMissingAxisPredicateCandidate]
 ):
+    candidate_collector = staticmethod(_all_missing_axis_predicate_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
         "All-missing axis predicates should be named axis authorities",
@@ -3781,6 +3790,7 @@ class RepeatedValidateShapeGuardFamilyDetector(
 class RepeatedResultAssemblyPipelineDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedResultAssemblyPipelineCandidate]
 ):
+    candidate_collector = staticmethod(_repeated_result_assembly_pipeline_candidates)
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated result-assembly pipeline should collapse into one authoritative assembler",
@@ -4131,6 +4141,7 @@ declare_candidate_rule_detector(
 class DirectBuildFindingRendererDetector(
     ModuleCollectorCandidateDetector[DirectBuildFindingRendererCandidate]
 ):
+    candidate_collector = staticmethod(_direct_build_finding_renderer_candidates)
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Direct build_finding renderer should be a typed renderer value",
@@ -4473,6 +4484,7 @@ class DeferredClassRegistrationDetector(
 class StructuralConfusabilityDetector(
     ModuleCollectorCandidateDetector[StructuralConfusabilityCandidate]
 ):
+    candidate_collector = staticmethod(_structural_confusability_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Consumer observes a confusable duck-typed family",

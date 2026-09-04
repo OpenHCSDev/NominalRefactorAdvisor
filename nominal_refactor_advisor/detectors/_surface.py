@@ -167,6 +167,7 @@ class ManualFamilyRosterDetector(
 class FragmentedFamilyAuthorityDetector(
     ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]
 ):
+    candidate_collector = staticmethod(_fragmented_family_authority_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel key-family tables should become one authoritative record",

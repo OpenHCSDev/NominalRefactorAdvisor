@@ -18,6 +18,7 @@ from nominal_refactor_advisor.detectors import (
     SemanticMirrorIssueDetector,
     SsotAuthorityBoundaryDetector,
 )
+from nominal_refactor_advisor.detectors._base import DerivedCandidateCollectorMixin
 from nominal_refactor_advisor.detectors._runtime import (
     RepeatedBuilderCallShapeProjectionFamily,
 )
@@ -53,6 +54,8 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
         "AttributeChainAuthority",
         "_AstAttributeChainProjection",
         "_CallNameProjection",
+        "_candidate_collector_name_from_class_name",
+        "_derive_candidate_collector",
         "_TerminalNameProjection",
         "_ast_attribute_chain",
         "_ast_terminal_name",
@@ -74,6 +77,20 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
 
     assert nested_imports == ()
     assert competing_declarations == ()
+
+
+def test_concrete_candidate_detectors_own_their_collector_declaration() -> None:
+    collector_detector_types = tuple(
+        detector_type
+        for detector_type in IssueDetector.registered_detector_types()
+        if issubclass(detector_type, DerivedCandidateCollectorMixin)
+    )
+
+    assert collector_detector_types
+    assert all(
+        "candidate_collector" in vars(detector_type)
+        for detector_type in collector_detector_types
+    )
 
 
 def test_exact_report_demand_behavior_is_owned_by_collected_family_declarations() -> None:
