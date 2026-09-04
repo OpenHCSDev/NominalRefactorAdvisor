@@ -22,6 +22,7 @@ import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
+import nominal_refactor_advisor.cancelable_composition as cancelable_composition_module
 import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
@@ -9003,6 +9004,32 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
     assert CancelableCompositionKind.PRODUCT_PACK_FORWARD.load_bearing_bonus == 25
     assert CancelableCompositionKind.PACK_UNPACK_FORWARD.load_bearing_bonus == 75
+
+
+def test_cancelable_composition_kind_executes_direct_product_leaf(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Planner:\n"
+        "    def adapt(self, payload):\n"
+        "        return Destination(alpha=payload.alpha, beta=payload.beta)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+
+    signals = detect_cancelable_composition_signals(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    assert len(signals) == 1
+    assert signals[0].composition_kind is (
+        CancelableCompositionKind.PRODUCT_PACK_FORWARD
+    )
+    assert signals[0].field_names == ("alpha", "beta")
 
 
 @pytest.mark.parametrize(
@@ -24758,8 +24785,10 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
 def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
     import nominal_refactor_advisor as public_api
 
+    assert public_api.CancelableCompositionKind is (
+        cancelable_composition_module.CancelableCompositionKind
+    )
     public_names = (
-        "CancelableCompositionKind",
         "CodemodBackend",
         "FindingRecipePlanningHorizon",
         "FindingRecipeSynthesisStatus",
@@ -24774,6 +24803,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
 @pytest.mark.parametrize(
     "declaration_owner",
     (
+        cancelable_composition_module,
         codemod_architecture_guards_module,
         codemod_import_bindings_module,
         codemod_import_graph_module,

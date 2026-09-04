@@ -248,7 +248,7 @@ closure helpers are imported back only when retained source still references
 them, and are not published as compatibility aliases.
 
 .. automodule:: nominal_refactor_advisor.codemod_semantics
-   :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CancelableCompositionKind, CodemodPreflightStatus
+   :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CodemodPreflightStatus
 
 .. automodule:: nominal_refactor_advisor.codemod_import_scopes
    :members: ModuleImportScope, TypeCheckingGuardReference, TypeCheckingGuardProjection
@@ -281,7 +281,7 @@ them, and are not published as compatibility aliases.
    :members: ArchitectureGuardConstraint, ForbiddenCallArchitectureGuardConstraint, ForbiddenAttributeArchitectureGuardConstraint, ForbiddenDispatchArchitectureGuardConstraint, ArchitectureGuardTargetScope, ResolvedArchitectureGuardTargetScope, ArchitectureGuardRule, ArchitectureGuardRuleResolution, ArchitectureGuardViolationTarget, ArchitectureGuardViolation, ArchitectureGuardReport, ArchitectureGuardSuite, ArchitectureGuardSuitePayloadValueCodec, evaluate_architecture_guards
 
 .. automodule:: nominal_refactor_advisor.cancelable_composition
-   :members: CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: CancelableCompositionKind, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 .. automodule:: nominal_refactor_advisor.codemod
    :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites

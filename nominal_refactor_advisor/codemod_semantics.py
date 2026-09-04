@@ -202,29 +202,6 @@ class FindingRecipeSynthesisStatus(StrEnum):
         return self._disposition is FindingRecipeSynthesisDisposition.UNSUPPORTED
 
 
-class CancelableCompositionKind(StrEnum):
-    """Kinds of product-carrier compositions and their prioritization rent."""
-
-    PRODUCT_PACK_FORWARD = ("product_pack_forward", 25)
-    PACK_UNPACK_FORWARD = ("pack_unpack_forward", 75)
-
-    def __new__(
-        cls,
-        value: str,
-        load_bearing_bonus: int,
-    ) -> "CancelableCompositionKind":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._load_bearing_bonus = load_bearing_bonus
-        return member
-
-    @property
-    def load_bearing_bonus(self) -> int:
-        """Return the prioritization rent owned by this composition kind."""
-
-        return self._load_bearing_bonus
-
-
 class CodemodPreflightStatus(StrEnum):
     """Machine-readable codemod preflight outcome."""
 

@@ -9,11 +9,13 @@ morphisms can be cancelled before a codemod materialises a rewrite.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
+from typing import ClassVar
 
 from .ast_tools import AstExpressionProjection, FunctionDefinitionNode
-from .codemod_semantics import CancelableCompositionKind
 from .collection_algebra import sorted_tuple
 from .semantic_match import Maybe
 from .source_index import (
@@ -31,6 +33,91 @@ class ProductForwardIdentity:
     carrier_name: str
     source_name: str
     field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ProductForward(ProductForwardIdentity):
+    """AST-local product-forward projection fact."""
+
+
+class _CancelableCompositionProjectionABC(ABC):
+    """Leaf execution owned by one cancelable-composition kind."""
+
+    load_bearing_bonus: ClassVar[int]
+
+    @abstractmethod
+    def product_forward(
+        self,
+        node: FunctionDefinitionNode,
+    ) -> _ProductForward | None:
+        """Project one function body into this exact composition kind."""
+
+        raise NotImplementedError
+
+
+class _ProductPackForwardProjection(_CancelableCompositionProjectionABC):
+    """Project a direct product construction returned from a function."""
+
+    load_bearing_bonus = 25
+
+    def product_forward(
+        self,
+        node: FunctionDefinitionNode,
+    ) -> _ProductForward | None:
+        return _return_pack_forward(node)
+
+
+class _PackUnpackForwardProjection(_CancelableCompositionProjectionABC):
+    """Project a product construction immediately unpacked into another."""
+
+    load_bearing_bonus = 75
+
+    def product_forward(
+        self,
+        node: FunctionDefinitionNode,
+    ) -> _ProductForward | None:
+        return _pack_then_unpack_forward(node)
+
+
+class CancelableCompositionKind(StrEnum):
+    """Kinds of product-carrier compositions with member-owned execution."""
+
+    PRODUCT_PACK_FORWARD = (
+        "product_pack_forward",
+        _ProductPackForwardProjection(),
+    )
+    PACK_UNPACK_FORWARD = (
+        "pack_unpack_forward",
+        _PackUnpackForwardProjection(),
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        projection: _CancelableCompositionProjectionABC,
+    ) -> "CancelableCompositionKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._projection = projection
+        return member
+
+    @property
+    def load_bearing_bonus(self) -> int:
+        """Return the prioritisation rent derived from the leaf projector."""
+
+        return self._projection.load_bearing_bonus
+
+    def signal_for(
+        self,
+        authority: "CancelableCompositionSignalTargetAuthority",
+    ) -> "CancelableCompositionSignal | None":
+        """Execute this member's projection for one indexed function target."""
+
+        return (
+            Maybe.of(self._projection.product_forward(authority.node))
+            .map(lambda product: authority.cancelable_signal(self, product))
+            .unwrap_or_none()
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -94,11 +181,6 @@ def detect_cancelable_composition_signals(
     )
 
 
-@dataclass(frozen=True, kw_only=True)
-class _ProductForward(ProductForwardIdentity):
-    """AST-local product-forward projection fact."""
-
-
 @dataclass(frozen=True)
 class CancelableCompositionSignalTargetAuthority:
     """Build cancelable-composition signals for one function target."""
@@ -108,26 +190,13 @@ class CancelableCompositionSignalTargetAuthority:
     node: FunctionDefinitionNode
 
     def signal(self) -> CancelableCompositionSignal | None:
-        pack_forward = self.product_pack_forward()
-        if pack_forward is not None:
-            return self.cancelable_signal(
-                CancelableCompositionKind.PRODUCT_PACK_FORWARD,
-                pack_forward,
-            )
-
-        pack_unpack_forward = self.pack_unpack_forward()
-        if pack_unpack_forward is not None:
-            return self.cancelable_signal(
-                CancelableCompositionKind.PACK_UNPACK_FORWARD,
-                pack_unpack_forward,
-            )
-        return None
-
-    def product_pack_forward(self) -> _ProductForward | None:
-        return _return_pack_forward(self.node)
-
-    def pack_unpack_forward(self) -> _ProductForward | None:
-        return _pack_then_unpack_forward(self.node)
+        return next(
+            filter(
+                lambda signal: signal is not None,
+                (kind.signal_for(self) for kind in CancelableCompositionKind),
+            ),
+            None,
+        )
 
     def cancelable_signal(
         self,

@@ -209,7 +209,6 @@ from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
 from .codemod_semantics import (
-    CancelableCompositionKind as CancelableCompositionKind,
     CodemodBackend as CodemodBackend,
     CodemodPreflightStatus as CodemodPreflightStatus,
     CodemodSourceDependencyScope as CodemodSourceDependencyScope,
@@ -318,6 +317,7 @@ from .codemod_architecture_guards import (
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
 from .cancelable_composition import (
+    CancelableCompositionKind as CancelableCompositionKind,
     CancelableCompositionSignal as CancelableCompositionSignal,
     CancelableCompositionSignalTargetAuthority as CancelableCompositionSignalTargetAuthority,
     ProductForwardCallAuthority as ProductForwardCallAuthority,

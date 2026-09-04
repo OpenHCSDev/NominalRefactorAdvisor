@@ -66,7 +66,6 @@ from .codemod_architecture_guards import (
     evaluate_architecture_guards,
 )
 from .codemod_semantics import (
-    CancelableCompositionKind,
     CodemodBackend,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisStatus,
@@ -168,6 +167,7 @@ from .taxonomy import (
     ObservationTag,
 )
 from .cancelable_composition import (
+    CancelableCompositionKind,
     CancelableCompositionSignal,
     detect_cancelable_composition_signals,
 )
