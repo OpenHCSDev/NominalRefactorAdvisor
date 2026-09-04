@@ -104,7 +104,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
 }
 
-EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
+EXPECTED_MAPPING_DECLARATIONS = frozenset(
     {
         codemod.DataclassConstructorProjectionMappingRecipeBuilder,
         codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
@@ -114,7 +114,12 @@ EXPECTED_INFERRED_MAPPING_DECLARATIONS = frozenset(
     }
 )
 
-EXPECTED_MAPPING_DECLARATIONS = EXPECTED_INFERRED_MAPPING_DECLARATIONS
+EXPECTED_REGISTRATION_DECLARATIONS = frozenset(
+    {
+        codemod.AutoregisterInstanceViewRecipeBuilder,
+        codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder,
+    }
+)
 
 
 def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
@@ -370,10 +375,24 @@ def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_auth
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:
     assert (
-        frozenset(codemod.InferredSemanticMirrorMappingRecipeBuilder.builder_types())
-        == EXPECTED_INFERRED_MAPPING_DECLARATIONS
+        frozenset(codemod.MappingSemanticMirrorRecipeBuilder.builder_types())
+        == EXPECTED_MAPPING_DECLARATIONS
     )
-    assert "__registry__" not in codemod.MappingSemanticMirrorRecipeBuilder.__dict__
+    assert (
+        frozenset(codemod.RegistrationSemanticMirrorRecipeBuilder.builder_types())
+        == EXPECTED_REGISTRATION_DECLARATIONS
+    )
+    assert frozenset(codemod.SemanticMirrorRecipeBuilder.builder_types()) == (
+        EXPECTED_MAPPING_DECLARATIONS | EXPECTED_REGISTRATION_DECLARATIONS
+    )
+    assert all(
+        "__registry__" not in declaration.__dict__
+        for declaration in (
+            codemod.SemanticMirrorRecipeBuilder,
+            codemod.MappingSemanticMirrorRecipeBuilder,
+            codemod.RegistrationSemanticMirrorRecipeBuilder,
+        )
+    )
     assert not hasattr(
         codemod.MappingSemanticMirrorRecipeStrategy,
         "enum_subset_builder_for_finding",
@@ -386,12 +405,6 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
         codemod.RefactorConcept.leaf_concept_for_declaration(builder_type)
         is EXPECTED_EXECUTABLE_CONCEPTS[builder_type]
         for builder_type in EXPECTED_MAPPING_DECLARATIONS
-    )
-    assert all(
-        builder_type.registry_key == registry_key
-        for registry_key, builder_type in (
-            codemod.ContextualSemanticMirrorRecipeBuilder.__registry__.items()
-        )
     )
 
 
@@ -496,7 +509,7 @@ def test_codemod_selection_context_is_an_external_abstract_boundary() -> None:
         codemod.CodemodSourceSnapshot,
     )
     assert issubclass(
-        codemod.ContextualSemanticMirrorRecipeBuilder,
+        codemod.RegistrationSemanticMirrorRecipeBuilder,
         codemod.CodemodSourceSnapshot,
     )
 
@@ -813,23 +826,20 @@ def test_assignment_deletions_share_validated_source_reproof() -> None:
     assert not hasattr(codemod, "TargetNodeRecipeOperationMixin")
 
 
-def test_registered_mapping_cases_publish_no_numeric_precedence() -> None:
-    mapping_declarations = (
+def test_semantic_mirror_builder_families_publish_no_parallel_registry_or_priority() -> None:
+    builder_declarations = (
+        codemod.SemanticMirrorRecipeBuilder,
         codemod.MappingSemanticMirrorRecipeBuilder,
         *EXPECTED_MAPPING_DECLARATIONS,
-    )
-    contextual_registration_declarations = (
-        codemod.ContextualSemanticMirrorRecipeBuilder,
-        *codemod.ContextualSemanticMirrorRecipeBuilder.__registry__.values(),
+        codemod.RegistrationSemanticMirrorRecipeBuilder,
+        *EXPECTED_REGISTRATION_DECLARATIONS,
     )
 
     assert all(
         not hasattr(declaration, "registration_order")
-        for declaration in mapping_declarations
-    )
-    assert all(
-        not hasattr(declaration, "registry_order")
-        for declaration in contextual_registration_declarations
+        and not hasattr(declaration, "registry_order")
+        and "__registry__" not in declaration.__dict__
+        for declaration in builder_declarations
     )
     assert not hasattr(
         codemod.RegistrationSemanticMirrorRecipeStrategy,

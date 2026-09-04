@@ -14890,10 +14890,50 @@ class SemanticMirrorImportBoundary:
         )
 
 
-class SemanticMirrorRecipeBuilder(ABC):
-    """Nominal owner of one semantic-mirror recipe proof attempt."""
+@dataclass(frozen=True, kw_only=True)
+class SemanticMirrorRecipeBuilder(CodemodSourceSnapshot, ABC):
+    """Shared source-backed lifecycle for one semantic-mirror recipe domain."""
 
     finding: RefactorFinding
+
+    @classmethod
+    def builder_types(cls) -> tuple[type[Self], ...]:
+        """Derive concrete builders from this nominal domain branch."""
+
+        return tuple(
+            cast(type[Self], builder_type)
+            for builder_type in loaded_concrete_nominal_descendants(cls)
+        )
+
+    @classmethod
+    def builders_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> tuple[Self, ...]:
+        if context is None:
+            return ()
+        return tuple(
+            builder
+            for builder_type in cls.builder_types()
+            if (
+                builder := builder_type(
+                    source_index=context.source_index,
+                    sources_by_file_path=context.sources_by_file_path,
+                    class_family_index=context.class_family_index,
+                    module_node_cache=context.module_nodes_by_file_path,
+                    ast_target_node_cache=context.ast_target_nodes_by_id,
+                    module_import_graph_cache=context.module_import_graph,
+                    finding=finding,
+                )
+            ).is_applicable()
+        )
+
+    @staticmethod
+    def proof_obstacles(
+        builders: tuple[Self, ...],
+    ) -> tuple[FindingRecipeProofObstacle, ...]:
+        return tuple(builder.proof_obstacle() for builder in builders)
 
     def is_applicable(self) -> bool:
         """Return whether this declaration owns the finding's semantic domain."""
@@ -14916,63 +14956,17 @@ class SemanticMirrorRecipeBuilder(ABC):
 
 
 class MappingSemanticMirrorRecipeBuilder(
-    CodemodSourceSnapshot,
     SemanticMirrorRecipeBuilder,
     ABC,
 ):
-    """Recipe declaration for one mapping-mirror family."""
-
-    finding: RefactorFinding
-
-    @classmethod
-    def from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> Self | None:
-        if context is None:
-            return None
-        return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            module_node_cache=context.module_nodes_by_file_path,
-            ast_target_node_cache=context.ast_target_nodes_by_id,
-            module_import_graph_cache=context.module_import_graph,
-            finding=finding,
-        )
+    """Nominal domain for mapping-mirror recipe declarations."""
 
 
-class InferredSemanticMirrorMappingRecipeBuilder(ABC):
-    """Nominal family of structurally inferred mapping recipe builders."""
-
-    @classmethod
-    def builder_types(
-        cls,
-    ) -> tuple[type[MappingSemanticMirrorRecipeBuilder], ...]:
-        return tuple(
-            cast(type[MappingSemanticMirrorRecipeBuilder], builder_type)
-            for builder_type in loaded_concrete_nominal_descendants(cls)
-        )
-
-    @classmethod
-    def builders_from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> tuple[MappingSemanticMirrorRecipeBuilder, ...]:
-        return tuple(
-            builder
-            for builder_type in cls.builder_types()
-            if (builder := builder_type.from_context(finding, context)) is not None
-            and builder.is_applicable()
-        )
-
-    @staticmethod
-    def proof_obstacles(
-        builders: tuple[MappingSemanticMirrorRecipeBuilder, ...],
-    ) -> tuple[FindingRecipeProofObstacle, ...]:
-        return tuple(builder.proof_obstacle() for builder in builders)
+class RegistrationSemanticMirrorRecipeBuilder(
+    SemanticMirrorRecipeBuilder,
+    ABC,
+):
+    """Nominal domain for registration-mirror recipe declarations."""
 
 
 class FindingRecipeParts(ABC):
@@ -15314,7 +15308,6 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
 @dataclass(frozen=True, kw_only=True)
 class EnumSubsetSemanticMirrorRecipeBuilder(
     MappingSemanticMirrorRecipeBuilder,
-    InferredSemanticMirrorMappingRecipeBuilder,
     DerivedProjectionConcept,
 ):
     """Build a source-derived enum subset recipe."""
@@ -15391,8 +15384,8 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
 
 
 @dataclass(frozen=True)
-class InferredMappingRecipeSelection:
-    """One unambiguous inferred builder and the recipe it produced."""
+class SemanticMirrorRecipeSelection:
+    """One unambiguous source-proved builder and its recipe."""
 
     builder: MappingSemanticMirrorRecipeBuilder
     recipe: RefactorRecipe
@@ -15401,7 +15394,7 @@ class InferredMappingRecipeSelection:
     def from_builders(
         cls,
         builders: tuple[MappingSemanticMirrorRecipeBuilder, ...],
-    ) -> "InferredMappingRecipeSelection | None":
+    ) -> "SemanticMirrorRecipeSelection | None":
         candidates = tuple(
             cls(builder=builder, recipe=recipe)
             for builder in builders
@@ -17338,7 +17331,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         ReturnDictProjectionTarget,
         SourceDerivedDataclassProjectionRecipeParts[ReturnDictProjectionTarget],
     ],
-    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
 ):
     """Derive an exhaustive direct-instance mapping from dataclass fields."""
@@ -17434,7 +17426,6 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
             DataclassFieldNameCollectionProjectionTarget
         ],
     ],
-    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
 ):
     """Derive an exhaustive local field-name collection from a dataclass."""
@@ -17525,7 +17516,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
             ReturnKeyValueSequenceProjectionTarget
         ],
     ],
-    InferredSemanticMirrorMappingRecipeBuilder,
     DataclassPayloadProjectionConcept,
 ):
     """Derive returned ``("field", value)`` items from a dataclass authority."""
@@ -18052,7 +18042,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
             DataclassConstructorProjectionTarget
         ],
     ],
-    InferredSemanticMirrorMappingRecipeBuilder,
     ConstructorKwargCarrierProjectionConcept,
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
@@ -18151,7 +18140,7 @@ class RegistrationSemanticMirrorRecipeStrategy(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         contextual_builders = (
-            ContextualSemanticMirrorRecipeBuilder.builders_from_context(
+            RegistrationSemanticMirrorRecipeBuilder.builders_from_context(
                 finding,
                 context,
             )
@@ -18187,7 +18176,7 @@ class RegistrationSemanticMirrorRecipeStrategy(
         if evaluations:
             return evaluations[0]
         obstacles = (
-            *ContextualSemanticMirrorRecipeBuilder.proof_obstacles(
+            *RegistrationSemanticMirrorRecipeBuilder.proof_obstacles(
                 contextual_builders,
             ),
             FindingRecipeProofObstacle(
@@ -18481,78 +18470,6 @@ class ClassFamilyCollectionProjection:
         )
 
 
-@dataclass(frozen=True, kw_only=True)
-class ContextualSemanticMirrorRecipeBuilder(
-    CodemodSourceSnapshot,
-    SemanticMirrorRecipeBuilder,
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Shared lifecycle for semantic-mirror builders that require selector context."""
-
-    __registry__: ClassVar[
-        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
-    ] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-
-    registry_key_suffix: ClassVar[str] = "RecipeBuilder"
-    registry_key: ClassVar[str]
-    finding: RefactorFinding
-
-    @classmethod
-    def builder_types(
-        cls,
-    ) -> tuple[type["ContextualSemanticMirrorRecipeBuilder"], ...]:
-        """Return registered declarations in stable presentation order."""
-
-        return sorted_tuple(
-            (
-                builder_type
-                for builder_type in cls.__registry__.values()
-                if issubclass(builder_type, cls) and builder_type is not cls
-            ),
-            key=lambda builder_type: builder_type.registry_key,
-        )
-
-    @classmethod
-    def builders_from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> tuple["ContextualSemanticMirrorRecipeBuilder", ...]:
-        return tuple(
-            builder
-            for builder_type in cls.builder_types()
-            if (builder := builder_type.from_context(finding, context)) is not None
-        )
-
-    @staticmethod
-    def proof_obstacles(
-        builders: tuple["ContextualSemanticMirrorRecipeBuilder", ...],
-    ) -> tuple[FindingRecipeProofObstacle, ...]:
-        return tuple(builder.proof_obstacle() for builder in builders)
-
-    @classmethod
-    def from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> Self | None:
-        if context is None:
-            return None
-        return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            module_node_cache=context.module_nodes_by_file_path,
-            ast_target_node_cache=context.ast_target_nodes_by_id,
-            module_import_graph_cache=context.module_import_graph,
-            finding=finding,
-        )
-
-
 @dataclass(frozen=True)
 class ClassFamilyCollectionCandidate:
     """One source projection proven equal to a complete nominal class family."""
@@ -18774,7 +18691,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
 
 @dataclass(frozen=True, kw_only=True)
 class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
-    ContextualSemanticMirrorRecipeBuilder,
+    RegistrationSemanticMirrorRecipeBuilder,
     ClassFamilyAuthorityConcept,
 ):
     """Build a source-derived class-family projection recipe."""
@@ -18841,7 +18758,7 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 
 @dataclass(frozen=True, kw_only=True)
 class AutoregisterInstanceViewRecipeBuilder(
-    ContextualSemanticMirrorRecipeBuilder,
+    RegistrationSemanticMirrorRecipeBuilder,
     AutoRegisterClassRegistryConcept,
 ):
     """Build recipes for constructor-valued views over AutoRegisterMeta families."""
@@ -18924,11 +18841,11 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        builders = InferredSemanticMirrorMappingRecipeBuilder.builders_from_context(
+        builders = MappingSemanticMirrorRecipeBuilder.builders_from_context(
             finding,
             context,
         )
-        selection = InferredMappingRecipeSelection.from_builders(builders)
+        selection = SemanticMirrorRecipeSelection.from_builders(builders)
         if selection is not None:
             return self.evaluation_from_recipe(
                 finding,
@@ -18992,12 +18909,12 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         resolved_builders = (
             builders
             if builders is not None
-            else InferredSemanticMirrorMappingRecipeBuilder.builders_from_context(
+            else MappingSemanticMirrorRecipeBuilder.builders_from_context(
                 finding,
                 context,
             )
         )
-        proof_obstacles = InferredSemanticMirrorMappingRecipeBuilder.proof_obstacles(
+        proof_obstacles = MappingSemanticMirrorRecipeBuilder.proof_obstacles(
             resolved_builders,
         )
         if proof_obstacles:
