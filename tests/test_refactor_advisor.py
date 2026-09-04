@@ -23874,18 +23874,27 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
         "semantic_mirror_without_descent",
         "small authority branch",
         (SourceLocation("module.py", 10, "SmallAuthority.guard"),),
+        projection_evidence=SourceLocation(
+            "module.py", 10, "SmallAuthority.guard"
+        ),
         title="A small authority branch",
     )
     large_one = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group one",
         (SourceLocation("module.py", 20, "LargeBoundary.alpha"),),
+        projection_evidence=SourceLocation(
+            "module.py", 20, "LargeBoundary.alpha"
+        ),
         title="Z large boundary group",
     )
     large_two = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group two",
         (SourceLocation("module.py", 30, "LargeBoundary.beta"),),
+        projection_evidence=SourceLocation(
+            "module.py", 30, "LargeBoundary.beta"
+        ),
         title="Z large boundary group",
     )
 
@@ -23917,6 +23926,9 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "narrow branch one",
         (SourceLocation("module.py", 10, "NarrowAuthority.alpha"),),
+        projection_evidence=SourceLocation(
+            "module.py", 10, "NarrowAuthority.alpha"
+        ),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -23929,6 +23941,9 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "narrow branch two",
         (SourceLocation("module.py", 20, "NarrowAuthority.beta"),),
+        projection_evidence=SourceLocation(
+            "module.py", 20, "NarrowAuthority.beta"
+        ),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -23941,6 +23956,9 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "broad semantic certificate",
         (SourceLocation("module.py", 30, "BroadAuthority.mapping"),),
+        projection_evidence=SourceLocation(
+            "module.py", 30, "BroadAuthority.mapping"
+        ),
         title="Z broad semantic certificate",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -24059,6 +24077,9 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
         "semantic_mirror_without_descent",
         "ComponentAxisAuthority has no resolved descent path.",
         (SourceLocation("module.py", 1, "ComponentAxisAuthority"),),
+        projection_evidence=SourceLocation(
+            "module.py", 1, "ComponentAxisAuthority"
+        ),
     )
     boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding(finding)
     discovery_findings = (
@@ -26304,6 +26325,8 @@ def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
     assert "EventProjection" in finding.summary
     assert "`Event`" in finding.summary
     assert "`render`" in finding.summary
+    assert finding.projection_evidence is not None
+    assert finding.projection_evidence.symbol == "pkg.mod.EventProjection"
     assert finding.authority_evidence == SourceLocation(
         str(tmp_path / "pkg/mod.py"),
         8,

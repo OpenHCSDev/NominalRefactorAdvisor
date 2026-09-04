@@ -944,9 +944,7 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     projection = graph.projections[0]
     certificate = graph.missing_descent_certificates[0]
     authority_evidence = (
-        semantic_descent_module.FindingBackedAuthorityProjection.authority_evidence(
-            finding
-        )
+        semantic_descent_module.FindingBackedSemanticDescent(finding).authority_evidence
     )
 
     assert authority.name == "Step"
@@ -983,6 +981,45 @@ def test_finding_authority_evidence_must_belong_to_its_evidence() -> None:
         )
 
 
+def test_finding_backed_graph_uses_declared_projection_witness_not_evidence_order() -> (
+    None
+):
+    authority_evidence = SourceLocation(
+        "pkg/generated.py",
+        3,
+        "GeneratedPolicy",
+    )
+    projection_evidence = SourceLocation(
+        "pkg/runtime.py",
+        7,
+        "LOCAL_POLICY",
+    )
+    finding = RefactorFinding(
+        detector_id="generated_boundary_semantic_constant_mirror",
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Generated policy is mirrored",
+        summary="runtime policy repeats generated policy",
+        why="the runtime declaration can drift",
+        capability_gap="one generated policy authority",
+        relation_context="runtime policy lacks a derivation path",
+        evidence=(authority_evidence, projection_evidence),
+        projection_evidence=projection_evidence,
+        authority_evidence=authority_evidence,
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            mapping_name="LOCAL_POLICY",
+            source_name="GeneratedPolicy",
+            field_names=("policy",),
+        ),
+    )
+
+    graph = build_finding_backed_semantic_descent_graph((finding,))
+
+    assert graph.authorities[0].location == authority_evidence
+    assert graph.projections[0].location == projection_evidence
+    assert graph.facts[0].location == projection_evidence
+
+
 def test_finding_certificate_authority_requires_exact_graph_membership() -> None:
     finding = RefactorFinding(
         detector_id="authority_projection_test",
@@ -1006,6 +1043,7 @@ def test_finding_certificate_authority_requires_exact_graph_membership() -> None
 
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
+    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1014,7 +1052,8 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
         why="case literals repeat an axis-owned semantic fact family",
         capability_gap="one authority-owned role-case projection",
         relation_context="case table lacks an authority-derived projection",
-        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        evidence=(projection_evidence,),
+        projection_evidence=projection_evidence,
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
             mapping_name="authority_projection_test",
@@ -1028,9 +1067,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     authority = graph.authorities[0]
     certificate = graph.missing_descent_certificates[0]
     authority_evidence = (
-        semantic_descent_module.FindingBackedAuthorityProjection.authority_evidence(
-            finding
-        )
+        semantic_descent_module.FindingBackedSemanticDescent(finding).authority_evidence
     )
 
     assert authority.name == "AxisRoleAuthority"
@@ -1047,6 +1084,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
 
 
 def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
+    projection_evidence = SourceLocation("pkg/mod.py", 7, "Builder.first:Result")
     finding = RefactorFinding(
         detector_id="repeated_builder_calls",
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -1055,7 +1093,8 @@ def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
         why="the constructor owns its field schema",
         capability_gap="one constructor-owned builder",
         relation_context="constructor calls bypass their nominal authority",
-        evidence=(SourceLocation("pkg/mod.py", 7, "Builder.first:Result"),),
+        evidence=(projection_evidence,),
+        projection_evidence=projection_evidence,
         metrics=ConstructorOwnedMappingMetrics.from_field_names(
             mapping_site_count=3,
             mapping_name="Result",
@@ -1077,6 +1116,7 @@ def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
 def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> (
     None
 ):
+    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1085,7 +1125,8 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
         why="case literals repeat an axis-owned semantic fact family",
         capability_gap="one authority-owned role-case projection",
         relation_context="case table lacks an authority-derived projection",
-        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        evidence=(projection_evidence,),
+        projection_evidence=projection_evidence,
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
             mapping_name="authority_projection_test",
@@ -1103,6 +1144,11 @@ def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_au
 def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping_name() -> (
     None
 ):
+    first_projection = SourceLocation(
+        "pkg/cli.py",
+        10,
+        "CodemodSynthesizePlanCliCommand:role_cases:applied,diff",
+    )
     first = RefactorFinding(
         detector_id="cross_module_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1111,19 +1157,19 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         why="case literals repeat a semantic fact family",
         capability_gap="one authority-owned role-case projection",
         relation_context="case table lacks an authority-derived projection",
-        evidence=(
-            SourceLocation(
-                "pkg/cli.py",
-                10,
-                "CodemodSynthesizePlanCliCommand:role_cases:applied,diff",
-            ),
-        ),
+        evidence=(first_projection,),
+        projection_evidence=first_projection,
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             mapping_name="cross_module_projection_test",
             source_name="codemod,command,plan",
             field_names=("applied", "diff"),
         ),
+    )
+    second_projection = SourceLocation(
+        "pkg/cli.py",
+        20,
+        "CodemodSynthesizeClassPlanCliCommand:role_cases:applied,diff",
     )
     second = RefactorFinding(
         detector_id="cross_module_projection_test",
@@ -1133,13 +1179,8 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         why=first.why,
         capability_gap=first.capability_gap,
         relation_context=first.relation_context,
-        evidence=(
-            SourceLocation(
-                "pkg/cli.py",
-                20,
-                "CodemodSynthesizeClassPlanCliCommand:role_cases:applied,diff",
-            ),
-        ),
+        evidence=(second_projection,),
+        projection_evidence=second_projection,
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             mapping_name="cross_module_projection_test",
@@ -1157,6 +1198,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
 
 
 def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
+    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1165,7 +1207,8 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         why="case literals repeat an axis-owned semantic fact family",
         capability_gap="one authority-owned role-case projection",
         relation_context="case table lacks an authority-derived projection",
-        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        evidence=(projection_evidence,),
+        projection_evidence=projection_evidence,
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=3,
             mapping_name="authority_projection_test",
@@ -1191,6 +1234,14 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
     )
     assert boundary.projection_kinds == (PresentationProjectionKind.DETECTOR_FINDING,)
+    for removed_projection in (
+        "FindingBackedAuthorityProjection",
+        "FindingBackedAuthorityNameProjection",
+        "FindingBackedPresentationProjection",
+        "FindingBackedFactProjection",
+        "FindingBackedMirrorEdgeProjection",
+    ):
+        assert not hasattr(semantic_descent_module, removed_projection)
     certificate_selection = certificate_authority.resolved_selection_for_findings(
         (finding, finding)
     )
@@ -1852,6 +1903,7 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
         if item.detector_id == "repeated_builder_calls"
     )
     assert isinstance(finding.metrics, ConstructorOwnedMappingMetrics)
+    assert finding.projection_evidence == finding.evidence[0]
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)

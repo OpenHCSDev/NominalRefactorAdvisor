@@ -131,6 +131,9 @@ def test_enum_keyed_facade_builder_recovers_nominal_owner(tmp_path: Path) -> Non
     assert component.map_method_name == "handler_types_by_mode"
     assert component.reverse_method_name == "modes_for_handler_name"
     assert component.property_name == "handler_type"
+    assert component.projection_evidence.symbol == (
+        "pkg.mod.HandlerCatalog.handler_types_by_mode"
+    )
     assert component.authority_evidence == SourceLocation(
         module_path.as_posix(),
         14,

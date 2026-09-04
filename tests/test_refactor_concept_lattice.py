@@ -334,12 +334,12 @@ def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_auth
         projection_evidence=projection,
     )
 
-    assert detectors.SemanticMirrorIssueDetector._normalize_findings(
+    assert detectors.SsotAuthorityBoundaryDetector._normalize_findings(
         [finding],
         detectors.DetectorConfig(),
     ) == [finding]
-    with pytest.raises(TypeError, match="require declared projection evidence"):
-        detectors.SemanticMirrorIssueDetector._normalize_findings(
+    with pytest.raises(TypeError, match="requires declared projection evidence"):
+        detectors.SsotAuthorityBoundaryDetector._normalize_findings(
             [replace(finding, projection_evidence=None)],
             detectors.DetectorConfig(),
         )

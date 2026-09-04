@@ -655,27 +655,19 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
 class SsotAuthorityBoundaryDetector(IssueDetector):
     """Nominal detector relation whose findings open an SSOT proof boundary."""
 
-
-class SemanticMirrorIssueDetector(SsotAuthorityBoundaryDetector):
-    """Semantic mirror whose projection witness is explicit and authority may be unknown."""
-
     @staticmethod
     def _normalize_findings(
         findings: list[RefactorFinding],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         normalized = IssueDetector._normalize_findings(findings, config)
-        missing_projection = tuple(
-            finding.stable_id
-            for finding in normalized
-            if finding.projection_evidence is None
-        )
-        if missing_projection:
-            raise TypeError(
-                "Semantic mirror findings require declared projection evidence: "
-                f"{missing_projection!r}"
-            )
+        for finding in normalized:
+            finding.required_projection_evidence()
         return normalized
+
+
+class SemanticMirrorIssueDetector(SsotAuthorityBoundaryDetector):
+    """Semantic mirror whose projection witness is explicit and authority may be unknown."""
 
 
 class PerModuleIssueDetector(IssueDetector):

@@ -1950,10 +1950,7 @@ class RepeatedBuilderCallDetector(
             if len(ordered) < 3 and not same_source:
                 continue
             evidence = tuple(
-                (
-                    SourceLocation(builder.file_path, builder.lineno, builder.symbol)
-                    for builder in ordered[:6]
-                )
+                builder.source_location for builder in ordered[:6]
             )
             findings.append(
                 self.build_finding(
@@ -1964,6 +1961,7 @@ class RepeatedBuilderCallDetector(
                         if same_source
                         else self.finding_spec.capability_gap
                     ),
+                    projection_evidence=ordered[0].source_location,
                     metrics=ConstructorOwnedMappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
                         mapping_name=ordered[0].callee_name,
@@ -3125,6 +3123,7 @@ class TypeKeyedBehaviorProjectionDetector(
                 "already supplies the behavior dispatch relation."
             ),
             component.evidence_locations,
+            projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
         )
 
@@ -3177,6 +3176,7 @@ class EnumKeyedDerivedMapFacadeDetector(
                 "enum identity outside its declaration."
             ),
             component.evidence_locations,
+            projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
         )
 

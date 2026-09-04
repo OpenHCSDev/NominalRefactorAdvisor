@@ -87,6 +87,14 @@ class EnumKeyedDerivedMapFacadeComponent:
         return SourceLocation(self.file_path, self.enum_line, self.enum_symbol)
 
     @property
+    def projection_evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.file_path,
+            self.map_method_line,
+            self.map_method_symbol,
+        )
+
+    @property
     def map_method_symbol(self) -> str:
         return f"{self.map_owner_symbol}.{self.map_method_name}"
 

@@ -975,6 +975,16 @@ class RefactorFinding(FindingSemantics):
                 f"{self.detector_id!r} must also occur in evidence."
             )
 
+    def required_projection_evidence(self) -> SourceLocation:
+        """Return the declared projection witness or fail the proof boundary."""
+
+        if self.projection_evidence is None:
+            raise TypeError(
+                f"Finding {self.stable_id} from detector {self.detector_id!r} "
+                "requires declared projection evidence."
+            )
+        return self.projection_evidence
+
     def map_evidence(
         self,
         transform: Callable[[SourceLocation], SourceLocation],

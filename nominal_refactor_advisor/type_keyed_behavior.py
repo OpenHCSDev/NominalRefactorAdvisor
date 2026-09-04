@@ -70,16 +70,21 @@ class TypeKeyedBehaviorProjectionComponent:
     @cached_property
     def evidence_locations(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(
-                self.projection_root.file_path,
-                self.projection_root.line,
-                self.projection_root.symbol,
-            ),
+            self.projection_evidence,
+            self.authority_evidence,
             *(
                 location
                 for binding in self.bindings
                 for location in binding.evidence_locations
             ),
+        )
+
+    @property
+    def projection_evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.projection_root.file_path,
+            self.projection_root.line,
+            self.projection_root.symbol,
         )
 
     @property

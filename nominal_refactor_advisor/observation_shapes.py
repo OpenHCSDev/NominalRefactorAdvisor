@@ -22,15 +22,14 @@ from .constructor_algebra import (
 )
 from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
-
-from .semantic_algebra import DispatchAxisExpression
-
+from .models import SourceLocation
 from .observation_graph import (
     ObservationKind,
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
 )
+from .semantic_algebra import DispatchAxisExpression
 
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule
@@ -116,6 +115,16 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
             execution_level=self.observation_execution_level,
             observed_name=self.observed_name,
             fiber_key=self.fiber_key,
+        )
+
+    @property
+    def source_location(self) -> SourceLocation:
+        """Project this structural observation onto its source coordinate."""
+
+        return SourceLocation(
+            self.file_path,
+            self.observation_line,
+            self.owner_symbol,
         )
 
 
