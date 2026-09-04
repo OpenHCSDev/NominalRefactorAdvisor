@@ -15,8 +15,10 @@ Detector declarations that can assess a finding inherit
 also inherit ``FindingRecipeSynthesizer`` and one nominal ``RefactorConcept``.
 Recipe lookup resolves the finding's registered ``IssueDetector`` declaration
 through its MRO; there is no second detector-to-evaluator registry.
-Metric-driven inferred synthesis remains separate and fails closed unless
-exactly one inference declaration supports the finding.
+An unregistered finding has no proved required-relation owner and therefore no
+recipe evaluator. Semantic-mirror detector declarations inherit a shared
+evaluator, while the finding's nominal metric type selects the strategy or
+builder that owns any executable refactor concept.
 
 The generated :doc:`detector_catalog` derives each detector's required-relation
 owner, authority-boundary contract, evaluation capability, executable
@@ -24,8 +26,8 @@ capability, and refactor concept directly from those declarations. This is a
 capability inventory, not evidence that a detector contributed a valid refactor
 for a particular repository. Source-specific authority evidence belongs to the
 semantic refactor gate, while evaluation, proof obstacles, executable recipes,
-and planning horizon belong to finding recipe synthesis. Metric-driven inferred
-synthesis also remains a finding-level decision.
+and planning horizon belong to finding recipe synthesis. Finding metrics supply
+typed evidence to a declared evaluator; they do not grant recipe capability.
 
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the

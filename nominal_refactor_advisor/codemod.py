@@ -11587,12 +11587,9 @@ class FindingRecipeEvaluator(ABC):
         detector_type = IssueDetector.registered_detector_type_for_id(
             finding.detector_id
         )
-        if detector_type is not None and issubclass(detector_type, cls):
-            return cast(Self, detector_type())
-        inferred = InferredFindingRecipeSynthesizer.for_finding(finding)
-        if inferred is None or not isinstance(inferred, cls):
+        if detector_type is None or not issubclass(detector_type, cls):
             return None
-        return cast(Self, inferred)
+        return cast(Self, detector_type())
 
     @abstractmethod
     def evaluate_recipe_for_finding(
@@ -11627,10 +11624,10 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
     ) -> bool:
         """Project one finding through its executable declaration's concept MRO."""
 
-        synthesizer = cls.for_finding(finding)
-        if synthesizer is None:
+        evaluator = FindingRecipeEvaluator.for_finding(finding)
+        if evaluator is None:
             return False
-        evaluation = synthesizer.evaluate_recipe_for_finding(
+        evaluation = evaluator.evaluate_recipe_for_finding(
             finding,
             selector_context,
         )
@@ -11767,34 +11764,6 @@ class CandidateCollectorBoilerplateFindingRecipeSynthesizer(
                 ),
             ).with_operation(operation)
         )
-
-
-class InferredFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
-    """Resolve an unregistered finding through declaration-owned evidence."""
-
-    @classmethod
-    def for_finding(
-        cls,
-        finding: RefactorFinding,
-    ) -> FindingRecipeSynthesizer | None:
-        matching_types = tuple(
-            synthesizer_type
-            for synthesizer_type in loaded_concrete_nominal_descendants(cls)
-            if synthesizer_type.supports_finding(finding)
-        )
-        if not matching_types:
-            return None
-        if len(matching_types) != 1:
-            raise TypeError(
-                f"Finding {finding.stable_id} matches multiple inferred recipe "
-                "synthesizers: " + ", ".join(item.__name__ for item in matching_types)
-            )
-        return matching_types[0]()
-
-    @classmethod
-    @abstractmethod
-    def supports_finding(cls, finding: RefactorFinding) -> bool:
-        raise NotImplementedError
 
 
 class SingleSourcePathFindingMixin:
@@ -19084,17 +19053,8 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         return ResolvedClassTarget(target=target, node=node)
 
 
-class SemanticMirrorRegistrationFindingRecipeSynthesizer(
-    InferredFindingRecipeSynthesizer,
-):
-    """Build metric-specific recipes for semantic mirror findings."""
-
-    @classmethod
-    def supports_finding(
-        cls,
-        finding: RefactorFinding,
-    ) -> bool:
-        return finding.detector_id in IssueDetector.semantic_mirror_detector_ids()
+class SemanticMirrorFindingRecipeEvaluator(FindingRecipeEvaluator):
+    """Evaluate a declared semantic-mirror finding through its metric contract."""
 
     def action_keys_for_finding(
         self,
@@ -19263,19 +19223,6 @@ class NumericLiteralDispatchFindingRecipeSynthesizer(
     LiteralDispatchFindingRecipeSynthesizer
 ):
     """Build recipes for closed numeric-literal dispatch functions."""
-
-
-class DispatchMetricsFindingRecipeSynthesizer(
-    LiteralDispatchFindingRecipeSynthesizer,
-    InferredFindingRecipeSynthesizer,
-):
-    """Recipe bridge for findings that already expose dispatch metrics."""
-
-    @classmethod
-    def supports_finding(cls, finding: RefactorFinding) -> bool:
-        return finding.metrics.plan_dispatch_axis is not None and bool(
-            finding.metrics.plan_literal_cases
-        )
 
 
 def dispatch_strategy_base_name(function_name: str) -> str:

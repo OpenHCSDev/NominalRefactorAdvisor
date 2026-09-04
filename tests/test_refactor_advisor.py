@@ -3819,47 +3819,27 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     assert plan.unsupported_count == 1
 
 
-def test_inferred_recipe_synthesis_discovers_concrete_nested_family_leaf() -> None:
-    from nominal_refactor_advisor.codemod import (
-        FindingRecipeSynthesizer,
-        InferredFindingRecipeSynthesizer,
-    )
+def test_unregistered_finding_has_no_recipe_evaluator() -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
 
-    detector_id = "nested_inferred_recipe_family_test"
+    detector_id = "unregistered_recipe_finding_test"
     finding = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Nested inferred recipe family fixture",
-        "A concrete leaf owns the inference predicate.",
-        "one complete nominal inference family",
-        "direct-subclass discovery stops at the abstract family",
+        "Unregistered recipe finding fixture",
+        "A finding without a detector declaration has unknown authority.",
+        "one registered nominal recipe authority",
+        "finding evidence exists without a declaration owner",
     ).build(
         detector_id,
-        "A nested inferred synthesizer should remain discoverable.",
+        "An unregistered finding must fail closed.",
         (SourceLocation("pkg/mod.py", 1, "Alpha"),),
+        metrics=DispatchCountMetrics.from_literal_family(
+            "mode",
+            ("fast", "safe"),
+        ),
     )
 
-    class NestedInferredSynthesizerFamily(
-        InferredFindingRecipeSynthesizer,
-        ABC,
-    ):
-        pass
-
-    class NestedInferredSynthesizer(NestedInferredSynthesizerFamily):
-        @classmethod
-        def supports_finding(cls, candidate: RefactorFinding) -> bool:
-            return candidate.detector_id == detector_id
-
-        def evaluate_recipe_for_finding(
-            self,
-            candidate: RefactorFinding,
-            context: CodemodSelectorContext | None = None,
-        ):
-            del candidate, context
-            return self.rejected_evaluation("nested inference fixture")
-
-    synthesizer = FindingRecipeSynthesizer.for_finding(finding)
-
-    assert isinstance(synthesizer, NestedInferredSynthesizer)
+    assert FindingRecipeEvaluator.for_finding(finding) is None
 
 
 def test_source_index_target_selector_supports_regex_patterns(

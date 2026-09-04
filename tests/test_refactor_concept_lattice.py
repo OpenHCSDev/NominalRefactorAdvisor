@@ -12,6 +12,7 @@ from nominal_refactor_advisor import detectors
 from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.models import DispatchCountMetrics
 
 EXPECTED_CONCEPT_DECLARATIONS = frozenset(
     {
@@ -153,6 +154,10 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
         {
             detectors.AutoRegisterMetaUnderRentedDetector,
             detectors.EnvironmentBooleanAuthorityDriftDetector,
+            detectors.ExternalEnumCaseRecoveryDetector,
+            detectors.FormalBoundaryExternalStringRegistryMirrorDetector,
+            detectors.GeneratedBoundarySemanticConstantMirrorDetector,
+            detectors.SemanticMirrorWithoutDescentDetector,
         }
     )
     assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
@@ -318,6 +323,24 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
         codemod.NominalBoundaryConcept,
         snapshot,
     )
+
+
+def test_registered_detector_cannot_infer_recipe_capability_from_metrics() -> None:
+    finding = advisor.RefactorFinding(
+        detector_id="constant_property_default_bundle",
+        pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
+        title="Dispatch-shaped evidence",
+        summary="Metrics cannot supply an undeclared recipe capability.",
+        why="The registered detector declaration owns its executable semantics.",
+        capability_gap="A declaration-owned recipe evaluator.",
+        relation_context="finding metrics are evidence rather than executable authority",
+        metrics=DispatchCountMetrics.from_literal_family(
+            "mode",
+            ("fast", "safe"),
+        ),
+    )
+
+    assert codemod.FindingRecipeEvaluator.for_finding(finding) is None
 
 
 def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_authority() -> None:

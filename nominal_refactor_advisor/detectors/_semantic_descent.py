@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, ClassVar, Iterator
 
+from ..codemod import SemanticMirrorFindingRecipeEvaluator
 from ._base import (
     CompactClassIndexMultiProjectionDetector,
     CompactFindingStream,
@@ -104,6 +105,7 @@ class SemanticMirrorWithoutDescentDetector(
     CompactClassIndexMultiProjectionDetector,
     ContextualGlobalCacheContract,
     SemanticMirrorIssueDetector,
+    SemanticMirrorFindingRecipeEvaluator,
 ):
     """Report presentation projections that mirror a nominal semantic authority."""
 

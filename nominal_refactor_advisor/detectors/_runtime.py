@@ -65,6 +65,7 @@ from ..codemod import (
     NumericLiteralDispatchFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
+    SemanticMirrorFindingRecipeEvaluator,
     TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
@@ -918,6 +919,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
 class FormalBoundaryExternalStringRegistryMirrorDetector(
     CompactModuleProjectionDetectorMixin[FormalBoundaryPythonStringConstant],
     SemanticMirrorIssueDetector,
+    SemanticMirrorFindingRecipeEvaluator,
 ):
     module_projection_family = FormalBoundaryPythonStringConstantFamily
     compact_report_context_requires_target_projection = True
@@ -1202,6 +1204,7 @@ class GeneratedBoundarySemanticConstantSiteFamily(
 class GeneratedBoundarySemanticConstantMirrorDetector(
     CompactModuleProjectionDetectorMixin[GeneratedBoundarySemanticConstantSite],
     SemanticMirrorIssueDetector,
+    SemanticMirrorFindingRecipeEvaluator,
 ):
     module_projection_family = GeneratedBoundarySemanticConstantSiteFamily
     compact_report_context_requires_target_projection = True
