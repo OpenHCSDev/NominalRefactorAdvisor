@@ -547,9 +547,6 @@ class MappingMetrics(MappingFindingMetrics):
     def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
         return self.source_name, self.mapping_name
 
-    def semantic_fact_names(self) -> tuple[str, ...]:
-        return self.field_names or self.identity_field_names
-
 
 @dataclass(frozen=True)
 class ConstructorOwnedMappingMetrics(MappingMetrics):

@@ -15,7 +15,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from time import perf_counter
 from typing import ClassVar, Self, TypeAlias, cast
@@ -115,8 +115,15 @@ from .economics import (
     ScanEconomicsProof,
     build_economics_proof_report,
 )
-from .finding_counts import FindingSummary
-from .json_reports import DataclassJsonReport, JsonObject, JsonReport, JsonValue
+from .finding_counts import FindingDetectorCount, FindingPatternCount, FindingSummary
+from .json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+    JsonReport,
+    JsonValue,
+    json_report_field,
+    json_report_property,
+)
 from .lean_export import LeanExportError
 from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
@@ -605,35 +612,33 @@ _CLI_ARGUMENT_SPECS = (
 
 
 @dataclass(frozen=True)
-class JsonFindingCounts:
+class JsonFindingPatternCount(FindingPatternCount):
+    """Pattern count with its declaration-owned presentation name."""
+
+    @json_report_property()
+    def pattern_name(self) -> str:
+        return PatternId(self.pattern_id).display_name
+
+
+@dataclass(frozen=True)
+class JsonFindingCounts(DataclassJsonReport):
     """Compact finding-count projection for tight-loop JSON payloads."""
 
-    summary: FindingSummary
+    summary: FindingSummary = json_report_field(included=False)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "by_pattern": tuple(
-                {
-                    "pattern_id": pattern_id,
-                    "pattern_name": PatternId(pattern_id).display_name,
-                    "count": count,
-                }
-                for pattern_id, count in (
-                    (item.pattern_id, item.count)
-                    for item in self.summary.pattern_counts
-                )
-            ),
-            "by_detector": tuple(
-                {"detector_id": detector_id, "count": count}
-                for detector_id, count in (
-                    (item.detector_id, item.count)
-                    for item in self.summary.detector_counts
-                )
-            ),
-        }
+    @json_report_property()
+    def by_pattern(self) -> tuple[JsonFindingPatternCount, ...]:
+        return tuple(
+            JsonFindingPatternCount(item.pattern_id, item.count)
+            for item in self.summary.pattern_counts
+        )
+
+    @json_report_property()
+    def by_detector(self) -> tuple[FindingDetectorCount, ...]:
+        return self.summary.detector_counts
 
 
-class JsonFindingPayloadMode(Enum):
+class JsonFindingPayloadMode(StrEnum):
     """Finding-detail level emitted by one JSON payload profile."""
 
     full = "full"
@@ -1018,44 +1023,89 @@ class JsonPayloadBuildTiming(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class JsonFindingPayloadEnvelope:
+class JsonFindingPayloadEnvelope(DataclassJsonReport):
     """Shared finding/planning envelope for JSON scan payloads."""
 
-    summary: FindingSummary
-    section_policy: JsonPayloadSections
-    finding_payload: list[JsonObject]
-    plan_payload: tuple[JsonObject, ...] = ()
+    summary: FindingSummary = json_report_field(included=False)
+    section_policy: JsonPayloadSections = json_report_field(included=False)
+    finding_payload: list[JsonObject] = json_report_field(field_name="findings")
+    plan_payload: tuple[JsonObject, ...] = json_report_field(
+        field_name="plans",
+        default=(),
+    )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "findings": self.finding_payload,
-            "plans": self.plan_payload,
-            "finding_payload_mode": (self.section_policy.finding_payload_mode.value),
-            "finding_count": self.summary.finding_count,
-            "finding_counts": JsonFindingCounts(self.summary).to_dict(),
-        }
+    @json_report_property()
+    def finding_payload_mode(self) -> JsonFindingPayloadMode:
+        return self.section_policy.finding_payload_mode
+
+    @json_report_property()
+    def finding_count(self) -> int:
+        return self.summary.finding_count
+
+    @json_report_property()
+    def finding_counts(self) -> JsonFindingCounts:
+        return JsonFindingCounts(self.summary)
+
+
+class JsonScanMode(StrEnum):
+    """Nominal completeness semantics for one JSON scan execution path."""
+
+    def __new__(cls, value: str, complete: bool, reason: str) -> "JsonScanMode":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._complete = complete
+        member._reason = reason
+        return member
+
+    exact_compact_global = (
+        "exact_compact_global",
+        True,
+        "all_context_detectors_use_compact_global_projections",
+    )
+    focused_cache_partial = (
+        "focused_cache_partial",
+        False,
+        "changed_files_reuse_evidence_local_detectors",
+    )
+    focused_local_partial = (
+        "focused_local_partial",
+        False,
+        "cold_auto_context_omits_context_dependent_detectors",
+    )
+
+    @property
+    def complete(self) -> bool:
+        return self._complete
+
+    @property
+    def reason(self) -> str:
+        return self._reason
 
 
 @dataclass(frozen=True)
 class JsonScanStatus(DataclassJsonReport):
     """Machine-readable completeness contract for a scan result."""
 
-    complete: bool
-    mode: str
+    mode: JsonScanMode
     analyzed_detector_count: int
     omitted_detector_count: int
-    reason: str
+
+    @json_report_property()
+    def complete(self) -> bool:
+        return self.mode.complete
+
+    @json_report_property()
+    def reason(self) -> str:
+        return self.mode.reason
 
     @classmethod
     def exact_compact_global(cls, detector_count: int) -> "JsonScanStatus":
         """Build the complete compact-scan contract for one detector roster."""
 
         return cls(
-            complete=True,
-            mode="exact_compact_global",
+            mode=JsonScanMode.exact_compact_global,
             analyzed_detector_count=detector_count,
             omitted_detector_count=0,
-            reason="all_context_detectors_use_compact_global_projections",
         )
 
 
@@ -1376,30 +1426,31 @@ class CodemodSimulationPayload:
 
 
 @dataclass(frozen=True)
-class CodemodPreflightFailurePayload:
+class CodemodPreflightFailurePayload(DataclassJsonReport):
     """JSON-ready metadata for a codemod preflight failure."""
 
-    report: CodemodOperationPreflightReport
+    report: CodemodOperationPreflightReport = json_report_field(
+        field_name="preflight_report"
+    )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "preflight_failed": True,
-            "applied": False,
-            "preflight_report": self.report.to_dict(),
-        }
+    @json_report_property()
+    def preflight_failed(self) -> bool:
+        return True
+
+    @json_report_property()
+    def applied(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
-class CodemodPlanPreflightPayload:
+class CodemodPlanPreflightPayload(DataclassJsonReport):
     """JSON-ready metadata for codemod plan preflight mode."""
 
-    report: CodemodPlanPreflightReport
+    report: CodemodPlanPreflightReport = json_report_field(flattened=True)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.report.to_dict(),
-            "applied": False,
-        }
+    @json_report_property()
+    def applied(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
@@ -3588,13 +3639,11 @@ def _main_without_deadline() -> int:
                     ).rerun_detector_family
                 )
                 scan_status = JsonScanStatus(
-                    complete=False,
-                    mode="focused_cache_partial",
+                    mode=JsonScanMode.focused_cache_partial,
                     analyzed_detector_count=analyzed_detector_count,
                     omitted_detector_count=(
                         len(detector_types) - analyzed_detector_count
                     ),
-                    reason="changed_files_reuse_evidence_local_detectors",
                 )
         elif focused_loop_cold_policy.enabled:
             detector_types = default_detector_types_for_analysis()
@@ -3643,13 +3692,11 @@ def _main_without_deadline() -> int:
                 module_cache_statuses
             )
             scan_status = JsonScanStatus(
-                complete=False,
-                mode="focused_local_partial",
+                mode=JsonScanMode.focused_local_partial,
                 analyzed_detector_count=len(local_detector_types),
                 omitted_detector_count=(
                     len(detector_types) - len(local_detector_types)
                 ),
-                reason="cold_auto_context_omits_context_dependent_detectors",
             )
         elif (
             args.json

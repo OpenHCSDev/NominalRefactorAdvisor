@@ -23870,6 +23870,7 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
         "mapping_literal has semantic overlap with class_family `Handler`; "
         "projection enumerates nominal facts directly"
     )
+    assert "missing_derivation_path" not in boundary_evidence[0]
     assert boundary_evidence[0]["authority_candidate"] == "Handler"
     assert boundary_evidence[0]["detector_ids"] == ("semantic_mirror_without_descent",)
     assert boundary_evidence[0]["finding_ids"] == (critical.stable_id,)

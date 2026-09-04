@@ -9,8 +9,14 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
 
-from .codemod import JsonObject
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
+from .json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+    SemanticRecord,
+    json_report_field,
+    json_report_property,
+)
 from .models import RefactorFinding
 from .models import SourceLocation
 from .patterns import PatternId
@@ -27,7 +33,6 @@ from .semantic_descent import (
     semantic_descent_finding_projection_id,
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
-from .json_reports import SemanticRecord
 
 
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
@@ -187,19 +192,11 @@ class DescentCertificateFindingAuthority:
 
 
 @dataclass(frozen=True)
-class FindingCoverage:
+class FindingCoverage(DataclassJsonReport):
     """Observed source-target and finding coverage for one evidence group."""
 
     target_count: int
-    finding_count: int
-
-    def to_payload_fields(self) -> JsonObject:
-        return JsonObject(
-            {
-                "target_count": self.target_count,
-                "covered_finding_count": self.finding_count,
-            }
-        )
+    finding_count: int = json_report_field(field_name="covered_finding_count")
 
 
 @dataclass(frozen=True)
@@ -214,19 +211,22 @@ class SemanticRefactorFindingGroupKey:
 class SemanticRefactorBoundaryEvidence(SemanticRecord):
     """One graph-backed authority-boundary evidence group."""
 
-    group_key: SemanticRefactorFindingGroupKey
+    group_key: SemanticRefactorFindingGroupKey = json_report_field(included=False)
     label: str
     authority_candidates: tuple[str, ...]
     detector_ids: tuple[str, ...]
     finding_ids: tuple[str, ...]
-    finding_coverage: FindingCoverage
+    finding_coverage: FindingCoverage = json_report_field(flattened=True)
     certificate_count: int
     matched_fact_count: int
     authority_kinds: tuple[SemanticAuthorityKind, ...]
     projection_kinds: tuple[PresentationProjectionKind, ...]
     authority_claims: tuple[AuthorityClaimResolution, ...]
     evidence_symbols: tuple[str, ...]
-    evidence_locations: tuple[SourceLocation, ...] = ()
+    evidence_locations: tuple[SourceLocation, ...] = json_report_field(
+        included=False,
+        default=(),
+    )
 
     @classmethod
     def from_ssot_finding(
@@ -290,34 +290,7 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
             evidence_locations=evidence_locations,
         )
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "stable_id": self.stable_id,
-                "detector_id": self.primary_detector_id,
-                "title": self.primary_title,
-                "summary": self.summary,
-                "relation_context": self.group_key.descent_path,
-                "label": self.label,
-                "authority_candidate": self.group_key.authority_label,
-                "authority_candidates": self.authority_candidates,
-                "missing_derivation_path": self.group_key.descent_path,
-                "detector_ids": self.detector_ids,
-                "finding_ids": self.finding_ids,
-                **self.finding_coverage.to_payload_fields(),
-                "certificate_count": self.certificate_count,
-                "matched_fact_count": self.matched_fact_count,
-                "authority_kinds": tuple(kind.value for kind in self.authority_kinds),
-                "projection_kinds": tuple(kind.value for kind in self.projection_kinds),
-                "authority_claims": tuple(
-                    claim.to_dict() for claim in self.authority_claims
-                ),
-                "evidence_symbols": self.evidence_symbols,
-                "authority_discovery_required": self.discovery_required,
-            }
-        )
-
-    @property
+    @json_report_property()
     def stable_id(self) -> str:
         payload = "|".join(
             (
@@ -330,18 +303,18 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
         )
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
-    @property
+    @json_report_property(field_name="detector_id")
     def primary_detector_id(self) -> str:
         detector_id = SemanticMirrorWithoutDescentDetector.effective_detector_id()
         if detector_id is None:
             raise TypeError("SemanticMirrorWithoutDescentDetector has no detector id")
         return detector_id
 
-    @property
+    @json_report_property(field_name="title")
     def primary_title(self) -> str:
         return SemanticMirrorWithoutDescentDetector.finding_spec.title
 
-    @property
+    @json_report_property()
     def summary(self) -> str:
         return (
             f"`{self.group_key.authority_label}` has "
@@ -351,7 +324,15 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
             f"{self.group_key.descent_path}."
         )
 
-    @property
+    @json_report_property(field_name="relation_context")
+    def relation_context(self) -> str:
+        return self.group_key.descent_path
+
+    @json_report_property(field_name="authority_candidate")
+    def authority_candidate(self) -> str:
+        return self.group_key.authority_label
+
+    @json_report_property(field_name="authority_discovery_required")
     def discovery_required(self) -> bool:
         return any(not claim.is_actionable for claim in self.authority_claims)
 
@@ -460,11 +441,11 @@ class SemanticRefactorGateReport(SemanticRecord):
     boundary_evidence: tuple[SemanticRefactorBoundaryEvidence, ...]
     authority_discovery_findings: tuple[RefactorFinding, ...]
 
-    @property
+    @json_report_property()
     def active(self) -> bool:
         return bool(self.boundary_evidence)
 
-    @property
+    @json_report_property()
     def ssot_authority_finding_count(self) -> int:
         return sum(
             item.finding_coverage.finding_count for item in self.boundary_evidence
@@ -499,21 +480,13 @@ class SemanticRefactorGateReport(SemanticRecord):
             authority_discovery_findings=(),
         )
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "active": self.active,
-                "policy": self.policy,
-                "raw_findings_default": self.raw_findings_default,
-                "ssot_authority_finding_count": self.ssot_authority_finding_count,
-                "boundary_evidence": tuple(
-                    item.to_dict() for item in self.boundary_evidence
-                ),
-                "authority_discovery_findings": tuple(
-                    finding.to_dict() for finding in self.authority_discovery_findings
-                ),
-            }
-        )
+    @json_report_property(field_name="policy")
+    def report_policy(self) -> str:
+        return self.policy
+
+    @json_report_property(field_name="raw_findings_default")
+    def report_raw_findings_default(self) -> str:
+        return self.raw_findings_default
 
     @staticmethod
     def _boundary_evidence(

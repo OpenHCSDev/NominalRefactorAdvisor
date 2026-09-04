@@ -2513,15 +2513,33 @@ class CodemodTargetSourceRecord(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodTargetSourceReport(JsonReport):
+class CodemodTargetSourceReport(DataclassJsonReport):
     """JSON-ready exact source spans for selected codemod targets."""
 
-    selector_resolution: CodemodSelectorResolutionReport
-    records: tuple[CodemodTargetSourceRecord, ...]
+    selector_resolution: CodemodSelectorResolutionReport = json_report_field(
+        included=False
+    )
+    records: tuple[CodemodTargetSourceRecord, ...] = json_report_field(included=False)
 
-    @property
+    @json_report_property()
+    def selector(self) -> CodemodTargetSelector:
+        return self.selector_resolution.selector
+
+    @json_report_property()
     def selected_count(self) -> int:
         return len(self.records)
+
+    @json_report_property()
+    def selected_target_ids(self) -> tuple[str, ...]:
+        return self.selector_resolution.selected_target_ids
+
+    @json_report_property()
+    def missing_target_ids(self) -> tuple[str, ...]:
+        return self.selector_resolution.missing_target_ids
+
+    @json_report_property(field_name="targets")
+    def target_records(self) -> tuple[CodemodTargetSourceRecord, ...]:
+        return self.records
 
     @classmethod
     def from_selector_context(
@@ -2542,18 +2560,6 @@ class CodemodTargetSourceReport(JsonReport):
                 for target in selector_resolution.selected_targets
             ),
         )
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "selector": self.selector_resolution.selector.to_dict(),
-                "selected_count": self.selected_count,
-                "selected_target_ids": self.selector_resolution.selected_target_ids,
-                "missing_target_ids": self.selector_resolution.missing_target_ids,
-                "targets": tuple(record.to_dict() for record in self.records),
-            }
-        )
-
 
 class _CallSiteSelectorVisitor(ast.NodeVisitor):
     def __init__(
