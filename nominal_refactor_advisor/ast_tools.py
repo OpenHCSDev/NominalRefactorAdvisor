@@ -50,8 +50,6 @@ from .observation_graph import (
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
-    build_observation_graph,
-    collect_structural_observations,
 )
 from .observation_shapes import (
     BuilderCallShape,
@@ -844,6 +842,20 @@ class ParsedModule(SourceFileIdentity):
             module_name=self.module_name,
             source=self.source,
             family_cache_dir=self.family_cache_dir,
+        )
+
+    @cached_property
+    def structural_observations(self) -> tuple[StructuralObservation, ...]:
+        """Project registered observation families from this parsed source."""
+
+        return sorted_tuple(
+            (
+                item.structural_observation
+                for family in CollectedFamily.all_registered_families()
+                for item in collect_family_items(self, family)
+                if isinstance(item, StructuralObservationCarrier)
+            ),
+            key=lambda item: (item.file_path, item.line, item.owner_symbol),
         )
 
     @cached_property

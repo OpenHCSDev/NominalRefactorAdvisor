@@ -363,27 +363,7 @@ def collect_structural_observations(
     parsed_module: ParsedModule,
 ) -> tuple[StructuralObservation, ...]:
     """Collect and sort structural observations for one parsed module."""
-    return _collect_structural_observations_cached(parsed_module)
-
-
-@lru_cache(maxsize=None)
-def _collect_structural_observations_cached(
-    parsed_module: ParsedModule,
-) -> tuple[StructuralObservation, ...]:
-    from .ast_tools import CollectedFamily, collect_family_items
-
-    observations: list[StructuralObservation] = []
-    for family in CollectedFamily.all_registered_families():
-        observations.extend(
-            (
-                item.structural_observation
-                for item in collect_family_items(parsed_module, family)
-                if isinstance(item, StructuralObservationCarrier)
-            )
-        )
-    return sorted_tuple(
-        observations, key=lambda item: (item.file_path, item.line, item.owner_symbol)
-    )
+    return parsed_module.structural_observations
 
 
 def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:

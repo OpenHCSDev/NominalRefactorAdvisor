@@ -8,6 +8,11 @@ to run the tool or consume emitted findings.
 AST And Registration Substrate
 ------------------------------
 
+``ParsedModule.structural_observations`` is the cached projection from one
+parsed source authority through every registered collection family.  The graph
+layer consumes that projection and does not import the AST registry during
+collection.
+
 .. automodule:: nominal_refactor_advisor.ast_tools
    :members: ParsedModule, AutoRegisterMeta, ModuleShapeSpec, AutoRegisteredModuleShapeSpec, CollectedFamily, RegisteredSpecCollectedFamily, SingleSpecCollectedFamily, collect_family_items
 

@@ -274,6 +274,7 @@ from nominal_refactor_advisor.observation_graph import (
     StructuralObservation,
     StructuralExecutionLevel,
     build_observation_graph,
+    collect_structural_observations,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
@@ -23241,7 +23242,11 @@ def resolve(config, obj):
     return SENTINEL
 """,
     )
-    graph = build_observation_graph(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
+    projected_observations = modules[0].structural_observations
+    graph = build_observation_graph(modules)
+
+    assert collect_structural_observations(modules[0]) is projected_observations
     kinds = {item.observation_kind for item in graph.observations}
     assert ObservationKind.BUILDER_CALL in kinds
     assert ObservationKind.CONFIG_DISPATCH in kinds
