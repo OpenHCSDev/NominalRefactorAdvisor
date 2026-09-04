@@ -520,13 +520,14 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         in codemod.NewModuleSymbolMoveOperationABC.__dict__
     )
     assert (
-        "move_symbol_qualnames"
+        "move_selection"
         in codemod.ExplicitModuleSymbolSelectionOperationABC.__dict__
     )
     assert (
-        "move_symbol_qualnames"
+        "move_selection"
         in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
     )
+    assert "move_symbol_qualnames" in codemod.ModuleSymbolMoveOperation.__dict__
     assert "move_plan" in codemod.ModuleSymbolMoveOperation.__dict__
     assert "move_plan" not in codemod.MoveSymbolsToModuleOperation.__dict__
     assert "move_plan" not in codemod.ExtractSymbolsToNewModuleOperation.__dict__

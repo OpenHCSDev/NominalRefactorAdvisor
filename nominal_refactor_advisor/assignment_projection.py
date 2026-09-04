@@ -45,7 +45,7 @@ class AssignmentStatementNameProjection:
                 for target in self.statement.targets
                 for name in AssignmentTargetNameProjection(target).names
             )
-        if isinstance(self.statement, ast.AnnAssign):
+        if isinstance(self.statement, ast.AnnAssign | ast.AugAssign):
             return AssignmentTargetNameProjection(self.statement.target).names
         return ()
 

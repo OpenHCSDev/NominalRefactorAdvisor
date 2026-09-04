@@ -5,6 +5,7 @@ import ast
 import pytest
 
 from nominal_refactor_advisor.assignment_projection import (
+    AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
 
@@ -23,3 +24,9 @@ def test_single_assignment_projection_rejects_a_non_assignment() -> None:
         match="not a single direct-name assignment",
     ):
         SingleAssignmentAndValueNameProjection(statement).required_name
+
+
+def test_assignment_statement_projection_includes_augmented_targets() -> None:
+    statement = ast.parse("result += increment").body[0]
+
+    assert AssignmentStatementNameProjection(statement).names == ("result",)

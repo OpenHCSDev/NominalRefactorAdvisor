@@ -25,6 +25,7 @@ import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindin
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
 import nominal_refactor_advisor.codemod_imports as codemod_imports_module
+import nominal_refactor_advisor.codemod_module_declarations as codemod_module_declarations_module
 import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
 import nominal_refactor_advisor.codemod_paths as codemod_paths_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
@@ -193,6 +194,7 @@ from nominal_refactor_advisor.codemod import (
     MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation,
     ModuleImportScope,
+    ModuleMoveObstacleKind,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
@@ -6756,8 +6758,12 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         "from dataclasses import dataclass\n",
     )
     assert report.source_import_removal_names == ("ClassVar", "dataclass")
-    assert report.source_local_dependency_names == ()
-    assert report.unresolved_dependency_names == ()
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
+    ) == ()
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
+    ) == ()
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
     assert set(simulation.apply()) == {
@@ -7163,7 +7169,9 @@ def test_symbol_move_rejects_guarded_import_for_eager_annotation(
     report = operation.dependency_report(snapshot)
 
     assert report.is_clean is False
-    assert report.unresolved_dependency_names == ("External",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
+    ) == ("External",)
     with pytest.raises(CodemodOperationPreflightError, match="External"):
         RefactorRecipe("reject-eager-guarded-import").with_operation(
             operation
@@ -7195,7 +7203,9 @@ def test_symbol_move_rejects_multiple_import_authorities(tmp_path: Path) -> None
     report = operation.dependency_report(snapshot)
 
     assert report.is_clean is False
-    assert report.ambiguous_import_dependency_names == ("Base",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY
+    ) == ("Base",)
     with pytest.raises(CodemodOperationPreflightError, match="import authorities"):
         RefactorRecipe("reject-ambiguous-import").with_operation(operation).simulate(
             snapshot
@@ -7566,7 +7576,9 @@ def test_symbol_move_rejects_destination_import_from_different_authority(
 
     report = operation.dependency_report(snapshot)
 
-    assert report.destination_import_conflict_names == ("Base",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT
+    ) == ("Base",)
     with pytest.raises(
         CodemodOperationPreflightError,
         match="destination bindings have different authorities",
@@ -7600,22 +7612,26 @@ def test_symbol_move_rejects_same_named_destination_for_source_local_dependency(
 
     report = operation.dependency_report(snapshot)
 
-    assert report.source_local_dependency_names == ("Base",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
+    ) == ("Base",)
     with pytest.raises(CodemodOperationPreflightError, match="source-local"):
         RefactorRecipe("reject-source-local-name-collision").with_operation(
             operation
         ).simulate(snapshot)
 
 
-def test_new_module_closure_extraction_rejects_nonmovable_local_dependency(
+def test_new_module_closure_extraction_derives_assignment_dependencies(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
     destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "VALUE = 1\n\n\n"
+        "BASE = 2\n"
+        "VALUE: int = BASE + 1\n\n\n"
         "def read_value():\n"
         "    return VALUE\n",
     )
@@ -7626,11 +7642,212 @@ def test_new_module_closure_extraction_rejects_nonmovable_local_dependency(
         destination_path=destination_path.as_posix(),
     )
 
+    simulation = RefactorRecipe("move-assignment-dependencies").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert operation.move_symbol_qualnames(
+        snapshot,
+        source_path.as_posix(),
+    ) == ("BASE", "VALUE", "read_value")
+    assert "VALUE: int = BASE + 1" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import BASE, VALUE, read_value; "
+            "assert (BASE, VALUE, read_value()) == (2, 3, 3)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_explicit_module_move_accepts_an_assignment_root(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/source.py", "VALUE = 3\n")
+    _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("VALUE",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("move-assignment-root").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert "VALUE = 3" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.source import VALUE; assert VALUE == 3"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_module_move_closure_follows_a_source_binding_that_shadows_a_builtin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "list = tuple\n\n\n"
+        "def build():\n"
+        "    return list((1, 2))\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("build",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("move-shadowed-builtin").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert operation.move_symbol_qualnames(
+        snapshot,
+        source_path.as_posix(),
+    ) == ("list", "build")
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import build; assert build() == (1, 2)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_module_move_rejects_a_destination_binding_that_shadows_a_builtin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "def build():\n"
+        "    return list((1, 2))\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "list = tuple\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("build",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.DESTINATION_BUILTIN_CONFLICT
+    ) == ("list",)
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="shadow required builtins",
+    ):
+        RefactorRecipe("reject-shadowed-builtin").with_operation(operation).simulate(
+            snapshot
+        )
+
+
+def test_module_move_rejects_implicit_module_context_dependencies(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "def module_name():\n"
+        "    return __name__\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("module_name",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY
+    ) == ("__name__",)
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="module-context dependencies change",
+    ):
+        RefactorRecipe("reject-module-context-change").with_operation(
+            operation
+        ).simulate(snapshot)
+
+
+def test_module_move_rejects_an_assignment_sharing_its_source_line(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/source.py", "FIRST = 1; SECOND = 2\n")
+    _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("FIRST",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    with pytest.raises(ValueError, match="unambiguous movable top-level"):
+        operation.move_plan(snapshot)
+
+
+def test_new_module_closure_extraction_rejects_ambiguous_assignment_dependency(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "OTHER = VALUE = 1\n\n\n"
+        "def read_value():\n"
+        "    return VALUE\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("read_value",),
+        destination_path=destination_path.as_posix(),
+    )
     document = CodemodPlanDocument(
         recipes=(
-            RefactorRecipe("reject-nonmovable-dependency").with_operation(
-                operation
-            ),
+            RefactorRecipe("reject-ambiguous-assignment").with_operation(operation),
         )
     )
 
@@ -7800,8 +8017,12 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
         CodemodSourceSnapshot.from_indexed_sources(source_index, source_by_path)
     )
     assert report.is_clean is False
-    assert report.source_local_dependency_names == ("LocalBase",)
-    assert report.unresolved_dependency_names == ()
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
+    ) == ("LocalBase",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
+    ) == ()
     build_source_index(parse_python_modules(tmp_path), ())
 
 
@@ -24039,6 +24260,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
         codemod_import_graph_module,
         codemod_import_scopes_module,
         codemod_imports_module,
+        codemod_module_declarations_module,
         codemod_module_move_reports_module,
         codemod_paths_module,
         codemod_semantics_module,

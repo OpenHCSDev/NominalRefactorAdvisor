@@ -11,8 +11,9 @@ from typing import Iterator, TypeAlias
 
 from .ast_tools import ImportBoundNameProjection
 
-
-MovableDeclaration: TypeAlias = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+MovableDeclaration: TypeAlias = (
+    ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign | ast.AnnAssign
+)
 
 
 class DeclarationDependencyUse(StrEnum):
@@ -185,10 +186,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self.annotation_count = 0
 
     def visit_declaration(self, node: MovableDeclaration) -> None:
-        if isinstance(node, ast.ClassDef):
-            self._visit_class(node)
-        else:
-            self._visit_function(node)
+        self.visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and not self._is_internal(node.id):
@@ -210,7 +208,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if self.scopes and isinstance(self.scopes[-1], _ClassScope):
+        if not self.scopes or isinstance(self.scopes[-1], _ClassScope):
             self._visit_annotation(node.annotation)
         if node.value is not None:
             self.visit(node.value)
@@ -399,7 +397,9 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             bound_names.update(_store_names(statement.target))
         elif isinstance(statement, ast.Import | ast.ImportFrom):
             bound_names.update(ImportBoundNameProjection(statement).names())
-        elif isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+        elif isinstance(
+            statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
             bound_names.add(statement.name)
         elif isinstance(statement, ast.Delete):
             for target in statement.targets:

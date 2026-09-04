@@ -15,7 +15,16 @@ def _projection(source: str) -> DeclarationDependencyProjection:
     declarations = tuple(
         statement
         for statement in module.body
-        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        if isinstance(
+            statement,
+            (
+                ast.ClassDef,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Assign,
+                ast.AnnAssign,
+            ),
+        )
     )
     return DeclarationDependencyProjection.from_declarations(declarations)
 
@@ -117,6 +126,16 @@ def test_comprehension_walrus_binding_belongs_to_containing_function() -> None:
     )
 
     assert projection.execution_names == frozenset(("lookup", "tuple"))
+
+
+def test_assignment_dependencies_preserve_value_and_annotation_contexts() -> None:
+    projection = _projection(
+        "BASE = make_base()\n" "VALUE: ValueType = transform(BASE)\n"
+    )
+
+    assert projection.execution_names == frozenset(("BASE", "make_base", "transform"))
+    assert projection.annotation_names == frozenset(("ValueType",))
+    assert projection.annotation_count == 1
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .ast_tools import ModuleAnnotationEvaluationMode
 from .codemod_import_bindings import (
@@ -57,6 +58,84 @@ class ModuleMoveImportDependency:
         }
 
 
+class ModuleMoveObstacleKind(StrEnum):
+    """Typed module-move proof failures with declaration-owned presentation."""
+
+    SOURCE_LOCAL_DEPENDENCY = (
+        "source_local_dependency_names",
+        "source-local dependencies not included in symbol_qualnames",
+    )
+    SOURCE_MODULE_CONTEXT_DEPENDENCY = (
+        "source_module_context_dependency_names",
+        "module-context dependencies change across module boundaries",
+    )
+    DESTINATION_BUILTIN_CONFLICT = (
+        "destination_builtin_conflict_names",
+        "destination bindings shadow required builtins",
+    )
+    UNRESOLVED_DEPENDENCY = (
+        "unresolved_dependency_names",
+        "unresolved dependencies",
+    )
+    AMBIGUOUS_IMPORT_DEPENDENCY = (
+        "ambiguous_import_dependency_names",
+        "dependencies with multiple import authorities",
+    )
+    DESTINATION_IMPORT_CONFLICT = (
+        "destination_import_conflict_names",
+        "destination bindings have different authorities",
+    )
+    ANNOTATION_EVALUATION_CHANGE = (
+        "annotation_evaluation_mode_change",
+        "annotation evaluation mode changes",
+    )
+
+    def __new__(
+        cls,
+        value: str,
+        message_label: str,
+    ) -> ModuleMoveObstacleKind:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._message_label = message_label
+        return member
+
+    def message(self, details: tuple[str, ...]) -> str:
+        return f"{self._message_label}={details!r}"
+
+
+@dataclass(frozen=True)
+class ModuleMoveObstacle:
+    """One typed reason a module move cannot preserve source semantics."""
+
+    kind: ModuleMoveObstacleKind
+    details: tuple[str, ...]
+
+    @property
+    def is_present(self) -> bool:
+        return bool(self.details)
+
+    @property
+    def message(self) -> str:
+        return self.kind.message(self.details)
+
+    @classmethod
+    def for_annotation_evaluation(
+        cls,
+        *,
+        source_mode: ModuleAnnotationEvaluationMode,
+        destination_mode: ModuleAnnotationEvaluationMode,
+        annotation_count: int,
+    ) -> ModuleMoveObstacle:
+        is_preserved = annotation_count == 0 or source_mode is destination_mode
+        return cls(
+            kind=ModuleMoveObstacleKind.ANNOTATION_EVALUATION_CHANGE,
+            details=(
+                () if is_preserved else (source_mode.value, destination_mode.value)
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class ModuleMoveDependencyReport:
     """Dependency closure report for a multi-symbol module move."""
@@ -70,10 +149,7 @@ class ModuleMoveDependencyReport:
     source_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
     destination_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
     moved_annotation_count: int
-    source_local_dependency_names: tuple[str, ...]
-    unresolved_dependency_names: tuple[str, ...]
-    ambiguous_import_dependency_names: tuple[str, ...]
-    destination_import_conflict_names: tuple[str, ...]
+    obstacles: tuple[ModuleMoveObstacle, ...]
 
     @property
     def destination_import_dependencies(
@@ -96,42 +172,40 @@ class ModuleMoveDependencyReport:
     @property
     def imported_dependency_names(self) -> tuple[str, ...]:
         return tuple(
-            dependency.name
-            for dependency in self.destination_import_dependencies
+            dependency.name for dependency in self.destination_import_dependencies
         )
 
     @property
     def import_sources(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                dependency.source
-                for dependency in self.destination_import_dependencies
+                dependency.source for dependency in self.destination_import_dependencies
             )
         )
 
     @property
     def source_import_removal_names(self) -> tuple[str, ...]:
-        return tuple(
-            dependency.name
-            for dependency in self.source_removal_dependencies
-        )
+        return tuple(dependency.name for dependency in self.source_removal_dependencies)
 
     @property
     def is_clean(self) -> bool:
-        return (
-            not self.source_local_dependency_names
-            and not self.unresolved_dependency_names
-            and not self.ambiguous_import_dependency_names
-            and not self.destination_import_conflict_names
-            and self.annotation_evaluation_is_preserved
+        return not any(obstacle.is_present for obstacle in self.obstacles)
+
+    def obstacle_details(
+        self,
+        kind: ModuleMoveObstacleKind,
+    ) -> tuple[str, ...]:
+        return tuple(
+            detail
+            for obstacle in self.obstacles
+            if obstacle.kind is kind
+            for detail in obstacle.details
         )
 
     @property
     def annotation_evaluation_is_preserved(self) -> bool:
-        return (
-            self.moved_annotation_count == 0
-            or self.source_annotation_evaluation_mode
-            is self.destination_annotation_evaluation_mode
+        return not self.obstacle_details(
+            ModuleMoveObstacleKind.ANNOTATION_EVALUATION_CHANGE
         )
 
     def require_clean(self) -> None:
@@ -147,31 +221,9 @@ class ModuleMoveDependencyReport:
             f"destination={self.destination_path!r}",
             f"moved={self.moved_symbol_names!r}",
         ]
-        if self.source_local_dependency_names:
-            parts.append(
-                "source-local dependencies not included in symbol_qualnames="
-                f"{self.source_local_dependency_names!r}"
-            )
-        if self.unresolved_dependency_names:
-            parts.append(
-                f"unresolved dependencies={self.unresolved_dependency_names!r}"
-            )
-        if self.ambiguous_import_dependency_names:
-            parts.append(
-                "dependencies with multiple import authorities="
-                f"{self.ambiguous_import_dependency_names!r}"
-            )
-        if self.destination_import_conflict_names:
-            parts.append(
-                "destination bindings have different authorities="
-                f"{self.destination_import_conflict_names!r}"
-            )
-        if not self.annotation_evaluation_is_preserved:
-            parts.append(
-                "annotation evaluation mode changes "
-                f"from {self.source_annotation_evaluation_mode.value!r} "
-                f"to {self.destination_annotation_evaluation_mode.value!r}"
-            )
+        parts.extend(
+            obstacle.message for obstacle in self.obstacles if obstacle.is_present
+        )
         return "; ".join(parts)
 
     def to_dict(self) -> JsonObject:
@@ -197,13 +249,9 @@ class ModuleMoveDependencyReport:
             "annotation_evaluation_is_preserved": (
                 self.annotation_evaluation_is_preserved
             ),
-            "source_local_dependency_names": self.source_local_dependency_names,
-            "unresolved_dependency_names": self.unresolved_dependency_names,
-            "ambiguous_import_dependency_names": (
-                self.ambiguous_import_dependency_names
-            ),
-            "destination_import_conflict_names": (
-                self.destination_import_conflict_names
-            ),
+            **{
+                kind.value: self.obstacle_details(kind)
+                for kind in ModuleMoveObstacleKind
+            },
             "is_clean": self.is_clean,
         }

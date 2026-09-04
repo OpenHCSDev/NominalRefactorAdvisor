@@ -281,6 +281,19 @@ from .codemod_source_edits import (
 from .codemod_module_move_reports import (
     ModuleMoveDependencyReport as ModuleMoveDependencyReport,
     ModuleMoveImportDependency as ModuleMoveImportDependency,
+    ModuleMoveObstacle as ModuleMoveObstacle,
+    ModuleMoveObstacleKind as ModuleMoveObstacleKind,
+)
+from .codemod_module_declarations import (
+    AssignedSourceTopLevelDeclaration as AssignedSourceTopLevelDeclaration,
+    CandidateNameReferenceCollector as CandidateNameReferenceCollector,
+    MovedTopLevelDeclarationSource as MovedTopLevelDeclarationSource,
+    NamedSourceTopLevelDeclaration as NamedSourceTopLevelDeclaration,
+    SourceTopLevelDeclaration as SourceTopLevelDeclaration,
+    SourceTopLevelDeclarationIndex as SourceTopLevelDeclarationIndex,
+    ModuleSymbolTable as ModuleSymbolTable,
+    _AVAILABLE_WITHOUT_IMPORT as _AVAILABLE_WITHOUT_IMPORT,
+    _PYTHON_RUNTIME_GLOBAL_NAMES as _PYTHON_RUNTIME_GLOBAL_NAMES,
 )
 
 
@@ -7970,99 +7983,6 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
         )
 
 
-@dataclass(frozen=True)
-class MovedTopLevelSymbolSource:
-    """Decorator-aware source block for one moved module-level symbol."""
-
-    name: str
-    source_file_path: str
-    source_start_line: int
-    source_end_line: int
-    moved_source: str
-
-    @classmethod
-    def from_target(
-        cls,
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-        source_by_path: Mapping[str, str],
-    ) -> "MovedTopLevelSymbolSource":
-        source_node = cls._top_level_source_node(target_digest, node)
-        span = SourceNodeSpan(
-            source_node,
-            decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
-        )
-        moved_source = "".join(
-            source_by_path[target_digest.file_path].splitlines(keepends=True)[
-                span.start_line - 1 : span.end_line
-            ]
-        )
-        return cls(
-            name=source_node.name,
-            source_file_path=target_digest.file_path,
-            source_start_line=span.start_line,
-            source_end_line=span.end_line,
-            moved_source=moved_source,
-        )
-
-    @staticmethod
-    def _top_level_source_node(
-        target_digest: AstTargetDigest,
-        node: _TargetNode,
-    ) -> ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef:
-        if (
-            not _is_movable_module_symbol_kind(target_digest.node_kind)
-            or "." in target_digest.qualname
-        ):
-            raise ValueError(
-                "Module symbol moves only support module-level classes "
-                f"and functions; got {target_digest.qualname!r}"
-            )
-        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            raise ValueError(
-                f"Target {target_digest.qualname!r} is not a movable symbol"
-            )
-        return node
-
-    def deletion_replacement(
-        self,
-        *,
-        source: str,
-        rationale: str,
-    ) -> SourceSpanReplacement:
-        source_lines = source.splitlines(keepends=True)
-        deletion_end_line = self.source_end_line
-        while (
-            deletion_end_line < len(source_lines)
-            and not source_lines[deletion_end_line].strip()
-        ):
-            deletion_end_line += 1
-        return SourceSpanReplacement(
-            file_path=self.source_file_path,
-            start_line=self.source_start_line,
-            end_line=deletion_end_line,
-            replacement_lines=(),
-            rationale=rationale or f"Remove moved symbol {self.name!r}.",
-        )
-
-
-def _is_movable_module_symbol_kind(node_kind: AstTargetNodeKind) -> bool:
-    return node_kind.is_class or node_kind is AstTargetNodeKind.FUNCTION
-
-
-_PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
-    (
-        "__builtins__",
-        "__doc__",
-        "__file__",
-        "__name__",
-        "__package__",
-        "__annotations__",
-    )
-)
-_AVAILABLE_WITHOUT_IMPORT = frozenset(dir(builtins)) | _PYTHON_RUNTIME_GLOBAL_NAMES
-
-
 @dataclass(frozen=True, kw_only=True)
 class SourceTopLevelSymbolClosureMoveCarrier:
     """Shared source/destination carrier for closure-checked symbol moves."""
@@ -8073,270 +7993,16 @@ class SourceTopLevelSymbolClosureMoveCarrier:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceTopLevelSymbolClosureMoveRequest(SourceTopLevelSymbolClosureMoveCarrier):
+class SourceTopLevelSymbolClosureMoveRequest:
     """Agent-authored request for one dependency-checked symbol move."""
 
-    symbol_qualnames: tuple[str, ...]
+    selection: SourceTopLevelSymbolMoveSelection
+    destination_path: str
+    rationale: str = ""
 
-
-@dataclass(frozen=True)
-class ModuleSymbolTable:
-    """Top-level and import-bound names visible in one module."""
-
-    file_path: str
-    source: str
-    module: ast.Module
-
-    @cached_property
-    def top_level_names(self) -> frozenset[str]:
-        return frozenset(
-            name
-            for statement in self.module.body
-            for name in self.bound_names_for_statement(statement)
-        )
-
-    def binding_statements(self, name: str) -> tuple[ast.stmt, ...]:
-        return tuple(
-            statement
-            for statement in self.module.body
-            if name in self.bound_names_for_statement(statement)
-        )
-
-    def insertion_line_after_bindings(
-        self,
-        names: Iterable[str],
-        import_scopes: Iterable[ModuleImportScope] = (),
-    ) -> int:
-        """Return the first line after every selected top-level binding."""
-
-        import_boundary = ModuleImportInsertionPoint(
-            self.source,
-            self.file_path,
-            self.module,
-        ).line_number
-        binding_end_lines = tuple(
-            statement.end_lineno or statement.lineno
-            for name in names
-            for statement in self.binding_statements(name)
-        )
-        guarded_import_end_lines = tuple(
-            guard.end_lineno or guard.lineno
-            for scope in import_scopes
-            if scope.is_guarded
-            for guard in TypeCheckingGuardProjection.from_module(self.module).guards
-        )
-        binding_end_lines = (*binding_end_lines, *guarded_import_end_lines)
-        if not binding_end_lines:
-            return import_boundary
-        return max(import_boundary, max(binding_end_lines) + 1)
-
-    @staticmethod
-    def bound_names_for_statement(statement: ast.stmt) -> tuple[str, ...]:
-        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            return (statement.name,)
-        if isinstance(statement, ast.Assign):
-            return _store_name_targets(statement.targets)
-        if isinstance(statement, ast.AnnAssign | ast.AugAssign):
-            return _store_name_targets((statement.target,))
-        return ()
-
-    @cached_property
-    def import_bindings(self) -> tuple[ModuleImportBinding, ...]:
-        return tuple(
-            ModuleImportBinding(
-                name=name,
-                request=RequestedImportStatement(
-                    statement,
-                    scope=scope,
-                ).with_aliases((ImportAliasRequirement.from_alias(alias),)),
-            )
-            for scope in ModuleImportScope
-            for statement in scope.import_statements(self.module)
-            for alias in statement.names
-            for name in (ImportBoundNameProjection(statement).alias_bound_name(alias),)
-            if name
-        )
-
-    @cached_property
-    def import_bindings_by_name(self) -> dict[str, tuple[ModuleImportBinding, ...]]:
-        bindings: dict[str, list[ModuleImportBinding]] = defaultdict(list)
-        for binding in self.import_bindings:
-            bindings[binding.name].append(binding)
-        return {name: tuple(items) for name, items in bindings.items()}
-
-    @cached_property
-    def import_sources_by_name(self) -> dict[str, str]:
-        sources: dict[str, str] = {}
-        for binding in self.import_bindings:
-            if binding.scope.is_guarded:
-                continue
-            if binding.name not in sources:
-                sources[binding.name] = binding.source
-        return sources
-
-    def import_binding_for_dependency(
-        self,
-        name: str,
-        *,
-        import_graph: SourceModuleImportGraph,
-        permits_guarded_import: bool,
-    ) -> tuple[ModuleImportBinding, ModuleImportBindingIdentity] | None:
-        candidates = self.resolved_import_bindings(
-            name,
-            import_graph=import_graph,
-            permits_guarded_import=permits_guarded_import,
-        )
-        unique_candidates = tuple(
-            {
-                (identity, binding.scope): (binding, identity)
-                for binding, identity in candidates
-            }.values()
-        )
-        if len(unique_candidates) != 1:
-            return None
-        return unique_candidates[0]
-
-    def import_dependency_is_ambiguous(
-        self,
-        name: str,
-        *,
-        import_graph: SourceModuleImportGraph,
-        permits_guarded_import: bool,
-    ) -> bool:
-        candidates = frozenset(
-            (identity, binding.scope)
-            for binding, identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
-                permits_guarded_import=permits_guarded_import,
-            )
-        )
-        return len(candidates) > 1
-
-    def resolved_import_bindings(
-        self,
-        name: str,
-        *,
-        import_graph: SourceModuleImportGraph,
-        permits_guarded_import: bool = True,
-    ) -> tuple[tuple[ModuleImportBinding, ModuleImportBindingIdentity], ...]:
-        """Resolve every import declaration for one bound name."""
-
-        return tuple(
-            (binding, identity)
-            for binding in self.import_bindings_by_name.get(name, ())
-            if permits_guarded_import or not binding.scope.is_guarded
-            if (identity := binding.identity(import_graph, self.file_path)) is not None
-        )
-
-    def satisfies_import_binding(
-        self,
-        name: str,
-        identity: ModuleImportBindingIdentity,
-        required_scope: ModuleImportScope,
-        *,
-        import_graph: SourceModuleImportGraph,
-    ) -> bool:
-        """Prove that this module already exposes the required authority."""
-
-        if (
-            name in self.top_level_names
-            and identity.is_destination_declaration(
-                import_graph,
-                destination_path=self.file_path,
-                bound_name=name,
-            )
-        ):
-            return True
-        return any(
-            available_identity == identity
-            and required_scope.is_satisfied_by(binding.scope)
-            for binding, available_identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
-            )
-        )
-
-    def conflicts_with_import_binding(
-        self,
-        name: str,
-        identity: ModuleImportBindingIdentity,
-        *,
-        import_graph: SourceModuleImportGraph,
-    ) -> bool:
-        """Return whether this module already gives the name another meaning."""
-
-        if name in self.top_level_names:
-            return not identity.is_destination_declaration(
-                import_graph,
-                destination_path=self.file_path,
-                bound_name=name,
-            )
-        return any(
-            available_identity != identity
-            for _, available_identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
-            )
-        )
-
-    @cached_property
-    def available_names(self) -> frozenset[str]:
-        return frozenset(
-            (
-                *self.top_level_names,
-                *self.import_sources_by_name,
-                *_AVAILABLE_WITHOUT_IMPORT,
-            )
-        )
-
-    @cached_property
-    def explicit_reexport_bound_names(self) -> frozenset[str]:
-        """Return bindings whose same-name alias declares a public re-export."""
-
-        return frozenset(
-            alias.asname
-            for statement in self.module.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
-            for alias in statement.names
-            if alias.asname is not None and alias.asname == alias.name
-        )
-
-    def referenced_names_excluding(
-        self,
-        excluded_symbol_names: Iterable[str],
-        candidate_names: Iterable[str],
-    ) -> frozenset[str]:
-        """Conservatively retain import bindings referenced outside moved nodes."""
-
-        excluded_names = frozenset(excluded_symbol_names)
-        candidates = frozenset(candidate_names)
-        references: set[str] = set()
-        for statement in self.module.body:
-            if (
-                isinstance(
-                    statement,
-                    (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-                )
-                and statement.name in excluded_names
-            ):
-                continue
-            for node in ast.walk(statement):
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                    references.add(node.id)
-                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    references.update(name for name in candidates if node.value == name)
-        return frozenset(references)
-
-
-def _store_name_targets(targets: Iterable[ast.AST]) -> tuple[str, ...]:
-    names: list[str] = []
-    for target in targets:
-        if isinstance(target, ast.Name):
-            names.append(target.id)
-        elif isinstance(target, (ast.Tuple, ast.List)):
-            names.extend(_store_name_targets(target.elts))
-    return tuple(names)
+    @property
+    def source_path(self) -> str:
+        return self.selection.source_path
 
 
 @dataclass(frozen=True)
@@ -8418,28 +8084,27 @@ class SourceTopLevelSymbolMoveSelection:
     """Exact movable declarations selected from one source module."""
 
     source_path: str
-    targets: tuple[AstTargetDigest, ...]
+    declarations: tuple[SourceTopLevelDeclaration, ...]
 
     @property
     def symbol_qualnames(self) -> tuple[str, ...]:
-        return tuple(target.qualname for target in self.targets)
+        return tuple(declaration.name for declaration in self.declarations)
 
     @classmethod
     def exact(
         cls,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
         source_path: str,
         symbol_qualnames: Iterable[str],
     ) -> "SourceTopLevelSymbolMoveSelection":
-        targets = tuple(
-            cls._target_for_symbol(source_index, source_path, symbol_qualname)
-            for symbol_qualname in symbol_qualnames
+        declaration_index = SourceTopLevelDeclarationIndex(
+            source_path=source_path,
+            module=context.module_nodes_by_file_path[source_path],
         )
-        if len({target.name for target in targets}) != len(targets):
-            raise ValueError(
-                "Module symbol move requires unique top-level symbol names"
-            )
-        return cls(source_path=source_path, targets=targets)
+        return cls(
+            source_path=source_path,
+            declarations=declaration_index.required_declarations(symbol_qualnames),
+        )
 
     @classmethod
     def dependency_closure(
@@ -8455,77 +8120,60 @@ class SourceTopLevelSymbolMoveSelection:
             source=context.sources_by_file_path[source_path],
             module=context.module_nodes_by_file_path[source_path],
         )
+        declaration_index = SourceTopLevelDeclarationIndex(
+            source_path=source_path,
+            module=context.module_nodes_by_file_path[source_path],
+        )
         root_selection = cls.exact(
-            context.source_index,
+            context,
             source_path,
             root_symbol_qualnames,
         )
-        movable_targets_by_name: dict[str, list[AstTargetDigest]] = defaultdict(list)
-        for target in context.source_index.ast_targets:
-            if (
-                target.file_path == source_path
-                and _is_movable_module_symbol_kind(target.node_kind)
-                and "." not in target.qualname
-            ):
-                movable_targets_by_name[target.name].append(target)
-        selected_by_name = {target.name: target for target in root_selection.targets}
+        selected_by_name = {
+            declaration.name: declaration
+            for declaration in root_selection.declarations
+        }
         while True:
             source_dependencies = frozenset(
                 name
-                for target in selected_by_name.values()
+                for declaration in selected_by_name.values()
                 for name in (
                     DeclarationDependencyProjection.from_declarations(
-                        (context.ast_target_nodes_by_id[target.target_id],)
+                        (declaration.node,)
                     ).names
-                    - _AVAILABLE_WITHOUT_IMPORT
                 )
                 if name in source_table.top_level_names
                 and name not in selected_by_name
             )
             additions = tuple(
-                candidates[0]
+                declaration
                 for name in sorted(source_dependencies)
-                for candidates in (movable_targets_by_name.get(name, []),)
-                if len(candidates) == 1
+                if (
+                    declaration := declaration_index.declaration_if_unambiguous(name)
+                )
+                is not None
             )
             if not additions:
                 break
-            selected_by_name.update((target.name, target) for target in additions)
+            selected_by_name.update(
+                (declaration.name, declaration) for declaration in additions
+            )
         return cls(
             source_path=source_path,
-            targets=tuple(
-                sorted(selected_by_name.values(), key=lambda target: target.line)
+            declarations=tuple(
+                sorted(
+                    selected_by_name.values(),
+                    key=lambda declaration: declaration.node.lineno,
+                )
             ),
         )
-
-    @staticmethod
-    def _target_for_symbol(
-        source_index: SourceIndex,
-        source_path: str,
-        symbol_qualname: str,
-    ) -> AstTargetDigest:
-        target_identifier = SourceRewriteTarget(
-            qualname=symbol_qualname,
-            file_path=source_path,
-        ).required_target_id(source_index)
-        target = source_index.target_by_id[target_identifier]
-        if (
-            target.file_path != source_path
-            or not _is_movable_module_symbol_kind(target.node_kind)
-            or "." in target.qualname
-        ):
-            raise ValueError(
-                "Module symbol move only supports module-level classes "
-                f"and functions; got {symbol_qualname!r}"
-            )
-        return target
 
 
 @dataclass(frozen=True, kw_only=True)
 class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier):
     """Dependency-checked move plan for a set of top-level symbols."""
 
-    source_blocks: tuple[MovedTopLevelSymbolSource, ...]
+    source_blocks: tuple[MovedTopLevelDeclarationSource, ...]
     dependency_report: ModuleMoveDependencyReport
     source_reexport_import_sources: tuple[str, ...]
     consumer_import_mutations: tuple[ModuleImportMutation, ...]
@@ -8546,43 +8194,38 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             source=context.sources_by_file_path[request.destination_path],
             module=context.module_nodes_by_file_path[request.destination_path],
         )
-        target_nodes = context.ast_target_nodes_by_id
-        targets = SourceTopLevelSymbolMoveSelection.exact(
-            context.source_index,
-            request.source_path,
-            request.symbol_qualnames,
-        ).targets
+        declarations = request.selection.declarations
+        moved_symbol_names = tuple(
+            declaration.name for declaration in declarations
+        )
         cls._validate_destination(
-            context.source_index,
-            request.destination_path,
-            targets,
+            destination_table,
+            moved_symbol_names,
         )
         source_blocks = tuple(
-            MovedTopLevelSymbolSource.from_target(
-                target,
-                target_nodes[target.target_id],
+            MovedTopLevelDeclarationSource.from_declaration(
+                declaration,
                 context.sources_by_file_path,
             )
-            for target in targets
+            for declaration in declarations
         )
         report = cls._dependency_report(
             context.module_import_graph,
             source_table,
             destination_table,
-            targets,
-            target_nodes,
+            declarations,
         )
         source_reexport_import_sources = cls._source_reexport_import_sources(
             context,
             source_path=request.source_path,
             destination_path=request.destination_path,
-            moved_symbol_names=tuple(target.name for target in targets),
+            moved_symbol_names=moved_symbol_names,
         )
         consumer_import_mutations = cls._consumer_import_mutations(
             context,
             source_path=request.source_path,
             destination_path=request.destination_path,
-            moved_symbol_names=tuple(target.name for target in targets),
+            moved_symbol_names=moved_symbol_names,
         )
         return cls(
             source_path=request.source_path,
@@ -8681,23 +8324,19 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
     @staticmethod
     def _validate_destination(
-        source_index: SourceIndex,
-        destination_path: str,
-        targets: tuple[AstTargetDigest, ...],
+        destination_table: ModuleSymbolTable,
+        moved_symbol_names: tuple[str, ...],
     ) -> None:
-        destination_names = {
-            target.name
-            for target in source_index.ast_targets
-            if target.file_path == destination_path
-            and _is_movable_module_symbol_kind(target.node_kind)
-            and "." not in target.qualname
-        }
+        destination_names = destination_table.top_level_names | frozenset(
+            destination_table.import_bindings_by_name
+        )
         duplicate_names = tuple(
-            target.name for target in targets if target.name in destination_names
+            name for name in moved_symbol_names if name in destination_names
         )
         if duplicate_names:
             raise ValueError(
-                f"Destination {destination_path!r} already defines moved symbols "
+                f"Destination {destination_table.file_path!r} already binds moved "
+                "declarations "
                 f"{duplicate_names!r}"
             )
 
@@ -8707,17 +8346,34 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph: SourceModuleImportGraph,
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
-        targets: tuple[AstTargetDigest, ...],
-        target_nodes: Mapping[str, _TargetNode],
+        declarations: tuple[SourceTopLevelDeclaration, ...],
     ) -> ModuleMoveDependencyReport:
-        moved_names = frozenset(target.name for target in targets)
+        moved_names = frozenset(
+            declaration.name for declaration in declarations
+        )
         moved_dependencies = DeclarationDependencyProjection.from_declarations(
-            tuple(target_nodes[target.target_id] for target in targets)
+            tuple(declaration.node for declaration in declarations)
         )
         source_annotation_mode = ModuleAnnotationEvaluationMode.from_module(
             source_table.module
         )
-        external_names = moved_dependencies.names - _AVAILABLE_WITHOUT_IMPORT
+        destination_annotation_mode = ModuleAnnotationEvaluationMode.from_module(
+            destination_table.module
+        )
+        source_module_context_names = tuple(
+            sorted(moved_dependencies.names & source_table.implicit_module_names)
+        )
+        builtin_dependency_names = (
+            moved_dependencies.names & source_table.unshadowed_builtin_names
+        )
+        destination_builtin_conflict_names = tuple(
+            sorted(builtin_dependency_names & destination_table.explicit_names)
+        )
+        external_names = (
+            moved_dependencies.names
+            - source_table.unshadowed_builtin_names
+            - source_table.implicit_module_names
+        )
         permits_guarded_import_by_name = {
             name: name in moved_dependencies.annotation_only_names
             and not source_annotation_mode.annotations_execute_at_declaration
@@ -8817,7 +8473,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
             destination_path=destination_table.file_path,
-            moved_symbol_names=tuple(target.name for target in targets),
+            moved_symbol_names=tuple(
+                declaration.name for declaration in declarations
+            ),
             import_dependencies=import_dependencies,
             destination_dependency_names=destination_dependency_names,
             destination_insertion_line=destination_table.insertion_line_after_bindings(
@@ -8826,14 +8484,39 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             source_annotation_evaluation_mode=source_annotation_mode,
             destination_annotation_evaluation_mode=(
-                ModuleAnnotationEvaluationMode.from_module(destination_table.module)
+                destination_annotation_mode
             ),
             moved_annotation_count=moved_dependencies.annotation_count,
-            source_local_dependency_names=source_local_names,
-            unresolved_dependency_names=unresolved_names,
-            ambiguous_import_dependency_names=ambiguous_import_names,
-            destination_import_conflict_names=(
-                destination_import_conflict_names
+            obstacles=(
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY,
+                    source_local_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY,
+                    source_module_context_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.DESTINATION_BUILTIN_CONFLICT,
+                    destination_builtin_conflict_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY,
+                    unresolved_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY,
+                    ambiguous_import_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT,
+                    destination_import_conflict_names,
+                ),
+                ModuleMoveObstacle.for_annotation_evaluation(
+                    source_mode=source_annotation_mode,
+                    destination_mode=destination_annotation_mode,
+                    annotation_count=moved_dependencies.annotation_count,
+                ),
             ),
         )
 
@@ -9000,20 +8683,28 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
             )
         return SourceTopLevelSymbolClosureMovePlan.from_request(
             SourceTopLevelSymbolClosureMoveRequest(
-                source_path=source_path,
+                selection=self.move_selection(context, source_path),
                 destination_path=destination_path,
-                symbol_qualnames=self.move_symbol_qualnames(context, source_path),
                 rationale=self.rationale,
             ),
             context=context,
         )
 
-    @abstractmethod
     def move_symbol_qualnames(
         self,
         context: CodemodSelectorContext,
         source_path: str,
     ) -> tuple[str, ...]:
+        """Return the declaration names derived from the current selection."""
+
+        return self.move_selection(context, source_path).symbol_qualnames
+
+    @abstractmethod
+    def move_selection(
+        self,
+        context: CodemodSelectorContext,
+        source_path: str,
+    ) -> SourceTopLevelSymbolMoveSelection:
         """Return exact declarations to move from the current source state."""
 
         raise NotImplementedError
@@ -9033,13 +8724,16 @@ class ExplicitModuleSymbolSelectionOperationABC(ModuleSymbolMoveOperation, ABC):
         StringArrayPayloadValueCodec()
     )
 
-    def move_symbol_qualnames(
+    def move_selection(
         self,
         context: CodemodSelectorContext,
         source_path: str,
-    ) -> tuple[str, ...]:
-        del context, source_path
-        return self.symbol_qualnames
+    ) -> SourceTopLevelSymbolMoveSelection:
+        return SourceTopLevelSymbolMoveSelection.exact(
+            context,
+            source_path,
+            self.symbol_qualnames,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -9053,16 +8747,16 @@ class DependencyClosureModuleSymbolSelectionOperationABC(
         StringArrayPayloadValueCodec()
     )
 
-    def move_symbol_qualnames(
+    def move_selection(
         self,
         context: CodemodSelectorContext,
         source_path: str,
-    ) -> tuple[str, ...]:
+    ) -> SourceTopLevelSymbolMoveSelection:
         return SourceTopLevelSymbolMoveSelection.dependency_closure(
             context,
             source_path,
             self.root_symbol_qualnames,
-        ).symbol_qualnames
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -13580,8 +13274,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
         findings: tuple[RefactorFinding, ...],
         root: Path,
     ) -> tuple[tuple[RefactorFinding, ...], ...] | None:
-        from .detectors import IssueDetector
-
         semantic_detector_ids = IssueDetector.semantic_mirror_detector_ids()
         semantic_findings = tuple(
             finding
@@ -21293,8 +20985,6 @@ class SemanticMirrorRegistrationFindingRecipeSynthesizer(
         cls,
         finding: RefactorFinding,
     ) -> bool:
-        from .detectors import IssueDetector
-
         return finding.detector_id in IssueDetector.semantic_mirror_detector_ids()
 
     def action_keys_for_finding(
