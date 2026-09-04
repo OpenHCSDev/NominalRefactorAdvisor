@@ -25106,6 +25106,96 @@ def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
     assert "resolve_backend" in finding.summary
     assert "ScoringFamily" in finding.summary
     assert "ScoringPolicy" in finding.summary
+    assert all(
+        finding.detector_id != "repeated_external_enum_dispatch" for finding in findings
+    )
+
+
+def test_detects_repeated_external_enum_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/status.py",
+        """\
+from enum import StrEnum
+
+
+class CacheStatus(StrEnum):
+    HIT = "hit"
+    PARTIAL = "partial"
+    MISS = "miss"
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        """\
+from pkg.status import CacheStatus
+
+
+def reuse(status: CacheStatus) -> bool:
+    if status is CacheStatus.HIT:
+        return True
+    return False
+
+
+def incomplete(status: CacheStatus) -> bool:
+    if status is CacheStatus.PARTIAL:
+        return True
+    return False
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "repeated_external_enum_dispatch"
+    )
+
+    assert "CacheStatus" in finding.summary
+    assert "2 external branch site(s) across 2 functions" in finding.summary
+    assert finding.metrics.plan_literal_cases == (
+        "CacheStatus.HIT",
+        "CacheStatus.PARTIAL",
+    )
+
+
+def test_ignores_single_locus_and_nonmember_enum_attributes(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """\
+from enum import StrEnum
+
+
+class Mode(StrEnum):
+    FIRST = "first"
+    SECOND = "second"
+
+    @classmethod
+    def parse(cls, value):
+        return cls(value)
+
+
+def authoritative_dispatch(mode: Mode) -> str:
+    if mode is Mode.FIRST:
+        return "first"
+    if mode is Mode.SECOND:
+        return "second"
+    raise AssertionError(mode)
+
+
+def method_reference(value: str) -> bool:
+    if value is Mode.parse:
+        return True
+    return False
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert all(
+        finding.detector_id != "repeated_external_enum_dispatch" for finding in findings
+    )
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:

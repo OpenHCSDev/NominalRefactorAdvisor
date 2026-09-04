@@ -45,5 +45,21 @@ class PythonEnumBaseAuthority:
 
         return member_name not in self.inherited_member_names
 
+    def declared_member_names(
+        self,
+        bindings: Iterable[tuple[str, bool]],
+    ) -> tuple[str, ...]:
+        """Derive runtime enum members from direct named value bindings."""
+
+        return tuple(
+            sorted(
+                name
+                for name, has_value in bindings
+                if has_value
+                if not name.startswith("_")
+                if self.permits_new_member(name)
+            )
+        )
+
 
 PYTHON_ENUM_BASE_AUTHORITY = PythonEnumBaseAuthority()

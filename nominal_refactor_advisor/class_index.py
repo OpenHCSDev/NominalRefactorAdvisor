@@ -619,6 +619,20 @@ class CompactIndexedClass(CompactClassHeader):
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
 
     @property
+    def direct_enum_member_names(self) -> tuple[str, ...]:
+        """Return public members declared by a direct Python enum owner."""
+
+        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(self.declared_base_names):
+            return ()
+        return PYTHON_ENUM_BASE_AUTHORITY.declared_member_names(
+            (
+                declaration.name,
+                declaration.expression is not None,
+            )
+            for declaration in self.direct_member_declarations
+        )
+
+    @property
     def assignments_by_name(self) -> dict[str, str | None]:
         return {
             name: declaration.expression

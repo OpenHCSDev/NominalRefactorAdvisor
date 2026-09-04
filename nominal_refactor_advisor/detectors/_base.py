@@ -2710,18 +2710,22 @@ def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ..
             CLASS_NODE_AUTHORITY.declared_base_names(node)
         ):
             continue
-        members: list[str] = []
+        bindings: list[tuple[str, bool]] = []
         for statement in node.body:
             target: ast.AST | None = None
+            value: ast.AST | None = None
             if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
                 target = statement.targets[0]
+                value = statement.value
             elif isinstance(statement, ast.AnnAssign):
                 target = statement.target
-            if not isinstance(target, ast.Name) or target.id.startswith("_"):
+                value = statement.value
+            if not isinstance(target, ast.Name):
                 continue
-            members.append(target.id)
+            bindings.append((target.id, value is not None))
+        members = PYTHON_ENUM_BASE_AUTHORITY.declared_member_names(bindings)
         if len(members) >= 2:
-            enum_members[node.name] = tuple(members)
+            enum_members[node.name] = members
     return enum_members
 
 
