@@ -2,15 +2,139 @@
 
 from __future__ import annotations
 
+from collections.abc import (
+    Iterable,
+    Mapping,
+)
 from dataclasses import dataclass
 from pathlib import Path
 
 from .analysis_cache import (
     AnalysisCacheIdentity,
-    AnalysisCacheStorage,
     AnalysisCacheStatus,
+    AnalysisCacheStorage,
 )
-from .codemod import CodemodSourceContext
+from .ast_tools import (
+    ParsedModule,
+    SourceModuleBatchParser,
+)
+from .class_index import (
+    ClassFamilyIndex,
+    build_class_family_index,
+)
+from .codemod import CodemodSourceSnapshot
+from .codemod_import_graph import SourceModuleImportGraph
+from .models import RefactorFinding
+from .source_index import (
+    AstTargetNodeIndex,
+    IndexedSourceAuthority,
+    build_source_index_artifacts,
+)
+
+
+@dataclass(frozen=True)
+class CodemodSourceContext(IndexedSourceAuthority):
+    """Cached global semantic source context for focused codemod planning."""
+
+    class_family_index: ClassFamilyIndex
+    imported_modules_by_module: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def from_modules(
+        cls,
+        modules: Iterable[ParsedModule],
+        findings: Iterable[RefactorFinding] = (),
+    ) -> "CodemodSourceContext":
+        module_tuple = tuple(modules)
+        source_index_artifacts = build_source_index_artifacts(
+            module_tuple,
+            tuple(findings),
+        )
+        module_nodes_by_file_path = {
+            module.file_path: module.module for module in module_tuple
+        }
+        import_graph = SourceModuleImportGraph(
+            source_index=source_index_artifacts.source_index,
+            module_nodes_by_file_path=module_nodes_by_file_path,
+        )
+        return cls(
+            source_index=source_index_artifacts.source_index,
+            sources_by_file_path={
+                module.file_path: module.source for module in module_tuple
+            },
+            class_family_index=build_class_family_index(module_tuple),
+            imported_modules_by_module=import_graph.import_edges_by_module,
+        )
+
+    @property
+    def module_import_graph(self) -> SourceModuleImportGraph:
+        return SourceModuleImportGraph(
+            source_index=self.source_index,
+            imported_modules_by_module=self.imported_modules_by_module,
+        )
+
+    def snapshot_for_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+        *,
+        parse_workers: int = 1,
+    ) -> "CodemodSourceSnapshot":
+        module_tuple = self.parsed_modules_for_findings(
+            tuple(findings),
+            parse_workers=parse_workers,
+        )
+        return CodemodSourceSnapshot(
+            source_index=self.source_index,
+            sources_by_file_path=dict(self.sources_by_file_path),
+            class_family_index=self.class_family_index,
+            module_node_cache={
+                module.file_path: module.module for module in module_tuple
+            },
+            ast_target_node_cache=(
+                AstTargetNodeIndex.from_modules(
+                    self.source_index,
+                    module_tuple,
+                ).nodes_by_target_id
+            ),
+            module_import_graph_cache=self.module_import_graph,
+        )
+
+    def parsed_modules_for_findings(
+        self,
+        findings: tuple[RefactorFinding, ...],
+        *,
+        parse_workers: int = 1,
+    ) -> tuple[ParsedModule, ...]:
+        return SourceModuleBatchParser(
+            source_modules=tuple(
+                self.source_index.module_path_authority.source_module(
+                    Path(file_path),
+                    self.sources_by_file_path[file_path],
+                )
+                for file_path in self.source_paths_for_findings(findings)
+            ),
+            parse_workers=parse_workers,
+        ).parsed_modules()
+
+    def source_paths_for_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> tuple[str, ...]:
+        source_paths: set[str] = set()
+        finding_ids: list[str] = []
+        for finding in findings:
+            finding_ids.append(finding.stable_id)
+            source_paths.update(
+                evidence.file_path
+                for evidence in finding.evidence
+                if evidence.file_path in self.sources_by_file_path
+            )
+        source_paths.update(
+            self.source_index.target_by_id[target_id].file_path
+            for target_id in self.source_index.target_ids_for_finding_ids(finding_ids)
+            if target_id in self.source_index.target_by_id
+        )
+        return tuple(sorted(source_paths))
 
 
 @dataclass(frozen=True)

@@ -54,6 +54,47 @@ class ModuleMoveImportDependency(DataclassJsonReport):
         )
 
 
+@dataclass(frozen=True)
+class ModuleMoveSourceLocalDependency(DataclassJsonReport):
+    """One source-owned declaration imported by a relocated declaration."""
+
+    name: str
+    destination_import_source: str
+
+    @classmethod
+    def from_source_declaration(
+        cls,
+        import_graph: SourceModuleImportGraph,
+        *,
+        source_path: str,
+        destination_path: str,
+        name: str,
+    ) -> ModuleMoveSourceLocalDependency:
+        return cls(
+            name=name,
+            destination_import_source=import_graph.required_import_source(
+                importing_file_path=destination_path,
+                imported_file_path=source_path,
+                imported_name=name,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ModuleMoveSourceLocalDependencyResolution:
+    """Declaration-owned result of resolving source-local move dependencies."""
+
+    import_dependencies: tuple[ModuleMoveSourceLocalDependency, ...] = ()
+    unresolved_names: tuple[str, ...] = ()
+    destination_conflict_names: tuple[str, ...] = ()
+
+    @classmethod
+    def blocked(
+        cls,
+        names: tuple[str, ...],
+    ) -> ModuleMoveSourceLocalDependencyResolution:
+        return cls(unresolved_names=names)
+
 class ModuleMoveObstacleKind(StrEnum):
     """Typed module-move proof failures with declaration-owned presentation."""
 
@@ -140,6 +181,7 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
     destination_path: str
     maximum_moved_symbol_count: int | None = json_report_field(omit_none=True)
     import_dependencies: tuple[ModuleMoveImportDependency, ...]
+    source_local_dependencies: tuple[ModuleMoveSourceLocalDependency, ...]
     destination_dependency_names: tuple[str, ...]
     destination_insertion_line: int
     source_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
@@ -205,16 +247,32 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
 
     @json_report_property()
     def imported_dependency_names(self) -> tuple[str, ...]:
-        return tuple(
-            dependency.name for dependency in self.destination_import_dependencies
+        return (
+            *(dependency.name for dependency in self.destination_import_dependencies),
+            *(dependency.name for dependency in self.source_local_dependencies),
         )
 
     @json_report_property()
     def import_sources(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                dependency.source for dependency in self.destination_import_dependencies
+                (
+                    *(
+                        dependency.source
+                        for dependency in self.destination_import_dependencies
+                    ),
+                    *(
+                        dependency.destination_import_source
+                        for dependency in self.source_local_dependencies
+                    ),
+                )
             )
+        )
+
+    @property
+    def has_destination_imports(self) -> bool:
+        return bool(
+            self.destination_import_dependencies or self.source_local_dependencies
         )
 
     @json_report_property()

@@ -47,7 +47,6 @@ from .ast_tools import (
     ParsedModule,
     PythonModulePathAuthority,
     SourceModule,
-    SourceModuleBatchParser,
     root_agnostic_expression_fingerprint,
     statements_without_docstring,
     walk_function_body_nodes,
@@ -263,6 +262,12 @@ from .codemod_module_move_reports import (
 )
 from .codemod_module_move_reports import (
     ModuleMoveObstacleKind as ModuleMoveObstacleKind,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveSourceLocalDependency as ModuleMoveSourceLocalDependency,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveSourceLocalDependencyResolution as ModuleMoveSourceLocalDependencyResolution,
 )
 from .codemod_paths import (
     ExactSourcePathResolution as ExactSourcePathResolution,
@@ -592,111 +597,6 @@ SourceReproofValueT = TypeVar("SourceReproofValueT")
 
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
-
-
-@dataclass(frozen=True)
-class CodemodSourceContext(IndexedSourceAuthority):
-    """Cached global semantic source context for focused codemod planning."""
-
-    class_family_index: ClassFamilyIndex
-    imported_modules_by_module: Mapping[str, frozenset[str]]
-
-    @classmethod
-    def from_modules(
-        cls,
-        modules: Iterable[ParsedModule],
-        findings: Iterable[RefactorFinding] = (),
-    ) -> "CodemodSourceContext":
-        module_tuple = tuple(modules)
-        source_index_artifacts = build_source_index_artifacts(
-            module_tuple,
-            tuple(findings),
-        )
-        module_nodes_by_file_path = {
-            module.file_path: module.module for module in module_tuple
-        }
-        import_graph = SourceModuleImportGraph(
-            source_index=source_index_artifacts.source_index,
-            module_nodes_by_file_path=module_nodes_by_file_path,
-        )
-        return cls(
-            source_index=source_index_artifacts.source_index,
-            sources_by_file_path={
-                module.file_path: module.source for module in module_tuple
-            },
-            class_family_index=build_class_family_index(module_tuple),
-            imported_modules_by_module=import_graph.import_edges_by_module,
-        )
-
-    @property
-    def module_import_graph(self) -> SourceModuleImportGraph:
-        return SourceModuleImportGraph(
-            source_index=self.source_index,
-            imported_modules_by_module=self.imported_modules_by_module,
-        )
-
-    def snapshot_for_findings(
-        self,
-        findings: Iterable[RefactorFinding],
-        *,
-        parse_workers: int = 1,
-    ) -> "CodemodSourceSnapshot":
-        module_tuple = self.parsed_modules_for_findings(
-            tuple(findings),
-            parse_workers=parse_workers,
-        )
-        return CodemodSourceSnapshot(
-            source_index=self.source_index,
-            sources_by_file_path=dict(self.sources_by_file_path),
-            class_family_index=self.class_family_index,
-            module_node_cache={
-                module.file_path: module.module for module in module_tuple
-            },
-            ast_target_node_cache=(
-                AstTargetNodeIndex.from_modules(
-                    self.source_index,
-                    module_tuple,
-                ).nodes_by_target_id
-            ),
-            module_import_graph_cache=self.module_import_graph,
-        )
-
-    def parsed_modules_for_findings(
-        self,
-        findings: tuple[RefactorFinding, ...],
-        *,
-        parse_workers: int = 1,
-    ) -> tuple[ParsedModule, ...]:
-        return SourceModuleBatchParser(
-            source_modules=tuple(
-                self.source_index.module_path_authority.source_module(
-                    Path(file_path),
-                    self.sources_by_file_path[file_path],
-                )
-                for file_path in self.source_paths_for_findings(findings)
-            ),
-            parse_workers=parse_workers,
-        ).parsed_modules()
-
-    def source_paths_for_findings(
-        self,
-        findings: Iterable[RefactorFinding],
-    ) -> tuple[str, ...]:
-        source_paths: set[str] = set()
-        finding_ids: list[str] = []
-        for finding in findings:
-            finding_ids.append(finding.stable_id)
-            source_paths.update(
-                evidence.file_path
-                for evidence in finding.evidence
-                if evidence.file_path in self.sources_by_file_path
-            )
-        source_paths.update(
-            self.source_index.target_by_id[target_id].file_path
-            for target_id in self.source_index.target_ids_for_finding_ids(finding_ids)
-            if target_id in self.source_index.target_by_id
-        )
-        return tuple(sorted(source_paths))
 
 
 def _parsed_modules_from_source_mapping(
@@ -6604,6 +6504,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         cls,
         request: SourceTopLevelSymbolClosureMoveRequest,
         context: CodemodSelectorContext,
+        operation: "ModuleSymbolMoveOperation",
     ) -> "SourceTopLevelSymbolClosureMovePlan":
         source_table = ModuleSymbolTable(
             file_path=request.source_path,
@@ -6633,8 +6534,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             source_table,
             destination_table,
             request,
+            operation,
         )
-        source_binding_import_sources = cls._source_binding_import_sources(
+        source_binding_import_sources = operation.source_binding_import_sources(
             context,
             source_table=source_table,
             source_path=request.source_path,
@@ -6659,41 +6561,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             rationale=request.rationale,
         )
 
-    @staticmethod
-    def _source_binding_import_sources(
-        context: CodemodSelectorContext,
-        *,
-        source_table: ModuleSymbolTable,
-        source_path: str,
-        destination_path: str,
-        moved_symbol_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        import_graph = context.module_import_graph
-        export_contract = module_public_export_contract(
-            context.parsed_module_for_source_path(source_path)
-        )
-        retained_reference_names = source_table.referenced_names_excluding(
-            moved_symbol_names,
-            moved_symbol_names,
-        )
-        return tuple(
-            (
-                import_graph.required_reexport_source
-                if export_contract.exposure_for(symbol_name).blocks_closed_boundary
-                else import_graph.required_import_source
-            )(
-                importing_file_path=source_path,
-                imported_file_path=destination_path,
-                imported_name=symbol_name,
-            )
-            for symbol_name in moved_symbol_names
-            if (
-                export_contract.exposure_for(symbol_name).blocks_closed_boundary
-                or symbol_name in retained_reference_names
-            )
-        )
-
-    @staticmethod
     def _consumer_import_mutations(
         context: CodemodSelectorContext,
         *,
@@ -6785,6 +6652,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
         request: SourceTopLevelSymbolClosureMoveRequest,
+        operation: "ModuleSymbolMoveOperation",
     ) -> ModuleMoveDependencyReport:
         selection = request.selection
         declarations = selection.declarations
@@ -6855,6 +6723,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 & source_table.top_level_names
             )
         )
+        source_local_resolution = operation.source_local_dependency_resolution(
+            import_graph,
+            source_path=source_table.file_path,
+            destination_table=destination_table,
+            names=source_local_names,
+        )
         unresolved_names = tuple(
             sorted(
                 external_names
@@ -6914,6 +6788,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_path=destination_table.file_path,
             maximum_moved_symbol_count=request.maximum_moved_symbol_count,
             import_dependencies=import_dependencies,
+            source_local_dependencies=source_local_resolution.import_dependencies,
             destination_dependency_names=destination_dependency_names,
             destination_insertion_line=destination_table.insertion_line_after_bindings(
                 destination_dependency_names,
@@ -6925,7 +6800,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             obstacles=(
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY,
-                    source_local_names,
+                    source_local_resolution.unresolved_names,
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY,
@@ -6945,7 +6820,14 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT,
-                    destination_import_conflict_names,
+                    tuple(
+                        sorted(
+                            {
+                                *destination_import_conflict_names,
+                                *source_local_resolution.destination_conflict_names,
+                            }
+                        )
+                    ),
                 ),
                 ModuleMoveObstacle.for_annotation_evaluation(
                     source_mode=source_annotation_mode,
@@ -6976,6 +6858,18 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     ),
                 )
                 for dependency in self.dependency_report.destination_import_dependencies
+            ),
+            *(
+                ModuleImportMutation.from_source(
+                    file_path=self.destination_path,
+                    import_source=dependency.destination_import_source,
+                    rationale=self.rationale
+                    or (
+                        "Ensure source-local dependencies for relocated symbols "
+                        f"{self.dependency_report.moved_symbol_names!r}."
+                    ),
+                )
+                for dependency in self.dependency_report.source_local_dependencies
             ),
             self.destination_insertion(context),
             *(
@@ -7049,7 +6943,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             self.destination_path,
         ).line_number
         pending_imports_share_anchor = (
-            bool(self.dependency_report.destination_import_dependencies)
+            self.dependency_report.has_destination_imports
             and insertion_line == import_insertion_line
         )
         leading_separator = (
@@ -7103,6 +6997,33 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
             ),
         )
 
+    @abstractmethod
+    def source_local_dependency_resolution(
+        self,
+        import_graph: SourceModuleImportGraph,
+        *,
+        source_path: str,
+        destination_table: ModuleSymbolTable,
+        names: tuple[str, ...],
+    ) -> ModuleMoveSourceLocalDependencyResolution:
+        """Resolve source-owned dependencies through this move's binding policy."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def source_binding_import_sources(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_table: ModuleSymbolTable,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Return source bindings required after moving the declarations."""
+
+        raise NotImplementedError
+
     def move_plan(
         self,
         context: CodemodSelectorContext,
@@ -7122,6 +7043,7 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
                 rationale=self.rationale,
             ),
             context=context,
+            operation=self,
         )
 
     def move_symbol_qualnames(
@@ -7263,17 +7185,174 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceBindingPreservingModuleSymbolMoveOperationABC(
+    ModuleSymbolMoveOperation,
+    ABC,
+):
+    """Move declarations while preserving public or locally required bindings."""
+
+    def source_local_dependency_resolution(
+        self,
+        import_graph: SourceModuleImportGraph,
+        *,
+        source_path: str,
+        destination_table: ModuleSymbolTable,
+        names: tuple[str, ...],
+    ) -> ModuleMoveSourceLocalDependencyResolution:
+        del import_graph, source_path, destination_table
+        return ModuleMoveSourceLocalDependencyResolution.blocked(names)
+
+    def source_binding_import_sources(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_table: ModuleSymbolTable,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        import_graph = context.module_import_graph
+        export_contract = module_public_export_contract(
+            context.parsed_module_for_source_path(source_path)
+        )
+        retained_reference_names = source_table.referenced_names_excluding(
+            moved_symbol_names,
+            moved_symbol_names,
+        )
+        return tuple(
+            (
+                import_graph.required_reexport_source
+                if export_contract.exposure_for(symbol_name).blocks_closed_boundary
+                else import_graph.required_import_source
+            )(
+                importing_file_path=source_path,
+                imported_file_path=destination_path,
+                imported_name=symbol_name,
+            )
+            for symbol_name in moved_symbol_names
+            if (
+                export_contract.exposure_for(symbol_name).blocks_closed_boundary
+                or symbol_name in retained_reference_names
+            )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceBindingRelocatingModuleSymbolMoveOperationABC(
+    ModuleSymbolMoveOperation,
+    ABC,
+):
+    """Move declarations only when their former bindings can be removed."""
+
+    def source_local_dependency_resolution(
+        self,
+        import_graph: SourceModuleImportGraph,
+        *,
+        source_path: str,
+        destination_table: ModuleSymbolTable,
+        names: tuple[str, ...],
+    ) -> ModuleMoveSourceLocalDependencyResolution:
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        if source_module_name is None:
+            raise ValueError(
+                f"Source module identity is unavailable for {source_path!r}"
+            )
+        identities = {
+            name: FromModuleImportBindingIdentity(
+                module_name=source_module_name,
+                member_name=name,
+            )
+            for name in names
+        }
+        conflict_names = tuple(
+            name
+            for name, identity in identities.items()
+            if destination_table.conflicts_with_import_binding(
+                name,
+                identity,
+                import_graph=import_graph,
+            )
+        )
+        conflict_name_set = frozenset(conflict_names)
+        import_dependencies = tuple(
+            ModuleMoveSourceLocalDependency.from_source_declaration(
+                import_graph,
+                source_path=source_path,
+                destination_path=destination_table.file_path,
+                name=name,
+            )
+            for name, identity in identities.items()
+            if name not in conflict_name_set
+            if not destination_table.satisfies_import_binding(
+                name,
+                identity,
+                ModuleImportScope.RUNTIME,
+                import_graph=import_graph,
+            )
+        )
+        return ModuleMoveSourceLocalDependencyResolution(
+            import_dependencies=import_dependencies,
+            destination_conflict_names=conflict_names,
+        )
+
+    def source_binding_import_sources(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_table: ModuleSymbolTable,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        del destination_path
+        export_contract = module_public_export_contract(
+            context.parsed_module_for_source_path(source_path)
+        )
+        blocked_names = tuple(
+            symbol_name
+            for symbol_name in moved_symbol_names
+            if not export_contract.allows_binding_relocation(symbol_name)
+        )
+        if blocked_names:
+            raise ValueError(
+                "Source export contract does not prove binding relocation for "
+                f"{blocked_names!r}"
+            )
+        retained_names = source_table.referenced_names_excluding(
+            moved_symbol_names,
+            moved_symbol_names,
+        ).intersection(moved_symbol_names)
+        if retained_names:
+            raise ValueError(
+                "Relocated symbols remain referenced by their source module: "
+                f"{tuple(sorted(retained_names))!r}"
+            )
+        return ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class MoveSymbolsToModuleOperation(
     ExistingModuleSymbolMoveOperationABC,
     ExplicitModuleSymbolSelectionOperationABC,
+    SourceBindingPreservingModuleSymbolMoveOperationABC,
 ):
     """Move an explicitly complete symbol set into an existing module."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class RelocateSymbolsToModuleOperation(
+    ExistingModuleSymbolMoveOperationABC,
+    ExplicitModuleSymbolSelectionOperationABC,
+    SourceBindingRelocatingModuleSymbolMoveOperationABC,
+):
+    """Move exact symbols and remove their former source-module bindings."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class MoveSymbolClosureToModuleOperation(
     ExistingModuleSymbolMoveOperationABC,
     DependencyClosureModuleSymbolSelectionOperationABC,
+    SourceBindingPreservingModuleSymbolMoveOperationABC,
 ):
     """Move a root-derived dependency closure into an existing module."""
 
@@ -7282,6 +7361,7 @@ class MoveSymbolClosureToModuleOperation(
 class ExtractSymbolsToNewModuleOperation(
     NewModuleSymbolMoveOperationABC,
     ExplicitModuleSymbolSelectionOperationABC,
+    SourceBindingPreservingModuleSymbolMoveOperationABC,
 ):
     """Create a module and move an explicitly complete symbol set into it."""
 
@@ -7290,6 +7370,7 @@ class ExtractSymbolsToNewModuleOperation(
 class ExtractSymbolClosureToNewModuleOperation(
     NewModuleSymbolMoveOperationABC,
     DependencyClosureModuleSymbolSelectionOperationABC,
+    SourceBindingPreservingModuleSymbolMoveOperationABC,
 ):
     """Create a module and derive the moved closure from semantic roots."""
 

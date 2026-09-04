@@ -17,7 +17,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodPlanDocument,
     CodemodPreflightStatus,
-    CodemodSourceContext,
     CodemodSourceSnapshot,
     DeriveClassFamilyCollectionOperation,
     DeriveDataclassConstructorProjectionOperation,
@@ -30,6 +29,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
     codemod_plan_from_findings,
 )
+from nominal_refactor_advisor.codemod_source_cache import CodemodSourceContext
 from nominal_refactor_advisor.detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
@@ -1429,6 +1429,9 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
 def test_codemod_source_context_hydrates_selected_finding_files_only(
     tmp_path: Path,
 ) -> None:
+    assert CodemodSourceContext.__module__ == (
+        "nominal_refactor_advisor.codemod_source_cache"
+    )
     alpha_path = tmp_path / "alpha.py"
     beta_path = tmp_path / "beta.py"
     alpha_path.write_text("import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8")

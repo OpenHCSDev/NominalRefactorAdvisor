@@ -3323,6 +3323,8 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert implicit.exposure_for("_private") is (
         class_index_module.CompactPublicNameExposure.PRIVATE
     )
+    assert implicit.allows_binding_relocation("public") is True
+    assert implicit.allows_binding_relocation("_private") is True
     assert isinstance(
         explicit,
         class_index_module.CompactExplicitPublicExportContract,
@@ -3334,6 +3336,8 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert explicit.exposure_for("public") is (
         class_index_module.CompactPublicNameExposure.PRIVATE
     )
+    assert explicit.allows_binding_relocation("_private") is False
+    assert explicit.allows_binding_relocation("public") is True
     assert isinstance(
         dynamic,
         class_index_module.CompactUnresolvedPublicExportContract,
@@ -3341,6 +3345,7 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert dynamic.exposure_for("first") is (
         class_index_module.CompactPublicNameExposure.UNRESOLVED
     )
+    assert dynamic.allows_binding_relocation("first") is False
     assert isinstance(
         non_dunder_globals,
         class_index_module.CompactExplicitPublicExportContract,

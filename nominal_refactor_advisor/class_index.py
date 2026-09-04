@@ -814,6 +814,12 @@ class CompactModulePublicExportContract(ABC):
     def exposure_for(self, name: str) -> CompactPublicNameExposure:
         raise NotImplementedError
 
+    @abstractmethod
+    def allows_binding_relocation(self, name: str) -> bool:
+        """Return whether removing this module binding preserves the contract."""
+
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class CompactImplicitPublicExportContract(CompactModulePublicExportContract):
@@ -825,6 +831,10 @@ class CompactImplicitPublicExportContract(CompactModulePublicExportContract):
             if name.startswith("_")
             else CompactPublicNameExposure.PUBLIC
         )
+
+    def allows_binding_relocation(self, name: str) -> bool:
+        del name
+        return True
 
 
 @dataclass(frozen=True)
@@ -902,6 +912,9 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
             else CompactPublicNameExposure.PRIVATE
         )
 
+    def allows_binding_relocation(self, name: str) -> bool:
+        return name not in self.exported_names
+
 
 @dataclass(frozen=True)
 class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
@@ -910,6 +923,10 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
     def exposure_for(self, name: str) -> CompactPublicNameExposure:
         del name
         return CompactPublicNameExposure.UNRESOLVED
+
+    def allows_binding_relocation(self, name: str) -> bool:
+        del name
+        return False
 
 
 @dataclass(frozen=True)

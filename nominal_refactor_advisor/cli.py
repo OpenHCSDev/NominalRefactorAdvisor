@@ -71,7 +71,6 @@ from .codemod import (
     CodemodPlanSequence,
     CodemodPlanSequenceSimulation,
     CodemodSimulationReport,
-    CodemodSourceContext,
     CodemodSourceSnapshot,
     CodemodTargetSelector,
     FindingRecipeClassPlanReport,
@@ -95,7 +94,10 @@ from .codemod_preflight import (
     CodemodOperationPreflightReport,
     CodemodPlanPreflightReport,
 )
-from .codemod_source_cache import CodemodSourceContextCache
+from .codemod_source_cache import (
+    CodemodSourceContext,
+    CodemodSourceContextCache,
+)
 from .codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,

@@ -208,6 +208,7 @@ from nominal_refactor_advisor.codemod import (
     InsertBeforeTargetOperation,
     MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation,
+    RelocateSymbolsToModuleOperation,
     ModuleImportScope,
     ModuleMoveDependencyReport,
     ModuleMoveObstacleKind,
@@ -6806,6 +6807,163 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
         "class Existing"
     )
+
+
+def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Kept:\n"
+        "    pass\n\n\n"
+        "class Moved(Kept):\n"
+        "    value = 3\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .source import Moved\n\n"
+        "value = Moved.value\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=destination_path.as_posix(),
+    )
+    payload = json_report_object(operation)
+
+    decoded = RefactorRecipeOperation.from_json_value(payload)
+    simulation = RefactorRecipe("relocate-moved").with_operation(operation).simulate(
+        snapshot
+    )
+
+    assert payload["operation"] == "relocate_symbols_to_module"
+    assert type(decoded) is RelocateSymbolsToModuleOperation
+    assert simulation.is_clean
+    assert "Moved" not in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
+    assert "class Kept:" in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
+    assert "class Moved(Kept):" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    assert "from .source import Kept" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    assert "from .destination import Moved" in simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ]
+    assert "from .source import Moved" not in simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumer import Moved, value; "
+            "from pkg.source import Kept; "
+            "assert Moved.__module__ == 'pkg.destination'; "
+            "assert issubclass(Moved, Kept); assert value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    (
+        (
+            "class Moved:\n"
+            "    pass\n\n\n"
+            "def build():\n"
+            "    return Moved()\n",
+            "Relocated symbols remain referenced by their source module",
+        ),
+        (
+            "__all__ = ('Moved',)\n\n\n"
+            "class Moved:\n"
+            "    pass\n",
+            "Source export contract does not prove binding relocation",
+        ),
+        (
+            "__all__ = ['Moved']\n"
+            "__all__.append('Other')\n\n\n"
+            "class Moved:\n"
+            "    pass\n",
+            "Source export contract does not prove binding relocation",
+        ),
+    ),
+)
+def test_symbol_relocation_fails_closed_when_source_binding_is_required(
+    tmp_path: Path,
+    source: str,
+    message: str,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/source.py", source)
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.preflight_reports(snapshot)
+
+    assert report[0].status is CodemodPreflightStatus.FAILED
+    assert message in report[0].message
+
+
+def test_symbol_relocation_rejects_source_dependency_collision(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Kept:\n"
+        "    pass\n\n\n"
+        "class Moved(Kept):\n"
+        "    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "class Kept:\n"
+        "    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.preflight_reports(snapshot)
+
+    assert report[0].status is CodemodPreflightStatus.FAILED
+    assert report[0].detail.obstacle_details(
+        ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT
+    ) == ("Kept",)
 
 
 def test_symbol_move_preserves_explicit_source_reexport_dependency(
