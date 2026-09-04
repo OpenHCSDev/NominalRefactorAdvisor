@@ -18415,12 +18415,13 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     stage = report.stages[0]
     assert stage.applied is False
-    assert stage.progress.removed_target_finding_ids == (finding.stable_id,)
-    assert stage.progress.surviving_target_finding_ids == ()
-    assert stage.finding_delta.finding_ids is stage.progress.finding_ids
-    assert stage.finding_delta.confirmed_expected_removed_finding_ids(
-        stage.expected_removed_finding_ids
-    ) == (finding.stable_id,)
+    assert stage.progress.removed_ids == (finding.stable_id,)
+    assert stage.progress.surviving_ids == ()
+    assert stage.finding_delta.before_ids is stage.progress.before_ids
+    assert stage.finding_delta.after_ids is stage.progress.after_ids
+    assert stage.finding_delta.confirmed_expected_removed_finding_ids == (
+        finding.stable_id,
+    )
     assert len(stage.class_plan_report.classes) == 1
     assert len(stage.class_plan_report.classes[0].synthesis_records) == 1
     assert (
@@ -18559,8 +18560,9 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
     assert stage.applied is True
     assert stage.progress.achieved is False
     assert stage.progress.made_progress is False
-    assert stage.progress.after_target_finding_ids == (finding.stable_id,)
-    assert stage.finding_delta.finding_ids is stage.progress.finding_ids
+    assert stage.progress.after_ids == (finding.stable_id,)
+    assert stage.finding_delta.before_ids is stage.progress.before_ids
+    assert stage.finding_delta.after_ids is stage.progress.after_ids
     assert "return 'new'" in module_path.read_text(encoding="utf-8")
 
 
@@ -19439,13 +19441,13 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.final_target_finding_ids == ()
-    assert report.stages[0].progress.before_target_finding_ids == (
+    assert report.stages[0].progress.before_ids == (
         report_finding.stable_id,
     )
     assert context_finding.stable_id not in (
-        report.stages[0].progress.before_target_finding_ids
+        report.stages[0].progress.before_ids
     )
-    assert report.stages[0].progress.after_target_finding_ids == ()
+    assert report.stages[0].progress.after_ids == ()
 
 
 def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
@@ -20430,15 +20432,25 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ReplaceTargetOperation
 
     delta = CodemodFindingDelta(
-        finding_ids=CodemodFindingIdTransition(
-            before_ids=("a", "b"),
-            after_ids=("b", "c"),
-        ),
+        before_ids=("a", "b"),
+        after_ids=("b", "c"),
+        expected_removed_finding_ids=("a",),
     )
     assert not hasattr(nra, "CodemodFindingChangeCarrier")
     assert not hasattr(nra, "CodemodFindingChangeProjection")
     assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
     assert issubclass(CodemodFindingClassChange, CodemodFindingDelta)
+    assert issubclass(CodemodFindingDelta, CodemodFindingIdTransition)
+    assert issubclass(CodemodRefactorGoalProgress, CodemodFindingIdTransition)
+    assert tuple(field.name for field in fields(CodemodFindingDelta)) == (
+        "before_ids",
+        "after_ids",
+        "expected_removed_finding_ids",
+    )
+    assert tuple(field.name for field in fields(CodemodRefactorGoalProgress)) == (
+        "before_ids",
+        "after_ids",
+    )
     assert CodemodFindingIdTransition.__name__ == "CodemodFindingIdTransition"
     assert CodemodDetectorIdTransition.__name__ == "CodemodDetectorIdTransition"
     assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
@@ -20503,9 +20515,19 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         == "ReplaceFieldsWithCarrierOperation"
     )
     assert not hasattr(nra, "SourceRewriteSimulationPayload")
-    assert delta.removed_finding_ids == ("a",)
-    assert delta.added_finding_ids == ("c",)
-    assert delta.fulfilled_expected_removals(("a",)) is True
+    assert not hasattr(delta, "finding_ids")
+    assert delta.removed_ids == ("a",)
+    assert delta.added_ids == ("c",)
+    assert delta.fulfilled_expected_removals is True
+    with pytest.raises(
+        ValueError,
+        match="expected removals must belong to the before-state",
+    ):
+        CodemodFindingDelta(
+            before_ids=("a",),
+            after_ids=(),
+            expected_removed_finding_ids=("unknown",),
+        )
 
 
 def test_module_cli_recipe_only_codemod_apply_without_structural_overlap(

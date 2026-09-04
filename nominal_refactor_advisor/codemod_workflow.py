@@ -204,43 +204,43 @@ class CodemodFindingClassStatus(StrEnum):
 
     ELIMINATED = (
         "eliminated",
-        lambda change: bool(change.before_finding_ids) and not change.after_finding_ids,
+        lambda change: bool(change.before_ids) and not change.after_ids,
     )
     MOVED = (
         "moved",
         lambda change: (
-            bool(change.before_finding_ids)
-            and bool(change.after_finding_ids)
-            and change.before_finding_count == change.after_finding_count
-            and bool(change.removed_finding_ids or change.added_finding_ids)
+            bool(change.before_ids)
+            and bool(change.after_ids)
+            and change.before_count == change.after_count
+            and bool(change.removed_ids or change.added_ids)
         ),
     )
     EXPANDED = (
         "expanded",
         lambda change: (
-            bool(change.before_finding_ids)
-            and change.after_finding_count > change.before_finding_count
+            bool(change.before_ids)
+            and change.after_count > change.before_count
         ),
     )
     PARTIALLY_ELIMINATED = (
         "partially_eliminated",
         lambda change: (
-            bool(change.after_finding_ids)
-            and change.after_finding_count < change.before_finding_count
+            bool(change.after_ids)
+            and change.after_count < change.before_count
         ),
     )
     PERSISTED = (
         "persisted",
         lambda change: (
-            bool(change.before_finding_ids)
-            and change.before_finding_count == change.after_finding_count
-            and not change.removed_finding_ids
+            bool(change.before_ids)
+            and change.before_count == change.after_count
+            and not change.removed_ids
             and bool(change.expected_removed_finding_ids)
         ),
     )
     INTRODUCED = (
         "introduced",
-        lambda change: not change.before_finding_ids and bool(change.after_finding_ids),
+        lambda change: not change.before_ids and bool(change.after_ids),
     )
     UNCHANGED = ("unchanged", None)
 
@@ -331,7 +331,7 @@ class CodemodFindingIdTransition(CodemodIdentityTransition[str]):
         cls,
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
-    ) -> "CodemodFindingIdTransition":
+    ) -> Self:
         """Project finding declarations onto their stable identity transition."""
 
         return cls(
@@ -361,7 +361,7 @@ class CodemodDetectorIdTransition(CodemodIdentityTransition[str]):
         cls,
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
-    ) -> "CodemodDetectorIdTransition":
+    ) -> Self:
         return cls(
             before_ids=tuple(
                 dict.fromkeys(finding.detector_id for finding in before_findings)
@@ -381,134 +381,97 @@ class CodemodDetectorIdTransition(CodemodIdentityTransition[str]):
 
 
 @dataclass(frozen=True)
-class CodemodFindingDelta:
+class CodemodFindingDelta(CodemodFindingIdTransition):
     """Before/after finding transition for one codemod batch."""
 
-    finding_ids: CodemodFindingIdTransition
+    expected_removed_finding_ids: tuple[str, ...] = field(
+        default=(),
+        kw_only=True,
+    )
+
+    def __post_init__(self) -> None:
+        before_ids = frozenset(self.before_ids)
+        unknown_expected_ids = tuple(
+            finding_id
+            for finding_id in self.expected_removed_finding_ids
+            if finding_id not in before_ids
+        )
+        if unknown_expected_ids:
+            raise ValueError(
+                "expected removals must belong to the before-state: "
+                f"{unknown_expected_ids!r}"
+            )
 
     @classmethod
     def from_findings(
         cls,
-        before_findings: tuple[RefactorFinding, ...],
-        after_findings: tuple[RefactorFinding, ...],
-    ) -> "CodemodFindingDelta":
+        before_findings: Iterable[RefactorFinding],
+        after_findings: Iterable[RefactorFinding],
+        *,
+        expected_removed_finding_ids: tuple[str, ...] = (),
+    ) -> Self:
+        transition = CodemodFindingIdTransition.from_findings(
+            before_findings,
+            after_findings,
+        )
         return cls(
-            finding_ids=CodemodFindingIdTransition.from_findings(
-                before_findings,
-                after_findings,
-            )
+            before_ids=transition.before_ids,
+            after_ids=transition.after_ids,
+            expected_removed_finding_ids=expected_removed_finding_ids,
         )
 
     @property
-    def before_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.before_ids
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
 
     @property
-    def after_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.after_ids
-
-    @property
-    def removed_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.removed_ids
-
-    @property
-    def added_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.added_ids
-
-    @property
-    def before_finding_count(self) -> int:
-        return self.finding_ids.before_count
-
-    @property
-    def after_finding_count(self) -> int:
-        return self.finding_ids.after_count
-
-    def confirmed_expected_removed_finding_ids(
-        self,
-        expected_removed_finding_ids: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        removed_ids = frozenset(self.removed_finding_ids)
+    def confirmed_expected_removed_finding_ids(self) -> tuple[str, ...]:
+        removed_ids = frozenset(self.removed_ids)
         return tuple(
             finding_id
-            for finding_id in expected_removed_finding_ids
+            for finding_id in self.expected_removed_finding_ids
             if finding_id in removed_ids
         )
 
-    def surviving_expected_removed_finding_ids(
-        self,
-        expected_removed_finding_ids: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        after_ids = frozenset(self.after_finding_ids)
+    @property
+    def surviving_expected_removed_finding_ids(self) -> tuple[str, ...]:
+        after_ids = frozenset(self.after_ids)
         return tuple(
             finding_id
-            for finding_id in expected_removed_finding_ids
+            for finding_id in self.expected_removed_finding_ids
             if finding_id in after_ids
         )
 
     @property
-    def removed_finding_count(self) -> int:
-        return len(self.removed_finding_ids)
+    def confirmed_expected_removed_finding_count(self) -> int:
+        return len(self.confirmed_expected_removed_finding_ids)
 
     @property
-    def added_finding_count(self) -> int:
-        return len(self.added_finding_ids)
+    def surviving_expected_removed_finding_count(self) -> int:
+        return len(self.surviving_expected_removed_finding_ids)
 
-    def confirmed_expected_removed_finding_count(
-        self,
-        expected_removed_finding_ids: tuple[str, ...],
-    ) -> int:
-        return len(
-            self.confirmed_expected_removed_finding_ids(expected_removed_finding_ids)
-        )
+    @property
+    def fulfilled_expected_removals(self) -> bool:
+        return self.surviving_expected_removed_finding_count == 0
 
-    def surviving_expected_removed_finding_count(
-        self,
-        expected_removed_finding_ids: tuple[str, ...],
-    ) -> int:
-        return len(
-            self.surviving_expected_removed_finding_ids(expected_removed_finding_ids)
-        )
-
-    def fulfilled_expected_removals(
-        self,
-        expected_removed_finding_ids: tuple[str, ...],
-    ) -> bool:
-        return (
-            self.surviving_expected_removed_finding_count(expected_removed_finding_ids)
-            == 0
-        )
-
-    def to_dict(
-        self,
-        expected_removed_finding_ids: tuple[str, ...] = (),
-    ) -> JsonObject:
+    def to_dict(self) -> JsonObject:
         return JsonObject(
-            **self.finding_ids.to_dict(),
-            expected_removed_finding_ids=expected_removed_finding_ids,
-            expected_removed_finding_count=len(expected_removed_finding_ids),
+            **super().to_dict(),
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
+            expected_removed_finding_count=self.expected_removed_finding_count,
             confirmed_expected_removed_finding_ids=(
-                self.confirmed_expected_removed_finding_ids(
-                    expected_removed_finding_ids
-                )
+                self.confirmed_expected_removed_finding_ids
             ),
             surviving_expected_removed_finding_ids=(
-                self.surviving_expected_removed_finding_ids(
-                    expected_removed_finding_ids
-                )
+                self.surviving_expected_removed_finding_ids
             ),
             confirmed_expected_removed_finding_count=(
-                self.confirmed_expected_removed_finding_count(
-                    expected_removed_finding_ids
-                )
+                self.confirmed_expected_removed_finding_count
             ),
             surviving_expected_removed_finding_count=(
-                self.surviving_expected_removed_finding_count(
-                    expected_removed_finding_ids
-                )
+                self.surviving_expected_removed_finding_count
             ),
-            fulfilled_expected_removals=self.fulfilled_expected_removals(
-                expected_removed_finding_ids
-            ),
+            fulfilled_expected_removals=self.fulfilled_expected_removals,
         )
 
 
@@ -518,31 +481,48 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
     obligation_class: FindingObligationClass
     detector_ids: CodemodDetectorIdTransition
-    expected_removed_finding_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_findings(
+        cls,
+        obligation_class: FindingObligationClass,
+        before_findings: tuple[RefactorFinding, ...],
+        after_findings: tuple[RefactorFinding, ...],
+        *,
+        expected_removed_finding_ids: tuple[str, ...] = (),
+    ) -> "CodemodFindingClassChange":
+        transition = CodemodFindingIdTransition.from_findings(
+            before_findings,
+            after_findings,
+        )
+        return cls(
+            before_ids=transition.before_ids,
+            after_ids=transition.after_ids,
+            expected_removed_finding_ids=expected_removed_finding_ids,
+            obligation_class=obligation_class,
+            detector_ids=CodemodDetectorIdTransition.from_findings(
+                before_findings,
+                after_findings,
+            ),
+        )
 
     @property
     def status(self) -> CodemodFindingClassStatus:
         return CodemodFindingClassStatus.from_change(self)
 
     @property
-    def expected_removed_finding_count(self) -> int:
-        return len(self.expected_removed_finding_ids)
-
-    @property
     def finding_count_increase(self) -> int:
         """Return newly introduced obligations in this semantic class."""
 
-        return max(self.after_finding_count - self.before_finding_count, 0)
+        return max(self.after_count - self.before_count, 0)
 
     def to_dict(self) -> JsonObject:
         return JsonObject(
-            **self.finding_ids.to_dict(),
+            **super().to_dict(),
             obligation_class=self.obligation_class.to_dict(),
             detector_transition=self.detector_ids.to_dict(),
             status=self.status.value,
             finding_count_increase=self.finding_count_increase,
-            expected_removed_finding_ids=self.expected_removed_finding_ids,
-            expected_removed_finding_count=self.expected_removed_finding_count,
         )
 
 
@@ -570,16 +550,10 @@ class CodemodFindingClassDelta:
             before_class_findings = before_findings_by_class.get(obligation_class, ())
             after_class_findings = after_findings_by_class.get(obligation_class, ())
             changes.append(
-                CodemodFindingClassChange(
-                    obligation_class=obligation_class,
-                    detector_ids=CodemodDetectorIdTransition.from_findings(
-                        before_class_findings,
-                        after_class_findings,
-                    ),
-                    finding_ids=CodemodFindingIdTransition.from_findings(
-                        before_class_findings,
-                        after_class_findings,
-                    ),
+                CodemodFindingClassChange.from_findings(
+                    obligation_class,
+                    before_class_findings,
+                    after_class_findings,
                     expected_removed_finding_ids=tuple(
                         finding.stable_id
                         for finding in before_class_findings
@@ -640,7 +614,7 @@ class CodemodFindingClassDelta:
         return tuple(
             change
             for change in self.changes
-            if selected_ids.intersection(change.before_finding_ids)
+            if selected_ids.intersection(change.before_ids)
         )
 
     def to_dict(self) -> JsonObject:
@@ -655,70 +629,25 @@ class CodemodFindingClassDelta:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalProgress:
+class CodemodRefactorGoalProgress(CodemodFindingIdTransition):
     """Before/after target-finding progress for one goal stage."""
-
-    finding_ids: CodemodFindingIdTransition
-
-    @classmethod
-    def from_findings(
-        cls,
-        before_findings: Iterable[RefactorFinding],
-        after_findings: Iterable[RefactorFinding],
-    ) -> "CodemodRefactorGoalProgress":
-        return cls(
-            finding_ids=CodemodFindingIdTransition.from_findings(
-                before_findings,
-                after_findings,
-            )
-        )
-
-    @property
-    def finding_delta(self) -> CodemodFindingDelta:
-        """Project generic delta reporting from the single goal transition."""
-
-        return CodemodFindingDelta(self.finding_ids)
-
-    @property
-    def before_target_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.before_ids
-
-    @property
-    def after_target_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.after_ids
-
-    @property
-    def removed_target_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.removed_ids
-
-    @property
-    def surviving_target_finding_ids(self) -> tuple[str, ...]:
-        return self.finding_ids.surviving_ids
-
-    @property
-    def removed_target_finding_count(self) -> int:
-        return len(self.removed_target_finding_ids)
-
-    @property
-    def surviving_target_finding_count(self) -> int:
-        return len(self.surviving_target_finding_ids)
 
     @property
     def achieved(self) -> bool:
-        return not self.after_target_finding_ids
+        return not self.after_ids
 
     @property
     def made_progress(self) -> bool:
-        return self.removed_target_finding_count > 0
+        return self.removed_count > 0
 
     def to_dict(self) -> JsonObject:
         return {
-            "before_target_finding_ids": self.before_target_finding_ids,
-            "after_target_finding_ids": self.after_target_finding_ids,
-            "removed_target_finding_ids": self.removed_target_finding_ids,
-            "surviving_target_finding_ids": self.surviving_target_finding_ids,
-            "removed_target_finding_count": self.removed_target_finding_count,
-            "surviving_target_finding_count": self.surviving_target_finding_count,
+            "before_target_finding_ids": self.before_ids,
+            "after_target_finding_ids": self.after_ids,
+            "removed_target_finding_ids": self.removed_ids,
+            "surviving_target_finding_ids": self.surviving_ids,
+            "removed_target_finding_count": self.removed_count,
+            "surviving_target_finding_count": len(self.surviving_ids),
             "achieved": self.achieved,
             "made_progress": self.made_progress,
         }
@@ -735,7 +664,11 @@ class CodemodRefactorGoalStage:
 
     @property
     def finding_delta(self) -> CodemodFindingDelta:
-        return self.progress.finding_delta
+        return CodemodFindingDelta(
+            before_ids=self.progress.before_ids,
+            after_ids=self.progress.after_ids,
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
+        )
 
     @property
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
@@ -754,10 +687,7 @@ class CodemodRefactorGoalStage:
         after_ids = tuple(finding.stable_id for finding in findings)
         return replace(
             self,
-            progress=replace(
-                self.progress,
-                finding_ids=self.progress.finding_ids.with_after_ids(after_ids),
-            ),
+            progress=self.progress.with_after_ids(after_ids),
             applied=True,
         )
 
@@ -766,9 +696,7 @@ class CodemodRefactorGoalStage:
             "applied": self.applied,
             "simulation": self.simulation.to_dict(),
             "progress": self.progress.to_dict(),
-            "finding_delta": self.finding_delta.to_dict(
-                self.expected_removed_finding_ids
-            ),
+            "finding_delta": self.finding_delta.to_dict(),
             "class_plan_report": self.class_plan_report.to_dict(),
         }
 
@@ -1080,8 +1008,8 @@ class CodemodRefactorGoalReport:
                 "   - "
                 f"Stage {stage_number}: "
                 f"rewrites={stage.rewrite_count}, "
-                f"removed_targets={stage.progress.removed_target_finding_count}, "
-                f"surviving_targets={stage.progress.surviving_target_finding_count}, "
+                f"removed_targets={stage.progress.removed_count}, "
+                f"surviving_targets={len(stage.progress.surviving_ids)}, "
                 f"applied={stage.applied}"
             )
         for obstacle in self.trajectory_proof.obstacles:
@@ -1138,6 +1066,7 @@ class CodemodProjectedFindingReport:
         return CodemodFindingDelta.from_findings(
             self.before_findings,
             self.after_findings,
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
         )
 
     @cached_property
@@ -1174,9 +1103,7 @@ class CodemodProjectedFindingReport:
             "scan_mode": self.scan_mode.value,
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
-            "finding_delta": self.finding_delta.to_dict(
-                self.expected_removed_finding_ids
-            ),
+            "finding_delta": self.finding_delta.to_dict(),
             "finding_class_delta": self.finding_class_delta.to_dict(),
             "after_findings": tuple(finding.to_dict() for finding in after_findings),
         }
@@ -1235,7 +1162,7 @@ class CodemodClassPlanProjectedDelta:
         surviving_ids = {
             finding_id
             for change in self.changes
-            for finding_id in change.after_finding_ids
+            for finding_id in change.after_ids
         }
         return not any(
             finding_id in surviving_ids
@@ -1275,7 +1202,7 @@ class CodemodClassPlanSiteProjectedDelta:
             changes=tuple(
                 change
                 for change in changes
-                if synthesis_record.finding_id in change.before_finding_ids
+                if synthesis_record.finding_id in change.before_ids
             ),
             expected_removed_finding_ids=tuple(
                 finding_id
@@ -1293,7 +1220,7 @@ class CodemodClassPlanSiteProjectedDelta:
         surviving_ids = {
             finding_id
             for change in self.changes
-            for finding_id in change.after_finding_ids
+            for finding_id in change.after_ids
         }
         return not (
             frozenset(self.expected_removed_finding_ids) & frozenset(surviving_ids)

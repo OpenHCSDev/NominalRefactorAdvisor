@@ -299,6 +299,12 @@ The goal runner reports complete reachable-state evidence separately from the
 single replay sequence.  ``PROVED`` means that exhaustive exploration found one
 unique terminal source state.  Ambiguity or any frontier, depth, or state-budget
 obstacle keeps ``stages`` empty and prevents application.
+Finding deltas and goal progress inherit one ``CodemodFindingIdTransition``
+algebra over ``before_ids`` and ``after_ids``.  Finding-specific and
+target-specific names exist only in their JSON presentations.  Expected
+removals belong to ``CodemodFindingDelta``; a goal stage derives that delta from
+its progress and its class plan instead of retaining a second transition
+carrier.
 Target-free states that increase any complete-scan finding class relative to
 the starting state are recorded as unjustified-debt terminals rather than
 accepted as successful refactors.  The search may pass through intermediate
