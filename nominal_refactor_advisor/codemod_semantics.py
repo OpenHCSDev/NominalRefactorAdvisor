@@ -170,9 +170,9 @@ class FindingRecipeSynthesisStatus(StrEnum):
         "",
         FindingRecipeSynthesisDisposition.CANDIDATE,
     )
-    NO_SYNTHESIZER = (
-        "no_synthesizer",
-        "detector declaration has no executable finding synthesis behavior",
+    NO_EVALUATOR = (
+        "no_evaluator",
+        "detector declaration has no finding recipe evaluation behavior",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_ACTION_KEYS = (

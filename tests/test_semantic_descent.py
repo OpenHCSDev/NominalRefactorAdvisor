@@ -1266,7 +1266,7 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert record.detector_id == "semantic_mirror_without_descent"
     assert record.status.value == "executable_candidate"
     assert (
-        record.executable_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
+        record.evaluation_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
@@ -1383,7 +1383,7 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
 
     assert plan.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].executable_declaration_name
+        plan.records[0].evaluation_declaration_name
         == "InheritedAutoRegisterConfigBoilerplateDetector"
     )
     assert plan.records[0].refactor_concept == "auto_register"
@@ -1550,7 +1550,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
 
     assert plan.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].executable_declaration_name
+        plan.records[0].evaluation_declaration_name
         == "AutoRegisterExplicitPriorityOrderingDetector"
     )
     assert plan.records[0].refactor_concept == "auto_register_mro_ordering"
@@ -2470,7 +2470,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     assert simulation.is_clean is True
     assert record.refactor_concept == "dataclass_payload_projection"
     assert (
-        record.executable_declaration_name
+        record.evaluation_declaration_name
         == "DataclassPayloadProjectionMappingRecipeBuilder"
     )
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
@@ -2722,7 +2722,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
 
     assert plan.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].executable_declaration_name
+        plan.records[0].evaluation_declaration_name
         == "DataclassFieldNameCollectionProjectionMappingRecipeBuilder"
     )
     assert plan.records[0].refactor_concept == "dataclass_payload_projection"

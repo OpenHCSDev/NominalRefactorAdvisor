@@ -52,11 +52,22 @@ from .taxonomy import (
 
 
 @dataclass(frozen=True, order=True)
-class RequiredRelationIdentity(SemanticRecord):
-    """Structured identity derived from one nominal relation declaration."""
+class NominalDeclarationIdentity(SemanticRecord):
+    """Structured identity derived from one nominal Python declaration."""
 
     module_name: str
     qualname: str
+
+    @classmethod
+    def from_declaration(cls, declaration_type: type[object]) -> Self:
+        return cls(
+            module_name=declaration_type.__module__,
+            qualname=declaration_type.__qualname__,
+        )
+
+
+class RequiredRelationIdentity(NominalDeclarationIdentity):
+    """Identity of a declaration that owns one required relation."""
 
 
 class RequiredRelationDeclaration(ABC):
@@ -73,10 +84,7 @@ class RequiredRelationDeclaration(ABC):
     def required_relation_identity(cls) -> RequiredRelationIdentity:
         """Project the nominal declaration as a structured immutable identity."""
 
-        return RequiredRelationIdentity(
-            module_name=cls.__module__,
-            qualname=cls.__qualname__,
-        )
+        return RequiredRelationIdentity.from_declaration(cls)
 
 
 class SemanticFieldRole(StrEnum):

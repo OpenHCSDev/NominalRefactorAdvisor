@@ -59,7 +59,7 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
 from ..codemod import (
-    AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
+    AutoRegisterMetaUnderRentedFindingRecipeEvaluator,
     EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
@@ -2889,7 +2889,7 @@ def _compact_autoregister_meta_rent_candidates(
 
 class AutoRegisterMetaUnderRentedDetector(
     CompactClassRepositoryCandidateDetector[AutoRegisterMetaRentCandidate],
-    AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
+    AutoRegisterMetaUnderRentedFindingRecipeEvaluator,
 ):
     compact_report_context_promotion_predicate = staticmethod(
         _target_has_autoregister_meta_root

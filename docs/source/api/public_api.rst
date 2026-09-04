@@ -136,10 +136,11 @@ Each obstacle identifies the nominal executable declaration that failed to
 prove a recipe and carries that declaration's diagnostic.  The record's
 ``reason`` is a concise summary; consumers that need diagnostic proof detail
 should inspect the structured obstacles instead of parsing that summary.
-For detector-owned synthesis, ``executable_declaration`` names the concrete
-detector declaration whose MRO supplied the recipe behaviour.  Inferred
-metric-driven synthesis names the strategy or builder declaration selected by
-the finding evidence.
+``evaluation_declaration`` names the concrete detector, strategy, or builder
+whose MRO assessed the finding. An executable candidate's evaluation
+declaration is also the nominal owner that supplied its recipe behavior;
+evaluator-only declarations remain explicit without being misreported as
+executable.
 
 Exact repeated methods without a proved owner remain evidence-only findings for
 automatic synthesis because source structure cannot determine the new

@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+from nominal_refactor_advisor.detector_contributions import (
+    DetectorRefactorContribution,
+    DetectorRefactorContributionReport,
+)
 from nominal_refactor_advisor.detectors import IssueDetector
-from nominal_refactor_advisor.models import FindingSpec
+from nominal_refactor_advisor.models import NominalDeclarationIdentity
 from nominal_refactor_advisor.patterns import PatternId
 
 
@@ -83,6 +87,9 @@ def _render_pattern_catalog(patterns: list[PatternId]) -> str:
 
 
 def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) -> str:
+    contribution_report = DetectorRefactorContributionReport(
+        tuple(DetectorRefactorContribution(item) for item in detector_types)
+    )
     lines = [
         ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
         ".. Do not edit manually.",
@@ -95,53 +102,59 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "-------",
         "",
         f"- Total detectors: ``{len(detector_types)}``",
+        f"- Authority-boundary detectors: ``{contribution_report.authority_boundary_count}``",
+        f"- Semantic-mirror detectors: ``{contribution_report.semantic_mirror_count}``",
+        f"- Direct recipe evaluators: ``{contribution_report.direct_recipe_evaluator_count}``",
+        f"- Direct executable refactors: ``{contribution_report.direct_executable_refactor_count}``",
         "",
         ".. list-table::",
         "   :header-rows: 1",
         "",
         "   * - Detector ID",
         "     - Pattern",
-        "     - Finding title",
-        "     - Class",
-        "     - Base",
+        "     - Required-relation owner",
+        "     - Authority contract",
+        "     - Direct recipe evaluation",
+        "     - Direct executable concept",
     ]
-    for detector_type in detector_types:
-        finding_spec = _finding_spec(detector_type)
+    for contribution in contribution_report.contributions:
+        detector_type = contribution.detector_type
+        finding_spec = detector_type.required_relation_finding_spec()
+        authority_contract = (
+            contribution.semantic_mirror_contract
+            or contribution.ssot_authority_boundary
+        )
         lines.extend(
             [
                 f"   * - ``{detector_type.detector_id}``",
-                (
-                    f"     - ``{finding_spec.pattern_id.value}``"
-                    if finding_spec is not None
-                    else "     - Unknown"
-                ),
-                (
-                    f"     - {finding_spec.title}"
-                    if finding_spec is not None
-                    else "     - Unknown"
-                ),
-                f"     - ``{detector_type.__name__}``",
-                f"     - ``{_detector_base_name(detector_type)}``",
+                f"     - ``{finding_spec.pattern_id.value}``",
+                f"     - ``{contribution.required_relation.qualname}``",
+                f"     - {_declaration_reference(authority_contract)}",
+                f"     - {_declaration_reference(contribution.direct_recipe_evaluator)}",
+                f"     - {_declaration_reference(contribution.direct_refactor_concept)}",
             ]
         )
     lines.extend(["", "Detectors", "---------", ""])
     for detector_type in detector_types:
         title = detector_type.__name__
-        finding_spec = _finding_spec(detector_type)
+        finding_spec = detector_type.required_relation_finding_spec()
+        contribution = DetectorRefactorContribution(detector_type)
         lines.extend(
             [
                 title,
                 "^" * len(title),
                 "",
                 f":Detector ID: ``{detector_type.detector_id}``",
-                (
-                    f":Pattern: ``{finding_spec.pattern_id.value}``"
-                    if finding_spec is not None
-                    else ":Pattern: Unknown"
-                ),
+                f":Pattern: ``{finding_spec.pattern_id.value}``",
                 f":Base: ``{_detector_base_name(detector_type)}``",
                 f":Reference: :doc:`detector_reference/{detector_type.detector_id}`",
                 f":Summary: {_detector_summary(detector_type)}",
+                f":Required-relation owner: ``{contribution.required_relation.qualname}``",
+                f":SSOT authority boundary: {_declaration_reference(contribution.ssot_authority_boundary)}",
+                f":Semantic-mirror contract: {_declaration_reference(contribution.semantic_mirror_contract)}",
+                f":Direct recipe evaluator: {_declaration_reference(contribution.direct_recipe_evaluator)}",
+                f":Direct executable refactor: {_declaration_reference(contribution.direct_executable_refactor)}",
+                f":Direct refactor concept: {_declaration_reference(contribution.direct_refactor_concept)}",
                 "",
             ]
         )
@@ -175,7 +188,8 @@ def _render_detector_reference_index(
 def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
     qualified_name = f"nominal_refactor_advisor.detectors.{detector_type.__name__}"
     title = detector_type.__name__
-    finding_spec = _finding_spec(detector_type)
+    finding_spec = detector_type.required_relation_finding_spec()
+    contribution = DetectorRefactorContribution(detector_type)
     lines = [
         ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
         ".. Do not edit manually.",
@@ -189,33 +203,42 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
         "",
         f"{_detector_summary(detector_type)}",
         "",
+        "Refactoring Contribution",
+        "------------------------",
+        "",
+        f":Required-relation owner: ``{contribution.required_relation.qualname}``",
+        f":SSOT authority boundary: {_declaration_reference(contribution.ssot_authority_boundary)}",
+        f":Semantic-mirror contract: {_declaration_reference(contribution.semantic_mirror_contract)}",
+        f":Direct recipe evaluator: {_declaration_reference(contribution.direct_recipe_evaluator)}",
+        f":Direct executable refactor: {_declaration_reference(contribution.direct_executable_refactor)}",
+        f":Direct refactor concept: {_declaration_reference(contribution.direct_refactor_concept)}",
+        "",
     ]
-    if finding_spec is not None:
-        lines.extend(
-            [
-                "Default Finding Semantics",
-                "-------------------------",
-                "",
-                f":Pattern: ``{finding_spec.pattern_id.value}``",
-                f":Title: {_rst_field_value(finding_spec.title)}",
-                f":Why: {_rst_field_value(finding_spec.why)}",
-                f":Capability gap: {_rst_field_value(finding_spec.capability_gap)}",
-                f":Relation context: {_rst_field_value(finding_spec.relation_context)}",
-                f":Default confidence: ``{finding_spec.confidence.name}``",
-                f":Default certification: ``{finding_spec.certification.name}``",
-                (
-                    f":Capability tags: {_enum_name_list(finding_spec.capability_tags)}"
-                    if finding_spec.capability_tags
-                    else ":Capability tags: None"
-                ),
-                (
-                    f":Observation tags: {_enum_name_list(finding_spec.observation_tags)}"
-                    if finding_spec.observation_tags
-                    else ":Observation tags: None"
-                ),
-                "",
-            ]
-        )
+    lines.extend(
+        [
+            "Default Finding Semantics",
+            "-------------------------",
+            "",
+            f":Pattern: ``{finding_spec.pattern_id.value}``",
+            f":Title: {_rst_field_value(finding_spec.title)}",
+            f":Why: {_rst_field_value(finding_spec.why)}",
+            f":Capability gap: {_rst_field_value(finding_spec.capability_gap)}",
+            f":Relation context: {_rst_field_value(finding_spec.relation_context)}",
+            f":Default confidence: ``{finding_spec.confidence.name}``",
+            f":Default certification: ``{finding_spec.certification.name}``",
+            (
+                f":Capability tags: {_enum_name_list(finding_spec.capability_tags)}"
+                if finding_spec.capability_tags
+                else ":Capability tags: None"
+            ),
+            (
+                f":Observation tags: {_enum_name_list(finding_spec.observation_tags)}"
+                if finding_spec.observation_tags
+                else ":Observation tags: None"
+            ),
+            "",
+        ]
+    )
     lines.extend(
         [
             "Implementation",
@@ -244,26 +267,14 @@ def _detector_base_name(detector_type: type[IssueDetector]) -> str:
     return IssueDetector.__name__
 
 
-def _doc_summary(detector_type: type[IssueDetector]) -> str:
-    doc = detector_type.__doc__
-    if not doc:
-        return "Internal detector implementation; inspect the detector ID and finding output for semantics."
-    first_line = doc.strip().splitlines()[0].strip()
-    return first_line.rstrip(".") + "."
-
-
-def _finding_spec(detector_type: type[IssueDetector]) -> FindingSpec | None:
-    finding_spec = getattr(detector_type, "finding_spec", None)
-    if isinstance(finding_spec, FindingSpec):
-        return finding_spec
-    return None
-
-
 def _detector_summary(detector_type: type[IssueDetector]) -> str:
-    finding_spec = _finding_spec(detector_type)
-    if finding_spec is not None:
-        return finding_spec.title
-    return _doc_summary(detector_type)
+    return detector_type.required_relation_finding_spec().title
+
+
+def _declaration_reference(
+    identity: NominalDeclarationIdentity | None,
+) -> str:
+    return "None" if identity is None else f"``{identity.qualname}``"
 
 
 def _enum_name_list(values: Iterable[object]) -> str:

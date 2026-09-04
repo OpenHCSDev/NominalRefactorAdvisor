@@ -10,12 +10,19 @@ Detector Base Classes
 .. automodule:: nominal_refactor_advisor.detectors
    :members: DetectorConfig, IssueDetector, PerModuleIssueDetector, CandidateFindingDetector, EvidenceOnlyPerModuleDetector, StaticModulePatternDetector, default_detectors
 
-Concrete detectors that can produce executable recipes inherit
-``FindingRecipeSynthesizer`` behaviour directly.  Recipe lookup resolves the
-finding's registered ``IssueDetector`` declaration and follows its MRO; there is
-no second detector-to-synthesiser registry.  Metric-driven inferred synthesis
-remains separate and fails closed unless exactly one inference declaration
-supports the finding.
+Detector declarations that can assess a finding inherit
+``FindingRecipeEvaluator``. Only declarations capable of producing a rewrite
+also inherit ``FindingRecipeSynthesizer`` and one nominal ``RefactorConcept``.
+Recipe lookup resolves the finding's registered ``IssueDetector`` declaration
+through its MRO; there is no second detector-to-evaluator registry.
+Metric-driven inferred synthesis remains separate and fails closed unless
+exactly one inference declaration supports the finding.
+
+The generated :doc:`detector_catalog` derives each detector's required-relation
+owner, authority-boundary contract, evaluation capability, executable
+capability, and refactor concept directly from those declarations. These are
+the direct MRO capabilities; metric-driven inferred synthesis remains a
+finding-level decision.
 
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the

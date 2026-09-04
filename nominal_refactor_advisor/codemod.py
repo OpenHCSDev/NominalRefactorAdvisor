@@ -11603,9 +11603,9 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
     def proof_obstacles(self) -> tuple[FindingRecipeProofObstacle, ...]:
         return self.evaluation.proof_obstacles
 
-    @json_report_property(field_name="executable_declaration")
-    def executable_declaration_name(self) -> str:
-        return self.evaluation.executable_declaration_name
+    @json_report_property(field_name="evaluation_declaration")
+    def evaluation_declaration_name(self) -> str:
+        return self.evaluation.evaluation_declaration_name
 
     @json_report_property()
     def conflict_evidence(self) -> "CurrentSnapshotRecipeConflictEvidence | None":
@@ -11796,7 +11796,7 @@ class FindingRecipeEvaluation(ABC):
     candidate_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
     proof_obstacles = ConstantProperty[tuple[FindingRecipeProofObstacle, ...]](())
     refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
-    executable_declaration_name = ConstantProperty[str]("")
+    evaluation_declaration_name = ConstantProperty[str]("")
     conflict_evidence = ConstantProperty[CurrentSnapshotRecipeConflictEvidence | None](
         None
     )
@@ -11834,15 +11834,19 @@ class FindingRecipeEvaluation(ABC):
         return self
 
     @property
+    def required_evaluation_declaration_type(self) -> type[object]:
+        raise TypeError("Finding recipe evaluation has no declaration owner")
+
+    @property
     def required_executable_declaration_type(self) -> type[object]:
         raise TypeError("Finding recipe evaluation has no executable declaration")
 
 
 @dataclass(frozen=True, kw_only=True)
-class MissingRecipeSynthesizerEvaluation(FindingRecipeEvaluation):
-    """Finding with no declaration capable of evaluating a recipe."""
+class MissingRecipeEvaluatorEvaluation(FindingRecipeEvaluation):
+    """Finding with no declaration capable of evaluating recipe evidence."""
 
-    status = FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    status = FindingRecipeSynthesisStatus.NO_EVALUATOR
 
     @property
     def rejection_reason(self) -> str:
@@ -11851,25 +11855,25 @@ class MissingRecipeSynthesizerEvaluation(FindingRecipeEvaluation):
 
 @dataclass(frozen=True, kw_only=True)
 class DeclaredRecipeEvaluation(FindingRecipeEvaluation, ABC):
-    """Evaluation outcome with one required executable declaration owner."""
+    """Evaluation outcome owned by one nominal evaluation declaration."""
 
-    executable_declaration_type: type[object]
+    evaluation_declaration_type: type[object]
 
     @property
-    def executable_declaration_name(self) -> str:
-        return self.executable_declaration_type.__name__
+    def evaluation_declaration_name(self) -> str:
+        return self.evaluation_declaration_type.__name__
+
+    @property
+    def required_evaluation_declaration_type(self) -> type[object]:
+        return self.evaluation_declaration_type
 
     @property
     def refactor_concept_type(self) -> type[RefactorConcept] | None:
-        if not issubclass(self.executable_declaration_type, RefactorConcept):
+        if not issubclass(self.evaluation_declaration_type, RefactorConcept):
             return None
         return RefactorConcept.leaf_concept_for_declaration(
-            self.executable_declaration_type
+            self.evaluation_declaration_type
         )
-
-    @property
-    def required_executable_declaration_type(self) -> type[object]:
-        return self.executable_declaration_type
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -11901,6 +11905,10 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         return self.executable_recipe
 
     @property
+    def required_executable_declaration_type(self) -> type[object]:
+        return self.evaluation_declaration_type
+
+    @property
     def recipe_id(self) -> str:
         return self.executable_recipe.recipe_id
 
@@ -11922,7 +11930,7 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         if not action_keys:
             return MissingActionKeysRecipeEvaluation(
                 executable_recipe=self.executable_recipe,
-                executable_declaration_type=self.executable_declaration_type,
+                evaluation_declaration_type=self.evaluation_declaration_type,
             )
         return self
 
@@ -11949,7 +11957,7 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
             return self
         return RejectedRecipeEvaluation(
             reason=FindingRecipeAuthorityClaimGate.rejection_reason(authority_report),
-            executable_declaration_type=self.executable_declaration_type,
+            evaluation_declaration_type=self.evaluation_declaration_type,
         )
 
     def terminal_evaluation(
@@ -11963,13 +11971,13 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         except CodemodOperationPreflightError as error:
             return RejectedRecipeEvaluation(
                 reason=error.report.message,
-                executable_declaration_type=self.executable_declaration_type,
+                evaluation_declaration_type=self.evaluation_declaration_type,
             )
         if has_effective_rewrites:
             return self
         return IneffectiveRecipeEvaluation(
             executable_recipe=self.executable_recipe,
-            executable_declaration_type=self.executable_declaration_type,
+            evaluation_declaration_type=self.evaluation_declaration_type,
         )
 
 
@@ -12079,7 +12087,7 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
                 reason=(
                     "semantic-descent recipe requires a source-resolved AuthorityClaim"
                 ),
-                executable_declaration_type=self.executable_declaration_type,
+                evaluation_declaration_type=self.evaluation_declaration_type,
             )
         return self.gated_by_existing_authority_claim(context)
 
@@ -12101,19 +12109,19 @@ class FindingRecipeAuthorityClaimGate:
 
 @dataclass(frozen=True)
 class FindingRecipeSynthesisAttempt:
-    """Evaluate one finding against the registered executable DSL bridge."""
+    """Evaluate one finding against its declaration-owned DSL bridge."""
 
     finding: RefactorFinding
     selector_context: CodemodSelectorContext | None
 
     def evaluate(self) -> FindingRecipeSynthesisRecord:
-        synthesizer = FindingRecipeSynthesizer.for_finding(self.finding)
-        if synthesizer is None:
-            evaluation: FindingRecipeEvaluation = MissingRecipeSynthesizerEvaluation()
+        evaluator = FindingRecipeEvaluator.for_finding(self.finding)
+        if evaluator is None:
+            evaluation: FindingRecipeEvaluation = MissingRecipeEvaluatorEvaluation()
             action_keys: tuple[FindingRecipeActionKey, ...] = ()
         else:
-            action_keys = synthesizer.action_keys_for_finding(self.finding)
-            evaluation = synthesizer.evaluate_recipe_for_finding(
+            action_keys = evaluator.action_keys_for_finding(self.finding)
+            evaluation = evaluator.evaluate_recipe_for_finding(
                 self.finding,
                 self.selector_context,
             )
@@ -12453,8 +12461,63 @@ def codemod_class_plan_from_findings(
     )
 
 
-class FindingRecipeSynthesizer(ABC):
-    """Executable finding semantics inherited by their detector declarations."""
+class FindingRecipeEvaluator(ABC):
+    """Declaration-owned proof evaluation for one detector finding."""
+
+    @classmethod
+    def detector_declaration_type(cls) -> type[IssueDetector]:
+        """Return the unique detector declaration inheriting this behavior."""
+
+        detector_types = tuple(
+            detector_type
+            for detector_type in IssueDetector.registered_detector_types()
+            if issubclass(detector_type, cls)
+        )
+        if len(detector_types) != 1:
+            raise TypeError(
+                f"{cls.__name__} must belong to exactly one detector declaration; "
+                f"found {tuple(item.__name__ for item in detector_types)!r}"
+            )
+        return detector_types[0]
+
+    @classmethod
+    def for_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> Self | None:
+        detector_type = IssueDetector.registered_detector_type_for_id(
+            finding.detector_id
+        )
+        if detector_type is not None and issubclass(detector_type, cls):
+            return cast(Self, detector_type())
+        inferred = InferredFindingRecipeSynthesizer.for_finding(finding)
+        if inferred is None or not isinstance(inferred, cls):
+            return None
+        return cast(Self, inferred)
+
+    @abstractmethod
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        raise NotImplementedError
+
+    def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
+        return RejectedRecipeEvaluation(
+            reason=reason,
+            evaluation_declaration_type=type(self),
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return ()
+
+
+class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
+    """Proof-bearing recipe production inherited by detector declarations."""
 
     @classmethod
     def finding_matches_concept(
@@ -12473,7 +12536,7 @@ class FindingRecipeSynthesizer(ABC):
             selector_context,
         )
         return issubclass(
-            evaluation.required_executable_declaration_type,
+            evaluation.required_evaluation_declaration_type,
             concept_type,
         )
 
@@ -12512,63 +12575,14 @@ class FindingRecipeSynthesizer(ABC):
             and issubclass(detector_type, concept_type)
         )
 
-    @classmethod
-    def detector_declaration_type(cls) -> type[IssueDetector]:
-        """Return the unique detector declaration inheriting this behavior."""
-
-        detector_types = tuple(
-            detector_type
-            for detector_type in IssueDetector.registered_detector_types()
-            if issubclass(detector_type, cls)
-        )
-        if len(detector_types) != 1:
-            raise TypeError(
-                f"{cls.__name__} must belong to exactly one detector declaration; "
-                f"found {tuple(item.__name__ for item in detector_types)!r}"
-            )
-        return detector_types[0]
-
-    @classmethod
-    def for_finding(
-        cls,
-        finding: RefactorFinding,
-    ) -> "FindingRecipeSynthesizer | None":
-        detector_type = IssueDetector.registered_detector_type_for_id(
-            finding.detector_id
-        )
-        if detector_type is not None and issubclass(detector_type, cls):
-            return cast(FindingRecipeSynthesizer, detector_type())
-        return InferredFindingRecipeSynthesizer.for_finding(finding)
-
-    @abstractmethod
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        raise NotImplementedError
-
     def executable_evaluation(
         self,
         recipe: RefactorRecipe,
     ) -> ExecutableRecipeEvaluation:
         return ExecutableRecipeEvaluation(
             executable_recipe=recipe,
-            executable_declaration_type=type(self),
+            evaluation_declaration_type=type(self),
         )
-
-    def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
-        return RejectedRecipeEvaluation(
-            reason=reason,
-            executable_declaration_type=type(self),
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        return ()
-
 
 class PrimaryEvidenceActionKeysMixin:
     """Derive one conflict key from a finding's primary source witness."""
@@ -12607,6 +12621,7 @@ class FindingEvidenceActionKeysMixin:
 class CandidateCollectorBoilerplateFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
 ):
     """Compile a forwarding-method finding through its current source witness."""
 
@@ -12692,9 +12707,9 @@ class SingleSourcePathFindingMixin:
         return next(iter(file_paths))
 
 
-class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
+class EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator(
     PrimaryEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    FindingRecipeEvaluator,
 ):
     """Preserve the exact proof gap for environment-boolean drift findings."""
 
@@ -12718,9 +12733,9 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
         )
 
 
-class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
+class AutoRegisterMetaUnderRentedFindingRecipeEvaluator(
     PrimaryEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    FindingRecipeEvaluator,
 ):
     """Reject a metaclass edit until its missing rent semantics are proven."""
 
@@ -13608,7 +13623,10 @@ class RepeatedBuilderAuthorityRecipeParts(AuthorityClaimCarrier):
         )
 
 
-class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class RepeatedBuilderCallFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    ConstructorKwargCollapseConcept,
+):
     """Build class-owned constructor authority recipes for repeated builder calls."""
 
     def evaluate_recipe_for_finding(
@@ -13631,7 +13649,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
             )
         return ExecutableRecipeEvaluation(
             executable_recipe=parts.recipe_for(finding),
-            executable_declaration_type=parts.derivation.executable_declaration_type,
+            evaluation_declaration_type=parts.derivation.executable_declaration_type,
         )
 
     def recipe_parts_for_finding(
@@ -14863,6 +14881,7 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
 class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    DerivedProjectionConcept,
 ):
     """Move source-proved key-facing queries to their enum declaration."""
 
@@ -15679,7 +15698,7 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         del finding
         return SemanticDescentRecipeEvaluation(
             executable_recipe=recipe,
-            executable_declaration_type=declaration_type,
+            evaluation_declaration_type=declaration_type,
             strategy_type=type(self),
         )
 
@@ -19105,7 +19124,7 @@ class RegistrationSemanticMirrorRecipeStrategy(
             ),
             FindingRecipeProofObstacle(
                 executable_declaration_type=(
-                    manual_evaluation.required_executable_declaration_type
+                    manual_evaluation.required_evaluation_declaration_type
                 ),
                 reason=manual_evaluation.rejection_reason,
             ),
@@ -19115,7 +19134,7 @@ class RegistrationSemanticMirrorRecipeStrategy(
                 "no class-family recipe declaration proved an executable exact "
                 "derivation"
             ),
-            executable_declaration_type=type(self),
+            evaluation_declaration_type=type(self),
             obstacles=obstacles,
         )
 
@@ -19880,7 +19899,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
                 reason=(
                     "semantic mapping mirror recipes require a source selector context"
                 ),
-                executable_declaration_type=type(self),
+                evaluation_declaration_type=type(self),
             )
         seed = SemanticMirrorRecipeSeedLocations.from_finding(finding)
         import_boundary = (
@@ -19894,7 +19913,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
             reason = "semantic authority import would create a module cycle"
             return RejectedRecipeEvaluation(
                 reason=reason,
-                executable_declaration_type=type(self),
+                evaluation_declaration_type=type(self),
                 obstacles=(
                     FindingRecipeProofObstacle(
                         executable_declaration_type=SemanticMirrorImportBoundary,
@@ -19919,7 +19938,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
                     "no inferred mapping recipe builder proved an executable "
                     "exact derivation"
                 ),
-                executable_declaration_type=type(self),
+                evaluation_declaration_type=type(self),
                 obstacles=proof_obstacles,
             )
         return RejectedRecipeEvaluation(
@@ -19929,7 +19948,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
                 f"`{finding.metrics.plan_mapping_name}` from "
                 f"`{finding.metrics.plan_source_name}`"
             ),
-            executable_declaration_type=type(self),
+            evaluation_declaration_type=type(self),
         )
 
     @staticmethod
@@ -20815,7 +20834,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         evaluation = self.candidates[index].record.evaluation
         return UnprovedRecipePlanEvaluation(
             executable_recipe=evaluation.required_recipe,
-            executable_declaration_type=(
+            evaluation_declaration_type=(
                 evaluation.required_executable_declaration_type
             ),
             reason=reason,
@@ -20829,7 +20848,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         evaluation = self.candidates[index].record.evaluation
         return ConflictingTrajectoryBranchEvaluation(
             executable_recipe=evaluation.required_recipe,
-            executable_declaration_type=(
+            evaluation_declaration_type=(
                 evaluation.required_executable_declaration_type
             ),
             evidence=evidence,
@@ -20842,7 +20861,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         evaluation = self.candidates[index].record.evaluation
         return CurrentSnapshotBatchCandidateEvaluation(
             executable_recipe=evaluation.required_recipe,
-            executable_declaration_type=(
+            evaluation_declaration_type=(
                 evaluation.required_executable_declaration_type
             ),
         )

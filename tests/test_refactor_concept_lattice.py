@@ -71,6 +71,15 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
         codemod.AutoRegisterMroOrderingConcept
     ),
+    codemod.CandidateCollectorBoilerplateFindingRecipeSynthesizer: (
+        codemod.ClassFamilyAuthorityConcept
+    ),
+    codemod.EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer: (
+        codemod.DerivedProjectionConcept
+    ),
+    codemod.RepeatedBuilderCallFindingRecipeSynthesizer: (
+        codemod.ConstructorKwargCollapseConcept
+    ),
     detectors.ManualClassRegistrationDetector: (
         codemod.AutoRegisterClassRegistryConcept
     ),
@@ -126,67 +135,50 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
     assert "finding_matches_concept" in vars(codemod.FindingRecipeSynthesizer)
 
 
-def test_detector_declarations_own_executable_synthesis_through_mro() -> None:
-    executable_bindings = (
-        (
-            detectors.AutoRegisterExplicitPriorityOrderingDetector,
-            codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.AutoRegisterMetaUnderRentedDetector,
-            codemod.AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.ClosedParameterConveyorDetector,
-            detectors.ClosedParameterConveyorDetector,
-        ),
-        (
-            detectors.DeclaredCarrierExpansionDetector,
-            detectors.DeclaredCarrierExpansionDetector,
-        ),
-        (
-            detectors.EnvironmentBooleanAuthorityDriftDetector,
-            codemod.EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.ExactLeafMethodAncestorPromotionDetector,
-            codemod.ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.InheritedAutoRegisterConfigBoilerplateDetector,
-            codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.ManualClassRegistrationDetector,
-            codemod.ManualClassRegistrationFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.NumericLiteralDispatchDetector,
-            codemod.NumericLiteralDispatchFindingRecipeSynthesizer,
-        ),
-        (
-            detectors.RepeatedBuilderCallDetector,
-            codemod.RepeatedBuilderCallFindingRecipeSynthesizer,
-        ),
+def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
+    detector_types = detectors.IssueDetector.registered_detector_types()
+    evaluator_types = tuple(
+        detector_type
+        for detector_type in detector_types
+        if issubclass(detector_type, codemod.FindingRecipeEvaluator)
     )
+    synthesis_types = tuple(
+        detector_type
+        for detector_type in evaluator_types
+        if issubclass(detector_type, codemod.FindingRecipeSynthesizer)
+    )
+    evaluator_only_types = frozenset(evaluator_types) - frozenset(synthesis_types)
 
+    assert evaluator_only_types == frozenset(
+        {
+            detectors.AutoRegisterMetaUnderRentedDetector,
+            detectors.EnvironmentBooleanAuthorityDriftDetector,
+        }
+    )
     assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
-    for detector_type, synthesis_type in executable_bindings:
+    assert "__registry__" not in vars(codemod.FindingRecipeEvaluator)
+    for detector_type in evaluator_types:
         detector_id = detector_type.effective_detector_id()
         assert detector_id is not None
-        assert issubclass(detector_type, codemod.FindingRecipeSynthesizer)
-        assert synthesis_type.detector_declaration_type() is detector_type
+        assert detector_type.detector_declaration_type() is detector_type
         finding = advisor.RefactorFinding(
             detector_id=detector_id,
             pattern_id=advisor.PatternId.NOMINAL_BOUNDARY,
-            title="Executable detector declaration",
-            summary="The detector declaration owns synthesis through its MRO.",
-            why="A separate synthesizer registry would mirror detector identity.",
-            capability_gap="one nominal executable detector declaration",
-            relation_context="detector identity and synthesis share one leaf",
+            title="Recipe evaluation declaration",
+            summary="The detector declaration owns evaluation through its MRO.",
+            why="A separate evaluator registry would mirror detector identity.",
+            capability_gap="one nominal recipe evaluation declaration",
+            relation_context="detector identity and evaluation share one leaf",
         )
-        assert type(codemod.FindingRecipeSynthesizer.for_finding(finding)) is (
+        evaluator = codemod.FindingRecipeEvaluator.for_finding(finding)
+        assert type(evaluator) is detector_type
+
+    for detector_type in synthesis_types:
+        concept_type = codemod.RefactorConcept.leaf_concept_for_declaration(
             detector_type
+        )
+        assert detector_type.effective_detector_id() in (
+            codemod.FindingRecipeSynthesizer.detector_ids_for_concept(concept_type)
         )
 
 

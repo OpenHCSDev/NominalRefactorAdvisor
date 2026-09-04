@@ -89,15 +89,21 @@ from .codemod_workflow import (
     CodemodWorkflowStopReason,
     ProjectedScanModuleSet,
 )
+from .detector_contributions import (
+    DetectorRefactorContribution,
+    DetectorRefactorContributionReport,
+)
 from .models import (
     AnalysisReport,
     EvidenceSymbol,
     FindingObligationClass,
     ImpactDelta,
+    NominalDeclarationIdentity,
     OutcomeEstimate,
     RefactorFinding,
     RefactorPatternEvidence,
     RefactorPlan,
+    RequiredRelationIdentity,
     SourceLineReference,
     SourceLocation,
 )

@@ -4,15 +4,25 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.codemod import (
+    FindingRecipeEvaluator,
+    FindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.detector_contributions import (
+    DetectorRefactorContributionReport,
+)
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     ExternalEnumCaseRecoveryDetector,
     IssueDetector,
+    SemanticMirrorIssueDetector,
+    SsotAuthorityBoundaryDetector,
 )
 from nominal_refactor_advisor.detectors._runtime import (
     RepeatedBuilderCallShapeProjectionFamily,
 )
 from nominal_refactor_advisor.models import FindingObligationClass
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
 )
@@ -89,3 +99,51 @@ def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:
             declaration.required_relation_pattern_id()
             is detector_type.finding_spec.pattern_id
         )
+
+
+def test_detector_refactor_contributions_are_derived_from_nominal_mro() -> None:
+    detector_types = IssueDetector.registered_detector_types()
+    report = DetectorRefactorContributionReport.from_registered_detectors()
+
+    assert tuple(
+        contribution.detector_type for contribution in report.contributions
+    ) == detector_types
+    assert report.required_relation_count == len(detector_types)
+    assert report.authority_boundary_count == sum(
+        issubclass(detector_type, SsotAuthorityBoundaryDetector)
+        for detector_type in detector_types
+    )
+    assert report.semantic_mirror_count == sum(
+        issubclass(detector_type, SemanticMirrorIssueDetector)
+        for detector_type in detector_types
+    )
+    assert report.direct_recipe_evaluator_count == sum(
+        issubclass(detector_type, FindingRecipeEvaluator)
+        for detector_type in detector_types
+    )
+    assert report.direct_executable_refactor_count == sum(
+        issubclass(detector_type, FindingRecipeSynthesizer)
+        for detector_type in detector_types
+    )
+    assert all(
+        contribution.required_relation
+        == contribution.detector_type.required_relation_declaration_type().required_relation_identity()
+        for contribution in report.contributions
+    )
+    assert all(
+        contribution.direct_recipe_evaluator is not None
+        for contribution in report.contributions
+        if contribution.direct_executable_refactor is not None
+    )
+    assert all(
+        contribution.direct_refactor_concept is not None
+        for contribution in report.contributions
+        if contribution.direct_executable_refactor is not None
+    )
+
+    payload = json_report_object(report)
+    assert len(payload["contributions"]) == len(detector_types)
+    assert all(
+        {"required_relation", "required_relation_pattern"} <= contribution.keys()
+        for contribution in payload["contributions"]
+    )

@@ -555,9 +555,14 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     def required_relation_pattern_id(cls) -> PatternId:
         """Derive the required pattern from the MRO-selected spec owner."""
 
+        return cls.required_relation_finding_spec().pattern_id
+
+    @classmethod
+    def required_relation_finding_spec(cls) -> FindingSpec:
+        """Return the finding semantics owned by the selected MRO declaration."""
+
         declaration_type = cls.required_relation_declaration_type()
-        finding_spec = cast(FindingSpec, vars(declaration_type)["finding_spec"])
-        return finding_spec.pattern_id
+        return cast(FindingSpec, vars(declaration_type)["finding_spec"])
 
     @classmethod
     def required_relation_for_finding(

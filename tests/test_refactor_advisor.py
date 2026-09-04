@@ -183,7 +183,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeTrajectoryObstacleKind,
     FindingEvidenceTargetSelector,
     ExecutableRecipeEvaluation,
-    MissingRecipeSynthesizerEvaluation,
+    MissingRecipeEvaluatorEvaluation,
     MappingSemanticMirrorRecipeStrategy,
     SemanticDescentRecipeEvaluation,
     DeclareAuthorityOperation,
@@ -1465,7 +1465,7 @@ def test_generic_recipe_evaluation_does_not_infer_proof_from_rationale() -> None
 
     candidate = ExecutableRecipeEvaluation(
         executable_recipe=recipe,
-        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        evaluation_declaration_type=FindingRecipeAuthorityClaimGate,
     )
     evaluation = candidate.gated_by_authority_claim(
         None,
@@ -1483,10 +1483,10 @@ def test_generic_recipe_evaluation_does_not_infer_proof_from_rationale() -> None
     assert evaluation is candidate
 
 
-def test_missing_recipe_synthesizer_is_a_nominal_terminal_outcome() -> None:
-    evaluation = MissingRecipeSynthesizerEvaluation()
+def test_missing_recipe_evaluator_is_a_nominal_terminal_outcome() -> None:
+    evaluation = MissingRecipeEvaluatorEvaluation()
 
-    assert evaluation.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert evaluation.status is FindingRecipeSynthesisStatus.NO_EVALUATOR
     assert evaluation.candidate_recipes == ()
 
 
@@ -1496,7 +1496,7 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
 
     evaluation = ExecutableRecipeEvaluation(
         executable_recipe=RefactorRecipe("action-key-gate-fixture"),
-        executable_declaration_type=ExecutableRecipeEvaluation,
+        evaluation_declaration_type=ExecutableRecipeEvaluation,
     )
     action_key = FindingRecipeActionKey(
         detector_id="action_key_gate_fixture",
@@ -1508,7 +1508,7 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
 
     assert missing.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
     assert missing.recipe_id == "action-key-gate-fixture"
-    assert missing.executable_declaration_name == "ExecutableRecipeEvaluation"
+    assert missing.evaluation_declaration_name == "ExecutableRecipeEvaluation"
     assert identified is evaluation
     assert isinstance(action_key, FindingRecipeActionIdentity)
     assert "semantic_identity" not in FindingRecipeActionKey.__dict__
@@ -1519,7 +1519,7 @@ def test_executable_recipe_evaluation_does_not_hide_programming_errors(
 ) -> None:
     evaluation = ExecutableRecipeEvaluation(
         executable_recipe=RefactorRecipe("programming-error-fixture"),
-        executable_declaration_type=ExecutableRecipeEvaluation,
+        evaluation_declaration_type=ExecutableRecipeEvaluation,
     )
 
     def raise_programming_error(
@@ -1728,7 +1728,7 @@ def _direct_recipe_candidate(
             finding=finding,
             evaluation=ExecutableRecipeEvaluation(
                 executable_recipe=recipe,
-                executable_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
+                evaluation_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
             ),
             action_keys=(
                 FindingRecipeActionKey(
@@ -2193,7 +2193,7 @@ def test_finding_recipe_batch_rejects_order_dependent_composition(
                             source=source,
                         )
                     ),
-                    executable_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
+                    evaluation_declaration_type=CurrentSnapshotRecipeBatchEvaluation,
                 ),
             )
         )
@@ -2476,7 +2476,7 @@ def test_semantic_descent_context_does_not_guess_an_authority_claim(
     )
     evaluation = SemanticDescentRecipeEvaluation(
         executable_recipe=original_recipe,
-        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        evaluation_declaration_type=FindingRecipeAuthorityClaimGate,
         strategy_type=MappingSemanticMirrorRecipeStrategy,
     ).gated_by_authority_claim(snapshot, finding)
     assert original_recipe.authority_claims == ()
@@ -2499,7 +2499,7 @@ def test_semantic_descent_recipe_requires_a_formal_authority_claim() -> None:
             recipe_id="unproved-semantic-plan",
             reason="derive the projection from the source type",
         ),
-        executable_declaration_type=FindingRecipeAuthorityClaimGate,
+        evaluation_declaration_type=FindingRecipeAuthorityClaimGate,
         strategy_type=MappingSemanticMirrorRecipeStrategy,
     ).gated_by_authority_claim(None, finding)
 
@@ -3750,7 +3750,7 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
     record = plan.records[0]
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == "nominal authority proof is incomplete"
-    assert record.executable_declaration_name == (
+    assert record.evaluation_declaration_name == (
         "RejectedRecipeWithoutActionKeysSynthesizer"
     )
     assert record.action_keys == ()
@@ -3808,7 +3808,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     assert record.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
     assert record.action_keys == ()
     assert record.recipe_id == "unidentified-executable-recipe"
-    assert record.executable_declaration_name == (
+    assert record.evaluation_declaration_name == (
         "ExecutableRecipeWithoutActionKeysSynthesizer"
     )
     assert plan.document.recipes == ()
@@ -4967,7 +4967,7 @@ def test_repeated_property_alias_findings_do_not_invent_a_mixin_authority(
 
     assert len(findings) == 1
     assert plan.expected_removed_finding_count == 0
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.NO_EVALUATOR
     assert plan.document.recipes == ()
 
 
@@ -5023,7 +5023,7 @@ def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
     assert plan.expected_removed_finding_count == 0
     assert plan.document.recipes == ()
     assert all(
-        record.status is FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+        record.status is FindingRecipeSynthesisStatus.NO_EVALUATOR
         for record in plan.records
     )
 
@@ -14757,7 +14757,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].executable_declaration_name == (
+    assert plan.records[0].evaluation_declaration_name == (
         "RepeatedBuilderSourceProjectionAuthorityMethod"
     )
     assert plan.records[0].refactor_concept == "constructor_kwarg_carrier_projection"
@@ -15132,7 +15132,7 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
 
     assert len(findings) == 1
     assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].executable_declaration_name == (
+    assert plan.records[0].evaluation_declaration_name == (
         "InheritedConsumerBuilderAuthorityDescent"
     )
     assert plan.records[0].refactor_concept == "constructor_kwarg_collapse"
@@ -20447,7 +20447,7 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     assert synthesis_record["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert synthesis_record["executable_declaration"] == (
+    assert synthesis_record["evaluation_declaration"] == (
         "ManualClassRegistrationDetector"
     )
     assert recipe["recipe_id"] == synthesis_record["recipe"]["recipe_id"]
@@ -20481,7 +20481,7 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
                 recipe_id="manual-registry-repair",
                 authority_claims=(claim,),
             ),
-            executable_declaration_type=FindingRecipeClassPlan,
+            evaluation_declaration_type=FindingRecipeClassPlan,
         ),
     )
 
