@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
 from .codemod_imports import ImportFromSource, RequestedImportStatement
-from .codemod_payload import CodemodJsonReport, JsonObject
+from .codemod_payload import DataclassJsonReport, json_report_property
 
 
 @dataclass(frozen=True)
@@ -61,12 +61,12 @@ class ModuleImportBinding:
 
 
 @dataclass(frozen=True)
-class ModuleImportBindingIdentity(CodemodJsonReport, ABC):
+class ModuleImportBindingIdentity(DataclassJsonReport, ABC):
     """Canonical import identity independent of source spelling."""
 
     module_name: str
 
-    @property
+    @json_report_property()
     @abstractmethod
     def imported_name(self) -> str | None:
         """Return the from-import member, when this identity has one."""
@@ -83,14 +83,6 @@ class ModuleImportBindingIdentity(CodemodJsonReport, ABC):
         """Return whether this import names a declaration owned by destination."""
 
         return False
-
-    def to_dict(self) -> JsonObject:
-        """Project the public identity fields from their nominal owner."""
-
-        return {
-            "module_name": self.module_name,
-            "imported_name": self.imported_name,
-        }
 
     @staticmethod
     def alias_for_bound_name(

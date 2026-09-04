@@ -33,6 +33,7 @@ from .codemod_payload import (
     DataclassJsonReport,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
+    JSON_REPORT_VALUE_PROJECTION,
     JsonObject,
     JsonValue,
     OptionalStringPayloadValueCodec,
@@ -579,10 +580,6 @@ class ArchitectureGuardSuite:
     def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
         return self.rules
 
-    def to_dict(self) -> tuple[JsonObject, ...]:
-        return tuple(rule.to_dict() for rule in self.rules)
-
-
 @dataclass(frozen=True)
 class ArchitectureGuardSuitePayloadValueCodec(
     PayloadValueCodec[ArchitectureGuardSuite]
@@ -601,7 +598,7 @@ class ArchitectureGuardSuitePayloadValueCodec(
             raise TypeError(
                 "architecture-guard payload codec requires ArchitectureGuardSuite"
             )
-        return value.to_dict()
+        return JSON_REPORT_VALUE_PROJECTION.project(value.rules)
 
 
 def evaluate_architecture_guards(

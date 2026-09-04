@@ -181,6 +181,8 @@ class DataclassJsonReport(CodemodJsonReport, SemanticRecord, ABC):
 class DataclassPayloadProjection(DataclassJsonReport, ABC):
     """JSON projection derived completely from nominal dataclass fields."""
 
+    omit_none_payload_values: ClassVar[bool] = False
+
     @classmethod
     @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet[Self, object]:
@@ -195,7 +197,10 @@ class DataclassPayloadProjection(DataclassJsonReport, ABC):
         return cls(**cls.payload_bindings().constructor_kwargs(payload))
 
     def to_dict(self) -> JsonObject:
-        return type(self).payload_bindings().payload(self)
+        return type(self).payload_bindings().payload(
+            self,
+            omit_none=type(self).omit_none_payload_values,
+        )
 
 
 class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
@@ -380,7 +385,6 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
     """Nominal record family selected by one declaration-owned wire key."""
 
     discriminator_field_name: ClassVar[str]
-    omit_none_payload_values: ClassVar[bool] = False
 
     @classmethod
     @abstractmethod

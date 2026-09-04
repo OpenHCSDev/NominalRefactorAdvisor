@@ -1820,6 +1820,8 @@ class CodemodTargetSelection:
 class SelectionCountExpectation(CodemodPayloadRecord):
     """Cardinality contract for selector-backed codemod operations."""
 
+    omit_none_payload_values: ClassVar[bool] = True
+
     minimum: int | None = codemod_payload_field(
         IntegerPayloadValueCodec(),
         field_name="min",
@@ -1882,10 +1884,6 @@ class SelectionCountExpectation(CodemodPayloadRecord):
                 "Selected-target operation expected at most "
                 f"{self.maximum} target(s), but selector resolved {actual_count}"
             )
-
-    def to_dict(self) -> JsonObject:
-        return self.payload_bindings().payload(self, omit_none=True)
-
 
 @dataclass(frozen=True)
 class NodeKindArrayPayloadValueCodec(OptionalStringArrayPayloadValueCodec):
@@ -12218,11 +12216,19 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
         )
 
 @dataclass(frozen=True)
-class FindingRecipePlanPreflight:
+class FindingRecipePlanPreflight(DataclassJsonReport):
     """Preflight result for a synthesized finding-backed codemod plan."""
 
-    plan: FindingRecipePlan
-    preflight_report: CodemodPlanPreflightReport
+    plan: FindingRecipePlan = json_report_field(flattened=True)
+    preflight_report: CodemodPlanPreflightReport = json_report_field(flattened=True)
+
+    @json_report_property(field_name="preflight_report")
+    def nested_preflight_report(self) -> CodemodPlanPreflightReport:
+        return self.preflight_report
+
+    @json_report_property()
+    def applied(self) -> bool:
+        return False
 
     @property
     def is_clean(self) -> bool:
@@ -12232,20 +12238,17 @@ class FindingRecipePlanPreflight:
     def preflight_failed(self) -> bool:
         return self.preflight_report.preflight_failed
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.plan.to_dict(),
-            **self.preflight_report.to_dict(),
-            "preflight_report": self.preflight_report.to_dict(),
-            "applied": False,
-        }
-
-
 @dataclass(frozen=True)
-class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
+class FindingRecipePlanSimulation(
+    CodemodDocumentSimulationCarrier,
+    DataclassJsonReport,
+):
     """Simulation result plus expected finding removals from a finding bridge."""
 
-    plan: FindingRecipePlan
+    document_simulation: CodemodPlanDocumentSimulation = json_report_field(
+        included=False
+    )
+    plan: FindingRecipePlan = json_report_field(flattened=True)
 
     @classmethod
     def from_sequence_simulation(
@@ -12281,11 +12284,9 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
     def is_clean(self) -> bool:
         return self.document_simulation.is_clean
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **self.plan.to_dict(),
-            **self.document_simulation.simulation_payload(),
-        }
+    @json_report_property(flattened=True)
+    def simulation_payload(self) -> JsonObject:
+        return self.document_simulation.simulation_payload()
 
 
 @dataclass(frozen=True)
