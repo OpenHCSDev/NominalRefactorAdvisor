@@ -15761,7 +15761,7 @@ class SemanticMirrorRecipeSeedLocations:
         cls,
         finding: RefactorFinding,
     ) -> "SemanticMirrorRecipeSeedLocations | None":
-        projection = finding.primary_evidence
+        projection = finding.projection_evidence
         authority = finding.authority_evidence
         if projection is None or authority is None:
             return None

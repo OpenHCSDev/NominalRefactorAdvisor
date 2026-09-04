@@ -1640,13 +1640,23 @@ class ExternalEnumCaseRecoveryCandidate:
         return sum(site.branch_site_count for site in self.sites)
 
     @property
+    def authority_evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.enum_class.file_path,
+            self.enum_class.line,
+            self.enum_class.qualname,
+        )
+
+    @property
+    def projection_evidence(self) -> SourceLocation:
+        if not self.sites:
+            raise ValueError("external enum recovery requires one projection site")
+        return self.sites[0].evidence
+
+    @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(
-                self.enum_class.file_path,
-                self.enum_class.line,
-                self.enum_class.qualname,
-            ),
+            self.authority_evidence,
             *(site.evidence for site in self.sites[:5]),
         )
 
@@ -1791,6 +1801,8 @@ class ExternalEnumCaseRecoveryDetector(
                 f"{', '.join(candidate.case_names)}."
             ),
             candidate.evidence,
+            projection_evidence=candidate.projection_evidence,
+            authority_evidence=candidate.authority_evidence,
             metrics=DispatchCountMetrics(
                 dispatch_site_count=candidate.branch_site_count,
                 dispatch_axis=candidate.enum_class.simple_name,

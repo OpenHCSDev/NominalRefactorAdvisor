@@ -173,6 +173,7 @@ class FeatureEnvironmentAuthority:
         "DeclaredEnvironmentFlagAuthority.enabled"
     )
     assert profile_finding.authority_evidence == profile_finding.evidence[1]
+    assert profile_finding.projection_evidence == profile_finding.evidence[0]
     assert "environment-read default '0' makes absence disabled" in (
         summaries_by_symbol["trace_enabled"].summary
     )
@@ -189,6 +190,7 @@ class FeatureEnvironmentAuthority:
         "DeclaredEnvironmentFlagAuthority.enabled"
     )
     assert wrapper_finding.authority_evidence == wrapper_finding.evidence[1]
+    assert wrapper_finding.projection_evidence == wrapper_finding.evidence[0]
     assert isinstance(
         wrapper_finding.metrics,
         FixedKeyEnvironmentAuthorityWrapperMetrics,

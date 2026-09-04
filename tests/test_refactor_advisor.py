@@ -23948,6 +23948,7 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
             SourceLocation("module.py", 10, "HANDLERS"),
             authority_location,
         ),
+        projection_evidence=SourceLocation("module.py", 10, "HANDLERS"),
         authority_evidence=authority_location,
         title="`HANDLERS` mirrors `Handler`",
         relation_context=(
@@ -25466,6 +25467,8 @@ def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     )
     assert "RuntimePolicy.lean" in finding.summary
     assert "3 formal-boundary string ids" in finding.summary
+    assert Path(finding.projection_evidence.file_path).name == "runtime.py"
+    assert Path(finding.authority_evidence.file_path).name == "RuntimePolicy.lean"
 
 
 def test_formal_boundary_string_registry_skips_candidate_free_ast_walk(
@@ -25514,6 +25517,10 @@ def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifac
     )
     assert "lean_runtime_policy_bundle.json" in finding.summary
     assert "3 formal-boundary string ids" in finding.summary
+    assert Path(finding.projection_evidence.file_path).name == "runtime.py"
+    assert Path(finding.authority_evidence.file_path).name == (
+        "lean_runtime_policy_bundle.json"
+    )
 
 
 def test_detects_generated_boundary_semantic_constant_mirror(
@@ -25540,6 +25547,8 @@ def test_detects_generated_boundary_semantic_constant_mirror(
 
     assert "POLICY_PROFILE_ID" in finding.summary
     assert "generated semantic constant value" in finding.summary
+    assert Path(finding.projection_evidence.file_path).name == "runtime.py"
+    assert Path(finding.authority_evidence.file_path).name == "policy_ids.py"
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
@@ -25840,6 +25849,8 @@ def incomplete(status: CacheStatus) -> bool:
         "CacheStatus.HIT",
         "CacheStatus.PARTIAL",
     )
+    assert Path(finding.projection_evidence.file_path).name == "consumer.py"
+    assert Path(finding.authority_evidence.file_path).name == "status.py"
     assert issubclass(
         systemic_detectors.ExternalEnumCaseRecoveryDetector,
         base_detectors.SemanticMirrorIssueDetector,

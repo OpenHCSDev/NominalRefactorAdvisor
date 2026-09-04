@@ -804,6 +804,7 @@ class FindingBuildContextKwargs(TypedDict, total=False):
     capability_gap: str | None
     confidence: ConfidenceLevel | None
     relation_context: str | None
+    projection_evidence: SourceLocation | None
     authority_evidence: SourceLocation | None
     certification: CertificationLevel | None
     capability_tags: tuple[CapabilityTag, ...] | None
@@ -821,6 +822,7 @@ class FindingBuildContext:
     capability_gap: str | None = None
     confidence: ConfidenceLevel | None = None
     relation_context: str | None = None
+    projection_evidence: SourceLocation | None = None
     authority_evidence: SourceLocation | None = None
     certification: CertificationLevel | None = None
     capability_tags: tuple[CapabilityTag, ...] | None = None
@@ -855,6 +857,7 @@ class FindingBuildContext:
             confidence=self.confidence or spec.confidence,
             relation_context=self.relation_context or spec.relation_context,
             evidence=evidence,
+            projection_evidence=self.projection_evidence,
             authority_evidence=self.authority_evidence,
             compression_certificate=self.compression_certificate,
             certification=self.certification or spec.certification,
@@ -894,6 +897,7 @@ class RefactorFinding(FindingSemantics):
     detector_id: str
     summary: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
+    projection_evidence: SourceLocation | None = None
     authority_evidence: SourceLocation | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
@@ -917,18 +921,34 @@ class RefactorFinding(FindingSemantics):
                 f"{self.detector_id!r} must contain SourceLocation records; "
                 f"got {invalid_types}."
             )
-        if self.authority_evidence is not None:
-            if not isinstance(self.authority_evidence, SourceLocation):
-                raise TypeError(
-                    f"{type(self).__name__}.authority_evidence for detector "
-                    f"{self.detector_id!r} must be a SourceLocation; got "
-                    f"{type(self.authority_evidence).__name__}."
-                )
-            if self.authority_evidence not in self.evidence:
-                raise ValueError(
-                    f"{type(self).__name__}.authority_evidence for detector "
-                    f"{self.detector_id!r} must also occur in evidence."
-                )
+        self.require_declared_evidence_member(
+            self.projection_evidence,
+            field_name="projection_evidence",
+        )
+        self.require_declared_evidence_member(
+            self.authority_evidence,
+            field_name="authority_evidence",
+        )
+
+    def require_declared_evidence_member(
+        self,
+        location: SourceLocation | None,
+        *,
+        field_name: str,
+    ) -> None:
+        if location is None:
+            return
+        if not isinstance(location, SourceLocation):
+            raise TypeError(
+                f"{type(self).__name__}.{field_name} for detector "
+                f"{self.detector_id!r} must be a SourceLocation; got "
+                f"{type(location).__name__}."
+            )
+        if location not in self.evidence:
+            raise ValueError(
+                f"{type(self).__name__}.{field_name} for detector "
+                f"{self.detector_id!r} must also occur in evidence."
+            )
 
     def map_evidence(
         self,
@@ -940,6 +960,15 @@ class RefactorFinding(FindingSemantics):
             (location, transform(location)) for location in self.evidence
         )
         evidence = tuple(transformed for _location, transformed in transformed_evidence)
+        projection_evidence = (
+            None
+            if self.projection_evidence is None
+            else next(
+                transformed
+                for location, transformed in transformed_evidence
+                if location == self.projection_evidence
+            )
+        )
         authority_evidence = (
             None
             if self.authority_evidence is None
@@ -949,11 +978,16 @@ class RefactorFinding(FindingSemantics):
                 if location == self.authority_evidence
             )
         )
-        if evidence == self.evidence and authority_evidence == self.authority_evidence:
+        if (
+            evidence == self.evidence
+            and projection_evidence == self.projection_evidence
+            and authority_evidence == self.authority_evidence
+        ):
             return self
         return replace(
             self,
             evidence=evidence,
+            projection_evidence=projection_evidence,
             authority_evidence=authority_evidence,
         )
 

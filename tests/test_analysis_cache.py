@@ -1030,7 +1030,7 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
     assert rebased[0].evidence[0] is finding.evidence[0]
 
 
-def test_cross_checkout_finding_rebase_preserves_authority_evidence(
+def test_cross_checkout_finding_rebase_preserves_declared_evidence_roles(
     tmp_path: Path,
 ) -> None:
     source_root = tmp_path / "source"
@@ -1057,6 +1057,7 @@ def test_cross_checkout_finding_rebase_preserves_authority_evidence(
         "authority_cache_detector",
         "authority-backed finding",
         (projection, authority),
+        projection_evidence=projection,
         authority_evidence=authority,
     )
 
@@ -1069,6 +1070,7 @@ def test_cross_checkout_finding_rebase_preserves_authority_evidence(
     )[0]
 
     assert rebased.evidence[0].file_path == (target_root / "projection.py").as_posix()
+    assert rebased.projection_evidence is rebased.evidence[0]
     assert rebased.authority_evidence is not None
     assert rebased.authority_evidence is rebased.evidence[1]
     assert (

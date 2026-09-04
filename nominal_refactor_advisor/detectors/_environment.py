@@ -1204,6 +1204,14 @@ class _EnvironmentBooleanDriftCandidate(SourceLocation):
         return self.metrics.environment_key
 
     @property
+    def projection_evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.file_path,
+            self.line,
+            f"{self.symbol}:{self.environment_key}",
+        )
+
+    @property
     def authority_evidence(self) -> SourceLocation | None:
         if self.authority is None:
             return None
@@ -1215,15 +1223,10 @@ class _EnvironmentBooleanDriftCandidate(SourceLocation):
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        local = SourceLocation(
-            self.file_path,
-            self.line,
-            f"{self.symbol}:{self.environment_key}",
-        )
         authority = self.authority_evidence
         if authority is None:
-            return (local,)
-        return (local, authority)
+            return (self.projection_evidence,)
+        return (self.projection_evidence, authority)
 
 
 def _parser_candidate(
@@ -1551,6 +1554,7 @@ class EnvironmentBooleanAuthorityDriftDetector(
                     "wrapper to independently owned boolean flag semantics"
                 ),
                 metrics=candidate.metrics,
+                projection_evidence=candidate.projection_evidence,
                 authority_evidence=candidate.authority_evidence,
             )
             for candidate in sorted(

@@ -1222,6 +1222,10 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     evidence: CandidateEvidenceRenderer[CandidateItemT]
     compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
+    projection_evidence: OptionalCandidateValueRenderer[
+        CandidateItemT,
+        SourceLocation,
+    ] = None
     authority_evidence: OptionalCandidateValueRenderer[
         CandidateItemT,
         SourceLocation,
@@ -1246,6 +1250,10 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
                 candidate, self.compression_certificate
             ),
             metrics=self._optional_value(candidate, self.metrics),
+            projection_evidence=self._optional_value(
+                candidate,
+                self.projection_evidence,
+            ),
             authority_evidence=self._optional_value(
                 candidate,
                 self.authority_evidence,
@@ -2261,6 +2269,10 @@ def declare_candidate_rule_detector(
         CandidateItemT
     ] = None,
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None,
+    projection_evidence: OptionalCandidateValueRenderer[
+        CandidateItemT,
+        SourceLocation,
+    ] = None,
     authority_evidence: OptionalCandidateValueRenderer[
         CandidateItemT,
         SourceLocation,
@@ -2276,6 +2288,7 @@ def declare_candidate_rule_detector(
         evidence=evidence,
         compression_certificate=compression_certificate,
         metrics=metrics,
+        projection_evidence=projection_evidence,
         authority_evidence=authority_evidence,
     )
     try:

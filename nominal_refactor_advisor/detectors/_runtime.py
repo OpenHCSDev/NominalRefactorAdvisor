@@ -882,21 +882,22 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         shared_values = tuple(sorted(set(sites_by_value) & set(constants_by_value)))
         if len(shared_values) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
             return None
+        projection_evidence = _formal_boundary_python_evidence_for_values(
+            constants_by_value,
+            shared_values[:6],
+        )
+        authority_evidence = _formal_boundary_external_evidence_for_values(
+            sites_by_value,
+            shared_values[:6],
+        )
         return detector.build_finding(
             FormalBoundaryExternalStringRegistryMirrorAuthority.summary(
                 path,
                 shared_values,
             ),
-            (
-                _formal_boundary_python_evidence_for_values(
-                    constants_by_value,
-                    shared_values[:6],
-                )
-                + _formal_boundary_external_evidence_for_values(
-                    sites_by_value,
-                    shared_values[:6],
-                )
-            ),
+            projection_evidence + authority_evidence,
+            projection_evidence=projection_evidence[0],
+            authority_evidence=authority_evidence[0],
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=2,
                 field_names=shared_values,
@@ -1153,9 +1154,11 @@ class GeneratedBoundarySemanticConstantAuthority:
         if not generated_sites or not runtime_sites:
             return None
         target_name, value = key
+        authority_evidence = generated_sites[0].source_location()
+        projection_evidence = runtime_sites[0].source_location()
         evidence = (
-            generated_sites[0].source_location(),
-            runtime_sites[0].source_location(),
+            authority_evidence,
+            projection_evidence,
         )
         return detector.build_finding(
             (
@@ -1163,6 +1166,8 @@ class GeneratedBoundarySemanticConstantAuthority:
                 f"{value!r} across generated and non-generated Python modules."
             ),
             evidence,
+            projection_evidence=projection_evidence,
+            authority_evidence=authority_evidence,
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(matching_sites),
                 field_names=(target_name, value),

@@ -240,6 +240,7 @@ class SemanticMirrorWithoutDescentDetector(
         return self.build_finding(
             summary,
             self._certificate_evidence(graph, certificate),
+            projection_evidence=projection.location,
             authority_evidence=authority.location,
             title=f"`{projection.label}` mirrors `{authority.name}`",
             why=(

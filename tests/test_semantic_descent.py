@@ -3439,6 +3439,11 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
             SourceLocation(str(module_path), 4, "SourceLineReplacement"),
             SourceLocation(str(module_path), 12, "SourceLineSpan"),
         ),
+        projection_evidence=SourceLocation(
+            str(module_path),
+            26,
+            "build_replacement:return",
+        ),
         authority_evidence=SourceLocation(
             str(module_path),
             12,
@@ -3552,6 +3557,11 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
             SourceLocation(str(module_path), 14, "build_replacement:return"),
             SourceLocation(str(module_path), 9, "SourceLineSpan"),
         ),
+        projection_evidence=SourceLocation(
+            str(module_path),
+            14,
+            "build_replacement:return",
+        ),
         authority_evidence=SourceLocation(
             str(module_path),
             9,
@@ -3630,6 +3640,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
             SourceLocation(str(report_path), 5, "build:return"),
             SourceLocation(str(model_path), 5, "Span"),
         ),
+        projection_evidence=SourceLocation(str(report_path), 5, "build:return"),
         authority_evidence=SourceLocation(str(model_path), 5, "Span"),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
