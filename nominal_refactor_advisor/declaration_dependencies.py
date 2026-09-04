@@ -11,8 +11,7 @@ from enum import StrEnum
 from typing import TypeAlias
 
 from .annotation_semantics import StringizedAnnotationSurface
-from .ast_tools import ImportBoundNameProjection, ModuleAnnotationEvaluationMode
-from .codemod_import_scopes import ModuleImportScope
+from .ast_tools import ImportBoundNameProjection
 
 MovableDeclaration: TypeAlias = (
     ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign | ast.AnnAssign
@@ -68,24 +67,6 @@ class DeclarationDependencyProjection:
     @property
     def annotation_only_names(self) -> frozenset[str]:
         return self.annotation_names - self.execution_names
-
-    def minimum_import_scope(
-        self,
-        name: str,
-        annotation_evaluation_mode: ModuleAnnotationEvaluationMode,
-    ) -> ModuleImportScope:
-        """Derive the least execution scope preserving one dependency."""
-
-        requires_runtime = name in self.execution_names or (
-            annotation_evaluation_mode.annotations_execute_at_declaration
-            and name in self.evaluated_annotation_names
-        )
-        return (
-            ModuleImportScope.RUNTIME
-            if requires_runtime
-            else ModuleImportScope.TYPE_CHECKING
-        )
-
 
 @dataclass(frozen=True)
 class ModuleLexicalDependencyProjection:

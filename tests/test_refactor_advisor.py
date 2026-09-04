@@ -7711,7 +7711,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     ]
 
     assert tuple(
-        (dependency.name, dependency.destination_scope)
+        (dependency.name, dependency.scope)
         for dependency in report.import_dependencies
     ) == (
         ("External", ModuleImportScope.TYPE_CHECKING),
@@ -7751,7 +7751,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     assert imported.returncode == 0, imported.stderr
 
 
-def test_symbol_move_derives_guarded_import_from_forward_annotation(
+def test_symbol_move_preserves_runtime_import_for_forward_annotation(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
@@ -7798,17 +7798,11 @@ def test_symbol_move_derives_guarded_import_from_forward_annotation(
         destination_path.as_posix()
     ]
 
-    assert dependency.source_scope is ModuleImportScope.RUNTIME
-    assert dependency.destination_scope is ModuleImportScope.TYPE_CHECKING
+    assert dependency.scope is ModuleImportScope.RUNTIME
     rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
     assert "from .dependencies import External" in rewritten_source
-    assert (
-        "import ast\n"
-        "from typing import TYPE_CHECKING\n\n"
-        "from .existing import VALUE\n\n"
-        "if TYPE_CHECKING:\n"
-        "    from .dependencies import External"
-    ) in rewritten_destination
+    assert "from .dependencies import External" in rewritten_destination
+    assert "if TYPE_CHECKING:" not in rewritten_destination
     simulation.apply()
     imported = subprocess.run(
         [
@@ -7817,6 +7811,61 @@ def test_symbol_move_derives_guarded_import_from_forward_annotation(
             "from pkg.destination import Helper; "
             "assert Helper.__dict__['build'].__annotations__ == "
             "{'value': \"'External'\", 'return': \"'External'\"}",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_preserves_runtime_import_consumed_by_dataclass(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n"
+        "from typing import ClassVar\n\n\n"
+        "@dataclass\n"
+        "class RegistryOwner:\n"
+        "    __registry__: ClassVar[dict[str, int]] = {}\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("RegistryOwner",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("move-runtime-consumed-annotation").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert "from typing import ClassVar" in rewritten_destination
+    assert "if TYPE_CHECKING:" not in rewritten_destination
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from dataclasses import fields; "
+            "from pkg.destination import RegistryOwner; "
+            "assert RegistryOwner.__registry__ == {}; "
+            "assert fields(RegistryOwner) == ()",
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -16974,6 +17023,118 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
         target.qualname == "Generated.run"
         for target in projected_snapshot.source_index.ast_targets
     )
+
+
+def test_codemod_plan_sequence_chains_hand_patch_into_semantic_extraction(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/context.py", "class SharedContext:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "from .context import SharedContext\n\n\n"
+        "class LegacyContext:\n"
+        "    pass\n\n\n"
+        "class Helper:\n"
+        "    def resolve(self, context: LegacyContext) -> LegacyContext:\n"
+        "        return context\n",
+    )
+    sequence = CodemodPlanSequence.from_json_value(
+        {
+            "stages": [
+                {
+                    "recipes": [
+                        {
+                            "recipe_id": "bind-helper-to-shared-context",
+                            "operations": [
+                                {
+                                    "operation": "patch_target",
+                                    "file_path": source_path.as_posix(),
+                                    "target_qualname": "Helper.resolve",
+                                    "replacements": [
+                                        {
+                                            "old_source": (
+                                                "def resolve(self, context: "
+                                                "LegacyContext) -> LegacyContext:"
+                                            ),
+                                            "new_source": (
+                                                "def resolve(self, context: "
+                                                "SharedContext) -> SharedContext:"
+                                            ),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+                {
+                    "recipes": [
+                        {
+                            "recipe_id": "extract-patched-helper",
+                            "operations": [
+                                {
+                                    "operation": "extract_symbols_to_new_module",
+                                    "file_path": source_path.as_posix(),
+                                    "symbol_qualnames": ["Helper"],
+                                    "destination_path": destination_path.as_posix(),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            ]
+        }
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = sequence.simulate(snapshot)
+    first_stage, second_stage = simulation.stage_reports
+    rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    first_stage_source_file = next(
+        source_file
+        for source_file in first_stage.after_source_index.files
+        if source_file.file_path == source_path.as_posix()
+    )
+    second_stage_source_file = next(
+        source_file
+        for source_file in second_stage.before_source_index.files
+        if source_file.file_path == source_path.as_posix()
+    )
+
+    assert simulation.simulation.applied_rewrite_count == 3
+    assert "SharedContext) -> SharedContext" in (
+        first_stage.document_simulation.simulation.rewritten_sources[
+            source_path.as_posix()
+        ]
+    )
+    assert second_stage_source_file == first_stage_source_file
+    assert "class LegacyContext:" in rewritten_source
+    assert "class Helper:" not in rewritten_source
+    assert "from .context import SharedContext" in rewritten_destination
+    assert "SharedContext) -> SharedContext" in rewritten_destination
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.context import SharedContext; "
+            "from pkg.extracted import Helper; "
+            "value = SharedContext(); assert Helper().resolve(value) is value",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
 
 
 def test_codemod_sequential_report_projection_preserves_same_file_changes(

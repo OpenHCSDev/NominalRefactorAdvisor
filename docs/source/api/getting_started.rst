@@ -107,6 +107,53 @@ each old source fragment to occur exactly once, compiles the chain into one
 physical rewrite, validates the resulting Python, and writes nothing when any
 step fails.  Review the simulated diff, then use ``--codemod-apply``.
 
+Chaining a Hand Patch into a Semantic Refactor
+----------------------------------------------
+
+Use separate ``stages`` when a semantic operation must resolve against the
+result of a hand patch:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/python/package \
+     --codemod-plan - --codemod-simulate <<'JSON'
+   {
+     "stages": [
+       {
+         "recipes": [{
+           "recipe_id": "bind-helper-to-shared-context",
+           "operations": [{
+             "operation": "patch_target",
+             "file_path": "package/source.py",
+             "target_qualname": "Helper.resolve",
+             "replacements": [{
+               "old_source": "LegacyContext) -> LegacyContext:",
+               "new_source": "SharedContext) -> SharedContext:"
+             }]
+           }]
+         }]
+       },
+       {
+         "recipes": [{
+           "recipe_id": "extract-patched-helper",
+           "operations": [{
+             "operation": "extract_symbols_to_new_module",
+             "file_path": "package/source.py",
+             "symbol_qualnames": ["Helper"],
+             "destination_path": "package/helper.py"
+           }]
+         }]
+       }
+     ]
+   }
+   JSON
+
+NRA reindexes the projected source at the stage boundary.  The extraction
+therefore selects the patched declaration and derives its import and consumer
+rewrites from that state.  Review the combined diff, then replace
+``--codemod-simulate`` with ``--codemod-apply`` to write the sequence as one
+revision-checked batch.
+
 Extracting a Declaration Closure
 --------------------------------
 

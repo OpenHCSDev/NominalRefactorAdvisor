@@ -72,7 +72,6 @@ from .codemod import (
     CodemodPlanSequenceSimulation,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
-    CodemodTargetSelector,
     FindingRecipeClassPlanReport,
     FindingRecipeFrontierBudget,
     FindingRecipePlan,
@@ -98,6 +97,7 @@ from .codemod_source_cache import (
     CodemodSourceContext,
     CodemodSourceContextCache,
 )
+from .codemod_target_selectors import CodemodTargetSelector
 from .codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
