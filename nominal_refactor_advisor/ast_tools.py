@@ -132,7 +132,7 @@ _MAX_AUTO_PARSE_WORKERS = 16
 class AstParseCacheSchema:
     """Nominal schema identity for persisted Python AST cache entries."""
 
-    version: int = 1
+    version: int = 2
 
 
 class AstCachePayloadUnavailable:
@@ -150,7 +150,7 @@ class AstParseCachePayload:
     source_signature: str
     python_version: tuple[int, int]
     module: ast.Module
-    semantic_hash: str | None = None
+    semantic_hash: str
 
     def matches(
         self,
@@ -176,7 +176,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 24
+    version: int = 25
     max_payload_bytes: int = 100_000
 
 
@@ -760,7 +760,7 @@ def _parse_source_module(
         else source_semantic_hash.for_source_signature(source_signature)
     )
     if semantic_hash is None and cached_payload is not None:
-        semantic_hash = getattr(cached_payload, "semantic_hash", None)
+        semantic_hash = cached_payload.semantic_hash
     if cached_payload is None:
         module = ast.parse(source, filename=str(path))
     else:
@@ -1671,7 +1671,7 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
 
     identity: CollectedFamilyCacheIdentity
     items: tuple[ShapeItemT, ...]
-    ast_free: bool = False
+    ast_free: bool
 
 
 def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
@@ -2211,25 +2211,8 @@ class CollectedFamilyCacheContext:
                 identity,
                 payload.items,
             )
-        if getattr(payload, "ast_free", False) is not True:
-            if retains_python_ast(payload.items):
-                return None
-            certified_payload = CollectedFamilyCachePayload(
-                identity=payload.identity,
-                items=payload.items,
-                ast_free=True,
-            )
-            try:
-                certified_bytes = pickle.dumps(
-                    certified_payload,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
-                _collected_family_cache_path(
-                    self.family_cache_dir,
-                    identity,
-                ).write_bytes(certified_bytes)
-            except (OSError, pickle.PickleError, TypeError, AttributeError):
-                pass
+        if payload.ast_free is not True:
+            return None
         return cast(tuple[ShapeItemT, ...], payload.items)
 
     def load_content_signature(

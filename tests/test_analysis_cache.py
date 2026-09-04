@@ -2081,7 +2081,7 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
     ]
 
 
-def test_legacy_family_cache_payload_is_ast_checked_and_certified(
+def test_uncertified_family_cache_payload_is_invalidated(
     tmp_path: Path,
 ) -> None:
     package_root = tmp_path / "pkg"
