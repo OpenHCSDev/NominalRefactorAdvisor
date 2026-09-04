@@ -19,9 +19,14 @@ from .assignment_projection import (
 )
 from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ParsedModule,
     REGISTERED_TYPE_LINEAGE,
     ImportBoundNameProjection,
     SharedRegistryRootBase,
+)
+from .class_index import module_public_export_contract
+from .codemod_import_bindings import (
+    FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
 from .codemod_import_bindings import (
     ModuleImportBinding as ModuleImportBinding,
@@ -52,6 +57,7 @@ from .codemod_source_edits import (
 )
 from .declaration_dependencies import MovableDeclaration
 from .semantic_match import single_item
+from .source_index import SourceFileDigest
 
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
     (
@@ -93,6 +99,240 @@ class CandidateNameReferenceCollector(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str) and node.value in self.candidate_names:
             self.references.add(node.value)
+
+
+@dataclass(frozen=True)
+class _ModuleImportDependencyResolution:
+    """Exact import candidates and unresolved star-export obligations for one name."""
+
+    candidates: tuple[tuple[ModuleImportBinding, ModuleImportBindingIdentity], ...] = ()
+    unresolved_star_module_names: tuple[str | None, ...] = ()
+
+    @classmethod
+    def from_candidates(
+        cls,
+        candidates: Iterable[
+            tuple[ModuleImportBinding, ModuleImportBindingIdentity]
+        ] = (),
+    ) -> "_ModuleImportDependencyResolution":
+        return cls(tuple(candidates))
+
+    @classmethod
+    def unresolved_star(
+        cls,
+        module_name: str | None,
+    ) -> "_ModuleImportDependencyResolution":
+        return cls(unresolved_star_module_names=(module_name,))
+
+    @classmethod
+    def combine(
+        cls,
+        resolutions: Iterable["_ModuleImportDependencyResolution"],
+    ) -> "_ModuleImportDependencyResolution":
+        resolution_tuple = tuple(resolutions)
+        return cls(
+            candidates=tuple(
+                candidate
+                for resolution in resolution_tuple
+                for candidate in resolution.candidates
+            ),
+            unresolved_star_module_names=tuple(
+                module_name
+                for resolution in resolution_tuple
+                for module_name in resolution.unresolved_star_module_names
+            ),
+        )
+
+    @cached_property
+    def unique_candidates(
+        self,
+    ) -> tuple[tuple[ModuleImportBinding, ModuleImportBindingIdentity], ...]:
+        candidates_by_identity_and_scope: dict[
+            tuple[ModuleImportBindingIdentity, ModuleImportScope],
+            list[tuple[ModuleImportBinding, ModuleImportBindingIdentity]],
+        ] = defaultdict(list)
+        for binding, identity in self.candidates:
+            candidates_by_identity_and_scope[(identity, binding.scope)].append(
+                (binding, identity)
+            )
+        return tuple(
+            next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate[0].supports_bound_name_removal
+                ),
+                candidates[0],
+            )
+            for candidates in candidates_by_identity_and_scope.values()
+        )
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return (
+            bool(self.unresolved_star_module_names) or len(self.unique_candidates) > 1
+        )
+
+    @property
+    def binding_and_identity(
+        self,
+    ) -> tuple[ModuleImportBinding, ModuleImportBindingIdentity] | None:
+        return None if self.is_ambiguous else single_item(self.unique_candidates)
+
+
+@dataclass(frozen=True)
+class _ModuleExportBindingAuthority:
+    """Resolve one module's exported name back to its canonical declaration."""
+
+    source_file: SourceFileDigest
+    module: ast.Module
+
+    @cached_property
+    def parsed_module(self) -> ParsedModule:
+        return ParsedModule(
+            path=self.source_file.module_path_identity.path,
+            module_name=self.source_file.module_name,
+            is_package_init=self.source_file.is_package_init,
+            module=self.module,
+            source="",
+        )
+
+    @cached_property
+    def symbol_table(self) -> "ModuleSymbolTable":
+        return ModuleSymbolTable(
+            file_path=self.source_file.file_path,
+            source="",
+            module=self.module,
+        )
+
+    def dependency_resolution(
+        self,
+        name: str,
+        binding: "_StarProjectedModuleImportBinding",
+        import_graph: SourceModuleImportGraph,
+    ) -> _ModuleImportDependencyResolution:
+        exposure = module_public_export_contract(self.parsed_module).exposure_for(name)
+        if exposure.introduces_uncertainty:
+            return _ModuleImportDependencyResolution.unresolved_star(
+                self.source_file.module_name
+            )
+        if not exposure.proves_public_exposure:
+            return _ModuleImportDependencyResolution()
+        imported_identities = tuple(
+            dict.fromkeys(
+                identity
+                for _binding, identity in self.symbol_table.resolved_import_bindings(
+                    name,
+                    import_graph=import_graph,
+                    permits_guarded_import=False,
+                )
+            )
+        )
+        if len(imported_identities) == 1:
+            return _ModuleImportDependencyResolution.from_candidates(
+                ((binding, imported_identities[0]),)
+            )
+        if imported_identities:
+            return _ModuleImportDependencyResolution.unresolved_star(
+                self.source_file.module_name
+            )
+        local_bindings = tuple(
+            statement
+            for statement in self.symbol_table.binding_statements(name)
+            if not isinstance(statement, ast.Import | ast.ImportFrom)
+        )
+        if len(local_bindings) == 1:
+            return _ModuleImportDependencyResolution.from_candidates(
+                (
+                    (
+                        binding,
+                        FromModuleImportBindingIdentity(
+                            module_name=self.source_file.module_name,
+                            member_name=name,
+                        ),
+                    ),
+                )
+            )
+        if local_bindings or self.symbol_table.star_import_projections:
+            return _ModuleImportDependencyResolution.unresolved_star(
+                self.source_file.module_name
+            )
+        return _ModuleImportDependencyResolution()
+
+
+@dataclass(frozen=True)
+class _StarProjectedModuleImportBinding(ModuleImportBinding):
+    """Explicit destination import derived from a proven source star binding."""
+
+    @property
+    def supports_bound_name_removal(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class _ModuleStarImportProjection:
+    """One star import and the execution scope in which it binds names."""
+
+    statement: ast.ImportFrom
+    scope: ModuleImportScope
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ast.Module,
+    ) -> tuple["_ModuleStarImportProjection", ...]:
+        return tuple(
+            cls(statement, scope)
+            for scope in ModuleImportScope
+            for statement in scope.import_statements(module)
+            if isinstance(statement, ast.ImportFrom)
+            if any(alias.name == "*" for alias in statement.names)
+        )
+
+    def dependency_resolution(
+        self,
+        name: str,
+        *,
+        source_file_path: str,
+        import_graph: SourceModuleImportGraph,
+    ) -> _ModuleImportDependencyResolution:
+        source_file = import_graph.source_file_for_path(source_file_path)
+        module_name = (
+            None
+            if source_file is None
+            else import_graph.resolve_import_from_module(
+                source_file,
+                imported_module=self.statement.module,
+                level=self.statement.level,
+            )
+        )
+        imported_file = (
+            None
+            if module_name is None
+            else import_graph.unique_source_file_for_module_name(module_name)
+        )
+        imported_node = (
+            None
+            if imported_file is None
+            else import_graph.module_nodes_by_file_path.get(imported_file.file_path)
+        )
+        binding = _StarProjectedModuleImportBinding(
+            name=name,
+            request=RequestedImportStatement(
+                ast.ImportFrom(
+                    module=self.statement.module,
+                    names=[ast.alias(name=name)],
+                    level=self.statement.level,
+                ),
+                scope=self.scope,
+            ),
+        )
+        if imported_file is None or imported_node is None:
+            return _ModuleImportDependencyResolution.unresolved_star(module_name)
+        return _ModuleExportBindingAuthority(
+            source_file=imported_file,
+            module=imported_node,
+        ).dependency_resolution(name, binding, import_graph)
 
 
 @dataclass(frozen=True)
@@ -194,18 +434,11 @@ class ModuleSymbolTable:
         import_graph: SourceModuleImportGraph,
         permits_guarded_import: bool,
     ) -> tuple[ModuleImportBinding, ModuleImportBindingIdentity] | None:
-        candidates = self.resolved_import_bindings(
+        return self.import_dependency_resolution(
             name,
             import_graph=import_graph,
             permits_guarded_import=permits_guarded_import,
-        )
-        unique_candidates = tuple(
-            {
-                (identity, binding.scope): (binding, identity)
-                for binding, identity in candidates
-            }.values()
-        )
-        return single_item(unique_candidates)
+        ).binding_and_identity
 
     def import_dependency_is_ambiguous(
         self,
@@ -214,15 +447,43 @@ class ModuleSymbolTable:
         import_graph: SourceModuleImportGraph,
         permits_guarded_import: bool,
     ) -> bool:
-        candidates = frozenset(
-            (identity, binding.scope)
-            for binding, identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
-                permits_guarded_import=permits_guarded_import,
+        return self.import_dependency_resolution(
+            name,
+            import_graph=import_graph,
+            permits_guarded_import=permits_guarded_import,
+        ).is_ambiguous
+
+    def import_dependency_resolution(
+        self,
+        name: str,
+        *,
+        import_graph: SourceModuleImportGraph,
+        permits_guarded_import: bool = True,
+    ) -> _ModuleImportDependencyResolution:
+        return _ModuleImportDependencyResolution.combine(
+            (
+                _ModuleImportDependencyResolution.from_candidates(
+                    self.resolved_import_bindings(
+                        name,
+                        import_graph=import_graph,
+                        permits_guarded_import=permits_guarded_import,
+                    )
+                ),
+                *(
+                    star_import.dependency_resolution(
+                        name,
+                        source_file_path=self.file_path,
+                        import_graph=import_graph,
+                    )
+                    for star_import in self.star_import_projections
+                    if permits_guarded_import or not star_import.scope.is_guarded
+                ),
             )
         )
-        return len(candidates) > 1
+
+    @cached_property
+    def star_import_projections(self) -> tuple[_ModuleStarImportProjection, ...]:
+        return _ModuleStarImportProjection.from_module(self.module)
 
     def resolved_import_bindings(
         self,
@@ -250,6 +511,10 @@ class ModuleSymbolTable:
     ) -> bool:
         """Prove that this module already exposes the required authority."""
 
+        resolution = self.import_dependency_resolution(
+            name,
+            import_graph=import_graph,
+        )
         return (
             name in self.top_level_names
             and identity.is_destination_declaration(
@@ -257,12 +522,12 @@ class ModuleSymbolTable:
                 destination_path=self.file_path,
                 bound_name=name,
             )
-        ) or any(
-            available_identity == identity
-            and required_scope.is_satisfied_by(binding.scope)
-            for binding, available_identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
+        ) or (
+            not resolution.is_ambiguous
+            and any(
+                available_identity == identity
+                and required_scope.is_satisfied_by(binding.scope)
+                for binding, available_identity in resolution.unique_candidates
             )
         )
 
@@ -281,12 +546,15 @@ class ModuleSymbolTable:
                 destination_path=self.file_path,
                 bound_name=name,
             )
+        resolution = self.import_dependency_resolution(
+            name,
+            import_graph=import_graph,
+        )
+        if resolution.is_ambiguous:
+            return True
         return any(
             available_identity != identity
-            for _, available_identity in self.resolved_import_bindings(
-                name,
-                import_graph=import_graph,
-            )
+            for _, available_identity in resolution.unique_candidates
         )
 
     @cached_property

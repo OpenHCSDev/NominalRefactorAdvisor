@@ -7938,7 +7938,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     )
                 ),
                 source_removal_required=(
-                    name not in remaining_references
+                    binding.supports_bound_name_removal
+                    and name not in remaining_references
                     and name not in source_table.explicit_reexport_bound_names
                 ),
             )

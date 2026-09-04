@@ -231,6 +231,10 @@ An import binding used only by moved declarations is removed from the source
 module; bindings with any remaining static name or string reference are
 retained.  A source-local dependency that is not one unambiguous movable class
 or function leaves the closure unproved and fails preflight.
+Dependencies introduced by a star import are transferred only when the imported
+module's source proves both public exposure and one canonical underlying
+binding.  Dynamic export surfaces and multiple possible origins fail closed;
+the planner never invents a binding from an export policy alone.
 ``ModuleMoveDependencyReport.import_dependencies`` is the authoritative import
 transfer record.  Each ``ModuleMoveImportDependency`` carries one parsed
 binding, its canonical module identity, its execution scope, its destination

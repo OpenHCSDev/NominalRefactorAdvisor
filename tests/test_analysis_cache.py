@@ -3279,6 +3279,19 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
             source="__all__ = ['first']\n__all__.append('second')\n",
         ).parse()
     )[0].public_export_contract
+    non_dunder_globals = family.collect(
+        SourceModule(
+            path=Path("/repo/pkg/non_dunder.py"),
+            module_name="pkg.non_dunder",
+            source=(
+                "PUBLIC = 1\n"
+                "_PRIVATE = 2\n"
+                "__all__ = tuple(\n"
+                "    name for name in globals() if not name.startswith('__')\n"
+                ")\n"
+            ),
+        ).parse()
+    )[0].public_export_contract
 
     assert isinstance(
         implicit,
@@ -3307,6 +3320,20 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     )
     assert dynamic.exposure_for("first") is (
         class_index_module.CompactPublicNameExposure.UNRESOLVED
+    )
+    assert isinstance(
+        non_dunder_globals,
+        class_index_module.CompactExplicitPublicExportContract,
+    )
+    assert non_dunder_globals.exported_names == ("PUBLIC", "_PRIVATE")
+    assert non_dunder_globals.exposure_for("PUBLIC") is (
+        class_index_module.CompactPublicNameExposure.PUBLIC
+    )
+    assert non_dunder_globals.exposure_for("_PRIVATE") is (
+        class_index_module.CompactPublicNameExposure.PUBLIC
+    )
+    assert non_dunder_globals.exposure_for("__all__") is (
+        class_index_module.CompactPublicNameExposure.PRIVATE
     )
 
 

@@ -825,6 +825,68 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
 
     exported_names: tuple[str, ...]
 
+    @classmethod
+    def from_expression(
+        cls,
+        value: ast.expr,
+        preceding_bound_names: frozenset[str],
+    ) -> "CompactExplicitPublicExportContract | None":
+        literal_names = _literal_public_export_names(value)
+        if literal_names is not None:
+            return cls(literal_names)
+        if {"tuple", "globals"}.intersection(preceding_bound_names) or not (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "tuple"
+            and len(value.args) == 1
+            and not value.keywords
+            and isinstance(value.args[0], ast.GeneratorExp)
+        ):
+            return None
+        generator = value.args[0]
+        if not (
+            isinstance(generator.elt, ast.Name)
+            and len(generator.generators) == 1
+        ):
+            return None
+        comprehension = generator.generators[0]
+        if not (
+            isinstance(comprehension.target, ast.Name)
+            and generator.elt.id == comprehension.target.id
+            and isinstance(comprehension.iter, ast.Call)
+            and isinstance(comprehension.iter.func, ast.Name)
+            and comprehension.iter.func.id == "globals"
+            and not comprehension.iter.args
+            and not comprehension.iter.keywords
+            and len(comprehension.ifs) == 1
+            and not comprehension.is_async
+        ):
+            return None
+        condition = comprehension.ifs[0]
+        if not (
+            isinstance(condition, ast.UnaryOp)
+            and isinstance(condition.op, ast.Not)
+            and isinstance(condition.operand, ast.Call)
+        ):
+            return None
+        predicate = condition.operand
+        if not (
+            isinstance(predicate.func, ast.Attribute)
+            and isinstance(predicate.func.value, ast.Name)
+            and predicate.func.value.id == comprehension.target.id
+            and predicate.func.attr == "startswith"
+            and len(predicate.args) == 1
+            and isinstance(predicate.args[0], ast.Constant)
+            and predicate.args[0].value == "__"
+            and not predicate.keywords
+        ):
+            return None
+        return cls(
+            sorted_tuple(
+                name for name in preceding_bound_names if not name.startswith("__")
+            )
+        )
+
     def exposure_for(self, name: str) -> CompactPublicNameExposure:
         return (
             CompactPublicNameExposure.PUBLIC
@@ -2623,10 +2685,21 @@ def module_public_export_contract(
     )
     if references != (target,):
         return CompactUnresolvedPublicExportContract()
-    exported_names = _literal_public_export_names(value)
-    if exported_names is None:
-        return CompactUnresolvedPublicExportContract()
-    return CompactExplicitPublicExportContract(exported_names)
+    assignment_statement = next(
+        statement
+        for statement in module.body
+        if _public_export_assignment(statement) == assignments[0]
+    )
+    preceding_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        module.body[: module.body.index(assignment_statement)]
+    )
+    return (
+        CompactExplicitPublicExportContract.from_expression(
+            value,
+            preceding_bound_names,
+        )
+        or CompactUnresolvedPublicExportContract()
+    )
 
 
 class CompactNominalBindingKind(StrEnum):

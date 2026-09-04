@@ -6946,6 +6946,135 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_derives_explicit_import_from_proven_star_export(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        "from dataclasses import dataclass\n\n"
+        "__all__ = tuple(\n"
+        "    name for name in globals() if not name.startswith('__')\n"
+        ")\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n"
+        "from .base import *\n\n\n"
+        "@dataclass\n"
+        "class Payload:\n"
+        "    value: int\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Payload",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-star-import-dependency").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.imported_dependency_names == ("dataclass",)
+    assert report.source_import_removal_names == ("dataclass",)
+    assert "from dataclasses import dataclass" in simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import Payload; assert Payload(3).value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_does_not_invent_a_binding_from_an_export_policy(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        "PRESENT = object()\n\n"
+        "__all__ = tuple(\n"
+        "    name for name in globals() if not name.startswith('__')\n"
+        ")\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .base import *\n\n\n"
+        "def build():\n"
+        "    return missing()\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("build",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
+    ) == ("missing",)
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY
+    ) == ()
+
+
+def test_symbol_move_rejects_unproved_star_export_dependency(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        "from dataclasses import dataclass\n"
+        "__all__ = ['dataclass']\n"
+        "__all__.append('later')\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .base import *\n\n\n"
+        "@dataclass\n"
+        "class Payload:\n"
+        "    value: int\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Payload",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY
+    ) == ("dataclass",)
+
+
 def test_symbol_move_preserves_only_public_and_still_referenced_source_bindings(
     tmp_path: Path,
 ) -> None:

@@ -41,6 +41,7 @@ from ..registry_identity import (
 from ..taxonomy import CapabilityTag, ObservationTag
 
 from ._base import *
+from ._finding_spec_defaults import FindingSpecDefaultFieldCandidateCollector
 from ._helpers import *
 
 
@@ -4087,7 +4088,7 @@ declare_candidate_rule_detector(
 class FindingSpecDefaultFieldBoilerplateDetector(
     ModuleCollectorCandidateDetector[FindingSpecDefaultFieldCandidate]
 ):
-    candidate_collector = _finding_spec_default_field_candidates
+    candidate_collector = FindingSpecDefaultFieldCandidateCollector.collect
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "FindingSpec semantic defaults should be constructor-derived",

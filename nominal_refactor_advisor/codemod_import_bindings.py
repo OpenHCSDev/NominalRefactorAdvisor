@@ -27,6 +27,12 @@ class ModuleImportBinding:
     def scope(self) -> ModuleImportScope:
         return self.request.scope
 
+    @property
+    def supports_bound_name_removal(self) -> bool:
+        """Return whether this declaration explicitly owns the bound alias."""
+
+        return True
+
     def identity(
         self,
         import_graph: SourceModuleImportGraph,

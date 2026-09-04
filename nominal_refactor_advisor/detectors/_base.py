@@ -248,27 +248,55 @@ FindingSpecSemanticValue: TypeAlias = ConfidenceLevel | CertificationLevel
 
 
 class FindingSpecSemanticField(StrEnum):
-    CONFIDENCE = "confidence"
-    CERTIFICATION = "certification"
+    CONFIDENCE = ("confidence", ConfidenceLevel, "_CONFIDENCE")
+    CERTIFICATION = ("certification", CertificationLevel, "")
 
+    def __new__(
+        cls,
+        value: str,
+        semantic_value_type: type[ConfidenceLevel] | type[CertificationLevel],
+        import_name_suffix: str,
+    ) -> "FindingSpecSemanticField":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._semantic_value_type = semantic_value_type
+        member._import_name_suffix = import_name_suffix
+        return member
 
-def finding_spec_semantic_value_import_name(value: FindingSpecSemanticValue) -> str:
-    if isinstance(value, ConfidenceLevel):
-        return f"{value.name}_CONFIDENCE"
-    return value.name
+    @classmethod
+    def from_keyword_name(cls, keyword_name: str | None) -> Self | None:
+        if keyword_name is None:
+            return None
+        try:
+            return cls(keyword_name)
+        except ValueError:
+            return None
 
+    def semantic_value_from_import_name(
+        self,
+        import_name: str | None,
+    ) -> FindingSpecSemanticValue | None:
+        if import_name is None:
+            return None
+        return next(
+            (
+                value
+                for value in self._semantic_value_type
+                if self.import_name_for_value(value) == import_name
+            ),
+            None,
+        )
 
-def finding_spec_semantic_value_from_import_name(
-    import_name: str,
-) -> FindingSpecSemanticValue | None:
-    return next(
-        (
-            value
-            for value in (*ConfidenceLevel, *CertificationLevel)
-            if finding_spec_semantic_value_import_name(value) == import_name
-        ),
-        None,
-    )
+    def import_name_for_value(self, value: FindingSpecSemanticValue) -> str:
+        if not isinstance(value, self._semantic_value_type):
+            raise TypeError(f"{value!r} is not a value for {self.value!r}")
+        return f"{value.name}{self._import_name_suffix}"
+
+    def default_value(
+        self,
+        defaults: "FindingSpecSemanticDefaults",
+    ) -> FindingSpecSemanticValue:
+        return attrgetter(self.value)(defaults)
 
 
 @dataclass(frozen=True)
@@ -276,21 +304,10 @@ class FindingSpecSemanticDefaults:
     confidence: ConfidenceLevel
     certification: CertificationLevel
 
-    def field_values(
-        self,
-    ) -> tuple[tuple[FindingSpecSemanticField, FindingSpecSemanticValue], ...]:
-        return (
-            (FindingSpecSemanticField.CONFIDENCE, self.confidence),
-            (FindingSpecSemanticField.CERTIFICATION, self.certification),
-        )
-
     def value_for_field(
         self, field_name: FindingSpecSemanticField
     ) -> FindingSpecSemanticValue:
-        for candidate_name, value in self.field_values():
-            if candidate_name is field_name:
-                return value
-        raise KeyError(field_name)
+        return field_name.default_value(self)
 
 
 @dataclass(frozen=True)
