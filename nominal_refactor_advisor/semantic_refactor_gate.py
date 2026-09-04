@@ -6,7 +6,6 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cached_property
 from typing import ClassVar
 
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
@@ -21,16 +20,14 @@ from .models import RefactorFinding
 from .models import SourceLocation
 from .patterns import PatternId
 from .semantic_descent import (
-    AuthorityClaim,
     AuthorityClaimResolution,
-    AuthorityClaimResolver,
     AuthorityDiscoveryRequired,
-    DescentCertificate,
+    FindingDescentCertificateAuthority,
     PresentationProjectionKind,
+    ResolvedDescentCertificate,
     SemanticAuthorityKind,
     SemanticDescentGraph,
     build_finding_backed_semantic_descent_graph,
-    semantic_descent_finding_projection_id,
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
 
@@ -51,84 +48,24 @@ def ssot_authority_findings(
 
 
 @dataclass(frozen=True)
-class DescentCertificateFindingAuthority:
-    """Authority for selecting finding-backed descent certificates."""
-
-    graph: SemanticDescentGraph
-
-    @cached_property
-    def certificates_by_projection_id(
-        self,
-    ) -> dict[str, tuple[DescentCertificate, ...]]:
-        grouped: dict[str, list[DescentCertificate]] = defaultdict(list)
-        for certificate in self.graph.missing_descent_certificates:
-            grouped[certificate.edge.projection_id].append(certificate)
-        return {
-            projection_id: tuple(certificates)
-            for projection_id, certificates in grouped.items()
-        }
-
-    @cached_property
-    def certificate_rank_by_relation_identity(self) -> dict[tuple[str, str], int]:
-        return {
-            certificate.edge.identity: rank
-            for rank, certificate in enumerate(self.graph.missing_descent_certificates)
-        }
-
-    def certificate_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> DescentCertificate:
-        certificates = self.certificates_for_findings((finding,))
-        if len(certificates) != 1:
-            raise ValueError(
-                f"Finding {finding.stable_id} requires exactly one semantic-descent "
-                f"certificate; found {len(certificates)}."
-            )
-        return certificates[0]
-
-    def certificates_for_findings(
-        self,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[DescentCertificate, ...]:
-        projection_ids = tuple(
-            dict.fromkeys(
-                semantic_descent_finding_projection_id(finding) for finding in findings
-            )
-        )
-        certificates = tuple(
-            certificate
-            for projection_id in projection_ids
-            for certificate in self.certificates_by_projection_id.get(
-                projection_id,
-                (),
-            )
-        )
-        if len(projection_ids) < 2:
-            return certificates
-        return tuple(
-            sorted(
-                certificates,
-                key=lambda certificate: self.certificate_rank_by_relation_identity[
-                    certificate.edge.identity
-                ],
-            )
-        )
-
-    def authority_label_for_finding(self, finding: RefactorFinding) -> str:
-        certificate = self.certificate_for_finding(finding)
-        return self.graph.authority_catalog.authority_for_edge(certificate.edge).name
-
-    def descent_path_for_finding(self, finding: RefactorFinding) -> str:
-        return self.certificate_for_finding(finding).missing_derivation_path
+class DescentCertificateFindingAuthority(FindingDescentCertificateAuthority):
+    """Add semantic-boundary grouping to exact certificate selection."""
 
     def group_key_for_finding(
         self,
         finding: RefactorFinding,
     ) -> "SemanticRefactorFindingGroupKey":
+        return self.group_key_for_certificate(
+            self.resolved_certificate_for_finding(finding)
+        )
+
+    @staticmethod
+    def group_key_for_certificate(
+        resolved: ResolvedDescentCertificate,
+    ) -> "SemanticRefactorFindingGroupKey":
         return SemanticRefactorFindingGroupKey(
-            authority_label=self.authority_label_for_finding(finding),
-            descent_path=self.descent_path_for_finding(finding),
+            authority_label=resolved.authority.name,
+            descent_path=resolved.certificate.missing_derivation_path,
         )
 
     def finding_groups(
@@ -141,54 +78,6 @@ class DescentCertificateFindingAuthority:
         for finding in findings:
             groups[self.group_key_for_finding(finding)].append(finding)
         return tuple(tuple(group) for group in groups.values())
-
-    def matched_fact_count(
-        self,
-        certificates: tuple[DescentCertificate, ...],
-    ) -> int:
-        return sum(certificate.edge.match.fact_count for certificate in certificates)
-
-    def authority_kinds(
-        self,
-        certificates: tuple[DescentCertificate, ...],
-    ) -> tuple[SemanticAuthorityKind, ...]:
-        return tuple(
-            dict.fromkeys(
-                self.graph.authority_catalog.authority_for_edge(certificate.edge).kind
-                for certificate in certificates
-            )
-        )
-
-    def projection_kinds(
-        self,
-        certificates: tuple[DescentCertificate, ...],
-    ) -> tuple[PresentationProjectionKind, ...]:
-        return tuple(
-            dict.fromkeys(
-                self.graph.projection_catalog.projection_for_edge(certificate.edge).kind
-                for certificate in certificates
-            )
-        )
-
-    def authority_claim_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> AuthorityClaimResolution:
-        certificate = self.certificate_for_finding(finding)
-        authority = self.graph.authority_catalog.authority_for_edge(certificate.edge)
-        return AuthorityClaimResolver(self.graph).resolve(
-            AuthorityClaim.from_authority(authority)
-        )
-
-    def authority_claims_for_findings(
-        self,
-        findings: tuple[RefactorFinding, ...],
-    ) -> tuple[AuthorityClaimResolution, ...]:
-        resolutions_by_claim: dict[AuthorityClaim, AuthorityClaimResolution] = {}
-        for finding in findings:
-            resolution = self.authority_claim_for_finding(finding)
-            resolutions_by_claim[resolution.claim] = resolution
-        return tuple(resolutions_by_claim.values())
 
 
 @dataclass(frozen=True)
@@ -249,10 +138,10 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
         certificate_authority: DescentCertificateFindingAuthority,
     ) -> "SemanticRefactorBoundaryEvidence":
         first_finding = findings[0]
-        authority_candidates = _unique_strings(
-            certificate_authority.authority_label_for_finding(finding)
-            for finding in findings
+        certificate_selection = certificate_authority.resolved_selection_for_findings(
+            findings
         )
+        authority_candidates = certificate_selection.authority_names
         evidence_symbols = _unique_strings(
             location.symbol for finding in findings for location in finding.evidence
         )
@@ -262,8 +151,9 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
             )
         )
         detector_ids = _unique_strings(finding.detector_id for finding in findings)
-        certificates = certificate_authority.certificates_for_findings(findings)
-        group_key = certificate_authority.group_key_for_finding(first_finding)
+        group_key = certificate_authority.group_key_for_certificate(
+            certificate_selection.certificates[0]
+        )
         label = first_finding.title
         if len(findings) > 1:
             label = f"{label} ({len(findings)} raw signals)"
@@ -279,13 +169,11 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
                 target_count=max(1, len(evidence_symbols)),
                 finding_count=len(findings),
             ),
-            certificate_count=len(certificates),
-            matched_fact_count=certificate_authority.matched_fact_count(certificates),
-            authority_kinds=certificate_authority.authority_kinds(certificates),
-            projection_kinds=certificate_authority.projection_kinds(certificates),
-            authority_claims=certificate_authority.authority_claims_for_findings(
-                findings
-            ),
+            certificate_count=len(certificate_selection.certificates),
+            matched_fact_count=certificate_selection.matched_fact_count,
+            authority_kinds=certificate_selection.authority_kinds,
+            projection_kinds=certificate_selection.projection_kinds,
+            authority_claims=certificate_selection.authority_claims,
             evidence_symbols=evidence_symbols,
             evidence_locations=evidence_locations,
         )

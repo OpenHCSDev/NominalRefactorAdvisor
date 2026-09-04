@@ -2516,6 +2516,163 @@ class SemanticDescentGraphSpace(SemanticAuthorityInventory):
 
 
 @dataclass(frozen=True)
+class ResolvedDescentCertificate:
+    """One missing-descent certificate joined to its graph-owned declarations."""
+
+    certificate: DescentCertificate
+    authority: SemanticAuthority
+    projection: PresentationProjection
+    _fact_authority_index: SemanticFactAuthorityIndex = field(
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_graph(
+        cls,
+        graph: SemanticDescentGraphSpace,
+        certificate: DescentCertificate,
+    ) -> "ResolvedDescentCertificate":
+        edge = certificate.edge
+        return cls(
+            certificate=certificate,
+            authority=graph.authority_catalog.authority_for_edge(edge),
+            projection=graph.projection_catalog.projection_for_edge(edge),
+            _fact_authority_index=graph.fact_authority_index,
+        )
+
+    @cached_property
+    def matched_facts(self) -> tuple[SemanticFact, ...]:
+        return self._fact_authority_index.facts_for_edge(self.certificate.edge)
+
+    @cached_property
+    def matched_names(self) -> tuple[str, ...]:
+        return tuple(fact.name for fact in self.matched_facts)
+
+    @cached_property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            self.projection.location,
+            self.authority.location,
+            *(fact.location for fact in self.matched_facts),
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedDescentCertificateSelection:
+    """One exact finding selection projected from resolved graph certificates."""
+
+    graph: "SemanticDescentGraph"
+    certificates: tuple[ResolvedDescentCertificate, ...]
+
+    @cached_property
+    def authority_names(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(certificate.authority.name for certificate in self.certificates)
+        )
+
+    @cached_property
+    def matched_fact_count(self) -> int:
+        return sum(
+            resolved.certificate.edge.match.fact_count
+            for resolved in self.certificates
+        )
+
+    @cached_property
+    def authority_kinds(self) -> tuple[SemanticAuthorityKind, ...]:
+        return tuple(
+            dict.fromkeys(
+                resolved.authority.kind for resolved in self.certificates
+            )
+        )
+
+    @cached_property
+    def projection_kinds(self) -> tuple[PresentationProjectionKind, ...]:
+        return tuple(
+            dict.fromkeys(
+                resolved.projection.kind for resolved in self.certificates
+            )
+        )
+
+    @cached_property
+    def authority_claims(self) -> tuple[AuthorityClaimResolution, ...]:
+        resolutions_by_claim: dict[AuthorityClaim, AuthorityClaimResolution] = {}
+        resolver = AuthorityClaimResolver(self.graph)
+        for certificate in self.certificates:
+            resolution = resolver.resolve(
+                AuthorityClaim.from_authority(certificate.authority)
+            )
+            resolutions_by_claim[resolution.claim] = resolution
+        return tuple(resolutions_by_claim.values())
+
+
+@dataclass(frozen=True)
+class FindingDescentCertificateAuthority:
+    """Resolve finding identities to exact graph-owned descent certificates."""
+
+    graph: "SemanticDescentGraph"
+
+    @cached_property
+    def certificates_by_projection_id(
+        self,
+    ) -> dict[str, tuple[DescentCertificate, ...]]:
+        grouped: dict[str, list[DescentCertificate]] = {}
+        for certificate in self.graph.missing_descent_certificates:
+            grouped.setdefault(certificate.edge.projection_id, []).append(certificate)
+        return {
+            projection_id: tuple(certificates)
+            for projection_id, certificates in grouped.items()
+        }
+
+    @cached_property
+    def certificate_rank_by_relation_identity(self) -> dict[tuple[str, str], int]:
+        return {
+            certificate.edge.identity: rank
+            for rank, certificate in enumerate(self.graph.missing_descent_certificates)
+        }
+
+    def resolved_certificate_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> ResolvedDescentCertificate:
+        return self.resolved_selection_for_findings((finding,)).certificates[0]
+
+    def resolved_selection_for_findings(
+        self,
+        findings: tuple[RefactorFinding, ...],
+    ) -> ResolvedDescentCertificateSelection:
+        certificates_by_identity: dict[tuple[str, str], DescentCertificate] = {}
+        for finding in findings:
+            certificates = self.certificates_by_projection_id.get(
+                semantic_descent_finding_projection_id(finding),
+                (),
+            )
+            if len(certificates) != 1:
+                raise ValueError(
+                    f"Finding {finding.stable_id} requires exactly one "
+                    "semantic-descent certificate; "
+                    f"found {len(certificates)}."
+                )
+            certificate = certificates[0]
+            certificates_by_identity.setdefault(
+                certificate.edge.identity,
+                certificate,
+            )
+        return ResolvedDescentCertificateSelection(
+            graph=self.graph,
+            certificates=tuple(
+                ResolvedDescentCertificate.from_graph(self.graph, certificate)
+                for certificate in sorted(
+                    certificates_by_identity.values(),
+                    key=lambda certificate: self.certificate_rank_by_relation_identity[
+                        certificate.edge.identity
+                    ],
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SemanticDescentGraph(SemanticDescentGraphSpace):
     """Repository graph with one nominal authority-projection relation set."""
 
@@ -2671,14 +2828,14 @@ class SemanticDescentCertificateSummary(SemanticRecord):
     missing_derivation_path: str
 
     @classmethod
-    def from_graph(
+    def from_resolved_certificate(
         cls,
-        graph: SemanticDescentGraph,
-        certificate: DescentCertificate,
+        resolved: ResolvedDescentCertificate,
     ) -> "SemanticDescentCertificateSummary":
+        certificate = resolved.certificate
         edge = certificate.edge
-        authority = graph.authority_catalog.authority_for_edge(edge)
-        projection = graph.projection_catalog.projection_for_edge(edge)
+        authority = resolved.authority
+        projection = resolved.projection
         return cls(
             authority_name=authority.name,
             authority_kind=authority.kind,
@@ -2714,6 +2871,17 @@ class SemanticDescentGraphReport(SemanticRecord):
         *,
         certificate_limit: int = 10,
     ) -> "SemanticDescentGraphReport":
+        resolved_certificates = sorted_tuple(
+            (
+                ResolvedDescentCertificate.from_graph(graph, certificate)
+                for certificate in graph.missing_descent_certificates
+            ),
+            key=lambda item: (
+                -item.certificate.edge.match.fact_count,
+                item.authority.name,
+                item.projection.label,
+            ),
+        )
         return cls(
             authority_count=len(graph.authorities),
             fact_count=len(graph.facts),
@@ -2733,15 +2901,8 @@ class SemanticDescentGraphReport(SemanticRecord):
                 )
             ),
             top_certificates=tuple(
-                SemanticDescentCertificateSummary.from_graph(graph, certificate)
-                for certificate in sorted_tuple(
-                    graph.missing_descent_certificates,
-                    key=lambda item: (
-                        -item.edge.match.fact_count,
-                        graph.authority_catalog.authority_for_edge(item.edge).name,
-                        graph.projection_catalog.projection_for_edge(item.edge).label,
-                    ),
-                )[:certificate_limit]
+                SemanticDescentCertificateSummary.from_resolved_certificate(resolved)
+                for resolved in resolved_certificates[:certificate_limit]
             ),
         )
 

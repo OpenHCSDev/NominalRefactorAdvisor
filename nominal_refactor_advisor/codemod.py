@@ -505,9 +505,9 @@ from .semantic_descent import (
     AuthorityClaimResolution,
     AuthorityProofEdge,
     AuthorityProofEdgeKind,
+    FindingDescentCertificateAuthority,
     SemanticAuthorityKind,
     build_finding_backed_semantic_descent_graph,
-    semantic_descent_finding_projection_id,
 )
 from .semantic_match import (
     AstNameTemplateMatch,
@@ -12399,21 +12399,14 @@ class FindingRecipeClassPlanReport(DataclassJsonReport):
         graph = build_finding_backed_semantic_descent_graph(
             semantic_findings,
         )
-        certificates_by_projection_id = {
-            certificate.edge.projection_id: certificate
-            for certificate in graph.missing_descent_certificates
-        }
+        certificate_authority = FindingDescentCertificateAuthority(graph)
         grouped: dict[tuple[str, str], list[RefactorFinding]] = defaultdict(list)
         for finding in semantic_findings:
-            projection_id = semantic_descent_finding_projection_id(finding)
-            certificate = certificates_by_projection_id.get(projection_id)
-            if certificate is None:
-                group_key = (finding.title, finding.relation_context)
-            else:
-                group_key = (
-                    graph.authority_catalog.authority_for_edge(certificate.edge).name,
-                    certificate.missing_derivation_path,
-                )
+            resolved = certificate_authority.resolved_certificate_for_finding(finding)
+            group_key = (
+                resolved.authority.name,
+                resolved.certificate.missing_derivation_path,
+            )
             grouped[group_key].append(finding)
         ordinary_groups = FindingRecipeClassPlanReport.ordinary_finding_groups(
             ordinary_findings,

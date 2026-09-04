@@ -817,14 +817,18 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
             for evidence in finding.evidence
         )
     ]
-    rendered_candidates = []
-    original_renderer = detector._finding_for_candidate
+    rendered_certificates = []
+    original_renderer = detector._finding_for_resolved_certificate
 
-    def counted_renderer(candidate):
-        rendered_candidates.append(candidate)
-        return original_renderer(candidate)
+    def counted_renderer(resolved):
+        rendered_certificates.append(resolved)
+        return original_renderer(resolved)
 
-    monkeypatch.setattr(detector, "_finding_for_candidate", counted_renderer)
+    monkeypatch.setattr(
+        detector,
+        "_finding_for_resolved_certificate",
+        counted_renderer,
+    )
     focused_findings = detector._collect_focused_findings_from_graph(
         graph,
         modules,
@@ -835,8 +839,8 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
     assert [item.stable_id for item in focused_findings] == [
         item.stable_id for item in expected_findings
     ]
-    assert len(rendered_candidates) == len(focused_findings)
-    assert len(rendered_candidates) < len(graph.missing_descent_certificates)
+    assert len(rendered_certificates) == len(focused_findings)
+    assert len(rendered_certificates) < len(graph.missing_descent_certificates)
 
 
 def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
@@ -943,7 +947,7 @@ def test_finding_certificate_authority_requires_exact_graph_membership() -> None
     )
 
     with pytest.raises(ValueError, match="requires exactly one"):
-        certificate_authority.certificate_for_finding(finding)
+        certificate_authority.resolved_certificate_for_finding(finding)
     assert not hasattr(
         semantic_refactor_gate_module,
         "SemanticRefactorFindingGroupAuthority",
@@ -1127,10 +1131,11 @@ def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
         SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
     )
     assert boundary.projection_kinds == (PresentationProjectionKind.DETECTOR_FINDING,)
-    assert (
-        len(certificate_authority.authority_claims_for_findings((finding, finding)))
-        == 1
+    certificate_selection = certificate_authority.resolved_selection_for_findings(
+        (finding, finding)
     )
+    assert len(certificate_selection.certificates) == 1
+    assert len(certificate_selection.authority_claims) == 1
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(

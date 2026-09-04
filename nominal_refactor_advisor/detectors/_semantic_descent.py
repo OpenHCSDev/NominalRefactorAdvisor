@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, ClassVar, Iterator
 
@@ -23,20 +22,17 @@ from ..class_index import (
 from ..models import (
     RefactorFinding,
     SemanticMirrorMetricRelation,
-    SourceLocation,
 )
 from ..patterns import PatternId
 from ..semantic_descent import (
     CompactSemanticDescentRepository,
     CompactSemanticModuleProjectionFamily,
-    DescentCertificate,
     MirrorEdge,
     PresentationProjection,
-    SemanticAuthority,
+    ResolvedDescentCertificate,
     SemanticAuthorityMirrorPolicy,
     SemanticDescentGraph,
     SemanticDescentGraphCacheIdentity,
-    SemanticDescentGraphSpace,
     SemanticFact,
     normalized_name_variants,
 )
@@ -102,58 +98,6 @@ class SemanticMirrorClassKeySourceResolver(AliasOverlapClassKeySourceResolver):
         if len(matches) == 1:
             return matches[0]
         return super().key_source_for(fact, projection, matched_token_set)
-
-
-@dataclass(frozen=True)
-class SemanticMirrorFindingCandidate:
-    """One missing-descent certificate resolved to its nominal participants."""
-
-    certificate: DescentCertificate
-    authority: SemanticAuthority
-    projection: PresentationProjection
-    matched_facts: tuple[SemanticFact, ...]
-
-    @classmethod
-    def from_certificate(
-        cls,
-        graph: SemanticDescentGraphSpace,
-        certificate: DescentCertificate,
-    ) -> "SemanticMirrorFindingCandidate":
-        edge = certificate.edge
-        return cls(
-            certificate=certificate,
-            authority=graph.authority_catalog.authority_for_edge(edge),
-            projection=graph.projection_catalog.projection_for_edge(edge),
-            matched_facts=graph.fact_authority_index.facts_for_edge(edge),
-        )
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            self.projection.location,
-            self.authority.location,
-            *(fact.location for fact in self.matched_facts),
-        )
-
-    @property
-    def matched_names(self) -> tuple[str, ...]:
-        return tuple(fact.name for fact in self.matched_facts)
-
-    def metric_relation(
-        self,
-        key_source_resolver: SemanticMirrorClassKeySourceResolver,
-    ) -> SemanticMirrorMetricRelation:
-        return SemanticMirrorMetricRelation(
-            fact_names=self.matched_names,
-            projection_name=self.projection.label,
-            authority_name=self.authority.name,
-            identity_field_names=self.certificate.edge.match.tokens,
-            class_key_pairs=key_source_resolver.key_pairs_for(
-                self.matched_facts,
-                self.projection,
-                self.certificate.edge.match.tokens,
-            ),
-        )
 
 
 class SemanticMirrorWithoutDescentDetector(
@@ -249,8 +193,8 @@ class SemanticMirrorWithoutDescentDetector(
                 if edge is None:
                     raise TypeError("semantic mirror edge queue contains a non-edge")
                 chunk.append(
-                    self._finding_for_candidate(
-                        SemanticMirrorFindingCandidate.from_certificate(
+                    self._finding_for_resolved_certificate(
+                        ResolvedDescentCertificate.from_graph(
                             graph_space,
                             edge.certificate(graph_space),
                         )
@@ -273,8 +217,8 @@ class SemanticMirrorWithoutDescentDetector(
     ) -> list[RefactorFinding]:
         del modules, config
         return [
-            self._finding_for_candidate(
-                SemanticMirrorFindingCandidate.from_certificate(graph, certificate)
+            self._finding_for_resolved_certificate(
+                ResolvedDescentCertificate.from_graph(graph, certificate)
             )
             for certificate in graph.missing_descent_certificates
         ]
@@ -290,34 +234,34 @@ class SemanticMirrorWithoutDescentDetector(
         del modules, config
         findings: list[RefactorFinding] = []
         for certificate in graph.missing_descent_certificates:
-            candidate = SemanticMirrorFindingCandidate.from_certificate(
+            resolved = ResolvedDescentCertificate.from_graph(
                 graph,
                 certificate,
             )
             if not any(
                 includes_path(Path(evidence.file_path))
-                for evidence in candidate.evidence
+                for evidence in resolved.evidence
             ):
                 continue
-            findings.append(self._finding_for_candidate(candidate))
+            findings.append(self._finding_for_resolved_certificate(resolved))
         return findings
 
-    def _finding_for_candidate(
+    def _finding_for_resolved_certificate(
         self,
-        candidate: SemanticMirrorFindingCandidate,
+        resolved: ResolvedDescentCertificate,
     ) -> RefactorFinding:
-        certificate = candidate.certificate
+        certificate = resolved.certificate
         edge = certificate.edge
-        authority = candidate.authority
-        projection = candidate.projection
-        matched_names = candidate.matched_names
+        authority = resolved.authority
+        projection = resolved.projection
+        matched_names = resolved.matched_names
         summary = (
-            f"`{projection.label}` mirrors {len(candidate.matched_facts)} member(s) of "
+            f"`{projection.label}` mirrors {len(resolved.matched_facts)} member(s) of "
             f"`{authority.name}` without a descent path"
         )
         return self.build_finding(
             summary,
-            candidate.evidence,
+            resolved.evidence,
             projection_evidence=projection.location,
             authority_evidence=authority.location,
             title=f"`{projection.label}` mirrors `{authority.name}`",
@@ -337,6 +281,16 @@ class SemanticMirrorWithoutDescentDetector(
             metrics=SemanticAuthorityMirrorPolicy.for_authority(
                 authority
             ).semantic_mirror_metrics(
-                candidate.metric_relation(self.class_key_source_resolver)
+                SemanticMirrorMetricRelation(
+                    fact_names=matched_names,
+                    projection_name=projection.label,
+                    authority_name=authority.name,
+                    identity_field_names=edge.match.tokens,
+                    class_key_pairs=self.class_key_source_resolver.key_pairs_for(
+                        resolved.matched_facts,
+                        projection,
+                        edge.match.tokens,
+                    ),
+                )
             ),
         )
