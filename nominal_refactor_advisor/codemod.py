@@ -196,11 +196,11 @@ from .semantic_match import (
 )
 from .source_index import (
     AstTargetDigest,
+    AstTargetNodeIndex,
     AstTargetNodeKind,
     SourceFileDigest,
     SourceIndex,
     build_source_index_artifacts,
-    iter_statement_definition_nodes,
 )
 from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
 from .source_identity import canonical_source_mapping
@@ -874,10 +874,10 @@ class CodemodSourceContext(IndexedSourceAuthority):
                 module.file_path: module.module for module in module_tuple
             },
             ast_target_node_cache=(
-                AstTargetNodeIndex.nodes_by_target_identifier_from_modules(
+                AstTargetNodeIndex.from_modules(
                     self.source_index,
                     module_tuple,
-                )
+                ).nodes_by_target_id
             ),
             module_import_graph_cache=self.module_import_graph,
         )
@@ -1141,10 +1141,10 @@ class CodemodSelectorContext(IndexedSourceAuthority):
     ) -> Mapping[str, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
         if self.ast_target_node_cache is not None:
             return self.ast_target_node_cache
-        return AstTargetNodeIndex(
+        return AstTargetNodeIndex.from_source_mapping(
             self.source_index,
             self.sources_by_file_path,
-        ).nodes_by_target_identifier()
+        ).nodes_by_target_id
 
     @cached_property
     def module_nodes_by_file_path(self) -> Mapping[str, ast.Module]:
@@ -1576,10 +1576,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             module_node_cache=module_node_cache,
             ast_target_node_cache=(
-                AstTargetNodeIndex(
+                AstTargetNodeIndex.from_source_mapping(
                     source_index,
                     canonical_sources,
-                ).nodes_by_target_identifier()
+                ).nodes_by_target_id
                 if ast_target_node_cache is None
                 else ast_target_node_cache
             ),
@@ -1610,7 +1610,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             class_family_index=build_class_family_index(module_tuple),
             module_node_cache=module_node_cache,
             ast_target_node_cache=(
-                source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
+                source_index_artifacts.target_artifacts.node_index.nodes_by_target_id
             ),
             module_import_graph_cache=SourceModuleImportGraph(
                 source_index=source_index_artifacts.source_index,
@@ -22057,10 +22057,10 @@ def detect_cancelable_composition_signals(
 ) -> tuple[CancelableCompositionSignal, ...]:
     """Detect generic pack/unpack/forward compositions worth factoring away."""
 
-    nodes_by_target_id = AstTargetNodeIndex(
+    nodes_by_target_id = AstTargetNodeIndex.from_source_mapping(
         source_index,
         source_by_path,
-    ).function_nodes_by_target_identifier()
+    ).function_nodes_by_target_id
     signals = []
     for target in source_index.ast_targets:
         if not target.is_function_like:
@@ -22386,206 +22386,6 @@ _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 @dataclass(frozen=True, kw_only=True)
 class _ProductForward(ProductForwardIdentity):
     """AST-local product-forward projection fact."""
-
-
-class _AstTargetNodeIndexer(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.class_stack: list[str] = []
-        self.function_stack: list[str] = []
-        self.nodes_by_geometry: dict[AstTargetGeometryKey, _TargetNode] = {}
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
-        self.nodes_by_geometry[
-            AstTargetGeometryKey(
-                qualname=qualname,
-                line=node.lineno,
-                end_line=node.end_lineno or node.lineno,
-            )
-        ] = node
-        self.class_stack.append(node.name)
-        for statement in iter_statement_definition_nodes(node.body):
-            self.visit(statement)
-        self.class_stack.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_function(node)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def _visit_function(self, node: _FunctionNode) -> None:
-        qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
-        self.nodes_by_geometry[
-            AstTargetGeometryKey(
-                qualname=qualname,
-                line=node.lineno,
-                end_line=node.end_lineno or node.lineno,
-            )
-        ] = node
-        self.function_stack.append(node.name)
-        for statement in iter_statement_definition_nodes(node.body):
-            self.visit(statement)
-        self.function_stack.pop()
-
-
-@dataclass
-class AstTargetNodeGeometryIndexBuilder:
-    """Accumulate parsed AST nodes by file and source-index geometry."""
-
-    nodes_by_file_geometry: dict[str, dict[AstTargetGeometryKey, _TargetNode]] = field(
-        default_factory=dict
-    )
-
-    def add_module(self, module: ParsedModule) -> None:
-        self.add_tree(module.file_path, module.module)
-
-    def add_source(self, file_path: str, source: str) -> None:
-        self.add_tree(file_path, ast.parse(source, filename=file_path))
-
-    def add_tree(self, file_path: str, tree: ast.Module) -> None:
-        indexer = _AstTargetNodeIndexer()
-        indexer.visit(tree)
-        self.nodes_by_file_geometry[file_path] = indexer.nodes_by_geometry
-
-    def build(self) -> "AstTargetNodeGeometryIndex":
-        return AstTargetNodeGeometryIndex(nodes_by_file=self.nodes_by_file_geometry)
-
-
-@dataclass(frozen=True)
-class AstTargetNodeGeometryIndex:
-    """Parsed AST nodes keyed by source-index target geometry."""
-
-    nodes_by_file: Mapping[str, Mapping[AstTargetGeometryKey, _TargetNode]]
-
-    @classmethod
-    def from_modules(
-        cls,
-        modules: Iterable[ParsedModule],
-    ) -> "AstTargetNodeGeometryIndex":
-        builder = AstTargetNodeGeometryIndexBuilder()
-        for module in modules:
-            builder.add_module(module)
-        return builder.build()
-
-    @classmethod
-    def from_source_mapping(
-        cls,
-        source_by_path: Mapping[str, str],
-    ) -> "AstTargetNodeGeometryIndex":
-        builder = AstTargetNodeGeometryIndexBuilder()
-        for file_path, source in source_by_path.items():
-            builder.add_source(file_path, source)
-        return builder.build()
-
-    def node_for_target(self, target: AstTargetDigest) -> _TargetNode | None:
-        file_nodes = self.nodes_by_file.get(target.file_path)
-        if file_nodes is None:
-            return None
-        geometry = AstTargetGeometryKey(
-            qualname=target.qualname,
-            line=target.line,
-            end_line=target.end_line,
-        )
-        return file_nodes.get(geometry)
-
-
-@dataclass(frozen=True)
-class AstTargetNodeIndex(IndexedSourceAuthority):
-    """Source-index target ids mapped to parsed AST nodes."""
-
-    def nodes_by_target_identifier(self) -> dict[str, _TargetNode]:
-        return AstTargetNodeIndexCache.nodes_by_target_identifier(self)
-
-    def nodes_by_target_identifier_uncached(self) -> dict[str, _TargetNode]:
-        return self.nodes_by_target_identifier_from_geometry(
-            self.source_index,
-            self.nodes_by_file_geometry(),
-        )
-
-    @classmethod
-    def nodes_by_target_identifier_from_modules(
-        cls,
-        source_index: SourceIndex,
-        modules: Iterable[ParsedModule],
-    ) -> dict[str, _TargetNode]:
-        return cls.nodes_by_target_identifier_from_geometry(
-            source_index,
-            AstTargetNodeGeometryIndex.from_modules(modules),
-        )
-
-    @staticmethod
-    def nodes_by_target_identifier_from_geometry(
-        source_index: SourceIndex,
-        geometry_index: AstTargetNodeGeometryIndex,
-    ) -> dict[str, _TargetNode]:
-        node_index = UniqueIdentityIndexAuthority[str, AstTargetDigest, _TargetNode]()
-        for target in source_index.ast_targets:
-            node = geometry_index.node_for_target(target)
-            if node is not None:
-                node_index.add(target.target_id, target, node)
-        return node_index.values_by_handle()
-
-    def function_nodes_by_target_identifier(self) -> dict[str, _FunctionNode]:
-        return {
-            target_identifier: node
-            for target_identifier, node in self.nodes_by_target_identifier().items()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-
-    def nodes_by_file_geometry(
-        self,
-    ) -> AstTargetNodeGeometryIndex:
-        return AstTargetNodeGeometryIndex.from_source_mapping(self.sources_by_file_path)
-
-
-@dataclass(frozen=True)
-class AstTargetNodeIndexCacheKey:
-    """Object-identity key for one codemod source snapshot's target-node map."""
-
-    source_index_reference: SourceIndex = field(compare=False, repr=False)
-    source_mapping_reference: Mapping[str, str] = field(compare=False, repr=False)
-    source_index_identity: int
-    source_mapping_identity: int
-
-    @classmethod
-    def from_index(cls, index: AstTargetNodeIndex) -> "AstTargetNodeIndexCacheKey":
-        return cls(
-            source_index_reference=index.source_index,
-            source_mapping_reference=index.sources_by_file_path,
-            source_index_identity=id(index.source_index),
-            source_mapping_identity=id(index.sources_by_file_path),
-        )
-
-
-@dataclass
-class AstTargetNodeIndexCache:
-    """Bounded in-process cache for repeated codemod target-node resolution."""
-
-    max_entries: ClassVar[int] = 16
-    entries: ClassVar[dict[AstTargetNodeIndexCacheKey, dict[str, _TargetNode]]] = {}
-
-    @classmethod
-    def nodes_by_target_identifier(
-        cls,
-        index: AstTargetNodeIndex,
-    ) -> dict[str, _TargetNode]:
-        key = AstTargetNodeIndexCacheKey.from_index(index)
-        nodes = cls.entries.get(key)
-        if nodes is not None:
-            return dict(nodes)
-        nodes_by_target_identifier = index.nodes_by_target_identifier_uncached()
-        cls.store(key, nodes_by_target_identifier)
-        return dict(nodes_by_target_identifier)
-
-    @classmethod
-    def store(
-        cls,
-        key: AstTargetNodeIndexCacheKey,
-        nodes_by_target_identifier: dict[str, _TargetNode],
-    ) -> None:
-        if key not in cls.entries and len(cls.entries) >= cls.max_entries:
-            cls.entries.pop(next(iter(cls.entries)))
-        cls.entries[key] = nodes_by_target_identifier
 
 
 @dataclass(frozen=True)

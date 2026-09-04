@@ -15,7 +15,6 @@ from .cli import (
     plan_paths,
 )
 from .codemod import (
-    AstTargetNodeIndex,
     CancelableCompositionSignal,
     CarrierFieldProjection,
     CodemodPlanDocument,
@@ -163,6 +162,7 @@ from .semantic_inspection import (
     inspect_path,
     inspect_paths,
 )
+from .source_index import AstTargetNodeIndex
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,

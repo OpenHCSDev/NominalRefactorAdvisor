@@ -7,7 +7,8 @@ import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from typing import Generic, Iterable, TypeAlias, TypeVar
+from pathlib import Path
+from typing import Generic, Iterable, Mapping, TypeAlias, TypeVar
 
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
@@ -559,10 +560,77 @@ class SourceIndex:
 
 
 @dataclass(frozen=True)
-class AstTargetNodeCache:
-    """Parsed AST nodes addressed by source-index target identifiers."""
+class AstTargetNodeIndex:
+    """Parsed AST nodes addressed by their canonical source-index targets."""
 
     nodes_by_target_id: AstTargetNodeMap
+
+    @classmethod
+    def from_modules(
+        cls,
+        source_index: SourceIndex,
+        modules: Iterable[ParsedModule],
+    ) -> "AstTargetNodeIndex":
+        """Join stable indexed target addresses to freshly parsed AST nodes."""
+
+        node_index = UniqueIdentityIndexAuthority[
+            str, AstTargetDigest, AstTargetNode
+        ]()
+        target_authority = AstTargetDigestsAuthority()
+        for module in modules:
+            artifacts = target_authority.artifacts(
+                module,
+                SourceFileDigest.from_module(module),
+            )
+            projected_targets_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
+                artifacts.targets,
+                lambda target: target.target_id,
+            )
+            for target_id, node in artifacts.node_index.nodes_by_target_id.items():
+                node_index.add(
+                    target_id,
+                    projected_targets_by_id[target_id],
+                    node,
+                )
+        current_nodes_by_target_id = node_index.values_by_handle()
+        stable_target_ids = (
+            source_index.target_by_id.keys() & current_nodes_by_target_id.keys()
+        )
+        return cls(
+            {
+                target_id: current_nodes_by_target_id[target_id]
+                for target_id in stable_target_ids
+            }
+        )
+
+    @classmethod
+    def from_source_mapping(
+        cls,
+        source_index: SourceIndex,
+        sources_by_file_path: Mapping[str, str],
+    ) -> "AstTargetNodeIndex":
+        """Parse indexed sources and derive their canonical node handles."""
+
+        return cls.from_modules(
+            source_index,
+            (
+                source_index.module_path_authority.source_module(
+                    Path(file_path),
+                    source,
+                ).parse()
+                for file_path, source in sorted(sources_by_file_path.items())
+            ),
+        )
+
+    @property
+    def function_nodes_by_target_id(
+        self,
+    ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+        return {
+            target_id: node
+            for target_id, node in self.nodes_by_target_id.items()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
 
 
 @dataclass(frozen=True)
@@ -570,7 +638,7 @@ class AstTargetBuildArtifacts:
     """AST target rows plus the parsed-node cache for those rows."""
 
     targets: tuple[AstTargetDigest, ...]
-    node_cache: AstTargetNodeCache
+    node_index: AstTargetNodeIndex
 
 
 @dataclass(frozen=True)
@@ -734,7 +802,7 @@ class AstTargetDigestsAuthority:
         visitor.visit(module.module)
         return AstTargetBuildArtifacts(
             targets=(self.module_target_digest(module, file_digest), *visitor.targets),
-            node_cache=AstTargetNodeCache(visitor.target_node_index.values_by_handle()),
+            node_index=AstTargetNodeIndex(visitor.target_node_index.values_by_handle()),
         )
 
     def module_target_digest(
@@ -873,11 +941,11 @@ class SourceIndexBuildAuthority:
                 artifacts.targets,
                 lambda target: target.target_id,
             )
-            for target_id, node in artifacts.node_cache.nodes_by_target_id.items():
+            for target_id, node in artifacts.node_index.nodes_by_target_id.items():
                 target_node_index.add(target_id, targets_by_id[target_id], node)
         return AstTargetBuildArtifacts(
             targets=tuple(targets),
-            node_cache=AstTargetNodeCache(target_node_index.values_by_handle()),
+            node_index=AstTargetNodeIndex(target_node_index.values_by_handle()),
         )
 
     @staticmethod

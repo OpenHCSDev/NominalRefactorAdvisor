@@ -133,8 +133,6 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardTargetScope,
     AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
-    AstTargetNodeIndex,
-    AstTargetNodeIndexCache,
     AddClassBaseOperation,
     CodemodOperationPreflightError,
     CodemodBackend,
@@ -323,6 +321,7 @@ from nominal_refactor_advisor.semantic_description_length import (
     SemanticCostVector,
 )
 from nominal_refactor_advisor.source_index import (
+    AstTargetNodeIndex,
     AstTargetNodeKind,
     SourceIndex,
     build_source_index,
@@ -2600,7 +2599,7 @@ def test_delete_class_assignments_is_the_only_class_assignment_deletion_dsl() ->
     )
 
 
-def test_recipe_operation_target_nodes_reuse_snapshot_cache(
+def test_recipe_snapshot_builds_target_node_index_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2639,24 +2638,27 @@ def test_recipe_operation_target_nodes_reuse_snapshot_cache(
             )
         )
     )
-    original = AstTargetNodeIndex.nodes_by_target_identifier_uncached
-    uncached_call_count = 0
+    original = AstTargetNodeIndex.from_source_mapping.__func__
+    index_build_count = 0
 
-    def counted_uncached(index: AstTargetNodeIndex) -> dict[str, object]:
-        nonlocal uncached_call_count
-        uncached_call_count += 1
-        return original(index)
+    def counted_index_build(
+        cls: type[AstTargetNodeIndex],
+        indexed_source: SourceIndex,
+        indexed_sources: Mapping[str, str],
+    ) -> AstTargetNodeIndex:
+        nonlocal index_build_count
+        index_build_count += 1
+        return original(cls, indexed_source, indexed_sources)
 
-    AstTargetNodeIndexCache.entries.clear()
     monkeypatch.setattr(
         AstTargetNodeIndex,
-        "nodes_by_target_identifier_uncached",
-        counted_uncached,
+        "from_source_mapping",
+        classmethod(counted_index_build),
     )
 
     recipe.source_rewrite_batch(_indexed_snapshot(source_index, source_by_path))
 
-    assert uncached_call_count == 1
+    assert index_build_count == 1
 
 
 def test_projected_finding_report_uses_focused_partial_scan(
@@ -16126,13 +16128,13 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
         "\nclass Alpha:\n    def run(self):\n        return 1\n",
     )
 
-    def fail_reindex(*args: object, **kwargs: object) -> dict[str, ast.AST]:
+    def fail_reindex(*args: object, **kwargs: object) -> AstTargetNodeIndex:
         raise AssertionError("CodemodSourceSnapshot rebuilt AST target nodes")
 
     monkeypatch.setattr(
-        "nominal_refactor_advisor.codemod.AstTargetNodeIndex."
-        "nodes_by_target_identifier_from_modules",
-        fail_reindex,
+        AstTargetNodeIndex,
+        "from_modules",
+        classmethod(fail_reindex),
     )
 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
@@ -16153,6 +16155,30 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
         snapshot.ast_target_nodes_by_id[target_ids_by_qualname["Alpha.run"]],
         ast.FunctionDef,
     )
+
+
+def test_ast_target_node_index_joins_stable_target_geometry_after_source_edit(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def build(value):\n    return value\n",
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+
+    target = next(target for target in source_index.ast_targets if target.is_function)
+    node_index = AstTargetNodeIndex.from_source_mapping(
+        source_index,
+        {
+            module_path.as_posix(): "def build(other):\n    return other\n",
+        },
+    )
+
+    indexed_node = node_index.nodes_by_target_id[target.target_id]
+    assert isinstance(indexed_node, ast.FunctionDef)
+    assert indexed_node.args.args[0].arg == "other"
 
 
 def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
