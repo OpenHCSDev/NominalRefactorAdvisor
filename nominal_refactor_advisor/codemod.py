@@ -11099,19 +11099,12 @@ class CodemodParseValidationReport(DataclassJsonReport):
     validated_file_paths: tuple[str, ...]
     parse_valid: bool
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **super().to_dict(),
-            "backend": self.backend.value,
-        }
-
-
 @dataclass(frozen=True)
-class CodemodSimulationReport(CodemodJsonReport):
+class CodemodSimulationReport(DataclassJsonReport):
     """Result of simulating planned rewrites without writing files."""
 
     rewrites: tuple[SimulatedSourceRewrite, ...]
-    rewritten_sources: dict[str, str]
+    rewritten_sources: dict[str, str] = json_report_field(included=False)
     parse_validation: CodemodParseValidationReport
     base_revisions: tuple[CodemodSourceRevision, ...]
 
@@ -11211,11 +11204,11 @@ class CodemodSimulationReport(CodemodJsonReport):
         for revision in self.base_revisions:
             revision.require_path_state(encoding=encoding)
 
-    @property
+    @json_report_property()
     def applied_rewrite_count(self) -> int:
         return len(self.rewrites)
 
-    @property
+    @json_report_property()
     def changed_file_paths(self) -> tuple[str, ...]:
         return tuple(sorted(self.rewritten_sources))
 
@@ -11236,18 +11229,6 @@ class CodemodSimulationReport(CodemodJsonReport):
     @property
     def parse_valid(self) -> bool:
         return self.parse_validation.parse_valid
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "applied_rewrite_count": self.applied_rewrite_count,
-            "changed_file_paths": self.changed_file_paths,
-            "parse_validation": self.parse_validation.to_dict(),
-            "base_revisions": tuple(
-                revision.to_dict() for revision in self.base_revisions
-            ),
-            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
-        }
-
 
 @dataclass(frozen=True)
 class CodemodAfterSnapshotProjection:
@@ -11502,12 +11483,10 @@ class FindingRecipeActionIdentity(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class FindingRecipeActionKey(CodemodJsonReport):
+class FindingRecipeActionKey(FindingRecipeActionIdentity):
     """A detector claim projected onto one stable source action identity."""
 
     detector_id: str
-    file_path: str
-    subject_name: str
 
     @classmethod
     def from_finding_file_subjects(
@@ -11523,33 +11502,6 @@ class FindingRecipeActionKey(CodemodJsonReport):
             )
             for file_path, subject_name in file_subjects
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "detector_id": self.detector_id,
-            **self.semantic_identity.to_dict(),
-        }
-
-    @property
-    def semantic_identity(self) -> FindingRecipeActionIdentity:
-        return FindingRecipeActionIdentity(
-            file_path=self.file_path,
-            subject_name=self.subject_name,
-        )
-
-    @classmethod
-    def child_subject(cls, parent_subject: str, child_subject: str) -> str:
-        return FindingRecipeActionIdentity.child_subject(
-            parent_subject,
-            child_subject,
-        )
-
-    def conflicts_with(self, other: "FindingRecipeActionKey") -> bool:
-        return self.semantic_identity.conflicts_with(other.semantic_identity)
-
-    def subject_conflicts_with(self, other_subject: str) -> bool:
-        return self.semantic_identity.subject_conflicts_with(other_subject)
-
 
 class FindingRecipeCandidatePairDisposition(StrEnum):
     """Physical and semantic compatibility of two executable recipes."""
@@ -11568,26 +11520,17 @@ class FindingRecipeCandidatePairDisposition(StrEnum):
 
 
 @dataclass(frozen=True)
-class FindingRecipeCandidatePairAssessment(CodemodJsonReport):
+class FindingRecipeCandidatePairAssessment(DataclassJsonReport):
     """One pairwise compatibility proof used by batch evaluation."""
 
-    left_index: int
-    right_index: int
+    left_index: int = json_report_field(field_name="left_candidate_index")
+    right_index: int = json_report_field(field_name="right_candidate_index")
     disposition: FindingRecipeCandidatePairDisposition
     reason: str
 
     @property
     def edge(self) -> tuple[int, int]:
         return (self.left_index, self.right_index)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "left_candidate_index": self.left_index,
-            "right_candidate_index": self.right_index,
-            "disposition": self.disposition.value,
-            "reason": self.reason,
-        }
-
 
 class FindingRecipeSetDisposition(StrEnum):
     """Physical proof state of one recipe set simulation."""
@@ -11658,13 +11601,6 @@ class FindingRecipeSetAssessment(DataclassJsonReport):
     def proved(self) -> bool:
         return self.disposition.proved
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **super().to_dict(),
-            "disposition": self.disposition.value,
-        }
-
-
 @dataclass(frozen=True)
 class FindingRecipeSetSimulation:
     """Internal source result paired with its public proof assessment."""
@@ -11719,56 +11655,50 @@ class FindingRecipeTrajectoryObstacle(DataclassJsonReport):
     reason: str
 
 @dataclass(frozen=True)
-class FindingRecipeProofObstacle(CodemodJsonReport):
+class FindingRecipeProofObstacle(DataclassJsonReport):
     """One nominal declaration's failed proof for a finding-backed recipe."""
 
-    executable_declaration_type: type[object]
+    executable_declaration_type: type[object] = json_report_field(included=False)
     reason: str
 
-    @property
+    @json_report_property(field_name="executable_declaration")
     def executable_declaration_name(self) -> str:
         return self.executable_declaration_type.__name__
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "executable_declaration": self.executable_declaration_name,
-            "reason": self.reason,
-        }
-
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisRecord:
+class FindingRecipeSynthesisRecord(DataclassJsonReport):
     """Recipe-synthesis outcome for one finding."""
 
-    finding: RefactorFinding
-    evaluation: "FindingRecipeEvaluation"
+    finding: RefactorFinding = json_report_field(included=False)
+    evaluation: "FindingRecipeEvaluation" = json_report_field(included=False)
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
 
-    @property
+    @json_report_property()
     def status(self) -> FindingRecipeSynthesisStatus:
         return self.evaluation.status
 
-    @property
+    @json_report_property()
     def finding_id(self) -> str:
         return self.finding.stable_id
 
-    @property
+    @json_report_property()
     def detector_id(self) -> str:
         return self.finding.detector_id
 
-    @property
+    @json_report_property()
     def title(self) -> str:
         return self.finding.title
 
-    @property
+    @json_report_property()
     def summary(self) -> str:
         return self.finding.summary
 
-    @property
+    @json_report_property()
     def capability_gap(self) -> str:
         return self.finding.capability_gap
 
-    @property
+    @json_report_property()
     def reason(self) -> str:
         return self.evaluation.rejection_reason or self.status.default_reason
 
@@ -11776,11 +11706,11 @@ class FindingRecipeSynthesisRecord:
     def evidence_selector(self) -> FindingEvidenceTargetSelector:
         return FindingEvidenceTargetSelector(finding_ids=(self.finding_id,))
 
-    @property
+    @json_report_property()
     def recipe_id(self) -> str:
         return self.evaluation.recipe_id
 
-    @property
+    @json_report_property(field_name="recipe")
     def recipe_payload(self) -> JsonObject | None:
         return self.evaluation.recipe_payload
 
@@ -11788,56 +11718,28 @@ class FindingRecipeSynthesisRecord:
     def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
         return self.evaluation.candidate_recipes
 
-    @property
+    @json_report_property()
     def proof_obstacles(self) -> tuple[FindingRecipeProofObstacle, ...]:
         return self.evaluation.proof_obstacles
 
-    @property
+    @json_report_property(field_name="executable_declaration")
     def executable_declaration_name(self) -> str:
         return self.evaluation.executable_declaration_name
 
-    @property
+    @json_report_property()
     def conflict_evidence(self) -> "CurrentSnapshotRecipeConflictEvidence | None":
         return self.evaluation.conflict_evidence
 
-    @property
+    @json_report_property()
     def planning_horizon(self) -> FindingRecipePlanningHorizon:
         return self.evaluation.planning_horizon
 
-    @property
+    @json_report_property()
     def refactor_concept(self) -> str:
         concept_type = self.evaluation.refactor_concept_type
         if concept_type is None:
             return ""
         return concept_type.concept_key()
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "finding_id": self.finding_id,
-            "detector_id": self.detector_id,
-            "title": self.title,
-            "summary": self.summary,
-            "capability_gap": self.capability_gap,
-            "status": self.status.value,
-            "executable_declaration": self.executable_declaration_name,
-            "action_keys": tuple(
-                action_key.to_dict() for action_key in self.action_keys
-            ),
-            "recipe_id": self.recipe_id,
-            "recipe": self.recipe_payload,
-            "refactor_concept": self.refactor_concept,
-            "reason": self.reason,
-            "proof_obstacles": tuple(
-                obstacle.to_dict() for obstacle in self.proof_obstacles
-            ),
-            "conflict_evidence": (
-                self.conflict_evidence.to_dict()
-                if self.conflict_evidence is not None
-                else None
-            ),
-            "planning_horizon": self.planning_horizon.value,
-        }
-
 
 @dataclass(frozen=True)
 class FindingRecipePlanCandidate:
@@ -11893,25 +11795,20 @@ class FindingRecipeTrajectoryBranch(
 
 
 @dataclass(frozen=True)
-class FindingRecipeTrajectoryFrontier(CodemodJsonReport):
+class FindingRecipeTrajectoryFrontier(DataclassJsonReport):
     """All proved current-state transitions or explicit incompleteness evidence."""
 
     budget: FindingRecipeFrontierBudget
     branches: tuple[FindingRecipeTrajectoryBranch, ...] = ()
     obstacles: tuple[FindingRecipeTrajectoryObstacle, ...] = ()
 
-    @property
+    @json_report_property()
     def complete(self) -> bool:
         return not self.obstacles
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "complete": self.complete,
-            "budget": self.budget.to_dict(),
-            "branch_count": len(self.branches),
-            "branches": tuple(branch.to_dict() for branch in self.branches),
-            "obstacles": tuple(obstacle.to_dict() for obstacle in self.obstacles),
-        }
+    @json_report_property()
+    def branch_count(self) -> int:
+        return len(self.branches)
 
 
 @dataclass(frozen=True)
@@ -11932,21 +11829,21 @@ class CurrentSnapshotRecipeConflictEvidence(DataclassJsonReport):
     pair_assessments: tuple[FindingRecipeCandidatePairAssessment, ...]
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisReport(CodemodJsonReport):
+class FindingRecipeSynthesisReport(DataclassJsonReport):
     """Coverage report for finding-backed DSL recipe synthesis."""
 
     payload_key: ClassVar[str] = "synthesis_report"
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
 
-    @property
+    @json_report_property()
     def candidate_count(self) -> int:
         return sum(1 for record in self.records if record.status.candidate)
 
-    @property
+    @json_report_property()
     def rejected_count(self) -> int:
         return sum(1 for record in self.records if record.status.rejected)
 
-    @property
+    @json_report_property()
     def unsupported_count(self) -> int:
         return sum(1 for record in self.records if record.status.unsupported)
 
@@ -11954,42 +11851,34 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
     def requires_trajectory_proof(self) -> bool:
         return self.planning_horizon.requires_trajectory_proof
 
-    @property
+    @json_report_property()
     def application_blocked(self) -> bool:
         """Whether current evidence is insufficient to apply the candidate batch."""
 
         return self.requires_trajectory_proof
 
-    @property
+    @json_report_property()
     def application_block_reason(self) -> str:
         """Return the declaration-owned reason application remains unavailable."""
 
         return self.planning_horizon.application_block_reason
 
-    @property
+    @json_report_property()
     def planning_horizon(self) -> FindingRecipePlanningHorizon:
         return FindingRecipePlanningHorizon.join(
             record.planning_horizon for record in self.records
         )
 
-    def to_dict(self) -> JsonObject:
-        record_payloads = tuple(record.to_dict() for record in self.records)
-        return {
-            "records": record_payloads,
-            "candidate_count": self.candidate_count,
-            "rejected_count": self.rejected_count,
-            "unsupported_count": self.unsupported_count,
-            "planning_horizon": self.planning_horizon.value,
-            "application_blocked": self.application_blocked,
-            "application_block_reason": self.application_block_reason,
-            "status_counts": {
-                status.value: sum(
-                    1 for record in self.records if record.status is status
-                )
+    @json_report_property()
+    def status_counts(self) -> JsonObject:
+        statuses = Counter(record.status for record in self.records)
+        return JsonObject(
+            {
+                status.value: statuses[status]
                 for status in FindingRecipeSynthesisStatus
-                if any(record.status is status for record in self.records)
-            },
-        }
+                if statuses[status]
+            }
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -11998,7 +11887,7 @@ class FindingRecipeSynthesisBoundary(DataclassJsonReport):
 
     report: FindingRecipeSynthesisReport = json_report_field(
         field_name=FindingRecipeSynthesisReport.payload_key,
-        default_factory=FindingRecipeSynthesisReport
+        default_factory=FindingRecipeSynthesisReport,
     )
 
     @property

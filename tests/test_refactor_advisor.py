@@ -1482,6 +1482,7 @@ def test_missing_recipe_synthesizer_is_a_nominal_terminal_outcome() -> None:
 
 
 def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionIdentity
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
 
     evaluation = ExecutableRecipeEvaluation(
@@ -1500,6 +1501,8 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
     assert missing.recipe_id == "action-key-gate-fixture"
     assert missing.executable_declaration_name == "ExecutableRecipeEvaluation"
     assert identified is evaluation
+    assert isinstance(action_key, FindingRecipeActionIdentity)
+    assert "semantic_identity" not in FindingRecipeActionKey.__dict__
 
 
 def test_executable_recipe_evaluation_does_not_hide_programming_errors(
