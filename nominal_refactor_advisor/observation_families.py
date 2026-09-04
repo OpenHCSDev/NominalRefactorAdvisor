@@ -1,24 +1,14 @@
-"""Observation spec families and spec-derived family generation.
-
-This module declares the public observation specs used by the advisor and derives
-their exported collected families from the spec definitions themselves. The goal is
-to keep one nominal authority per family and derive runtime family surfaces from it.
-"""
+"""Source-visible observation specs and their collected families."""
 
 from __future__ import annotations
 
 import ast
-import inspect
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from functools import lru_cache
-from typing import Callable, ClassVar, Generic, ParamSpec, TypeAlias, TypeVar, cast
+from typing import Callable, ClassVar, Generic, TypeVar
 
 from .export_tools import PublicExportPolicy, derive_public_exports
-from .collection_algebra import sorted_tuple
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
-from .semantic_match import loaded_nominal_descendants
 
 from .observation_shapes import (
     BuilderCallShape,
@@ -44,10 +34,8 @@ from .ast_tools import (
     ClassAstObservation,
     CLASS_OBSERVATION_PROJECTION,
     CollectedFamily,
-    ContextForwardingShapeSpec,
     ContextHelperShapeSpec,
     FunctionObservationSpec,
-    ObservationShapeSpec,
     ParsedModule,
     RegisteredSpecCollectedFamily,
     ScopedAstObservation,
@@ -64,7 +52,6 @@ from .ast_tools import (
     _class_name_from_expr,
     _config_dispatch_observations,
     _dynamic_method_injection_observations,
-    _execution_level_for_scope,
     root_agnostic_expression_fingerprint,
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
@@ -72,7 +59,6 @@ from .ast_tools import (
     _iter_class_decorator_family_calls,
     _known_class_family,
     _literal_dispatch_observations_for_kind,
-    _node_display_name,
     _projection_helper_shape_from_function,
     _registration_key_fingerprint,
     _scoped_shape_wrapper_function_from_function,
@@ -81,318 +67,19 @@ from .ast_tools import (
     _sentinel_type_usage_observations,
 )
 
-GeneratedItemT = TypeVar("GeneratedItemT")
-GeneratedHelperParams = ParamSpec("GeneratedHelperParams")
+FamilyItemT = TypeVar("FamilyItemT")
 
 
-@dataclass(frozen=True)
-class GeneratedShapeHelper(Generic[GeneratedHelperParams, GeneratedItemT]):
-    """Nominal wrapper for generated observation and shape helper callables."""
-
-    function: Callable[GeneratedHelperParams, ShapeEmission[GeneratedItemT] | None]
-
-    def __call__(
-        self,
-        *args: GeneratedHelperParams.args,
-        **kwargs: GeneratedHelperParams.kwargs,
-    ) -> ShapeEmission[GeneratedItemT] | None:
-        return self.function(*args, **kwargs)
-
-
-@dataclass(frozen=True)
-class GeneratedSourceCollector(Generic[GeneratedItemT]):
-    """Source-only collector derived into one generated family declaration."""
-
-    function: Callable[
-        [SourceModule, NativePythonSyntaxIndex], list[GeneratedItemT] | None
-    ]
-
-    def __call__(
-        self,
-        source_module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-    ) -> list[GeneratedItemT] | None:
-        return self.function(source_module, syntax_index)
-
-
-@dataclass(frozen=True)
-class GeneratedFamilySpec(Generic[GeneratedItemT]):
-    """Declarative recipe for one generated collected family export."""
-
-    item_type: type[GeneratedItemT]
-    family_root: type[CollectedFamily[GeneratedItemT]]
-    export_name: str | None = None
-    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None
-
-
-GeneratedFamilySpecSet: TypeAlias = tuple[GeneratedFamilySpec, ...]
-GeneratedClassTypeValue: TypeAlias = type[ast.AST] | type[str] | type[int]
-GeneratedClassAttributeValue: TypeAlias = (
-    bool
-    | int
-    | str
-    | LiteralKind
-    | AstNameFamily
-    | GeneratedClassTypeValue
-    | GeneratedFamilySpecSet
-    | GeneratedShapeHelper[..., GeneratedItemT]
-    | GeneratedSourceCollector[GeneratedItemT]
-)
-GeneratedClassAttribute: TypeAlias = tuple[str, GeneratedClassAttributeValue]
-GeneratedNamespaceValue: TypeAlias = (
-    str | int | GeneratedClassAttributeValue | type[CollectedFamily]
-)
-
-
-@dataclass(frozen=True)
-class _GeneratedClassDeclaration:
-    """Declarative recipe for one metadata-only generated class."""
-
-    class_name: str
-    base_names: tuple[str, ...]
-    attributes: tuple[GeneratedClassAttribute, ...] = ()
-
-
-@dataclass(frozen=True)
-class GeneratedClassDeclarationFactory:
-    def class_declaration(
-        self,
-        class_name: str,
-        *base_names: str,
-        **attributes: GeneratedClassAttributeValue,
-    ) -> _GeneratedClassDeclaration:
-        return _GeneratedClassDeclaration(
-            class_name,
-            tuple((name for group in base_names for name in group.split())),
-            tuple(attributes.items()),
-        )
-
-    def root_spec_declaration(
-        self,
-        class_name: str,
-        item_type: type[GeneratedItemT],
-        family_root: type[CollectedFamily[GeneratedItemT]],
-        *base_names: str,
-        export_name: str | None = None,
-        source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
-    ) -> _GeneratedClassDeclaration:
-        return self.class_declaration(
-            class_name,
-            "FamilyGeneratingSpec",
-            *base_names,
-            _registry_root=True,
-            family_specs=_family_specs(
-                item_type,
-                family_root,
-                export_name,
-                source_collector=source_collector,
-            ),
-        )
-
-
-_GENERATED_CLASS_DECLARATIONS = GeneratedClassDeclarationFactory()
-
-
-def _family_specs(
-    item_type: type[GeneratedItemT],
-    family_root: type[CollectedFamily[GeneratedItemT]],
-    export_name: str | None = None,
-    *,
-    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
-) -> tuple[GeneratedFamilySpec[GeneratedItemT], ...]:
-    return (
-        GeneratedFamilySpec(
-            item_type,
-            family_root,
-            export_name,
-            source_collector,
-        ),
-    )
-
-
-def _materialize_class_declarations(
-    declarations: tuple[_GeneratedClassDeclaration, ...],
-) -> None:
-    frame = inspect.currentframe()
-    caller = None if frame is None else frame.f_back
-    base_lineno = 0 if caller is None else caller.f_lineno
-    module_globals = cast(dict[str, GeneratedNamespaceValue], globals())
-    for offset, declaration in enumerate(declarations):
-        namespace: dict[str, GeneratedNamespaceValue] = {
-            "__module__": __name__,
-            "__qualname__": declaration.class_name,
-            "__firstlineno__": base_lineno + offset,
-        }
-        namespace.update(dict(declaration.attributes))
-        bases = tuple(
-            (
-                cast(type, module_globals[base_name])
-                for base_name in declaration.base_names
-            )
-        )
-        module_globals[declaration.class_name] = AutoRegisterMeta(
-            declaration.class_name, bases, namespace
-        )
-
-
-class FamilyGeneratingSpec(ABC):
-    """Spec mixin that declares which collected families derive from the spec."""
-
-    family_specs: ClassVar[GeneratedFamilySpecSet] = ()
-
-
-def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
-    ordered = [
-        cast(type[FamilyGeneratingSpec], current)
-        for current in loaded_nominal_descendants(FamilyGeneratingSpec)
-        if current.__dict__.get("family_specs")
-    ]
-    return sorted_tuple(
-        ordered,
-        key=lambda spec_type: (
-            spec_type.__module__,
-            int(vars(spec_type).get("__firstlineno__", 0)),
-            spec_type.__qualname__,
-        ),
-    )
-
-
-class ObservationFamily(CollectedFamily[GeneratedItemT], Generic[GeneratedItemT], ABC):
+class ObservationFamily(CollectedFamily[FamilyItemT], Generic[FamilyItemT], ABC):
     """Registry root for observation families derived from observation specs."""
 
     _registry_root = True
 
 
-class ShapeFamily(CollectedFamily[GeneratedItemT], Generic[GeneratedItemT], ABC):
+class ShapeFamily(CollectedFamily[FamilyItemT], Generic[FamilyItemT], ABC):
     """Registry root for structural shape families derived from shape specs."""
 
     _registry_root = True
-
-
-def _observation_root_spec(
-    class_name: str,
-    item_type: type[GeneratedItemT],
-    *base_names: str,
-    export_name: str | None = None,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.root_spec_declaration(
-        class_name,
-        item_type,
-        ObservationFamily,
-        *base_names,
-        export_name=export_name,
-    )
-
-
-def _derived_type(stem: str, suffix: str) -> type:
-    return cast(type, globals()[f"{stem}{suffix}"])
-
-
-def _obs_root(
-    stem: str,
-    *base_names: str,
-    item_type: type[GeneratedItemT] | None = None,
-) -> _GeneratedClassDeclaration:
-    return _observation_root_spec(
-        f"{stem}ObservationSpec",
-        item_type or _derived_type(stem, "Observation"),
-        "AutoRegisteredModuleShapeSpec",
-        *base_names,
-    )
-
-
-def _std_obs(
-    stem: str,
-    helper: GeneratedShapeHelper[..., GeneratedItemT],
-    *base_names: str,
-    **attributes: GeneratedClassAttributeValue,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        f"Standard{stem}ObservationSpec",
-        f"{stem}ObservationSpec",
-        *base_names,
-        shape_helper=helper,
-        **attributes,
-    )
-
-
-def _multi_obs_root(
-    class_name: str,
-    *base_names: str,
-    family_specs: GeneratedFamilySpecSet,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        class_name,
-        "FamilyGeneratingSpec",
-        *base_names,
-        _registry_root=True,
-        family_specs=family_specs,
-    )
-
-
-def _shape_root(
-    stem: str,
-    *base_names: str,
-    item_type: type[GeneratedItemT] | None = None,
-    export_name: str | None = None,
-    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.root_spec_declaration(
-        f"{stem}ShapeSpec",
-        item_type or _derived_type(stem, "Shape"),
-        ShapeFamily,
-        *base_names,
-        export_name=export_name,
-        source_collector=source_collector,
-    )
-
-
-def _ctx_shape(
-    stem: str,
-    node_type: type[ast.AST],
-    *,
-    item_type: type[GeneratedItemT] | None = None,
-    source_collector: GeneratedSourceCollector[GeneratedItemT] | None = None,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        f"{stem}ShapeSpec",
-        "FamilyGeneratingSpec",
-        "ContextHelperShapeSpec",
-        family_specs=_family_specs(
-            item_type or _derived_type(stem, "Shape"),
-            ShapeFamily,
-            source_collector=source_collector,
-        ),
-        node_type=node_type,
-    )
-
-
-def _helper_decl(
-    class_name: str,
-    helper: GeneratedShapeHelper[..., GeneratedItemT],
-    *base_names: str,
-    **attributes: GeneratedClassAttributeValue,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        class_name,
-        *base_names,
-        shape_helper=helper,
-        **attributes,
-    )
-
-
-_FUNCTION_HELPER = "HelperBackedFunctionObservationSpec"
-_TUPLE_FUNCTION_HELPER = "TupleResultMixin HelperBackedFunctionObservationSpec"
-_MODULE_SCOPED_FUNCTION_HELPER = (
-    "ModuleOnlyFunctionObservationSpec HelperBackedScopedFunctionObservationSpec"
-)
-_MODULE_SYNC_SCOPED_FUNCTION_HELPER = (
-    "ModuleOnlyFunctionObservationSpec SyncFunctionOnlyMixin "
-    "HelperBackedScopedFunctionObservationSpec"
-)
-_MODULE_SCOPED_ASSIGN_HELPER = (
-    "ModuleOnlyAssignObservationSpec HelperBackedScopedAssignObservationSpec"
-)
 
 
 class TypedLiteralObservationFamily(ObservationFamily[LiteralDispatchObservation], ABC):
@@ -408,32 +95,18 @@ class TypedLiteralObservationFamily(ObservationFamily[LiteralDispatchObservation
         return cls.spec_root().collect(parsed_module)
 
 
-def _literal_spec(
-    stem: str,
-    base_name: str,
-    literal_kind: LiteralKind,
-) -> _GeneratedClassDeclaration:
-    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
-        f"{stem}LiteralDispatchObservationSpec",
-        "FamilyGeneratingSpec",
-        base_name,
-        family_specs=_family_specs(
-            LiteralDispatchObservation, TypedLiteralObservationFamily
-        ),
-        literal_kind=literal_kind,
-    )
+class BuilderCallShapeSpec(ContextHelperShapeSpec[BuilderCallShape]):
+    """Collect builder-call shapes through the canonical AST helper."""
 
+    node_type = ast.Call
+    shape_helper = staticmethod(_builder_call_shape)
 
-_materialize_class_declarations((_ctx_shape("BuilderCall", ast.Call),))
-
-
-BuilderCallShapeSpec.shape_helper = _builder_call_shape
 
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 
 
 class ScopeFilteredFunctionObservationSpec(
-    FunctionObservationSpec[GeneratedItemT], Generic[GeneratedItemT], ABC
+    FunctionObservationSpec[FamilyItemT], Generic[FamilyItemT], ABC
 ):
     @abstractmethod
     def accepts_scope(self, observation: ScopedAstObservation) -> bool:
@@ -445,7 +118,7 @@ class ScopeFilteredFunctionObservationSpec(
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         raise NotImplementedError
 
     def build_from_function(
@@ -453,15 +126,15 @@ class ScopeFilteredFunctionObservationSpec(
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         if not self.accepts_scope(observation):
             return None
         return self.build_scoped_function(parsed_module, function, observation)
 
 
 class ModuleOnlyFunctionObservationSpec(
-    ScopeFilteredFunctionObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ScopeFilteredFunctionObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def accepts_scope(self, observation: ScopedAstObservation) -> bool:
@@ -469,8 +142,8 @@ class ModuleOnlyFunctionObservationSpec(
 
 
 class ClassOnlyFunctionObservationSpec(
-    ScopeFilteredFunctionObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ScopeFilteredFunctionObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def accepts_scope(self, observation: ScopedAstObservation) -> bool:
@@ -478,7 +151,7 @@ class ClassOnlyFunctionObservationSpec(
 
 
 class ScopeFilteredAssignObservationSpec(
-    AssignObservationSpec[GeneratedItemT], Generic[GeneratedItemT], ABC
+    AssignObservationSpec[FamilyItemT], Generic[FamilyItemT], ABC
 ):
     @abstractmethod
     def accepts_scope(self, observation: ScopedAstObservation) -> bool:
@@ -490,7 +163,7 @@ class ScopeFilteredAssignObservationSpec(
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         raise NotImplementedError
 
     def build_from_assign(
@@ -498,26 +171,26 @@ class ScopeFilteredAssignObservationSpec(
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         if not self.accepts_scope(observation):
             return None
         return self.build_scoped_assign(parsed_module, node, observation)
 
 
 class ModuleOnlyAssignObservationSpec(
-    ScopeFilteredAssignObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ScopeFilteredAssignObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def accepts_scope(self, observation: ScopedAstObservation) -> bool:
         return observation.class_name is None and observation.function_name is None
 
 
-class TupleResultMixin(Generic[GeneratedItemT], ABC):
+class TupleResultMixin(Generic[FamilyItemT], ABC):
     @staticmethod
     def wrap_helper_result(
-        value: tuple[GeneratedItemT, ...] | None,
-    ) -> tuple[GeneratedItemT, ...] | None:
+        value: tuple[FamilyItemT, ...] | None,
+    ) -> tuple[FamilyItemT, ...] | None:
         return value
 
 
@@ -558,21 +231,21 @@ class SyncFunctionOnlyMixin(FunctionAcceptanceMixin):
         )
 
 
-class ShapeHelperBackedSpec(Generic[GeneratedItemT], ABC):
-    shape_helper: ClassVar[GeneratedShapeHelper[..., GeneratedItemT]]
+class ShapeHelperBackedSpec(Generic[FamilyItemT], ABC):
+    shape_helper: ClassVar[Callable[..., ShapeEmission[FamilyItemT] | None]]
 
     @staticmethod
     def wrap_helper_result(
-        value: ShapeEmission[GeneratedItemT] | None,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+        value: ShapeEmission[FamilyItemT] | None,
+    ) -> ShapeEmission[FamilyItemT] | None:
         return value
 
 
 class HelperBackedFunctionObservationSpec(
     FunctionAcceptanceMixin,
-    ShapeHelperBackedSpec[GeneratedItemT],
-    FunctionObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ShapeHelperBackedSpec[FamilyItemT],
+    FunctionObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def accepts_function(
@@ -588,7 +261,7 @@ class HelperBackedFunctionObservationSpec(
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         if not self.accepts_function(function, observation):
             return None
         return type(self).wrap_helper_result(
@@ -598,9 +271,9 @@ class HelperBackedFunctionObservationSpec(
 
 class HelperBackedScopedFunctionObservationSpec(
     FunctionAcceptanceMixin,
-    ShapeHelperBackedSpec[GeneratedItemT],
-    ScopeFilteredFunctionObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ShapeHelperBackedSpec[FamilyItemT],
+    ScopeFilteredFunctionObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def accepts_function(
@@ -616,7 +289,7 @@ class HelperBackedScopedFunctionObservationSpec(
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         if not self.accepts_function(function, observation):
             return None
         return type(self).wrap_helper_result(
@@ -625,9 +298,9 @@ class HelperBackedScopedFunctionObservationSpec(
 
 
 class ClassNamedFunctionHelperObservationSpec(
-    ShapeHelperBackedSpec[GeneratedItemT],
-    ClassOnlyFunctionObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ShapeHelperBackedSpec[FamilyItemT],
+    ClassOnlyFunctionObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def build_scoped_function(
@@ -635,7 +308,7 @@ class ClassNamedFunctionHelperObservationSpec(
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         class_name = observation.class_name
         if class_name is None:
             return None
@@ -645,9 +318,9 @@ class ClassNamedFunctionHelperObservationSpec(
 
 
 class HelperBackedScopedAssignObservationSpec(
-    ShapeHelperBackedSpec[GeneratedItemT],
-    ScopeFilteredAssignObservationSpec[GeneratedItemT],
-    Generic[GeneratedItemT],
+    ShapeHelperBackedSpec[FamilyItemT],
+    ScopeFilteredAssignObservationSpec[FamilyItemT],
+    Generic[FamilyItemT],
     ABC,
 ):
     def build_scoped_assign(
@@ -655,43 +328,74 @@ class HelperBackedScopedAssignObservationSpec(
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
-    ) -> ShapeEmission[GeneratedItemT] | None:
+    ) -> ShapeEmission[FamilyItemT] | None:
         del observation
         return type(self).shape_helper(parsed_module, node)
 
 
-_materialize_class_declarations(
-    (
-        _obs_root("ConfigDispatch", "FunctionObservationSpec"),
-        _std_obs(
-            "ConfigDispatch",
-            GeneratedShapeHelper(_config_dispatch_observations),
-            "ModuleOnlyFunctionObservationSpec RequiredFunctionParameterMixin TupleResultMixin HelperBackedScopedFunctionObservationSpec",
-            required_parameter_name="config",
-        ),
-        _obs_root("ClassMarker", "FunctionObservationSpec"),
-        _std_obs(
-            "ClassMarker",
-            GeneratedShapeHelper(_class_marker_observations),
-            _TUPLE_FUNCTION_HELPER,
-        ),
-        _obs_root("SentinelType", "ABC"),
-        _helper_decl(
-            "SentinelTypeAssignmentObservationSpec",
-            GeneratedShapeHelper(_sentinel_type_observation),
-            f"SentinelTypeObservationSpec {_MODULE_SCOPED_ASSIGN_HELPER}",
-        ),
-        _obs_root(
-            "DynamicMethodInjection",
-            "FunctionObservationSpec",
-        ),
-        _std_obs(
-            "DynamicMethodInjection",
-            GeneratedShapeHelper(_dynamic_method_injection_observations),
-            _TUPLE_FUNCTION_HELPER,
-        ),
-    )
-)
+class ConfigDispatchObservationSpec(
+    AutoRegisteredModuleShapeSpec[ConfigDispatchObservation],
+    FunctionObservationSpec[ConfigDispatchObservation],
+    ABC,
+):
+    _registry_root = True
+
+
+class StandardConfigDispatchObservationSpec(
+    ConfigDispatchObservationSpec,
+    ModuleOnlyFunctionObservationSpec[ConfigDispatchObservation],
+    RequiredFunctionParameterMixin,
+    TupleResultMixin[ConfigDispatchObservation],
+    HelperBackedScopedFunctionObservationSpec[ConfigDispatchObservation],
+):
+    shape_helper = staticmethod(_config_dispatch_observations)
+    required_parameter_name = "config"
+
+
+class ClassMarkerObservationSpec(
+    AutoRegisteredModuleShapeSpec[ClassMarkerObservation],
+    FunctionObservationSpec[ClassMarkerObservation],
+    ABC,
+):
+    _registry_root = True
+
+
+class StandardClassMarkerObservationSpec(
+    ClassMarkerObservationSpec,
+    TupleResultMixin[ClassMarkerObservation],
+    HelperBackedFunctionObservationSpec[ClassMarkerObservation],
+):
+    shape_helper = staticmethod(_class_marker_observations)
+
+
+class SentinelTypeObservationSpec(
+    AutoRegisteredModuleShapeSpec[SentinelTypeObservation], ABC
+):
+    _registry_root = True
+
+
+class SentinelTypeAssignmentObservationSpec(
+    SentinelTypeObservationSpec,
+    ModuleOnlyAssignObservationSpec[SentinelTypeObservation],
+    HelperBackedScopedAssignObservationSpec[SentinelTypeObservation],
+):
+    shape_helper = staticmethod(_sentinel_type_observation)
+
+
+class DynamicMethodInjectionObservationSpec(
+    AutoRegisteredModuleShapeSpec[DynamicMethodInjectionObservation],
+    FunctionObservationSpec[DynamicMethodInjectionObservation],
+    ABC,
+):
+    _registry_root = True
+
+
+class StandardDynamicMethodInjectionObservationSpec(
+    DynamicMethodInjectionObservationSpec,
+    TupleResultMixin[DynamicMethodInjectionObservation],
+    HelperBackedFunctionObservationSpec[DynamicMethodInjectionObservation],
+):
+    shape_helper = staticmethod(_dynamic_method_injection_observations)
 
 
 class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
@@ -862,9 +566,7 @@ def _native_registration_shapes(
                     and decorator.args
                 ):
                     continue
-                registry_name = AstExpressionProjection.terminal_name(
-                    decorator.args[0]
-                )
+                registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
                 if registry_name is None:
                     continue
                 key_expression = (
@@ -886,37 +588,25 @@ def _native_registration_shapes(
         return None
 
 
-_materialize_class_declarations(
-    (
-        _literal_spec(
-            "String",
-            "LiteralDispatchObservationSpec",
-            LiteralKind.STRING,
-        ),
-        _literal_spec(
-            "Numeric",
-            "LiteralDispatchObservationSpec",
-            LiteralKind.NUMERIC,
-        ),
-        _literal_spec(
-            "InlineString",
-            "InlineLiteralDispatchObservationSpec",
-            LiteralKind.STRING,
-        ),
-        _shape_root(
-            "Registration",
-            "AutoRegisteredModuleShapeSpec",
-            "ABC",
-            source_collector=GeneratedSourceCollector(_native_registration_shapes),
-        ),
-    )
-)
+class StringLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
+    literal_kind = LiteralKind.STRING
+
+
+class NumericLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
+    literal_kind = LiteralKind.NUMERIC
+
+
+class InlineStringLiteralDispatchObservationSpec(InlineLiteralDispatchObservationSpec):
+    literal_kind = LiteralKind.STRING
+
+
+class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec[RegistrationShape], ABC):
+    _registry_root = True
 
 
 class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
 
     def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
         return self.collect_with_known_class_family(
@@ -1017,13 +707,13 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
         return shapes
 
 
-_materialize_class_declarations((_obs_root("Field", "ABC"),))
+class FieldObservationSpec(AutoRegisteredModuleShapeSpec[FieldObservation], ABC):
+    _registry_root = True
 
 
 class ClassObservationSpec(FieldObservationSpec, ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
 
     def collect(self, parsed_module: ParsedModule) -> list[FieldObservation]:
         observations: list[FieldObservation] = []
@@ -1082,110 +772,147 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
         return observations
 
 
-_materialize_class_declarations(
-    (
-        _obs_root(
-            "ProjectionHelper",
-            "FunctionObservationSpec ABC",
-            item_type=ProjectionHelperShape,
-        ),
-        _std_obs(
-            "ProjectionHelper",
-            GeneratedShapeHelper(_projection_helper_shape_from_function),
-            _MODULE_SCOPED_FUNCTION_HELPER,
-        ),
-        _multi_obs_root(
-            "ScopedShapeWrapperObservationSpec",
-            "AutoRegisteredModuleShapeSpec ABC",
-            family_specs=(
-                *_family_specs(
-                    ScopedShapeWrapperFunction,
-                    ObservationFamily,
-                    "ScopedShapeWrapperFunctionFamily",
-                ),
-                *_family_specs(
-                    ScopedShapeWrapperSpec,
-                    ObservationFamily,
-                    "ScopedShapeWrapperSpecFamily",
-                ),
-            ),
-        ),
-        _helper_decl(
-            "ScopedShapeWrapperFunctionObservationSpec",
-            GeneratedShapeHelper(_scoped_shape_wrapper_function_from_function),
-            f"ScopedShapeWrapperObservationSpec {_MODULE_SYNC_SCOPED_FUNCTION_HELPER}",
-        ),
-        _helper_decl(
-            "ScopedShapeWrapperSpecObservationSpec",
-            GeneratedShapeHelper(_scoped_shape_wrapper_spec_from_assign),
-            f"ScopedShapeWrapperObservationSpec {_MODULE_SCOPED_ASSIGN_HELPER}",
-        ),
-    )
-)
+class ProjectionHelperObservationSpec(
+    AutoRegisteredModuleShapeSpec[ProjectionHelperShape],
+    FunctionObservationSpec[ProjectionHelperShape],
+    ABC,
+):
+    _registry_root = True
 
 
-GeneratedFamilyNamespaceValue: TypeAlias = (
-    str
-    | LiteralKind
-    | FamilyGeneratingSpec
-    | type[GeneratedItemT]
-    | type[TypedLiteralObservationSpec]
-    | type[AutoRegisteredModuleShapeSpec]
-    | type[CollectedFamily]
-    | GeneratedSourceCollector
-)
+class StandardProjectionHelperObservationSpec(
+    ProjectionHelperObservationSpec,
+    ModuleOnlyFunctionObservationSpec[ProjectionHelperShape],
+    HelperBackedScopedFunctionObservationSpec[ProjectionHelperShape],
+):
+    shape_helper = staticmethod(_projection_helper_shape_from_function)
 
 
-def _materialize_generated_family(
-    spec_type: type[FamilyGeneratingSpec],
-    family_spec: GeneratedFamilySpec,
-) -> type[CollectedFamily]:
-    module_globals = cast(dict[str, GeneratedFamilyNamespaceValue], globals())
-    family_root = family_spec.family_root
-    export_name = (
-        family_spec.export_name or spec_type.__name__.removesuffix("Spec") + "Family"
-    )
-    attributes: dict[str, GeneratedFamilyNamespaceValue] = {
-        "__module__": __name__,
-        "item_type": family_spec.item_type,
-    }
-    if family_spec.source_collector is not None:
-        attributes["source_collector"] = family_spec.source_collector
-    if family_root is TypedLiteralObservationFamily:
-        literal_spec_type = cast(type[TypedLiteralObservationSpec], spec_type)
-        attributes["spec_root"] = literal_spec_type
-        attributes["literal_kind"] = literal_spec_type.literal_kind
-        family_bases = (TypedLiteralObservationFamily,)
-    elif issubclass(spec_type, AutoRegisteredModuleShapeSpec):
-        attributes["spec_root"] = cast(type[AutoRegisteredModuleShapeSpec], spec_type)
-        family_bases = (RegisteredSpecCollectedFamily, family_root)
-    else:
-        attributes["spec"] = spec_type()
-        family_bases = (SingleSpecCollectedFamily, family_root)
-    family_type = cast(
-        type[CollectedFamily], AutoRegisterMeta(export_name, family_bases, attributes)
-    )
-    module_globals[export_name] = family_type
-    return family_type
+class ScopedShapeWrapperObservationSpec(
+    AutoRegisteredModuleShapeSpec[ScopedShapeWrapperFunction | ScopedShapeWrapperSpec],
+    ABC,
+):
+    _registry_root = True
 
 
-def _materialize_declared_families() -> dict[str, type[CollectedFamily]]:
-    families: dict[str, type[CollectedFamily]] = {}
-    for spec_type in _declared_family_spec_types():
-        for family_spec in spec_type.family_specs:
-            family_type = _materialize_generated_family(spec_type, family_spec)
-            families[family_type.__name__] = family_type
-    return families
+class ScopedShapeWrapperFunctionObservationSpec(
+    ScopedShapeWrapperObservationSpec,
+    ModuleOnlyFunctionObservationSpec[ScopedShapeWrapperFunction],
+    SyncFunctionOnlyMixin,
+    HelperBackedScopedFunctionObservationSpec[ScopedShapeWrapperFunction],
+):
+    shape_helper = staticmethod(_scoped_shape_wrapper_function_from_function)
 
 
-_FAMILY_EXPORTS = _materialize_declared_families()
-_FAMILY_EXPORT_NAMES = tuple(_FAMILY_EXPORTS)
+class ScopedShapeWrapperSpecObservationSpec(
+    ScopedShapeWrapperObservationSpec,
+    ModuleOnlyAssignObservationSpec[ScopedShapeWrapperSpec],
+    HelperBackedScopedAssignObservationSpec[ScopedShapeWrapperSpec],
+):
+    shape_helper = staticmethod(_scoped_shape_wrapper_spec_from_assign)
 
-# A registration finding's evidence is composed only from registration shapes.
-# With no report-target shape, no context-only group can enter report scope.
-_FAMILY_EXPORTS["RegistrationShapeFamily"].report_presence_predicate = staticmethod(
-    lambda items, config: bool(items)
-)
+
+class BuilderCallShapeFamily(
+    SingleSpecCollectedFamily[BuilderCallShape], ShapeFamily[BuilderCallShape]
+):
+    item_type = BuilderCallShape
+    spec = _BUILDER_CALL_SHAPE_SPEC
+
+
+class ConfigDispatchObservationFamily(
+    RegisteredSpecCollectedFamily[ConfigDispatchObservation],
+    ObservationFamily[ConfigDispatchObservation],
+):
+    item_type = ConfigDispatchObservation
+    spec_root = ConfigDispatchObservationSpec
+
+
+class ClassMarkerObservationFamily(
+    RegisteredSpecCollectedFamily[ClassMarkerObservation],
+    ObservationFamily[ClassMarkerObservation],
+):
+    item_type = ClassMarkerObservation
+    spec_root = ClassMarkerObservationSpec
+
+
+class SentinelTypeObservationFamily(
+    RegisteredSpecCollectedFamily[SentinelTypeObservation],
+    ObservationFamily[SentinelTypeObservation],
+):
+    item_type = SentinelTypeObservation
+    spec_root = SentinelTypeObservationSpec
+
+
+class DynamicMethodInjectionObservationFamily(
+    RegisteredSpecCollectedFamily[DynamicMethodInjectionObservation],
+    ObservationFamily[DynamicMethodInjectionObservation],
+):
+    item_type = DynamicMethodInjectionObservation
+    spec_root = DynamicMethodInjectionObservationSpec
+
+
+class StringLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = StringLiteralDispatchObservationSpec
+    literal_kind = spec_root.literal_kind
+
+
+class NumericLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = NumericLiteralDispatchObservationSpec
+    literal_kind = spec_root.literal_kind
+
+
+class InlineStringLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = InlineStringLiteralDispatchObservationSpec
+    literal_kind = spec_root.literal_kind
+
+
+class RegistrationShapeFamily(
+    RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
+):
+    item_type = RegistrationShape
+    spec_root = RegistrationShapeSpec
+    source_collector = staticmethod(_native_registration_shapes)
+
+    @staticmethod
+    def report_presence_predicate(items: tuple[object, ...], config: object) -> bool:
+        """Only registration shapes themselves establish report presence."""
+
+        del config
+        return bool(items)
+
+
+class FieldObservationFamily(
+    RegisteredSpecCollectedFamily[FieldObservation],
+    ObservationFamily[FieldObservation],
+):
+    item_type = FieldObservation
+    spec_root = FieldObservationSpec
+
+
+class ProjectionHelperObservationFamily(
+    RegisteredSpecCollectedFamily[ProjectionHelperShape],
+    ObservationFamily[ProjectionHelperShape],
+):
+    item_type = ProjectionHelperShape
+    spec_root = ProjectionHelperObservationSpec
+
+
+class ScopedShapeWrapperFunctionFamily(
+    RegisteredSpecCollectedFamily[ScopedShapeWrapperFunction],
+    ObservationFamily[ScopedShapeWrapperFunction],
+):
+    item_type = ScopedShapeWrapperFunction
+    spec_root = ScopedShapeWrapperObservationSpec
+
+
+class ScopedShapeWrapperSpecFamily(
+    RegisteredSpecCollectedFamily[ScopedShapeWrapperSpec],
+    ObservationFamily[ScopedShapeWrapperSpec],
+):
+    item_type = ScopedShapeWrapperSpec
+    spec_root = ScopedShapeWrapperObservationSpec
+
+
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     root_types=tuple(SharedRegistryRootBase.__subclasses__()),

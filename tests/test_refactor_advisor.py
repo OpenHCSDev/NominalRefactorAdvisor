@@ -22842,6 +22842,18 @@ def test_spec_families_use_autoregistration() -> None:
     }
 
 
+def test_observation_family_public_types_have_source_declarations() -> None:
+    local_public_types = (
+        value
+        for name in observation_families_module.__all__
+        if isinstance((value := getattr(observation_families_module, name)), type)
+        and value.__module__ == observation_families_module.__name__
+    )
+
+    for public_type in local_public_types:
+        assert f"class {public_type.__name__}" in inspect.getsource(public_type)
+
+
 def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
     typed_specs = TypedLiteralObservationSpec.registered_specs_for_literal_type()
     all_typed_specs = {type(spec).__name__ for spec in typed_specs}
