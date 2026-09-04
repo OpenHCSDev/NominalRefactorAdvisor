@@ -134,6 +134,7 @@ from ..class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactManualSubclassRegistrationSite,
+    CompactMethodSemanticCoordinateKind,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
@@ -9102,8 +9103,12 @@ class SemanticOverlapResidueAxisCandidate(
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
 ):
-    residue_kind_names: tuple[str, ...]
+    residue_kinds: tuple[CompactMethodSemanticCoordinateKind, ...]
     residue_site_count: int
+
+    @property
+    def residue_kind_names(self) -> tuple[str, ...]:
+        return tuple(residue_kind.value for residue_kind in self.residue_kinds)
 
 
 @dataclass(frozen=True)

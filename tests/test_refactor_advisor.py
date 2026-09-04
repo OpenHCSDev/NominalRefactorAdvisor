@@ -25036,6 +25036,67 @@ def test_global_method_family_uses_transitive_overlap_lattice(
     assert global_finding.compression_certificate.pays_rent
 
 
+def test_global_method_family_keeps_same_named_bases_nominally_distinct(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        '\nfrom plugin_a import Worker\n\n\nclass SharedWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_shared(clean)\n        self.write(value, suffix=".shared")\n        return value\n\n\nclass AlphaWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_alpha(clean)\n        self.write(value, suffix=".alpha")\n        return value\n\n\nclass OtherAlphaWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_other_alpha(clean)\n        self.write(value, suffix=".other-alpha")\n        return value\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        '\nfrom plugin_b import Worker\n\n\nclass SharedWorker(Worker):\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        value = audit_shared(clean)\n        self.write(value, suffix=".shared")\n        return value\n\n\nclass BetaWorker(Worker):\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        value = audit_beta(clean)\n        self.write(value, suffix=".beta")\n        return value\n\n\nclass OtherBetaWorker(Worker):\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        value = audit_other_beta(clean)\n        self.write(value, suffix=".other-beta")\n        return value\n',
+    )
+
+    findings = analyze_path(tmp_path)
+    semantic_findings = tuple(
+        finding
+        for finding in findings
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
+    )
+
+    assert len(semantic_findings) == 2
+    assert any("`emit`" in finding.summary for finding in semantic_findings)
+    assert any("`audit`" in finding.summary for finding in semantic_findings)
+    assert not any(
+        finding.detector_id == "overlapping_inheritance_families"
+        for finding in findings
+    )
+
+
+def test_method_family_candidate_identity_includes_the_resolved_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        '\nfrom plugin_a import Worker\n\n\nclass SharedWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_shared_a(clean)\n        self.write(value, suffix=".shared-a")\n        return value\n\n\nclass AlphaWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_alpha_a(clean)\n        self.write(value, suffix=".alpha-a")\n        return value\n\n\nclass OtherWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_other_a(clean)\n        self.write(value, suffix=".other-a")\n        return value\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        '\nfrom plugin_b import Worker\n\n\nclass SharedWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_shared_b(clean)\n        self.write(value, suffix=".shared-b")\n        return value\n\n\nclass AlphaWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_alpha_b(clean)\n        self.write(value, suffix=".alpha-b")\n        return value\n\n\nclass OtherWorker(Worker):\n    def emit(self, rows):\n        clean = self.normalize(rows)\n        value = encode_other_b(clean)\n        self.write(value, suffix=".other-b")\n        return value\n',
+    )
+
+    semantic_findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
+    )
+
+    assert len(semantic_findings) == 2
+    assert {
+        tuple(
+            sorted(
+                {Path(location.file_path).name for location in finding.evidence}
+            )
+        )
+        for finding in semantic_findings
+    } == {("alpha.py",), ("beta.py",)}
+
+
 def test_method_family_prefers_specific_base_for_duplicate_closure(
     tmp_path: Path,
 ) -> None:

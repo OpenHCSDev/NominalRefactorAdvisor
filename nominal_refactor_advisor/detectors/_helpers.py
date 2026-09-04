@@ -6,11 +6,14 @@ across the split implementation modules.
 
 from __future__ import annotations
 
-from ..factorization import (
-    FactorizationRow,
-    ResidueHookNamesCarrier,
-    factorization_axis_catalog_certificate,
-)
+import re
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from dataclasses import dataclass, replace
+from functools import cached_property, lru_cache
+from itertools import combinations
+from typing import Callable, ClassVar, TypeAlias, TypeVar
+
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_tools import (
     AstExpressionProjection,
@@ -18,12 +21,17 @@ from ..ast_tools import (
     SourceModule,
     walk_function_body_nodes,
 )
-from ..native_syntax import NativePythonSyntaxIndex
-from ..models import AutoRegisterMetaRentSignal
-from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
-from ..semantic_description_length import (
-    ClassFamilyCompressionProfile,
-    CompressionCertificate,
+from ..class_index import (
+    ClassSymbolResolutionAuthority,
+    CompactClassFamilyIndex,
+    CompactClassMethod,
+    CompactClassMethodSemanticProfile,
+    CompactIndexedClass,
+    CompactMethodSemanticCoordinate,
+    CompactMethodSemanticCoordinateKind,
+    CompactModuleClassProjection,
+    MethodFamilyResidueRole,
+    build_compact_class_family_index,
 )
 from ..exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
@@ -31,27 +39,22 @@ from ..exact_method_authority import (
     ExactMethodRoleComponent,
     ExactMethodRoleComponentBuilder,
 )
+from ..factorization import (
+    FactorizationRow,
+    ResidueHookNamesCarrier,
+    factorization_axis_catalog_certificate,
+)
+from ..models import AutoRegisterMetaRentSignal
+from ..native_syntax import NativePythonSyntaxIndex
+from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
+from ..semantic_description_length import (
+    ClassFamilyCompressionProfile,
+    CompressionCertificate,
+)
 from ..semantic_identity import InheritanceIdentityAttributeProjection
-import re
-from collections import defaultdict
-from dataclasses import dataclass, replace
-from functools import lru_cache
-from itertools import combinations
-from typing import Callable, ClassVar, TypeAlias, TypeVar
-
 from ._base import *
 from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
-from ..class_index import (
-    CompactClassMethod,
-    CompactClassMethodSemanticProfile,
-    CompactMethodSemanticCoordinate,
-    CompactClassFamilyIndex,
-    CompactIndexedClass,
-    CompactModuleClassProjection,
-    ClassSymbolResolutionAuthority,
-    build_compact_class_family_index,
-)
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
@@ -2958,7 +2961,6 @@ def _alternate_constructor_family_groups(
 
 
 _MethodFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
-_MethodFamilyMethodNamesByFamily: TypeAlias = dict[_MethodFamilyKey, set[str]]
 _MethodFamilyAxisSpecsByFamily: TypeAlias = dict[_MethodFamilyKey, set[str]]
 _MethodFamilyAxisRow: TypeAlias = tuple[str, tuple[str, ...]]
 _MethodFamilyAxisRowsByFamily: TypeAlias = dict[
@@ -2976,6 +2978,101 @@ class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
     varying_coordinates: tuple[CompactMethodSemanticCoordinate, ...]
     compression_certificate: CompressionCertificate
 
+    @staticmethod
+    def _varying_coordinates(
+        profiles: tuple[CompactClassMethodSemanticProfile, ...],
+    ) -> tuple[CompactMethodSemanticCoordinate, ...]:
+        grouped: dict[
+            tuple[tuple[str, ...], CompactMethodSemanticCoordinateKind],
+            set[str],
+        ] = defaultdict(set)
+        representatives: dict[
+            tuple[tuple[str, ...], CompactMethodSemanticCoordinateKind],
+            CompactMethodSemanticCoordinate,
+        ] = {}
+        for profile in profiles:
+            for coordinate in profile.coordinates:
+                key = (coordinate.path, coordinate.kind)
+                grouped[key].add(coordinate.value)
+                representatives.setdefault(key, coordinate)
+        return tuple(
+            representatives[key]
+            for key, values in sorted(grouped.items(), key=lambda item: item[0])
+            if len(values) >= 2
+        )
+
+    @staticmethod
+    def _residue_names(
+        method_name: str,
+        varying_coordinates: tuple[CompactMethodSemanticCoordinate, ...],
+    ) -> ResidueHookNamesCarrier:
+        names_by_role: dict[MethodFamilyResidueRole, list[str]] = defaultdict(list)
+        for index, coordinate in enumerate(varying_coordinates, start=1):
+            names_by_role[coordinate.kind.residue_role].append(
+                coordinate.kind.residue_name(method_name, index)
+            )
+        return ResidueHookNamesCarrier(
+            classvar_names=tuple(
+                dict.fromkeys(
+                    names_by_role[MethodFamilyResidueRole.CLASS_VARIABLE]
+                )
+            ),
+            property_hook_names=tuple(
+                dict.fromkeys(names_by_role[MethodFamilyResidueRole.PROPERTY_HOOK])
+            ),
+            behavior_hook_names=tuple(
+                dict.fromkeys(names_by_role[MethodFamilyResidueRole.BEHAVIOR_HOOK])
+            ),
+        )
+
+    @classmethod
+    def from_class_methods(
+        cls,
+        method_name: str,
+        class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
+    ) -> "_MethodFamilyMethodGroupProfile | None":
+        if len(class_methods) < 2:
+            return None
+        methods = tuple(method for _, method in class_methods)
+        statement_counts = {method.statement_count for method in methods}
+        if len(statement_counts) != 1:
+            return None
+        shared_statement_count = next(iter(statement_counts))
+        if shared_statement_count < 3:
+            return None
+        profiles = tuple(method.semantic_profile for method in methods)
+        if len({profile.skeleton for profile in profiles}) != 1:
+            return None
+        varying_coordinates = cls._varying_coordinates(profiles)
+        if not varying_coordinates or len(varying_coordinates) > max(
+            4,
+            shared_statement_count * 2,
+        ):
+            return None
+        residue_names = cls._residue_names(
+            method_name,
+            varying_coordinates,
+        )
+        certificate = ClassFamilyCompressionProfile.from_repeated_method_family(
+            class_count=len(
+                {indexed_class.symbol for indexed_class, _ in class_methods}
+            ),
+            shared_statement_count=shared_statement_count,
+            hook_count=len(residue_names.property_hook_names)
+            + len(residue_names.behavior_hook_names),
+            classvar_count=len(residue_names.classvar_names),
+        ).compression_certificate
+        if not certificate.pays_rent:
+            return None
+        return cls(
+            shared_statement_count=shared_statement_count,
+            varying_coordinates=varying_coordinates,
+            classvar_names=residue_names.classvar_names,
+            property_hook_names=residue_names.property_hook_names,
+            behavior_hook_names=residue_names.behavior_hook_names,
+            compression_certificate=certificate,
+        )
+
 
 @dataclass(frozen=True)
 class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
@@ -2985,895 +3082,688 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     line_numbers: tuple[int, ...]
     line_count: int
 
-
-@dataclass(frozen=True)
-class _MethodFamilyResidueEvidence(ResidueHookNamesCarrier):
-    leaf_residue_names: tuple[str, ...]
-    residue_declaration_count: int
-    shared_to_residue_ratio: float
-
-
-@dataclass(frozen=True)
-class _MethodFamilyMethodSurface:
-    base_name: str
-    method_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _MethodFamilyEvidence(
-    _MethodFamilyMethodSurface,
-    ResidueHookNamesCarrier,
-    MethodFamilyRelationSpecCarrier,
-    MethodFamilyLatticeMetricsCarrier,
-    MethodFamilyResidueEvidenceCarrier,
-):
-    class_names: tuple[str, ...]
-
-
-_MethodFamilyCandidateT = TypeVar("_MethodFamilyCandidateT")
-_MethodFamilyCandidateBuilder: TypeAlias = Callable[
-    [tuple[_MethodFamilyMethodPlan, ...], _MethodFamilyEvidence],
-    _MethodFamilyCandidateT | None,
-]
-
-
-def _method_family_residue_names(
-    method_name: str,
-    varying_coordinates: tuple[CompactMethodSemanticCoordinate, ...],
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    classvar_names: list[str] = []
-    property_hook_names: list[str] = []
-    behavior_hook_names: list[str] = []
-    for index, (_, kind, _) in enumerate(varying_coordinates, start=1):
-        if kind == "constant":
-            classvar_names.append(f"{method_name}_constant_{index}".upper())
-        elif kind == "self_attr":
-            property_hook_names.append(f"{method_name}_property_{index}")
-        elif kind == "call":
-            behavior_hook_names.append(f"_{method_name}_operation_{index}")
-        elif kind in {"attribute", "name"}:
-            property_hook_names.append(f"{method_name}_value_{index}")
-        else:
-            behavior_hook_names.append(f"_{method_name}_hook_{index}")
-    return (
-        tuple(dict.fromkeys(classvar_names)),
-        tuple(dict.fromkeys(property_hook_names)),
-        tuple(dict.fromkeys(behavior_hook_names)),
-    )
-
-
-def _method_family_certificate(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-) -> CompressionCertificate | None:
-    class_names = method_plans[0].class_names
-    manual_object_count = sum(
-        (
-            len(class_names) * method_plan.profile.shared_statement_count
-            for method_plan in method_plans
+    @classmethod
+    def from_class_methods(
+        cls,
+        base_symbol: str,
+        base_name: str,
+        method_name: str,
+        class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
+    ) -> "_MethodFamilyMethodPlan | None":
+        profile = _MethodFamilyMethodGroupProfile.from_class_methods(
+            method_name,
+            class_methods,
         )
-    )
-    residue_names = sorted_tuple(
-        {
-            residue_name
-            for method_plan in method_plans
-            for residue_name in (
-                *method_plan.profile.classvar_names,
-                *method_plan.profile.property_hook_names,
-                *method_plan.profile.behavior_hook_names,
-            )
-        }
-    )
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=manual_object_count,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("abc_base", "family_template"),
-            per_axis_objects=("residue_declaration",),
-        ),
-        semantic_axes=(*method_plans[0].class_names, *residue_names),
-        residual_object_count=len(class_names) * len(residue_names),
-        provenance_object_count=1,
-        independent_source_count=len(set(method_plans[0].file_paths)),
-    )
-    return certificate if certificate.pays_rent else None
-
-
-def _method_family_residue_axis_catalog_certificate(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    residue_kind_names: tuple[str, ...],
-) -> CompressionCertificate | None:
-    axis_names = tuple(
-        (
-            f"{index}:{residue_kind}"
-            for index, residue_kind in enumerate(residue_kind_names)
-        )
-    )
-    certificate = factorization_axis_catalog_certificate(
-        (
-            FactorizationRow.from_mapping(
-                method_plan.method_name,
-                {
-                    axis_name: residue_kind
-                    for axis_name, residue_kind in zip(axis_names, residue_kind_names)
-                },
-                source_name="|".join(sorted_tuple(frozenset(method_plan.file_paths))),
-            )
-            for method_plan in method_plans
-        ),
-        shared_objects=("residue_axis_catalog",),
-        per_axis_objects=("residue_axis_row",),
-    )
-    return certificate if certificate.pays_rent else None
-
-
-def _method_family_base_is_more_specific(
-    candidate_base_name: str,
-    incumbent_base_name: str,
-    class_index: ClassFamilyIndex,
-) -> bool:
-    return incumbent_base_name in class_index.ancestor_symbols(candidate_base_name)
-
-
-def _method_family_more_specific_method_plans(
-    method_plans: Iterable[_MethodFamilyMethodPlan],
-    class_index: ClassFamilyIndex,
-) -> tuple[_MethodFamilyMethodPlan, ...]:
-    plans_by_key: dict[_MethodFamilyMethodPlanKey, _MethodFamilyMethodPlan] = {}
-    for method_plan in method_plans:
-        key = (method_plan.method_name, method_plan.class_names)
-        incumbent = plans_by_key.get(key)
-        if incumbent is None or _method_family_base_is_more_specific(
-            method_plan.base_symbol, incumbent.base_symbol, class_index
-        ):
-            plans_by_key[key] = method_plan
-    return tuple(plans_by_key.values())
-
-
-def _method_family_candidate_from_method_plan_path(
-    file_path: str,
-    method_plan: _MethodFamilyMethodPlan,
-    family_plan: _MethodFamilyEvidence,
-) -> SemanticOverlapMethodCandidate:
-    return SemanticOverlapMethodCandidate(
-        file_path=file_path,
-        line=min(method_plan.line_numbers),
-        base_name=method_plan.base_name,
-        method_name=method_plan.method_name,
-        class_names=method_plan.class_names,
-        file_paths=method_plan.file_paths,
-        line_numbers=method_plan.line_numbers,
-        shared_statement_count=method_plan.profile.shared_statement_count,
-        varying_coordinate_count=len(method_plan.profile.varying_coordinates),
-        classvar_names=method_plan.profile.classvar_names,
-        property_hook_names=method_plan.profile.property_hook_names,
-        behavior_hook_names=method_plan.profile.behavior_hook_names,
-        family_method_names=family_plan.method_names,
-        leaf_residue_names=family_plan.leaf_residue_names,
-        residue_declaration_count=family_plan.residue_declaration_count,
-        shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
-        strict_subset_family_specs=family_plan.strict_subset_family_specs,
-        partial_overlap_family_specs=family_plan.partial_overlap_family_specs,
-        lattice_node_count=family_plan.lattice_node_count,
-        lattice_edge_count=family_plan.lattice_edge_count,
-        line_count=method_plan.line_count,
-        compression_certificate=method_plan.profile.compression_certificate,
-    )
-
-
-def _method_family_candidate(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plan: _MethodFamilyEvidence,
-) -> SemanticOverlapMethodFamilyCandidate | None:
-    if len(method_plans) < 2:
-        return None
-    certificate = _method_family_certificate(method_plans)
-    if certificate is None:
-        return None
-    file_paths = tuple(
-        (
-            file_path
-            for method_plan in method_plans
-            for file_path in method_plan.file_paths
-        )
-    )
-    line_numbers = tuple(
-        (
-            line_number
-            for method_plan in method_plans
-            for line_number in method_plan.line_numbers
-        )
-    )
-    method_symbols = tuple(
-        (
-            f"{class_name}.{method_plan.method_name}"
-            for method_plan in method_plans
-            for class_name in method_plan.class_names
-        )
-    )
-    residue_count = sum(
-        (
-            len(method_plan.profile.classvar_names)
-            + len(method_plan.profile.property_hook_names)
-            + len(method_plan.profile.behavior_hook_names)
-            for method_plan in method_plans
-        )
-    )
-    return SemanticOverlapMethodFamilyCandidate(
-        file_path=file_paths[0],
-        line=min(line_numbers),
-        base_name=family_plan.base_name,
-        class_names=family_plan.class_names,
-        method_names=family_plan.method_names,
-        file_paths=file_paths,
-        line_numbers=line_numbers,
-        method_symbols=method_symbols,
-        shared_statement_count=sum(
-            (method_plan.profile.shared_statement_count for method_plan in method_plans)
-        ),
-        residue_declaration_count=residue_count,
-        classvar_names=family_plan.classvar_names,
-        property_hook_names=family_plan.property_hook_names,
-        behavior_hook_names=family_plan.behavior_hook_names,
-        leaf_residue_names=family_plan.leaf_residue_names,
-        shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
-        strict_subset_family_specs=family_plan.strict_subset_family_specs,
-        partial_overlap_family_specs=family_plan.partial_overlap_family_specs,
-        lattice_node_count=family_plan.lattice_node_count,
-        lattice_edge_count=family_plan.lattice_edge_count,
-        line_count=sum((method_plan.line_count for method_plan in method_plans)),
-        compression_certificate=certificate,
-    )
-
-
-def _method_family_residue_kind_names(
-    method_plan: _MethodFamilyMethodPlan,
-) -> tuple[str, ...]:
-    return tuple((kind for _, kind, _ in method_plan.profile.varying_coordinates))
-
-
-def _method_family_residue_axis_catalog_candidate(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plan: _MethodFamilyEvidence,
-) -> SemanticOverlapResidueAxisCandidate | None:
-    residue_context = (
-        Maybe.of(method_plans)
-        .filter(lambda plans: len(plans) >= 2)
-        .map(
-            lambda plans: {
-                _method_family_residue_kind_names(method_plan) for method_plan in plans
-            }
-        )
-        .filter(lambda signatures: len(signatures) == 1)
-        .map(lambda signatures: next(iter(signatures)))
-        .filter(bool)
-        .combine(
-            lambda residue_kind_names: _method_family_residue_axis_catalog_certificate(
-                method_plans, residue_kind_names
+        if profile is None:
+            return None
+        methods = tuple(method for _, method in class_methods)
+        return cls(
+            base_symbol=base_symbol,
+            base_name=base_name,
+            method_name=method_name,
+            profile=profile,
+            class_names=tuple(
+                indexed_class.simple_name for indexed_class, _ in class_methods
             ),
-            lambda residue_kind_names, certificate: (residue_kind_names, certificate),
-        )
-        .unwrap_or_none()
-    )
-    if residue_context is None:
-        return None
-    residue_kind_names, certificate = residue_context
-    file_paths = tuple(
-        (
-            file_path
-            for method_plan in method_plans
-            for file_path in method_plan.file_paths
-        )
-    )
-    line_numbers = tuple(
-        (
-            line_number
-            for method_plan in method_plans
-            for line_number in method_plan.line_numbers
-        )
-    )
-    method_symbols = tuple(
-        (
-            f"{class_name}.{method_plan.method_name}"
-            for method_plan in method_plans
-            for class_name in method_plan.class_names
-        )
-    )
-    return SemanticOverlapResidueAxisCandidate(
-        file_path=file_paths[0],
-        line=min(line_numbers),
-        base_name=family_plan.base_name,
-        class_names=family_plan.class_names,
-        method_names=family_plan.method_names,
-        residue_kind_names=residue_kind_names,
-        file_paths=file_paths,
-        line_numbers=line_numbers,
-        method_symbols=method_symbols,
-        residue_site_count=len(method_plans) * len(residue_kind_names),
-        line_count=sum((method_plan.line_count for method_plan in method_plans)),
-        compression_certificate=certificate,
-    )
-
-
-def _method_family_member_spec(method_name: str, class_names: tuple[str, ...]) -> str:
-    return f"{method_name}[{','.join(class_names)}]"
-
-
-def _method_family_group_spec(
-    method_names: tuple[str, ...], class_names: tuple[str, ...]
-) -> str:
-    return f"{'+'.join(method_names)}[{','.join(class_names)}]"
-
-
-def _method_family_global_certificate(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plans: tuple[_MethodFamilyEvidence, ...],
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=sum(
-            (
-                len(method_plan.class_names)
-                * method_plan.profile.shared_statement_count
-                for method_plan in method_plans
-            )
-        ),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("inheritance_lattice", "abc_base"),
-            per_axis_objects=("residue_declaration",),
-        ),
-        semantic_axes=(
-            *(method_plan.method_name for method_plan in method_plans),
-            *(
-                _method_family_group_spec(
-                    family_plan.method_names, family_plan.class_names
-                )
-                for family_plan in family_plans
+            file_paths=tuple(
+                indexed_class.file_path for indexed_class, _ in class_methods
             ),
-        ),
-        residual_object_count=sum(
-            (
-                len(method_plan.class_names)
-                * (
-                    len(method_plan.profile.classvar_names)
-                    + len(method_plan.profile.property_hook_names)
-                    + len(method_plan.profile.behavior_hook_names)
-                )
-                for method_plan in method_plans
-            )
-        ),
-        provenance_object_count=len(family_plans),
-        independent_source_count=len(
-            {
-                class_name
-                for method_plan in method_plans
-                for class_name in method_plan.class_names
-            }
-        ),
-    )
-
-
-def _method_family_sets_have_global_structure(
-    family_plans: tuple[_MethodFamilyEvidence, ...],
-) -> bool:
-    class_sets = tuple(
-        (frozenset(family_plan.class_names) for family_plan in family_plans)
-    )
-    for left_index, left_classes in enumerate(class_sets):
-        for right_classes in class_sets[left_index + 1 :]:
-            if (left_classes & right_classes) and left_classes != right_classes:
-                return True
-    return False
-
-
-def _method_family_global_lattice_edge_count(
-    family_plans: tuple[_MethodFamilyEvidence, ...],
-) -> int:
-    edges: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
-    class_sets = tuple(
-        (frozenset(family_plan.class_names) for family_plan in family_plans)
-    )
-    for left_index, left_classes in enumerate(class_sets):
-        for right_classes in class_sets[left_index + 1 :]:
-            intersection = left_classes & right_classes
-            if not intersection:
-                continue
-            intersection_names = sorted_tuple(intersection)
-            for class_set in (left_classes, right_classes):
-                class_names = sorted_tuple(class_set)
-                if intersection_names != class_names:
-                    edges.add((intersection_names, class_names))
-    return len(edges)
-
-
-def _method_family_global_inheritance_candidate(
-    base_name: str,
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plans: tuple[_MethodFamilyEvidence, ...],
-) -> OverlappingInheritanceFamiliesCandidate | None:
-    if len(family_plans) < 2:
-        return None
-    if not _method_family_sets_have_global_structure(family_plans):
-        return None
-    certificate = _method_family_global_certificate(method_plans, family_plans)
-    if not certificate.pays_rent:
-        return None
-    file_paths = tuple(
-        (
-            file_path
-            for method_plan in method_plans
-            for file_path in method_plan.file_paths
+            line_numbers=tuple(method.line for method in methods),
+            line_count=sum(method.line_count for method in methods),
         )
-    )
-    line_numbers = tuple(
-        (
-            line_number
-            for method_plan in method_plans
-            for line_number in method_plan.line_numbers
-        )
-    )
-    method_symbols = tuple(
-        (
-            f"{class_name}.{method_plan.method_name}"
-            for method_plan in method_plans
-            for class_name in method_plan.class_names
-        )
-    )
-    class_names = sorted_tuple(
-        {
-            class_name
-            for method_plan in method_plans
-            for class_name in method_plan.class_names
-        }
-    )
-    return OverlappingInheritanceFamiliesCandidate(
-        file_path=file_paths[0],
-        line=min(line_numbers),
-        base_name=base_name,
-        class_names=class_names,
-        method_names=sorted_tuple(
-            (method_plan.method_name for method_plan in method_plans)
-        ),
-        family_specs=tuple(
-            (
-                _method_family_group_spec(
-                    family_plan.method_names, family_plan.class_names
-                )
-                for family_plan in family_plans
-            )
-        ),
-        strict_subset_family_specs=sorted_tuple(
-            (
-                axis_spec
-                for family_plan in family_plans
-                for axis_spec in family_plan.strict_subset_family_specs
-            )
-        ),
-        partial_overlap_family_specs=sorted_tuple(
-            (
-                axis_spec
-                for family_plan in family_plans
-                for axis_spec in family_plan.partial_overlap_family_specs
-            )
-        ),
-        file_paths=file_paths,
-        line_numbers=line_numbers,
-        method_symbols=method_symbols,
-        shared_statement_count=sum(
-            (method_plan.profile.shared_statement_count for method_plan in method_plans)
-        ),
-        residue_declaration_count=sum(
-            (family_plan.residue_declaration_count for family_plan in family_plans)
-        ),
-        leaf_residue_names=sorted_tuple(
-            (
-                residue_name
-                for family_plan in family_plans
-                for residue_name in family_plan.leaf_residue_names
-            )
-        ),
-        lattice_node_count=len(
-            {family_plan.class_names for family_plan in family_plans}
-            | {
-                sorted_tuple(set(left.class_names) & set(right.class_names))
-                for left in family_plans
-                for right in family_plans
-                if set(left.class_names) & set(right.class_names)
-            }
-        ),
-        lattice_edge_count=_method_family_global_lattice_edge_count(family_plans),
-        line_count=sum((method_plan.line_count for method_plan in method_plans)),
-        compression_certificate=certificate,
-    )
 
+    def is_more_specific_than(
+        self,
+        incumbent: "_MethodFamilyMethodPlan",
+        class_index: CompactClassFamilyIndex,
+    ) -> bool:
+        return incumbent.base_symbol in class_index.ancestor_symbols(self.base_symbol)
 
-def _method_family_residue_evidence(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    *,
-    class_names: tuple[str, ...],
-    shared_statement_score: int,
-) -> _MethodFamilyResidueEvidence:
-    classvars = sorted_tuple(
-        (
-            name
-            for method_plan in method_plans
-            for name in method_plan.profile.classvar_names
-        )
-    )
-    properties = sorted_tuple(
-        (
-            name
-            for method_plan in method_plans
-            for name in method_plan.profile.property_hook_names
-        )
-    )
-    behaviors = sorted_tuple(
-        (
-            name
-            for method_plan in method_plans
-            for name in method_plan.profile.behavior_hook_names
-        )
-    )
-    residue_declaration_count = len(class_names) * sum(
-        (
-            len(method_plan.profile.classvar_names)
-            + len(method_plan.profile.property_hook_names)
-            + len(method_plan.profile.behavior_hook_names)
-            for method_plan in method_plans
-        )
-    )
-    return _MethodFamilyResidueEvidence(
-        classvar_names=classvars,
-        property_hook_names=properties,
-        behavior_hook_names=behaviors,
-        leaf_residue_names=sorted_tuple((*classvars, *properties, *behaviors)),
-        residue_declaration_count=residue_declaration_count,
-        shared_to_residue_ratio=(
-            shared_statement_score / max(residue_declaration_count, 1)
-        ),
-    )
-
-
-def _method_family_plan(
-    family_key: _MethodFamilyKey,
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    subset_axis_specs: tuple[str, ...],
-    overlap_axis_specs: tuple[str, ...],
-    lattice_node_count: int,
-    lattice_edge_count: int,
-) -> _MethodFamilyEvidence:
-    _, class_names = family_key
-    base_name = method_plans[0].base_name
-    method_names = sorted_tuple(
-        (method_plan.method_name for method_plan in method_plans)
-    )
-    shared_statement_score = sum(
-        (method_plan.profile.shared_statement_count for method_plan in method_plans)
-    )
-    residue = _method_family_residue_evidence(
-        method_plans,
-        class_names=class_names,
-        shared_statement_score=shared_statement_score,
-    )
-    return _MethodFamilyEvidence(
-        base_name=base_name,
-        class_names=class_names,
-        method_names=method_names,
-        classvar_names=residue.classvar_names,
-        property_hook_names=residue.property_hook_names,
-        behavior_hook_names=residue.behavior_hook_names,
-        leaf_residue_names=residue.leaf_residue_names,
-        residue_declaration_count=residue.residue_declaration_count,
-        shared_to_residue_ratio=residue.shared_to_residue_ratio,
-        strict_subset_family_specs=subset_axis_specs,
-        partial_overlap_family_specs=overlap_axis_specs,
-        lattice_node_count=lattice_node_count,
-        lattice_edge_count=lattice_edge_count,
-    )
-
-
-def _method_family_partitioned_axis_coordinates(
-    subset_rows: set[_MethodFamilyAxisRow],
-    overlap_method_names: set[str],
-    overlap_axis_specs: set[str],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    nonorthogonal_subset_rows: set[_MethodFamilyAxisRow] = set()
-    subset_row_tuple = tuple(subset_rows)
-    for left_index, left_row in enumerate(subset_row_tuple):
-        left_classes = set(left_row[1])
-        for right_row in subset_row_tuple[left_index + 1 :]:
-            right_classes = set(right_row[1])
-            if not (left_classes & right_classes):
-                continue
-            if left_classes < right_classes or right_classes < left_classes:
-                continue
-            nonorthogonal_subset_rows.update((left_row, right_row))
-
-    clean_subset_rows = subset_rows - nonorthogonal_subset_rows
-    clean_subset_specs = {
-        _method_family_member_spec(method_name, class_names)
-        for method_name, class_names in clean_subset_rows
-    }
-    nonorthogonal_specs = {
-        _method_family_member_spec(method_name, class_names)
-        for method_name, class_names in nonorthogonal_subset_rows
-    }
-    return (
-        sorted_tuple(clean_subset_specs),
-        sorted_tuple(overlap_axis_specs | nonorthogonal_specs),
-    )
-
-
-def _method_family_plans(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-) -> dict[_MethodFamilyKey, _MethodFamilyEvidence]:
-    exact_groups: dict[_MethodFamilyKey, list[_MethodFamilyMethodPlan]] = defaultdict(
-        list
-    )
-    overlap_methods_by_family: _MethodFamilyMethodNamesByFamily = defaultdict(set)
-    subset_rows_by_family: _MethodFamilyAxisRowsByFamily = defaultdict(set)
-    overlap_specs_by_family: _MethodFamilyAxisSpecsByFamily = defaultdict(set)
-    lattice_nodes_by_family: dict[_MethodFamilyKey, set[tuple[str, ...]]] = defaultdict(
-        set
-    )
-    lattice_edges_by_family: _MethodFamilyLatticeEdgesByFamily = defaultdict(set)
-    for method_plan in method_plans:
-        family_key = (method_plan.base_symbol, method_plan.class_names)
-        family_classes = set(method_plan.class_names)
-        family_class_names = sorted_tuple(family_classes)
-        lattice_nodes_by_family[family_key].add(family_class_names)
-        exact_groups[family_key].append(method_plan)
-        for other_plan in method_plans:
-            if other_plan.base_symbol != method_plan.base_symbol:
-                continue
-            other_classes = set(other_plan.class_names)
-            if other_classes == family_classes:
-                continue
-            class_intersection = family_classes & other_classes
-            if not class_intersection:
-                continue
-            other_class_names = sorted_tuple(other_classes)
-            intersection_class_names = sorted_tuple(class_intersection)
-            lattice_nodes_by_family[family_key].add(other_class_names)
-            lattice_nodes_by_family[family_key].add(intersection_class_names)
-            if intersection_class_names != family_class_names:
-                lattice_edges_by_family[family_key].add(
-                    (intersection_class_names, family_class_names)
-                )
-            if intersection_class_names != other_class_names:
-                lattice_edges_by_family[family_key].add(
-                    (intersection_class_names, other_class_names)
-                )
-            if other_classes < family_classes:
-                subset_rows_by_family[family_key].add(
-                    (other_plan.method_name, other_class_names)
-                )
-            elif (
-                other_classes != family_classes
-                and (not other_classes < family_classes)
-                and (not family_classes < other_classes)
+    @classmethod
+    def most_specific(
+        cls,
+        method_plans: Iterable["_MethodFamilyMethodPlan"],
+        class_index: CompactClassFamilyIndex,
+    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+        plans_by_key: dict[
+            _MethodFamilyMethodPlanKey,
+            list[_MethodFamilyMethodPlan],
+        ] = defaultdict(list)
+        for method_plan in method_plans:
+            key = (method_plan.method_name, method_plan.class_names)
+            incumbents = plans_by_key[key]
+            if any(
+                incumbent.base_symbol == method_plan.base_symbol
+                or incumbent.is_more_specific_than(method_plan, class_index)
+                for incumbent in incumbents
             ):
-                overlap_methods_by_family[family_key].add(other_plan.method_name)
-                overlap_specs_by_family[family_key].add(
-                    _method_family_member_spec(
-                        other_plan.method_name, other_class_names
-                    )
-                )
-    return {
-        family_key: _method_family_plan(
-            family_key,
-            tuple(group),
-            *_method_family_partitioned_axis_coordinates(
-                subset_rows_by_family[family_key],
-                overlap_methods_by_family[family_key],
-                overlap_specs_by_family[family_key],
-            ),
-            len(lattice_nodes_by_family[family_key]),
-            len(lattice_edges_by_family[family_key]),
+                continue
+            plans_by_key[key] = [
+                incumbent
+                for incumbent in incumbents
+                if not method_plan.is_more_specific_than(incumbent, class_index)
+            ]
+            plans_by_key[key].append(method_plan)
+        return tuple(
+            method_plan
+            for method_plan_group in plans_by_key.values()
+            for method_plan in method_plan_group
         )
-        for family_key, group in exact_groups.items()
-    }
 
-
-def _compact_method_family_varying_coordinates(
-    profiles: tuple[CompactClassMethodSemanticProfile, ...],
-) -> tuple[CompactMethodSemanticCoordinate, ...]:
-    grouped: dict[tuple[tuple[str, ...], str], set[str]] = defaultdict(set)
-    representatives: dict[
-        tuple[tuple[str, ...], str], CompactMethodSemanticCoordinate
-    ] = {}
-    for profile in profiles:
-        for path, kind, value in profile.coordinates:
-            key = (path, kind)
-            grouped[key].add(value)
-            representatives.setdefault(key, (path, kind, value))
-    return tuple(
-        representatives[key]
-        for key, values in sorted(grouped.items(), key=lambda item: item[0])
-        if len(values) >= 2
-    )
-
-
-def _compact_method_family_method_plan(
-    base_symbol: str,
-    base_name: str,
-    method_name: str,
-    class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-) -> _MethodFamilyMethodPlan | None:
-    if len(class_methods) < 2:
-        return None
-    methods = tuple(method for _, method in class_methods)
-    statement_counts = {method.statement_count for method in methods}
-    if len(statement_counts) != 1:
-        return None
-    shared_statement_count = next(iter(statement_counts))
-    if shared_statement_count < 3:
-        return None
-    profiles = tuple(method.semantic_profile for method in methods)
-    skeletons = {profile.skeleton for profile in profiles}
-    if len(skeletons) != 1:
-        return None
-    varying_coordinates = _compact_method_family_varying_coordinates(profiles)
-    if not varying_coordinates or len(varying_coordinates) > max(
-        4, shared_statement_count * 2
-    ):
-        return None
-    classvar_names, property_hook_names, behavior_hook_names = (
-        _method_family_residue_names(method_name, varying_coordinates)
-    )
-    certificate = ClassFamilyCompressionProfile.from_repeated_method_family(
-        class_count=len({indexed_class.symbol for indexed_class, _ in class_methods}),
-        shared_statement_count=shared_statement_count,
-        hook_count=len(property_hook_names) + len(behavior_hook_names),
-        classvar_count=len(classvar_names),
-    ).compression_certificate
-    if not certificate.pays_rent:
-        return None
-    return _MethodFamilyMethodPlan(
-        base_symbol=base_symbol,
-        base_name=base_name,
-        method_name=method_name,
-        profile=_MethodFamilyMethodGroupProfile(
-            shared_statement_count=shared_statement_count,
-            varying_coordinates=varying_coordinates,
-            classvar_names=classvar_names,
-            property_hook_names=property_hook_names,
-            behavior_hook_names=behavior_hook_names,
-            compression_certificate=certificate,
-        ),
-        class_names=tuple(
-            indexed_class.simple_name for indexed_class, _ in class_methods
-        ),
-        file_paths=tuple(indexed_class.file_path for indexed_class, _ in class_methods),
-        line_numbers=tuple(method.line for method in methods),
-        line_count=sum(method.line_count for method in methods),
-    )
-
-
-def _compact_method_family_classes_by_base(
-    class_index: CompactClassFamilyIndex,
-) -> dict[tuple[str, str], list[CompactIndexedClass]]:
-    classes_by_base = {
-        (base_symbol, base.simple_name): [
-            indexed_class
-            for descendant_symbol in descendant_symbols
-            if (indexed_class := class_index.class_for(descendant_symbol)) is not None
-        ]
-        for base_symbol, descendant_symbols in class_index.descendants_by_symbol.items()
-        if (base := class_index.class_for(base_symbol)) is not None
-        and ClassSymbolResolutionAuthority.establishes_nominal_family(base.simple_name)
-    }
-    for indexed_class in class_index.classes_by_symbol.values():
-        resolved_base_names = {
-            base.simple_name
-            for base_symbol in indexed_class.resolved_base_symbols
-            if (base := class_index.class_for(base_symbol)) is not None
-        }
-        for base_name in indexed_class.declared_base_names:
-            simple_name = base_name.rsplit(".", 1)[-1]
-            if (
-                ClassSymbolResolutionAuthority.establishes_nominal_family(base_name)
-                and simple_name not in resolved_base_names
-            ):
-                classes_by_base.setdefault((base_name, simple_name), []).append(
-                    indexed_class
-                )
-    return classes_by_base
-
-
-def _compact_method_family_specific_method_plans(
-    projections: tuple[CompactModuleClassProjection, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[_MethodFamilyMethodPlan, ...]:
-    methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
-    for projection in projections:
-        for method in projection.class_methods:
-            methods_by_class[method.class_symbol][method.method_name] = method
-    classes_by_base = _compact_method_family_classes_by_base(class_index)
-    method_plans: list[_MethodFamilyMethodPlan] = []
-    for (base_symbol, base_name), indexed_classes in classes_by_base.items():
-        if len(indexed_classes) < 2:
-            continue
-        method_names = sorted_tuple(
-            {
-                method_name
-                for indexed_class in indexed_classes
-                for method_name in methods_by_class.get(indexed_class.symbol, ())
-            }
-        )
-        for method_name in method_names:
-            class_methods = tuple(
-                (indexed_class, method)
-                for indexed_class in indexed_classes
+    @staticmethod
+    def _classes_by_base(
+        class_index: CompactClassFamilyIndex,
+    ) -> dict[tuple[str, str], list[CompactIndexedClass]]:
+        classes_by_base = {
+            (base_symbol, base.simple_name): [
+                indexed_class
+                for descendant_symbol in descendant_symbols
                 if (
-                    method := methods_by_class.get(indexed_class.symbol, {}).get(
-                        method_name
-                    )
+                    indexed_class := class_index.class_for(descendant_symbol)
                 )
                 is not None
+            ]
+            for base_symbol, descendant_symbols in class_index.descendants_by_symbol.items()
+            if (base := class_index.class_for(base_symbol)) is not None
+            and ClassSymbolResolutionAuthority.establishes_nominal_family(
+                base.simple_name
             )
-            method_plan = _compact_method_family_method_plan(
-                base_symbol,
-                base_name,
-                method_name,
-                class_methods,
+        }
+        for indexed_class in class_index.classes_by_symbol.values():
+            resolved_base_names = {
+                base.simple_name
+                for base_symbol in indexed_class.resolved_base_symbols
+                if (base := class_index.class_for(base_symbol)) is not None
+            }
+            for base_reference in indexed_class.base_references:
+                if (
+                    ClassSymbolResolutionAuthority.establishes_nominal_family(
+                        base_reference.qualified_name
+                    )
+                    and base_reference.simple_name not in resolved_base_names
+                ):
+                    classes_by_base.setdefault(
+                        (
+                            base_reference.qualified_name,
+                            base_reference.simple_name,
+                        ),
+                        [],
+                    ).append(indexed_class)
+        return classes_by_base
+
+    @classmethod
+    def from_projections(
+        cls,
+        projections: tuple[CompactModuleClassProjection, ...],
+        class_index: CompactClassFamilyIndex,
+    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+        methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
+        for projection in projections:
+            for method in projection.class_methods:
+                methods_by_class[method.class_symbol][method.method_name] = method
+        method_plans: list[_MethodFamilyMethodPlan] = []
+        for (base_symbol, base_name), indexed_classes in cls._classes_by_base(
+            class_index
+        ).items():
+            if len(indexed_classes) < 2:
+                continue
+            method_names = sorted_tuple(
+                {
+                    method_name
+                    for indexed_class in indexed_classes
+                    for method_name in methods_by_class.get(
+                        indexed_class.symbol,
+                        (),
+                    )
+                },
             )
-            if method_plan is not None:
-                method_plans.append(method_plan)
-    return _method_family_more_specific_method_plans(method_plans, class_index)
+            for method_name in method_names:
+                class_methods = tuple(
+                    (indexed_class, method)
+                    for indexed_class in indexed_classes
+                    if (
+                        method := methods_by_class.get(
+                            indexed_class.symbol,
+                            {},
+                        ).get(method_name)
+                    )
+                    is not None
+                )
+                method_plan = cls.from_class_methods(
+                    base_symbol,
+                    base_name,
+                    method_name,
+                    class_methods,
+                )
+                if method_plan is not None:
+                    method_plans.append(method_plan)
+        return cls.most_specific(method_plans, class_index)
 
-
-def _compact_method_family_candidates(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
-    builder: _MethodFamilyCandidateBuilder[_MethodFamilyCandidateT],
-) -> tuple[_MethodFamilyCandidateT, ...]:
-    candidates: list[_MethodFamilyCandidateT] = []
-    for family_key, family_plan in family_plans.items():
-        candidate = builder(
-            _method_family_method_plans(method_plans, family_key),
-            family_plan,
+    @property
+    def residue_kinds(self) -> tuple[CompactMethodSemanticCoordinateKind, ...]:
+        return tuple(
+            coordinate.kind for coordinate in self.profile.varying_coordinates
         )
-        if candidate is not None:
-            candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-            candidate.method_names,
-        ),
-    )
+
+    def semantic_overlap_candidate(
+        self,
+        family: "_MethodFamilyEvidence",
+    ) -> SemanticOverlapMethodCandidate:
+        return SemanticOverlapMethodCandidate(
+            file_path=self.file_paths[0],
+            line=min(self.line_numbers),
+            base_name=self.base_name,
+            method_name=self.method_name,
+            class_names=self.class_names,
+            file_paths=self.file_paths,
+            line_numbers=self.line_numbers,
+            shared_statement_count=self.profile.shared_statement_count,
+            varying_coordinate_count=len(self.profile.varying_coordinates),
+            classvar_names=self.profile.classvar_names,
+            property_hook_names=self.profile.property_hook_names,
+            behavior_hook_names=self.profile.behavior_hook_names,
+            family_method_names=family.method_names,
+            leaf_residue_names=family.leaf_residue_names,
+            residue_declaration_count=family.residue_declaration_count,
+            shared_to_residue_ratio=family.shared_to_residue_ratio,
+            strict_subset_family_specs=family.strict_subset_family_specs,
+            partial_overlap_family_specs=family.partial_overlap_family_specs,
+            lattice_node_count=family.lattice_node_count,
+            lattice_edge_count=family.lattice_edge_count,
+            line_count=self.line_count,
+            compression_certificate=self.profile.compression_certificate,
+        )
 
 
-def _compact_global_inheritance_candidates(
-    method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
-) -> tuple[OverlappingInheritanceFamiliesCandidate, ...]:
-    method_plans_by_base: dict[str, list[_MethodFamilyMethodPlan]] = defaultdict(list)
-    family_plans_by_base: dict[str, list[_MethodFamilyEvidence]] = defaultdict(list)
-    for method_plan in method_plans:
-        method_plans_by_base[method_plan.base_name].append(method_plan)
-    for family_plan in family_plans.values():
-        family_plans_by_base[family_plan.base_name].append(family_plan)
-    candidates = tuple(
-        candidate
-        for base_name, base_method_plans in method_plans_by_base.items()
-        if (
-            candidate := _method_family_global_inheritance_candidate(
-                base_name,
-                tuple(base_method_plans),
-                tuple(family_plans_by_base[base_name]),
+class _MethodPlanEvidenceABC(ABC):
+    """Shared projections derived from one or more method-family plans."""
+
+    @property
+    @abstractmethod
+    def method_plans(self) -> tuple[_MethodFamilyMethodPlan, ...]:
+        raise NotImplementedError
+
+    @cached_property
+    def method_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            method_plan.method_name for method_plan in self.method_plans
+        )
+
+    @cached_property
+    def classvar_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            name
+            for method_plan in self.method_plans
+            for name in method_plan.profile.classvar_names
+        )
+
+    @cached_property
+    def property_hook_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            name
+            for method_plan in self.method_plans
+            for name in method_plan.profile.property_hook_names
+        )
+
+    @cached_property
+    def behavior_hook_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            name
+            for method_plan in self.method_plans
+            for name in method_plan.profile.behavior_hook_names
+        )
+
+    @cached_property
+    def leaf_residue_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            (
+                *self.classvar_names,
+                *self.property_hook_names,
+                *self.behavior_hook_names,
             )
         )
-        is not None
-    )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-        ),
-    )
+
+    @cached_property
+    def residue_declaration_count(self) -> int:
+        return sum(
+            len(method_plan.class_names)
+            * (
+                len(method_plan.profile.classvar_names)
+                + len(method_plan.profile.property_hook_names)
+                + len(method_plan.profile.behavior_hook_names)
+            )
+            for method_plan in self.method_plans
+        )
+
+    @cached_property
+    def shared_statement_count(self) -> int:
+        return sum(
+            method_plan.profile.shared_statement_count
+            for method_plan in self.method_plans
+        )
+
+    @cached_property
+    def file_paths(self) -> tuple[str, ...]:
+        return tuple(
+            file_path
+            for method_plan in self.method_plans
+            for file_path in method_plan.file_paths
+        )
+
+    @cached_property
+    def line_numbers(self) -> tuple[int, ...]:
+        return tuple(
+            line_number
+            for method_plan in self.method_plans
+            for line_number in method_plan.line_numbers
+        )
+
+    @cached_property
+    def method_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            f"{class_name}.{method_plan.method_name}"
+            for method_plan in self.method_plans
+            for class_name in method_plan.class_names
+        )
+
+    @cached_property
+    def line_count(self) -> int:
+        return sum(method_plan.line_count for method_plan in self.method_plans)
+
+
+@dataclass(frozen=True)
+class _MethodFamilyEvidence(_MethodPlanEvidenceABC):
+    """One exact class-family relation and the method plans proving it."""
+
+    _method_plans: tuple[_MethodFamilyMethodPlan, ...]
+    strict_subset_family_specs: tuple[str, ...]
+    partial_overlap_family_specs: tuple[str, ...]
+    lattice_node_count: int
+    lattice_edge_count: int
+
+    @property
+    def method_plans(self) -> tuple[_MethodFamilyMethodPlan, ...]:
+        return self._method_plans
+
+    @property
+    def base_symbol(self) -> str:
+        return self.method_plans[0].base_symbol
+
+    @property
+    def base_name(self) -> str:
+        return self.method_plans[0].base_name
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        return self.method_plans[0].class_names
+
+    @cached_property
+    def shared_to_residue_ratio(self) -> float:
+        return self.shared_statement_count / max(self.residue_declaration_count, 1)
+
+    def semantic_overlap_candidates(
+        self,
+    ) -> tuple[SemanticOverlapMethodCandidate, ...]:
+        return tuple(
+            method_plan.semantic_overlap_candidate(self)
+            for method_plan in self.method_plans
+        )
+
+    @property
+    def group_spec(self) -> str:
+        return f"{'+'.join(self.method_names)}[{','.join(self.class_names)}]"
+
+    def compression_certificate(self) -> CompressionCertificate | None:
+        residue_names = self.leaf_residue_names
+        certificate = CompressionCertificate.from_object_family(
+            manual_object_count=sum(
+                len(self.class_names) * method_plan.profile.shared_statement_count
+                for method_plan in self.method_plans
+            ),
+            replacement_shape=ObjectFamilyShape(
+                shared_objects=("abc_base", "family_template"),
+                per_axis_objects=("residue_declaration",),
+            ),
+            semantic_axes=(*self.class_names, *residue_names),
+            residual_object_count=len(self.class_names) * len(residue_names),
+            provenance_object_count=1,
+            independent_source_count=len(set(self.method_plans[0].file_paths)),
+        )
+        return certificate if certificate.pays_rent else None
+
+    def family_candidate(self) -> SemanticOverlapMethodFamilyCandidate | None:
+        if len(self.method_plans) < 2:
+            return None
+        certificate = self.compression_certificate()
+        if certificate is None:
+            return None
+        return SemanticOverlapMethodFamilyCandidate(
+            file_path=self.file_paths[0],
+            line=min(self.line_numbers),
+            base_name=self.base_name,
+            class_names=self.class_names,
+            method_names=self.method_names,
+            file_paths=self.file_paths,
+            line_numbers=self.line_numbers,
+            method_symbols=self.method_symbols,
+            shared_statement_count=self.shared_statement_count,
+            residue_declaration_count=self.residue_declaration_count,
+            classvar_names=self.classvar_names,
+            property_hook_names=self.property_hook_names,
+            behavior_hook_names=self.behavior_hook_names,
+            leaf_residue_names=self.leaf_residue_names,
+            shared_to_residue_ratio=self.shared_to_residue_ratio,
+            strict_subset_family_specs=self.strict_subset_family_specs,
+            partial_overlap_family_specs=self.partial_overlap_family_specs,
+            lattice_node_count=self.lattice_node_count,
+            lattice_edge_count=self.lattice_edge_count,
+            line_count=self.line_count,
+            compression_certificate=certificate,
+        )
+
+    def residue_axis_candidate(self) -> SemanticOverlapResidueAxisCandidate | None:
+        if len(self.method_plans) < 2:
+            return None
+        residue_kind_signatures = {
+            method_plan.residue_kinds for method_plan in self.method_plans
+        }
+        if len(residue_kind_signatures) != 1:
+            return None
+        residue_kinds = next(iter(residue_kind_signatures))
+        if not residue_kinds:
+            return None
+        axis_names = tuple(
+            f"{index}:{residue_kind}"
+            for index, residue_kind in enumerate(residue_kinds)
+        )
+        certificate = factorization_axis_catalog_certificate(
+            (
+                FactorizationRow.from_mapping(
+                    method_plan.method_name,
+                    {
+                        axis_name: residue_kind
+                        for axis_name, residue_kind in zip(
+                            axis_names,
+                            residue_kinds,
+                        )
+                    },
+                    source_name="|".join(
+                        sorted_tuple(frozenset(method_plan.file_paths))
+                    ),
+                )
+                for method_plan in self.method_plans
+            ),
+            shared_objects=("residue_axis_catalog",),
+            per_axis_objects=("residue_axis_row",),
+        )
+        if not certificate.pays_rent:
+            return None
+        return SemanticOverlapResidueAxisCandidate(
+            file_path=self.file_paths[0],
+            line=min(self.line_numbers),
+            base_name=self.base_name,
+            class_names=self.class_names,
+            method_names=self.method_names,
+            residue_kinds=residue_kinds,
+            file_paths=self.file_paths,
+            line_numbers=self.line_numbers,
+            method_symbols=self.method_symbols,
+            residue_site_count=len(self.method_plans) * len(residue_kinds),
+            line_count=self.line_count,
+            compression_certificate=certificate,
+        )
+
+    @staticmethod
+    def _member_spec(method_name: str, class_names: tuple[str, ...]) -> str:
+        return f"{method_name}[{','.join(class_names)}]"
+
+    @classmethod
+    def from_method_plans(
+        cls,
+        method_plans: tuple[_MethodFamilyMethodPlan, ...],
+    ) -> tuple["_MethodFamilyEvidence", ...]:
+        exact_groups: dict[
+            _MethodFamilyKey,
+            list[_MethodFamilyMethodPlan],
+        ] = defaultdict(list)
+        method_plans_by_base: dict[
+            str,
+            list[_MethodFamilyMethodPlan],
+        ] = defaultdict(list)
+        subset_rows_by_family: _MethodFamilyAxisRowsByFamily = defaultdict(set)
+        overlap_specs_by_family: _MethodFamilyAxisSpecsByFamily = defaultdict(set)
+        lattice_nodes_by_family: dict[
+            _MethodFamilyKey,
+            set[tuple[str, ...]],
+        ] = defaultdict(set)
+        lattice_edges_by_family: _MethodFamilyLatticeEdgesByFamily = defaultdict(set)
+        for method_plan in method_plans:
+            family_key = (method_plan.base_symbol, method_plan.class_names)
+            family_classes = set(method_plan.class_names)
+            family_class_names = sorted_tuple(family_classes)
+            lattice_nodes_by_family[family_key].add(family_class_names)
+            exact_groups[family_key].append(method_plan)
+            method_plans_by_base[method_plan.base_symbol].append(method_plan)
+        for method_plan in method_plans:
+            family_key = (method_plan.base_symbol, method_plan.class_names)
+            family_classes = set(method_plan.class_names)
+            family_class_names = sorted_tuple(family_classes)
+            for other_plan in method_plans_by_base[method_plan.base_symbol]:
+                other_classes = set(other_plan.class_names)
+                if other_classes == family_classes:
+                    continue
+                class_intersection = family_classes & other_classes
+                if not class_intersection:
+                    continue
+                other_class_names = sorted_tuple(other_classes)
+                intersection_class_names = sorted_tuple(class_intersection)
+                lattice_nodes_by_family[family_key].update(
+                    (other_class_names, intersection_class_names)
+                )
+                if intersection_class_names != family_class_names:
+                    lattice_edges_by_family[family_key].add(
+                        (intersection_class_names, family_class_names)
+                    )
+                if intersection_class_names != other_class_names:
+                    lattice_edges_by_family[family_key].add(
+                        (intersection_class_names, other_class_names)
+                    )
+                if other_classes < family_classes:
+                    subset_rows_by_family[family_key].add(
+                        (other_plan.method_name, other_class_names)
+                    )
+                elif not family_classes < other_classes:
+                    overlap_specs_by_family[family_key].add(
+                        cls._member_spec(
+                            other_plan.method_name,
+                            other_class_names,
+                        )
+                    )
+        return tuple(
+            cls(
+                _method_plans=tuple(group),
+                strict_subset_family_specs=subset_specs,
+                partial_overlap_family_specs=overlap_specs,
+                lattice_node_count=len(lattice_nodes_by_family[family_key]),
+                lattice_edge_count=len(lattice_edges_by_family[family_key]),
+            )
+            for family_key, group in exact_groups.items()
+            for subset_specs, overlap_specs in (
+                cls._partitioned_axis_specs(
+                    subset_rows_by_family[family_key],
+                    overlap_specs_by_family[family_key],
+                ),
+            )
+        )
+
+    @classmethod
+    def _partitioned_axis_specs(
+        cls,
+        subset_rows: set[_MethodFamilyAxisRow],
+        overlap_axis_specs: set[str],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        nonorthogonal_subset_rows: set[_MethodFamilyAxisRow] = set()
+        subset_row_tuple = tuple(subset_rows)
+        for left_index, left_row in enumerate(subset_row_tuple):
+            left_classes = set(left_row[1])
+            for right_row in subset_row_tuple[left_index + 1 :]:
+                right_classes = set(right_row[1])
+                if not (left_classes & right_classes):
+                    continue
+                if left_classes < right_classes or right_classes < left_classes:
+                    continue
+                nonorthogonal_subset_rows.update((left_row, right_row))
+
+        clean_subset_rows = subset_rows - nonorthogonal_subset_rows
+        clean_subset_specs = {
+            cls._member_spec(method_name, class_names)
+            for method_name, class_names in clean_subset_rows
+        }
+        nonorthogonal_specs = {
+            cls._member_spec(method_name, class_names)
+            for method_name, class_names in nonorthogonal_subset_rows
+        }
+        return (
+            sorted_tuple(clean_subset_specs),
+            sorted_tuple(overlap_axis_specs | nonorthogonal_specs),
+        )
+
+
+@dataclass(frozen=True)
+class _MethodFamilyBaseEvidence(_MethodPlanEvidenceABC):
+    """All proved method families descending from one resolved base symbol."""
+
+    base_symbol: str
+    families: tuple[_MethodFamilyEvidence, ...]
+
+    @classmethod
+    def from_families(
+        cls,
+        families: tuple[_MethodFamilyEvidence, ...],
+    ) -> tuple["_MethodFamilyBaseEvidence", ...]:
+        families_by_base: dict[str, list[_MethodFamilyEvidence]] = defaultdict(list)
+        for family in families:
+            families_by_base[family.base_symbol].append(family)
+        return tuple(
+            cls(base_symbol, tuple(base_families))
+            for base_symbol, base_families in families_by_base.items()
+        )
+
+    @cached_property
+    def method_plans(self) -> tuple[_MethodFamilyMethodPlan, ...]:
+        return tuple(
+            method_plan
+            for family in self.families
+            for method_plan in family.method_plans
+        )
+
+    @property
+    def base_name(self) -> str:
+        return self.families[0].base_name
+
+    @cached_property
+    def class_sets(self) -> tuple[frozenset[str], ...]:
+        return tuple(frozenset(family.class_names) for family in self.families)
+
+    @cached_property
+    def has_global_structure(self) -> bool:
+        for left_index, left_classes in enumerate(self.class_sets):
+            for right_classes in self.class_sets[left_index + 1 :]:
+                if (left_classes & right_classes) and left_classes != right_classes:
+                    return True
+        return False
+
+    @cached_property
+    def lattice_edge_count(self) -> int:
+        edges: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        for left_index, left_classes in enumerate(self.class_sets):
+            for right_classes in self.class_sets[left_index + 1 :]:
+                intersection = left_classes & right_classes
+                if not intersection:
+                    continue
+                intersection_names = sorted_tuple(intersection)
+                for class_set in (left_classes, right_classes):
+                    class_names = sorted_tuple(class_set)
+                    if intersection_names != class_names:
+                        edges.add((intersection_names, class_names))
+        return len(edges)
+
+    @cached_property
+    def certificate(self) -> CompressionCertificate:
+        return CompressionCertificate.from_object_family(
+            manual_object_count=sum(
+                len(method_plan.class_names)
+                * method_plan.profile.shared_statement_count
+                for method_plan in self.method_plans
+            ),
+            replacement_shape=ObjectFamilyShape(
+                shared_objects=("inheritance_lattice", "abc_base"),
+                per_axis_objects=("residue_declaration",),
+            ),
+            semantic_axes=(
+                *(method_plan.method_name for method_plan in self.method_plans),
+                *(family.group_spec for family in self.families),
+            ),
+            residual_object_count=self.residue_declaration_count,
+            provenance_object_count=len(self.families),
+            independent_source_count=len(
+                {
+                    class_name
+                    for method_plan in self.method_plans
+                    for class_name in method_plan.class_names
+                }
+            ),
+        )
+
+    def candidate(self) -> OverlappingInheritanceFamiliesCandidate | None:
+        if len(self.families) < 2 or not self.has_global_structure:
+            return None
+        certificate = self.certificate
+        if not certificate.pays_rent:
+            return None
+        class_names = sorted_tuple(
+            {
+                class_name
+                for method_plan in self.method_plans
+                for class_name in method_plan.class_names
+            }
+        )
+        return OverlappingInheritanceFamiliesCandidate(
+            file_path=self.file_paths[0],
+            line=min(self.line_numbers),
+            base_name=self.base_name,
+            class_names=class_names,
+            method_names=self.method_names,
+            family_specs=tuple(family.group_spec for family in self.families),
+            strict_subset_family_specs=sorted_tuple(
+                axis_spec
+                for family in self.families
+                for axis_spec in family.strict_subset_family_specs
+            ),
+            partial_overlap_family_specs=sorted_tuple(
+                axis_spec
+                for family in self.families
+                for axis_spec in family.partial_overlap_family_specs
+            ),
+            file_paths=self.file_paths,
+            line_numbers=self.line_numbers,
+            method_symbols=self.method_symbols,
+            shared_statement_count=self.shared_statement_count,
+            residue_declaration_count=self.residue_declaration_count,
+            leaf_residue_names=self.leaf_residue_names,
+            lattice_node_count=len(
+                {family.class_names for family in self.families}
+                | {
+                    sorted_tuple(set(left.class_names) & set(right.class_names))
+                    for left in self.families
+                    for right in self.families
+                    if set(left.class_names) & set(right.class_names)
+                }
+            ),
+            lattice_edge_count=self.lattice_edge_count,
+            line_count=self.line_count,
+            compression_certificate=certificate,
+        )
 
 
 @dataclass(frozen=True)
@@ -3888,35 +3778,6 @@ class CompactMethodFamilyContext:
     global_candidates: tuple[OverlappingInheritanceFamiliesCandidate, ...]
     residue_axis_candidates: tuple[SemanticOverlapResidueAxisCandidate, ...]
 
-    @staticmethod
-    def semantic_overlap_method_candidates(
-        method_plans: tuple[_MethodFamilyMethodPlan, ...],
-        family_plans: dict[_MethodFamilyKey, _MethodFamilyEvidence],
-    ) -> tuple[SemanticOverlapMethodCandidate, ...]:
-        candidates: list[SemanticOverlapMethodCandidate] = []
-        seen: set[tuple[str, str, tuple[str, ...]]] = set()
-        for method_plan in method_plans:
-            family_plan = family_plans[
-                (method_plan.base_symbol, method_plan.class_names)
-            ]
-            candidate = _method_family_candidate_from_method_plan_path(
-                method_plan.file_paths[0], method_plan, family_plan
-            )
-            key = (candidate.base_name, candidate.method_name, candidate.class_names)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(candidate)
-        return sorted_tuple(
-            candidates,
-            key=lambda candidate: (
-                candidate.file_path,
-                candidate.line,
-                candidate.base_name,
-                candidate.method_name,
-            ),
-        )
-
     @classmethod
     def from_projections(
         cls,
@@ -3926,10 +3787,25 @@ class CompactMethodFamilyContext:
     ) -> "CompactMethodFamilyContext":
         if class_index is None:
             class_index = build_compact_class_family_index(projections)
-        method_plans = _compact_method_family_specific_method_plans(
-            projections, class_index
+        method_plans = _MethodFamilyMethodPlan.from_projections(
+            projections,
+            class_index,
         )
-        family_plans = _method_family_plans(method_plans)
+        families = _MethodFamilyEvidence.from_method_plans(method_plans)
+        method_candidates_by_key: dict[
+            tuple[str, str, tuple[str, ...]],
+            SemanticOverlapMethodCandidate,
+        ] = {}
+        for family in families:
+            for candidate in family.semantic_overlap_candidates():
+                method_candidates_by_key.setdefault(
+                    (
+                        family.base_symbol,
+                        candidate.method_name,
+                        candidate.class_names,
+                    ),
+                    candidate,
+                )
         exact_promotion_builder = (
             ExactLeafMethodAncestorPromotionComponentBuilder.from_projections(
                 projections,
@@ -3943,36 +3819,56 @@ class CompactMethodFamilyContext:
             exact_ancestor_promotion_candidates=(
                 exact_promotion_builder.proven_components
             ),
-            method_candidates=cls.semantic_overlap_method_candidates(
-                method_plans, family_plans
+            method_candidates=sorted_tuple(
+                method_candidates_by_key.values(),
+                key=lambda candidate: (
+                    candidate.file_path,
+                    candidate.line,
+                    candidate.base_name,
+                    candidate.method_name,
+                ),
             ),
-            family_candidates=_compact_method_family_candidates(
-                method_plans,
-                family_plans,
-                _method_family_candidate,
+            family_candidates=sorted_tuple(
+                (
+                    candidate
+                    for family in families
+                    if (candidate := family.family_candidate()) is not None
+                ),
+                key=lambda candidate: (
+                    candidate.file_path,
+                    candidate.line,
+                    candidate.base_name,
+                    candidate.method_names,
+                ),
             ),
-            global_candidates=_compact_global_inheritance_candidates(
-                method_plans, family_plans
+            global_candidates=sorted_tuple(
+                (
+                    candidate
+                    for base_evidence in _MethodFamilyBaseEvidence.from_families(
+                        families
+                    )
+                    if (candidate := base_evidence.candidate()) is not None
+                ),
+                key=lambda candidate: (
+                    candidate.file_path,
+                    candidate.line,
+                    candidate.base_name,
+                ),
             ),
-            residue_axis_candidates=_compact_method_family_candidates(
-                method_plans,
-                family_plans,
-                _method_family_residue_axis_catalog_candidate,
+            residue_axis_candidates=sorted_tuple(
+                (
+                    candidate
+                    for family in families
+                    if (candidate := family.residue_axis_candidate()) is not None
+                ),
+                key=lambda candidate: (
+                    candidate.file_path,
+                    candidate.line,
+                    candidate.base_name,
+                    candidate.method_names,
+                ),
             ),
         )
-
-
-def _method_family_method_plans(
-    specific_method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    family_key: _MethodFamilyKey,
-) -> tuple[_MethodFamilyMethodPlan, ...]:
-    return tuple(
-        (
-            method_plan
-            for method_plan in specific_method_plans
-            if (method_plan.base_symbol, method_plan.class_names) == family_key
-        )
-    )
 
 
 def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:

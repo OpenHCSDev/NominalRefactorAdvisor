@@ -168,6 +168,14 @@ class CompactNominalReference(NamedTuple):
         )
 
     @property
+    def qualified_name(self) -> str:
+        return ".".join(self.resolved_parts)
+
+    @property
+    def simple_name(self) -> str:
+        return self.resolved_parts[-1]
+
+    @property
     def permits_root_relative_resolution(self) -> bool:
         return (
             self.root_binding is not None
@@ -1117,7 +1125,72 @@ class CompactModuleClassProjection(
         return values
 
 
-CompactMethodSemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
+class MethodFamilyResidueRole(StrEnum):
+    """Declaration role required to absorb one varying method coordinate."""
+
+    CLASS_VARIABLE = "class_variable"
+    PROPERTY_HOOK = "property_hook"
+    BEHAVIOR_HOOK = "behavior_hook"
+
+
+MethodFamilyResidueNameBuilder: TypeAlias = Callable[[str, int], str]
+
+
+class CompactMethodSemanticCoordinateKind(StrEnum):
+    """Closed coordinate grammar with declaration-owned residue semantics."""
+
+    CONSTANT = (
+        "constant",
+        MethodFamilyResidueRole.CLASS_VARIABLE,
+        lambda method_name, index: f"{method_name}_constant_{index}".upper(),
+    )
+    NAME = (
+        "name",
+        MethodFamilyResidueRole.PROPERTY_HOOK,
+        lambda method_name, index: f"{method_name}_value_{index}",
+    )
+    SELF_ATTRIBUTE = (
+        "self_attr",
+        MethodFamilyResidueRole.PROPERTY_HOOK,
+        lambda method_name, index: f"{method_name}_property_{index}",
+    )
+    ATTRIBUTE = (
+        "attribute",
+        MethodFamilyResidueRole.PROPERTY_HOOK,
+        lambda method_name, index: f"{method_name}_value_{index}",
+    )
+    CALL = (
+        "call",
+        MethodFamilyResidueRole.BEHAVIOR_HOOK,
+        lambda method_name, index: f"_{method_name}_operation_{index}",
+    )
+
+    residue_role: MethodFamilyResidueRole
+    _residue_name_builder: MethodFamilyResidueNameBuilder
+
+    def __new__(
+        cls,
+        value: str,
+        residue_role: MethodFamilyResidueRole,
+        residue_name_builder: MethodFamilyResidueNameBuilder,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.residue_role = residue_role
+        member._residue_name_builder = residue_name_builder
+        return member
+
+    def residue_name(self, method_name: str, index: int) -> str:
+        return self._residue_name_builder(method_name, index)
+
+
+@dataclass(frozen=True)
+class CompactMethodSemanticCoordinate:
+    """One typed varying value in a normalized method body."""
+
+    path: tuple[str, ...]
+    kind: CompactMethodSemanticCoordinateKind
+    value: str
 
 
 @dataclass(frozen=True)
@@ -4376,23 +4449,47 @@ def _compact_class_method_statement_skeleton(statement: ast.stmt) -> str:
 def _compact_class_method_coordinates(
     node: ast.AST,
     path: tuple[object, ...] = (),
-) -> tuple[tuple[tuple[str, ...], str, str], ...]:
-    coordinates: list[tuple[tuple[str, ...], str, str]] = []
+) -> tuple[CompactMethodSemanticCoordinate, ...]:
+    coordinates: list[CompactMethodSemanticCoordinate] = []
     coordinate_path = tuple(str(item) for item in path)
     if isinstance(node, ast.Constant):
-        coordinates.append((coordinate_path, "constant", repr(node.value)))
+        coordinates.append(
+            CompactMethodSemanticCoordinate(
+                coordinate_path,
+                CompactMethodSemanticCoordinateKind.CONSTANT,
+                repr(node.value),
+            )
+        )
     elif isinstance(node, ast.Name):
-        coordinates.append((coordinate_path, "name", node.id))
+        coordinates.append(
+            CompactMethodSemanticCoordinate(
+                coordinate_path,
+                CompactMethodSemanticCoordinateKind.NAME,
+                node.id,
+            )
+        )
     elif isinstance(node, ast.Attribute):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
-            coordinates.append((coordinate_path, "self_attr", node.attr))
+            coordinates.append(
+                CompactMethodSemanticCoordinate(
+                    coordinate_path,
+                    CompactMethodSemanticCoordinateKind.SELF_ATTRIBUTE,
+                    node.attr,
+                )
+            )
         else:
-            coordinates.append((coordinate_path, "attribute", ast.unparse(node)))
+            coordinates.append(
+                CompactMethodSemanticCoordinate(
+                    coordinate_path,
+                    CompactMethodSemanticCoordinateKind.ATTRIBUTE,
+                    ast.unparse(node),
+                )
+            )
     elif isinstance(node, ast.Call):
         coordinates.append(
-            (
+            CompactMethodSemanticCoordinate(
                 tuple(str(item) for item in (*path, "func")),
-                "call",
+                CompactMethodSemanticCoordinateKind.CALL,
                 ast.unparse(node.func),
             )
         )

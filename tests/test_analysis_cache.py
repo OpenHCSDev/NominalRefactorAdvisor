@@ -5506,6 +5506,45 @@ def _compact_class_methods_for_source(
     return projections[0].class_methods
 
 
+def test_compact_method_coordinates_own_typed_residue_semantics(
+    tmp_path: Path,
+) -> None:
+    methods = _compact_class_methods_for_source(
+        tmp_path / "pkg",
+        "class WorkerBase:\n"
+        "    pass\n"
+        "class Worker(WorkerBase):\n"
+        "    def emit(self, rows):\n"
+        "        clean = self.normalize(rows)\n"
+        "        value = encoder.build(clean)\n"
+        "        target = self.output_path\n"
+        "        mode = encoder.mode\n"
+        "        self.write(value, suffix='.out')\n"
+        "        return value\n",
+    )
+    kind = class_index_module.CompactMethodSemanticCoordinateKind
+    role = class_index_module.MethodFamilyResidueRole
+    coordinate_kinds = {
+        coordinate.kind
+        for method in methods
+        for coordinate in method.semantic_profile.coordinates
+    }
+
+    assert coordinate_kinds == {
+        kind.ATTRIBUTE,
+        kind.CALL,
+        kind.CONSTANT,
+        kind.NAME,
+        kind.SELF_ATTRIBUTE,
+    }
+    assert kind.CONSTANT.residue_role is role.CLASS_VARIABLE
+    assert kind.SELF_ATTRIBUTE.residue_role is role.PROPERTY_HOOK
+    assert kind.CALL.residue_role is role.BEHAVIOR_HOOK
+    assert kind.CONSTANT.residue_name("emit", 2) == "EMIT_CONSTANT_2"
+    assert kind.NAME.residue_name("emit", 3) == "emit_value_3"
+    assert kind.CALL.residue_name("emit", 4) == "_emit_operation_4"
+
+
 def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache(
     tmp_path: Path,
 ) -> None:
@@ -5760,6 +5799,10 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         "cache",
     )
     assert context.family_candidates[0].method_names == ("emit", "validate")
+    assert context.family_candidates[0].residue_declaration_count == 12
+    assert context.family_candidates[0].shared_to_residue_ratio == pytest.approx(
+        context.family_candidates[0].shared_statement_count / 12
+    )
     assert context.global_candidates[0].method_names == (
         "audit",
         "cache",
@@ -5785,6 +5828,23 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         "_MethodFamilyCandidateOrder",
         "_method_family_statement_skeleton",
         "_semantic_overlap_coordinates",
+        "_compact_method_family_classes_by_base",
+        "_compact_method_family_method_plan",
+        "_compact_method_family_specific_method_plans",
+        "_compact_method_family_varying_coordinates",
+        "_method_family_candidate",
+        "_method_family_candidate_from_method_plan_path",
+        "_method_family_global_certificate",
+        "_method_family_global_inheritance_candidate",
+        "_method_family_global_lattice_edge_count",
+        "_method_family_method_plans",
+        "_method_family_more_specific_method_plans",
+        "_method_family_partitioned_axis_coordinates",
+        "_method_family_plans",
+        "_method_family_residue_evidence",
+        "_method_family_residue_names",
+        "_method_family_residue_axis_catalog_candidate",
+        "_method_family_sets_have_global_structure",
     ):
         assert not hasattr(helper_detectors, removed_name)
     assert not hasattr(
