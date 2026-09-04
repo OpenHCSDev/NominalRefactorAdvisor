@@ -451,6 +451,23 @@ def test_codemod_authority_claim_boundary_is_owned_outside_execution() -> None:
     )
 
 
+def test_source_rewrite_selection_is_owned_by_source_edit_algebra() -> None:
+    rewrite_types = (
+        codemod.SourceRewriteDelta,
+        codemod.PlannedSourceRewrite,
+        codemod.SimulatedSourceRewrite,
+        codemod.ResolvedSourceRewrite,
+        codemod.PlannedRewriteConflictError,
+        codemod.PlannedRewriteSelectionAuthority,
+    )
+
+    assert all(
+        declaration.__module__
+        == "nominal_refactor_advisor.codemod_source_edits"
+        for declaration in rewrite_types
+    )
+
+
 def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     synthesizer_type = (
         codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer

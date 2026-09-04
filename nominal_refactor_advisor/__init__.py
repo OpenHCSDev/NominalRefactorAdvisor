@@ -31,9 +31,6 @@ from .codemod import (
     FindingRecipeProofObstacle,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisReport,
-    PlannedRewriteConflictError,
-    PlannedRewriteSelectionAuthority,
-    PlannedSourceRewrite,
     PromoteExactDataclassFieldsToExistingAuthorityOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
@@ -42,7 +39,6 @@ from .codemod import (
     ReplaceFieldsWithCarrierOperation,
     ReplaceFunctionBodyOperation,
     ReplaceTargetOperation,
-    ResolvedSourceRewrite,
     SourceRewritePlanItem,
     SourceRewriteSimulationAuthority,
     SourceRewriteTarget,
@@ -180,6 +176,12 @@ from .cancelable_composition import (
 from .refactor_concepts import (
     NominalBoundaryConcept,
     RefactorConcept,
+)
+from .codemod_source_edits import (
+    PlannedRewriteConflictError,
+    PlannedRewriteSelectionAuthority,
+    PlannedSourceRewrite,
+    ResolvedSourceRewrite,
 )
 
 

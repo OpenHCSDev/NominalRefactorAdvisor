@@ -23,11 +23,13 @@ from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 from typing import (
-    Self,
     TYPE_CHECKING,
+    ClassVar,
+    Self,
     cast,
 )
 
+from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
@@ -35,8 +37,13 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
+from .codemod_semantics import RewriteOperation
 from .collection_algebra import sorted_tuple
+from .json_reports import (
+    DataclassJsonReport,
+    json_report_field,
+    json_report_property,
+)
 from .source_geometry import (
     SourceByteSpan,
     SourceLineSegmentAuthority,
@@ -44,12 +51,8 @@ from .source_geometry import (
 from .source_index import (
     AstTargetDigest,
     SourceIndex,
+    SourceTargetSpan,
 )
-from .json_reports import (
-    DataclassJsonReport,
-    JsonObject,
-)
-
 
 if TYPE_CHECKING:
     from .codemod import CodemodSelectorContext, RefactorRecipeOperation
@@ -1275,6 +1278,151 @@ class SourceLineSpan:
 def _joined_rationales(rationales: Iterable[str]) -> str:
     unique_rationales = tuple(dict.fromkeys(item for item in rationales if item))
     return " ".join(unique_rationales)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteDelta(ReplacementSource):
+    """Replacement source shared by planned and simulated target rewrites."""
+
+    operation: ClassVar[RewriteOperation] = RewriteOperation.REPLACE_TARGET
+    rationale: str = ""
+    contributors: tuple[SourceRewriteContributor, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlannedSourceRewrite(SourceRewriteDelta):
+    """One planned source rewrite against an AST target digest."""
+
+    target_id: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SimulatedSourceRewrite(
+    SourceTargetSpan,
+    SourceRewriteDelta,
+    DataclassJsonReport,
+):
+    """Resolved source span and replacement preview for one planned rewrite."""
+
+    replacement_source: str = json_report_field(included=False)
+    original_source: str = json_report_field(included=False)
+
+    @json_report_property(field_name="operation")
+    def report_operation(self) -> RewriteOperation:
+        return self.operation
+
+
+@dataclass(frozen=True)
+class ResolvedSourceRewrite:
+    """Planned rewrite paired with its source-index target geometry."""
+
+    rewrite: PlannedSourceRewrite
+    target: AstTargetDigest
+
+
+class PlannedRewriteConflictError(ValueError):
+    """Two non-equivalent planned rewrites claim overlapping source geometry."""
+
+    def __init__(
+        self,
+        first: ResolvedSourceRewrite,
+        second: ResolvedSourceRewrite,
+    ) -> None:
+        self.first = first
+        self.second = second
+        super().__init__(
+            "Conflicting planned rewrites overlap in "
+            f"{first.target.file_path!r}: {first.target.target_id!r} and "
+            f"{second.target.target_id!r}"
+        )
+
+
+@dataclass(frozen=True)
+class PlannedRewriteSelectionAuthority:
+    """Prove a rewrite batch is exact-deduplicated and conflict free."""
+
+    source_index: SourceIndex
+
+    def resolved_rewrites(
+        self,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[ResolvedSourceRewrite, ...]:
+        resolved = tuple(
+            ResolvedSourceRewrite(
+                rewrite=rewrite,
+                target=self.required_target(rewrite),
+            )
+            for rewrite in self.coalesced_exact_rewrites(rewrites)
+        )
+        ordered = sorted_tuple(resolved, key=self.resolved_sort_key)
+        self.require_disjoint(ordered)
+        return ordered
+
+    @staticmethod
+    def coalesced_exact_rewrites(
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        rewrites_by_edit: dict[tuple[str, str], PlannedSourceRewrite] = {}
+        for rewrite in rewrites:
+            edit_key = (
+                rewrite.target_id,
+                rewrite.replacement_source,
+            )
+            existing = rewrites_by_edit.get(edit_key)
+            if existing is None:
+                rewrites_by_edit[edit_key] = rewrite
+                continue
+            rewrites_by_edit[edit_key] = replace(
+                existing,
+                rationale=_joined_rationales((existing.rationale, rewrite.rationale)),
+                contributors=SourceRewriteContributor.merge(
+                    existing.contributors,
+                    rewrite.contributors,
+                ),
+            )
+        return tuple(rewrites_by_edit.values())
+
+    def select(
+        self,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        return tuple(item.rewrite for item in self.resolved_rewrites(rewrites))
+
+    def required_target(self, rewrite: PlannedSourceRewrite) -> AstTargetDigest:
+        target = self.source_index.target_by_id.get(rewrite.target_id)
+        if target is None:
+            raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
+        return target
+
+    @staticmethod
+    def resolved_sort_key(
+        item: ResolvedSourceRewrite,
+    ) -> tuple[str, int, int, str]:
+        return (
+            item.target.file_path,
+            item.target.line,
+            -item.target.end_line,
+            item.target.qualname,
+        )
+
+    @classmethod
+    def require_disjoint(
+        cls,
+        rewrites: tuple[ResolvedSourceRewrite, ...],
+    ) -> None:
+        previous: ResolvedSourceRewrite | None = None
+        for rewrite in rewrites:
+            if previous is not None and cls.overlaps(previous.target, rewrite.target):
+                raise PlannedRewriteConflictError(previous, rewrite)
+            previous = rewrite
+
+    @staticmethod
+    def overlaps(first: AstTargetDigest, second: AstTargetDigest) -> bool:
+        return (
+            first.file_path == second.file_path
+            and first.line <= second.end_line
+            and second.line <= first.end_line
+        )
 
 
 @dataclass(frozen=True)
