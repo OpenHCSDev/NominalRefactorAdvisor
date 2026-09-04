@@ -86,6 +86,35 @@ def test_class_name_algebra_uses_tokens_for_common_suffixes() -> None:
     )
 
 
+def test_presentation_kinds_own_their_projection_policies() -> None:
+    assert PresentationProjectionKind.CALL_LITERAL.class_family_call_policy_applies
+    assert (
+        not PresentationProjectionKind.COLLECTION_LITERAL.admits_function_local_tokens(
+            has_string_literal=False
+        )
+    )
+    assert PresentationProjectionKind.COLLECTION_LITERAL.admits_function_local_tokens(
+        has_string_literal=True
+    )
+    assert PresentationProjectionKind.MAPPING_LITERAL.has_structured_key_source(
+        has_key_value_pairs=True
+    )
+    assert (
+        PresentationProjectionKind.BRANCH_LITERAL.low_coverage_authority_affinity_required
+    )
+    assert PresentationProjectionKind.BRANCH_LITERAL.is_branch_like
+    assert PresentationProjectionKind.MATCH_LITERAL.is_branch_like
+    assert not (
+        PresentationProjectionKind.MATCH_LITERAL.low_coverage_authority_affinity_required
+    )
+    assert (
+        semantic_descent_module.PresentationTokenKind.STRING_LITERAL.is_string_literal
+    )
+    assert (
+        semantic_descent_module.PresentationTokenKind.QUALIFIED_ATTRIBUTE.is_qualified_attribute
+    )
+
+
 def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> None:
     assert SemanticAuthorityMirrorPolicy.registered_authority_kinds() == frozenset(
         SemanticAuthorityKind

@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
 from typing import ClassVar, Generic, TypeAlias, TypeVar
@@ -282,27 +282,93 @@ class AuthorityProofEdgeKind(StrEnum):
     PROVIDES_QUERY_METHOD = "provides_query_method"
 
 
+class PresentationProjectionPolicy(Flag):
+    """Orthogonal semantic policies carried by projection-kind members."""
+
+    NONE = 0
+    CLASS_FAMILY_CALL = auto()
+    FUNCTION_LOCAL_STRING_EVIDENCE = auto()
+    STRUCTURED_KEY_SOURCE = auto()
+    LOW_COVERAGE_AUTHORITY_AFFINITY = auto()
+    BRANCH_LIKE = auto()
+
+
 class PresentationProjectionKind(StrEnum):
     """Raw presentation shapes that may mirror a semantic authority."""
 
-    CALL_LITERAL = ("call_literal", "call projection")
-    COLLECTION_LITERAL = ("collection_literal", "collection literal")
-    DETECTOR_FINDING = ("detector_finding", "detector finding")
-    MAPPING_LITERAL = ("mapping_literal", "mapping literal")
-    BRANCH_LITERAL = ("branch_literal", "branch literal")
-    MATCH_LITERAL = ("match_literal", "match literal")
+    CALL_LITERAL = (
+        "call_literal",
+        "call projection",
+        PresentationProjectionPolicy.CLASS_FAMILY_CALL,
+    )
+    COLLECTION_LITERAL = (
+        "collection_literal",
+        "collection literal",
+        PresentationProjectionPolicy.FUNCTION_LOCAL_STRING_EVIDENCE,
+    )
+    DETECTOR_FINDING = (
+        "detector_finding",
+        "detector finding",
+        PresentationProjectionPolicy.NONE,
+    )
+    MAPPING_LITERAL = (
+        "mapping_literal",
+        "mapping literal",
+        PresentationProjectionPolicy.STRUCTURED_KEY_SOURCE,
+    )
+    BRANCH_LITERAL = (
+        "branch_literal",
+        "branch literal",
+        PresentationProjectionPolicy.LOW_COVERAGE_AUTHORITY_AFFINITY
+        | PresentationProjectionPolicy.BRANCH_LIKE,
+    )
+    MATCH_LITERAL = (
+        "match_literal",
+        "match literal",
+        PresentationProjectionPolicy.BRANCH_LIKE,
+    )
 
-    def __new__(cls, value: str, surface_label: str) -> "PresentationProjectionKind":
+    def __new__(
+        cls,
+        value: str,
+        surface_label: str,
+        policy: PresentationProjectionPolicy,
+    ) -> "PresentationProjectionKind":
         member = str.__new__(cls, value)
         member._value_ = value
         member._surface_label = surface_label
+        member._policy = policy
         return member
 
     @property
+    def class_family_call_policy_applies(self) -> bool:
+        return PresentationProjectionPolicy.CLASS_FAMILY_CALL in self._policy
+
+    @property
     def is_branch_like(self) -> bool:
-        return self in (
-            type(self).BRANCH_LITERAL,
-            type(self).MATCH_LITERAL,
+        return PresentationProjectionPolicy.BRANCH_LIKE in self._policy
+
+    @property
+    def low_coverage_authority_affinity_required(self) -> bool:
+        return (
+            PresentationProjectionPolicy.LOW_COVERAGE_AUTHORITY_AFFINITY in self._policy
+        )
+
+    def admits_function_local_tokens(self, *, has_string_literal: bool) -> bool:
+        """Apply the member-owned evidence rule for function-local values."""
+
+        return (
+            PresentationProjectionPolicy.FUNCTION_LOCAL_STRING_EVIDENCE
+            not in self._policy
+            or has_string_literal
+        )
+
+    def has_structured_key_source(self, *, has_key_value_pairs: bool) -> bool:
+        """Return whether this member owns usable structured mapping keys."""
+
+        return (
+            PresentationProjectionPolicy.STRUCTURED_KEY_SOURCE in self._policy
+            and has_key_value_pairs
         )
 
     @property
@@ -327,9 +393,29 @@ class PresentationProjectionSiteKind(StrEnum):
 class PresentationTokenKind(StrEnum):
     """Source syntax category for one normalized presentation token."""
 
-    STRING_LITERAL = "string_literal"
-    NAME_REFERENCE = "name_reference"
-    QUALIFIED_ATTRIBUTE = "qualified_attribute"
+    STRING_LITERAL = ("string_literal", True, False)
+    NAME_REFERENCE = ("name_reference", False, False)
+    QUALIFIED_ATTRIBUTE = ("qualified_attribute", False, True)
+
+    def __new__(
+        cls,
+        value: str,
+        is_string_literal: bool,
+        is_qualified_attribute: bool,
+    ) -> "PresentationTokenKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._is_string_literal = is_string_literal
+        member._is_qualified_attribute = is_qualified_attribute
+        return member
+
+    @property
+    def is_string_literal(self) -> bool:
+        return self._is_string_literal
+
+    @property
+    def is_qualified_attribute(self) -> bool:
+        return self._is_qualified_attribute
 
 
 class PresentationTokenRole(StrEnum):
@@ -1211,6 +1297,14 @@ class PresentationProjection(SemanticProjectionReference):
             and self.label == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
         )
 
+    @property
+    def has_structured_key_source(self) -> bool:
+        """Return whether the projection carries authoritative mapping keys."""
+
+        return self.kind.has_structured_key_source(
+            has_key_value_pairs=bool(self.key_value_pairs)
+        )
+
 
 @dataclass(frozen=True)
 class SemanticClassSupplement:
@@ -1770,21 +1864,18 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
                 candidate.matched_facts,
             )
         )
-        return (
-            candidate.projection.kind is PresentationProjectionKind.CALL_LITERAL
-            and (
-                (
-                    context.dataclass_descent.projection_constructs_any_dataclass_authority(
-                        candidate.projection,
-                    )
-                    and not has_matched_class_reference
+        return candidate.projection.kind.class_family_call_policy_applies and (
+            (
+                context.dataclass_descent.projection_constructs_any_dataclass_authority(
+                    candidate.projection,
                 )
-                or (
-                    candidate.match.coverage_ratio < 1.0
-                    and matched_token_roles
-                    == frozenset((PresentationTokenRole.CALL_TARGET,))
-                    and has_matched_class_reference
-                )
+                and not has_matched_class_reference
+            )
+            or (
+                candidate.match.coverage_ratio < 1.0
+                and matched_token_roles
+                == frozenset((PresentationTokenRole.CALL_TARGET,))
+                and has_matched_class_reference
             )
         )
 
@@ -1812,7 +1903,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         ):
             return False
         return not (
-            candidate.projection.kind is PresentationProjectionKind.BRANCH_LITERAL
+            candidate.projection.kind.low_coverage_authority_affinity_required
             and candidate.match.fact_count <= 2
             and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
@@ -4515,9 +4606,8 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         if (
             self.current_function_name is not None
-            and projection_kind is PresentationProjectionKind.COLLECTION_LITERAL
-            and not any(
-                token.kind is PresentationTokenKind.STRING_LITERAL for token in tokens
+            and not projection_kind.admits_function_local_tokens(
+                has_string_literal=any(token.kind.is_string_literal for token in tokens)
             )
         ):
             return False
@@ -4713,8 +4803,7 @@ class ProjectionSemanticAuthority:
         authority: SemanticAuthority,
     ) -> bool:
         return any(
-            token.kind is PresentationTokenKind.QUALIFIED_ATTRIBUTE
-            and token.qualifier == authority.name
+            token.kind.is_qualified_attribute and token.qualifier == authority.name
             for token in projection.tokens
         )
 
@@ -4750,8 +4839,7 @@ class ProjectionSemanticAuthority:
                 {
                     token.value
                     for token in projection.tokens
-                    if token.kind is PresentationTokenKind.STRING_LITERAL
-                    and token.value in matched_tokens
+                    if token.kind.is_string_literal and token.value in matched_tokens
                 }
             )
             >= 2
@@ -4763,8 +4851,7 @@ class ProjectionSemanticAuthority:
         matched_tokens: frozenset[str],
     ) -> bool:
         return any(
-            token.kind is PresentationTokenKind.STRING_LITERAL
-            and token.value in matched_tokens
+            token.kind.is_string_literal and token.value in matched_tokens
             for token in projection.tokens
         )
 
@@ -4774,8 +4861,7 @@ class ProjectionSemanticAuthority:
         matched_tokens: frozenset[str],
     ) -> bool:
         return any(
-            token.kind is PresentationTokenKind.STRING_LITERAL
-            and token.value in matched_tokens
+            token.kind.is_string_literal and token.value in matched_tokens
             for token in projection.tokens
         )
 
@@ -5799,20 +5885,18 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         token: PresentationToken,
     ) -> tuple[SemanticFact, ...]:
         refs = self.fact_token_index.by_token.get(token.value, ())
-        if not refs or token.kind is not PresentationTokenKind.QUALIFIED_ATTRIBUTE:
+        if not refs or not token.kind.is_qualified_attribute:
             return refs
         cache = self.candidate_refs_by_token
         if token not in cache:
-            cache[token] = self._candidate_refs_for_token_uncached(token)
+            cache[token] = self._qualified_candidate_refs_for_token(token, refs)
         return cache[token]
 
-    def _candidate_refs_for_token_uncached(
+    def _qualified_candidate_refs_for_token(
         self,
         token: PresentationToken,
+        refs: tuple[SemanticFact, ...],
     ) -> tuple[SemanticFact, ...]:
-        refs = self.fact_token_index.by_token.get(token.value, ())
-        if not refs or token.kind is not PresentationTokenKind.QUALIFIED_ATTRIBUTE:
-            return refs
         qualifier = token.qualifier
         if qualifier is not None and self.authority_name_index.contains_name(qualifier):
             allowed_authority_ids = frozenset(

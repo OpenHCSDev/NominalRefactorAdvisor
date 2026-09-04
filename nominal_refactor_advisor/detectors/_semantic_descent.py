@@ -32,7 +32,6 @@ from ..semantic_descent import (
     CompactSemanticModuleProjectionFamily,
     DescentCertificate,
     MirrorEdge,
-    PresentationProjectionKind,
     PresentationProjection,
     SemanticAuthority,
     SemanticDescentGraph,
@@ -54,10 +53,7 @@ class AliasOverlapClassKeySourceResolver:
         projection: PresentationProjection,
         matched_token_set: frozenset[str],
     ) -> str | None:
-        if (
-            projection.kind is PresentationProjectionKind.MAPPING_LITERAL
-            and projection.key_value_pairs
-        ):
+        if projection.has_structured_key_source:
             return None
         non_class_aliases = tuple(alias for alias in fact.aliases if alias != fact.name)
         for alias in non_class_aliases:
