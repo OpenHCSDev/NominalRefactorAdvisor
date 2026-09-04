@@ -141,10 +141,39 @@ class CodemodSourceContext(IndexedSourceAuthority):
 class CodemodSourceContextCacheSchema:
     """Nominal schema identity for persisted codemod source context."""
 
-    version: int = 1
+    version: int = 2
 
 
 codemod_source_context_cache_schema = CodemodSourceContextCacheSchema()
+
+
+@dataclass(frozen=True)
+class CodemodSourceContextCacheEntry:
+    """One complete persisted source-context cache entry."""
+
+    identity: AnalysisCacheIdentity
+    schema: CodemodSourceContextCacheSchema
+    context: CodemodSourceContext
+
+    @classmethod
+    def current(
+        cls,
+        identity: AnalysisCacheIdentity,
+        context: CodemodSourceContext,
+    ) -> CodemodSourceContextCacheEntry:
+        return cls(identity, codemod_source_context_cache_schema, context)
+
+    def context_for(
+        self,
+        identity: AnalysisCacheIdentity,
+    ) -> CodemodSourceContext | None:
+        if (
+            self.identity == identity
+            and self.schema == codemod_source_context_cache_schema
+            and isinstance(self.context, CodemodSourceContext)
+        ):
+            return self.context
+        return None
 
 
 @dataclass(frozen=True)
@@ -170,15 +199,14 @@ class CodemodSourceContextCache:
         storage = self.storage()
         if storage is None:
             return CodemodSourceContextCacheLookup(AnalysisCacheStatus.DISABLED)
-        payload = storage.load_payload(self.context_path(storage, identity))
-        if payload is None:
+        entry = storage.load_typed_payload(
+            self.context_path(storage, identity),
+            CodemodSourceContextCacheEntry,
+        )
+        if entry is None:
             return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
-        if payload.get("identity") != identity:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
-        if payload.get("schema") != codemod_source_context_cache_schema:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
-        context = payload.get("context")
-        if not isinstance(context, CodemodSourceContext):
+        context = entry.context_for(identity)
+        if context is None:
             return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
         return CodemodSourceContextCacheLookup(AnalysisCacheStatus.HIT, context)
 
@@ -192,13 +220,11 @@ class CodemodSourceContextCache:
         storage = self.storage()
         if storage is None:
             return
-        payload = {
-            "identity": identity,
-            "schema": codemod_source_context_cache_schema,
-            "context": context,
-        }
         try:
-            storage.store_payload_atomic(self.context_path(storage, identity), payload)
+            storage.store_typed_payload_atomic(
+                self.context_path(storage, identity),
+                CodemodSourceContextCacheEntry.current(identity, context),
+            )
         except OSError:
             return
 

@@ -83,6 +83,11 @@ from nominal_refactor_advisor.cache_checkout import (
     checkout_relative_path,
     rebase_checkout_path,
 )
+from nominal_refactor_advisor.codemod_source_cache import (
+    CodemodSourceContext,
+    CodemodSourceContextCache,
+    CodemodSourceContextCacheEntry,
+)
 from nominal_refactor_advisor.detectors import (
     CrossModuleCandidateDetector,
     DetectorCacheGranularity,
@@ -196,6 +201,47 @@ def test_analysis_cache_status_members_own_resolution_policy(
     expected: str,
 ) -> None:
     assert status.resolve(_CacheResolutionFixture()) == expected
+
+
+def test_codemod_source_context_cache_preserves_its_nominal_entry(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "module.py"
+    module_path.write_text("class Example:\n    pass\n", encoding="utf-8")
+    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    identity = AnalysisCacheIdentity.from_modules(
+        (tmp_path,),
+        modules,
+        DetectorConfig(),
+    )
+    context = CodemodSourceContext.from_modules(modules)
+    cache = CodemodSourceContextCache(tmp_path / "cache")
+
+    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    cache.store(identity, context)
+    lookup = cache.load(identity)
+    cache_path = cache.context_path(cache.storage(), identity)
+    with cache_path.open("rb") as handle:
+        persisted_entry = pickle.load(handle)
+
+    assert lookup.status is AnalysisCacheStatus.HIT
+    assert lookup.context is not None
+    assert lookup.context.sources_by_file_path == context.sources_by_file_path
+    assert lookup.context.class_family_index.classes_by_symbol.keys() == (
+        context.class_family_index.classes_by_symbol.keys()
+    )
+    assert type(persisted_entry) is CodemodSourceContextCacheEntry
+    persisted_context = persisted_entry.context_for(identity)
+    assert persisted_context is not None
+    assert persisted_context.sources_by_file_path == context.sources_by_file_path
+
+    with cache_path.open("wb") as handle:
+        pickle.dump(
+            {"identity": identity, "context": context},
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    assert cache.load(identity).status is AnalysisCacheStatus.MISS
 
 
 def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
@@ -1482,7 +1528,7 @@ def test_analysis_cache_rejects_malformed_finding_evidence(
         (SourceLocation((package_root / "mod.py").as_posix(), 1, "VALUE"),),
     )
     object.__setattr__(finding, "evidence", (finding.evidence,))
-    storage.store_payload_atomic(
+    storage.store_typed_payload_atomic(
         storage.entry_path(identity),
         {"identity": identity, "findings": [finding]},
     )
