@@ -446,10 +446,32 @@ class DetectorConfig:
 class DetectorCacheGranularity(StrEnum):
     """Detector-output cache granularity supported by a detector contract."""
 
-    GLOBAL = "global"
-    PER_MODULE = "per_module"
-    CONTEXTUAL_MODULE = "contextual_module"
-    CONTEXTUAL_GLOBAL = "contextual_global"
+    GLOBAL = "global", True
+    PER_MODULE = "per_module", False
+    CONTEXTUAL_MODULE = "contextual_module", True
+    CONTEXTUAL_GLOBAL = "contextual_global", True
+
+    def __new__(cls, value: str, retains_repository_context: bool) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._retains_repository_context = retains_repository_context
+        return member
+
+    @property
+    def retains_repository_context(self) -> bool:
+        return self._retains_repository_context
+
+    def select_detector_types(
+        self,
+        detector_types: Iterable[type["IssueDetector"]],
+    ) -> tuple[type["IssueDetector"], ...]:
+        """Project declarations that selected this cache contract."""
+
+        return tuple(
+            detector_type
+            for detector_type in detector_types
+            if detector_type.cache_granularity is self
+        )
 
 
 class IssueDetector(ABC, metaclass=AutoRegisterMeta):

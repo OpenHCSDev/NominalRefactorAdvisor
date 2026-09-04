@@ -789,6 +789,14 @@ class CompactPublicNameExposure(StrEnum):
     def blocks_closed_boundary(self) -> bool:
         return self._blocks_closed_boundary
 
+    @property
+    def proves_public_exposure(self) -> bool:
+        return self is type(self).PUBLIC
+
+    @property
+    def introduces_uncertainty(self) -> bool:
+        return self is type(self).UNRESOLVED
+
 
 class CompactModulePublicExportContract(ABC):
     """Representation-independent declaration of one module's export policy."""
@@ -871,8 +879,10 @@ class RepositoryPublicExposureAuthority(ABC):
 
         return self.contains_module(module_name) and all(
             origin.module_name is not None
-            and self.exposure_for(origin.module_name, binding_name)
-            is CompactPublicNameExposure.PRIVATE
+            and not self.exposure_for(
+                origin.module_name,
+                binding_name,
+            ).blocks_closed_boundary
             for origin in self.star_import_origins_for(module_name)
         )
 
@@ -941,9 +951,9 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
                 unresolved = True
                 continue
             exposure = projection.public_export_contract.exposure_for(current_name)
-            if exposure is CompactPublicNameExposure.PUBLIC:
+            if exposure.proves_public_exposure:
                 return exposure
-            if exposure is CompactPublicNameExposure.UNRESOLVED:
+            if exposure.introduces_uncertainty:
                 unresolved = True
             symbol = f"{current_module}.{current_name}"
             pending.extend(self.named_reexports_by_target_symbol.get(symbol, ()))
@@ -1723,6 +1733,18 @@ class SelectionGuardKind(StrEnum):
     EMPTY = "empty"
     AMBIGUOUS = "ambiguous"
     NOT_EXACTLY_ONE = "not_exactly_one"
+
+    @classmethod
+    def proves_exact_selection(
+        cls,
+        guard_kinds: set["SelectionGuardKind | None"],
+    ) -> bool:
+        """Return whether the observed guards prove exactly one selected item."""
+
+        return cls.NOT_EXACTLY_ONE in guard_kinds or {
+            cls.EMPTY,
+            cls.AMBIGUOUS,
+        } <= guard_kinds
 
     @classmethod
     def from_node(
@@ -3838,10 +3860,7 @@ def _compact_predicate_selected_methods(
             for candidate in _trim_leading_docstring(list(statement.body))
             if isinstance(candidate, ast.If)
         }
-        if not (
-            SelectionGuardKind.NOT_EXACTLY_ONE in guard_kinds
-            or ({SelectionGuardKind.EMPTY, SelectionGuardKind.AMBIGUOUS} <= guard_kinds)
-        ):
+        if not SelectionGuardKind.proves_exact_selection(guard_kinds):
             continue
         if not any(
             isinstance(candidate, ast.Subscript)

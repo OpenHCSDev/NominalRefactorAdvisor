@@ -107,7 +107,7 @@ from .codemod_workflow import (
     CodemodWorkflowScan,
 )
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
-from .detectors import DetectorConfig
+from .detectors import DetectorCacheGranularity, DetectorConfig
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,
@@ -3618,10 +3618,10 @@ def _main_without_deadline() -> int:
                 )
         elif focused_loop_cold_policy.enabled:
             detector_types = default_detector_types_for_analysis()
-            detector_partition = DetectorTypePartition.from_detector_types(
-                detector_types
+            detector_partition = DetectorTypePartition(detector_types)
+            local_detector_types = detector_partition.detector_types_for(
+                DetectorCacheGranularity.PER_MODULE
             )
-            local_detector_types = detector_partition.per_module_detector_types
             parse_elapsed = 0.0
             analysis_elapsed = 0.0
             findings = []
@@ -3677,7 +3677,7 @@ def _main_without_deadline() -> int:
             and not preparse_cache_policy.parsed_modules_required
             and scan_analysis_required
             and not codemod_requested
-            and not DetectorTypePartition.from_detector_types(
+            and not DetectorTypePartition(
                 default_detector_types_for_analysis()
             ).ast_retaining_context_detector_types
         ):

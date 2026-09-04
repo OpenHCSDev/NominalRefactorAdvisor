@@ -1603,7 +1603,7 @@ class ResidualClosedAxisBranchingDetector(
 
 
 @dataclass(frozen=True)
-class ExternalEnumDispatchSite:
+class ExternalEnumCaseRecoverySite:
     """One external function recovering cases from an enum declaration."""
 
     function: CompactClosedAxisBranchFunction
@@ -1620,11 +1620,11 @@ class ExternalEnumDispatchSite:
 
 
 @dataclass(frozen=True)
-class RepeatedExternalEnumDispatchCandidate:
-    """One enum whose cases are repeatedly recovered outside its declaration."""
+class ExternalEnumCaseRecoveryCandidate:
+    """One enum whose cases are recovered outside its declaration."""
 
     enum_class: CompactIndexedClass
-    sites: tuple[ExternalEnumDispatchSite, ...]
+    sites: tuple[ExternalEnumCaseRecoverySite, ...]
     case_names: tuple[str, ...]
 
     @property
@@ -1656,16 +1656,18 @@ def _unique_direct_enum_classes(
     }
 
 
-def _repeated_external_enum_dispatch_candidates(
+def _external_enum_case_recovery_candidates(
     context: CompactClassRepositoryContext,
     config: DetectorConfig,
-) -> tuple[RepeatedExternalEnumDispatchCandidate, ...]:
+) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
     enum_classes = _unique_direct_enum_classes(context.class_index)
     keyed_axis_names = {
         spec.key_type_name
         for spec in _compact_keyed_family_axis_specs_from_context(context)
     }
-    sites_by_enum_name: dict[str, list[ExternalEnumDispatchSite]] = defaultdict(list)
+    sites_by_enum_name: dict[str, list[ExternalEnumCaseRecoverySite]] = defaultdict(
+        list
+    )
     for projection in context.projections:
         for function in projection.closed_axis_branch_functions:
             if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
@@ -1691,21 +1693,21 @@ def _repeated_external_enum_dispatch_candidates(
                 if not case_names:
                     continue
                 sites_by_enum_name[enum_class.simple_name].append(
-                    ExternalEnumDispatchSite(
+                    ExternalEnumCaseRecoverySite(
                         function=function,
                         branch_site_count=axis.branch_site_count,
                         case_names=case_names,
                     )
                 )
-    candidates: list[RepeatedExternalEnumDispatchCandidate] = []
+    candidates: list[ExternalEnumCaseRecoveryCandidate] = []
     for enum_name, sites in sites_by_enum_name.items():
         case_names = sorted_tuple(
             {case_name for site in sites for case_name in site.case_names}
         )
-        if len(sites) < 2 or len(case_names) < config.min_string_cases:
+        if len(case_names) < config.min_string_cases:
             continue
         candidates.append(
-            RepeatedExternalEnumDispatchCandidate(
+            ExternalEnumCaseRecoveryCandidate(
                 enum_class=enum_classes[enum_name],
                 sites=tuple(sites),
                 case_names=case_names,
@@ -1717,7 +1719,7 @@ def _repeated_external_enum_dispatch_candidates(
     )
 
 
-def _target_has_external_enum_dispatch(
+def _target_has_external_enum_case_recovery(
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
     config: DetectorConfig,
 ) -> bool:
@@ -1735,20 +1737,21 @@ def _target_has_external_enum_dispatch(
     )
 
 
-class RepeatedExternalEnumDispatchDetector(
-    CompactClassRepositoryCandidateDetector[RepeatedExternalEnumDispatchCandidate],
+class ExternalEnumCaseRecoveryDetector(
+    SemanticMirrorIssueDetector,
+    CompactClassRepositoryCandidateDetector[ExternalEnumCaseRecoveryCandidate],
 ):
-    """Find enum case semantics distributed across multiple consumers."""
+    """Find closed enum case semantics recovered outside their declaration."""
 
     compact_report_context_promotion_predicate = staticmethod(
-        _target_has_external_enum_dispatch
+        _target_has_external_enum_case_recovery
     )
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
-        "Repeated external enum branching should move to nominal owners",
-        "Multiple functions recover cases from the same declared enum. The enum or a keyed strategy family should own those case semantics so consumers query behavior instead of rediscovering member identity.",
+        "External enum case recovery should move to its nominal owner",
+        "A function outside an enum declaration recovers multiple cases from that closed axis. The enum or a keyed strategy family should own those case semantics so consumers query behavior instead of rediscovering member identity.",
         "one nominal owner for closed-axis behavior with consumers deriving its result",
-        "the same declared enum members are inspected by multiple external functions",
+        "multiple declared enum members are inspected outside their nominal owner",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -1765,18 +1768,18 @@ class RepeatedExternalEnumDispatchDetector(
         self,
         context: CompactClassRepositoryContext,
         config: DetectorConfig,
-    ) -> tuple[RepeatedExternalEnumDispatchCandidate, ...]:
-        return _repeated_external_enum_dispatch_candidates(context, config)
+    ) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
+        return _external_enum_case_recovery_candidates(context, config)
 
     def _finding_for_candidate(
         self,
-        candidate: RepeatedExternalEnumDispatchCandidate,
+        candidate: ExternalEnumCaseRecoveryCandidate,
     ) -> RefactorFinding:
         return self.build_finding(
             (
                 f"Enum `{candidate.enum_class.simple_name}` has "
                 f"{candidate.branch_site_count} external branch site(s) across "
-                f"{len(candidate.sites)} functions for cases "
+                f"{len(candidate.sites)} function(s) for cases "
                 f"{', '.join(candidate.case_names)}."
             ),
             candidate.evidence,

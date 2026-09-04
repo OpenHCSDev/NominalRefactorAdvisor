@@ -238,6 +238,7 @@ from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetec
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
+from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
     RefactorEvidenceEconomics,
@@ -20947,6 +20948,23 @@ def test_selection_guard_kind_owns_full_and_compact_guard_syntax(
     assert SelectionGuardKind.from_node(node, "matches") is expected_kind
 
 
+@pytest.mark.parametrize(
+    ("guard_kinds", "expected"),
+    (
+        ((SelectionGuardKind.NOT_EXACTLY_ONE,), True),
+        ((SelectionGuardKind.EMPTY, SelectionGuardKind.AMBIGUOUS), True),
+        ((SelectionGuardKind.EMPTY,), False),
+        ((SelectionGuardKind.AMBIGUOUS,), False),
+        ((), False),
+    ),
+)
+def test_selection_guard_kind_owns_exact_selection_proof(
+    guard_kinds: tuple[SelectionGuardKind, ...],
+    expected: bool,
+) -> None:
+    assert SelectionGuardKind.proves_exact_selection(set(guard_kinds)) is expected
+
+
 def test_selection_guard_kind_has_no_parallel_step_or_compact_authority() -> None:
     removed_step_names = (
         "_SelectionGuardContext",
@@ -25312,11 +25330,11 @@ def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
     assert "ScoringFamily" in finding.summary
     assert "ScoringPolicy" in finding.summary
     assert all(
-        finding.detector_id != "repeated_external_enum_dispatch" for finding in findings
+        finding.detector_id != "external_enum_case_recovery" for finding in findings
     )
 
 
-def test_detects_repeated_external_enum_dispatch(tmp_path: Path) -> None:
+def test_detects_external_enum_case_recovery_across_consumers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/status.py",
@@ -25353,18 +25371,24 @@ def incomplete(status: CacheStatus) -> bool:
     finding = next(
         finding
         for finding in analyze_path(tmp_path)
-        if finding.detector_id == "repeated_external_enum_dispatch"
+        if finding.detector_id == "external_enum_case_recovery"
     )
 
     assert "CacheStatus" in finding.summary
-    assert "2 external branch site(s) across 2 functions" in finding.summary
+    assert "2 external branch site(s) across 2 function(s)" in finding.summary
     assert finding.metrics.plan_literal_cases == (
         "CacheStatus.HIT",
         "CacheStatus.PARTIAL",
     )
+    assert issubclass(
+        systemic_detectors.ExternalEnumCaseRecoveryDetector,
+        base_detectors.SemanticMirrorIssueDetector,
+    )
 
 
-def test_ignores_single_locus_and_nonmember_enum_attributes(tmp_path: Path) -> None:
+def test_detects_single_external_ladder_and_ignores_nonmember_attributes(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -25396,11 +25420,16 @@ def method_reference(value: str) -> bool:
 """,
     )
 
-    findings = analyze_path(tmp_path)
-
-    assert all(
-        finding.detector_id != "repeated_external_enum_dispatch" for finding in findings
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "external_enum_case_recovery"
     )
+
+    assert "Mode" in finding.summary
+    assert "2 external branch site(s) across 1 function(s)" in finding.summary
+    assert finding.metrics.plan_literal_cases == ("Mode.FIRST", "Mode.SECOND")
+    assert all("method_reference" not in item.symbol for item in finding.evidence)
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:

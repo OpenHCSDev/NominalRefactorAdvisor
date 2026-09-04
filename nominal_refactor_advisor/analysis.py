@@ -498,66 +498,22 @@ def release_module_analysis_memory(*, collect_cycles: bool = True) -> int:
 
 @dataclass(frozen=True)
 class DetectorTypePartition:
-    """Split detectors by the cache granularity their contract supports."""
+    """Declaration tuple with cache-granularity projections owned by the enum."""
 
-    per_module_detector_types: tuple[type[IssueDetector], ...]
-    contextual_module_detector_types: tuple[type[IssueDetector], ...]
-    contextual_global_detector_types: tuple[type[IssueDetector], ...]
-    global_detector_types: tuple[type[IssueDetector], ...]
+    detector_types: tuple[type[IssueDetector], ...]
 
-    @classmethod
-    def from_detector_types(
-        cls,
-        detector_types: tuple[type[IssueDetector], ...],
-    ) -> "DetectorTypePartition":
-        per_module_detector_types: list[type[IssueDetector]] = []
-        contextual_module_detector_types: list[type[IssueDetector]] = []
-        contextual_global_detector_types: list[type[IssueDetector]] = []
-        global_detector_types: list[type[IssueDetector]] = []
-        for detector_type in detector_types:
-            if detector_type.cache_granularity is DetectorCacheGranularity.PER_MODULE:
-                per_module_detector_types.append(detector_type)
-            elif (
-                detector_type.cache_granularity
-                is DetectorCacheGranularity.CONTEXTUAL_MODULE
-            ):
-                contextual_module_detector_types.append(detector_type)
-            elif (
-                detector_type.cache_granularity
-                is DetectorCacheGranularity.CONTEXTUAL_GLOBAL
-            ):
-                contextual_global_detector_types.append(detector_type)
-            else:
-                global_detector_types.append(detector_type)
-        return cls(
-            per_module_detector_types=tuple(per_module_detector_types),
-            contextual_module_detector_types=tuple(contextual_module_detector_types),
-            contextual_global_detector_types=tuple(contextual_global_detector_types),
-            global_detector_types=tuple(global_detector_types),
-        )
-
-    @property
-    def has_per_module_detectors(self) -> bool:
-        return bool(self.per_module_detector_types)
-
-    @property
-    def has_contextual_module_detectors(self) -> bool:
-        return bool(self.contextual_module_detector_types)
-
-    @property
-    def has_contextual_global_detectors(self) -> bool:
-        return bool(self.contextual_global_detector_types)
-
-    @property
-    def has_global_detectors(self) -> bool:
-        return bool(self.global_detector_types)
+    def detector_types_for(
+        self,
+        granularity: DetectorCacheGranularity,
+    ) -> tuple[type[IssueDetector], ...]:
+        return granularity.select_detector_types(self.detector_types)
 
     @property
     def context_dependent_detector_types(self) -> tuple[type[IssueDetector], ...]:
-        return (
-            *self.contextual_module_detector_types,
-            *self.contextual_global_detector_types,
-            *self.global_detector_types,
+        return tuple(
+            detector_type
+            for detector_type in self.detector_types
+            if detector_type.cache_granularity.retains_repository_context
         )
 
     @property
@@ -1743,7 +1699,7 @@ def analyze_compact_roots_with_cache(
     config = config or DetectorConfig()
     if detector_types is None:
         detector_types = default_detector_types_for_analysis()
-    partition = DetectorTypePartition.from_detector_types(detector_types)
+    partition = DetectorTypePartition(detector_types)
     if partition.ast_retaining_context_detector_types:
         detector_names = ", ".join(
             detector_type.__name__
@@ -1991,8 +1947,11 @@ def analyze_compact_roots_with_cache(
     local_analysis_seconds = 0.0
     local_cache_hit_count = 0
     build_requests: list[CompactProjectionBuildRequest] = []
+    per_module_detector_types = partition.detector_types_for(
+        DetectorCacheGranularity.PER_MODULE
+    )
     detector_bundle_plan = PerModuleDetectorBundlePlan.from_detector_types(
-        partition.per_module_detector_types
+        per_module_detector_types
     )
     local_identity_by_path: dict[Path, PerModuleAnalysisCacheFamilyIdentity] = {}
     local_cached_findings_by_path: dict[
@@ -2043,7 +2002,7 @@ def analyze_compact_roots_with_cache(
             local_cache_lookup = None
             local_semantic_hash = None
             local_analysis_required = bool(
-                include_local_findings and partition.per_module_detector_types
+                include_local_findings and per_module_detector_types
             )
             if local_analysis_required and aggregate_lookup.status.can_reuse_findings:
                 if source_signature_cache is not None:
@@ -2107,7 +2066,7 @@ def analyze_compact_roots_with_cache(
                 )
 
             local_detector_types = (
-                partition.per_module_detector_types if local_analysis_required else ()
+                per_module_detector_types if local_analysis_required else ()
             )
             if local_cache_lookup is not None:
                 local_detector_types = detector_bundle_plan.missing_detector_types(
@@ -2408,15 +2367,17 @@ class EvidenceLocalPartialDetectorSelection:
         cls,
         detector_types: tuple[type[IssueDetector], ...],
     ) -> "EvidenceLocalPartialDetectorSelection":
-        partition = DetectorTypePartition.from_detector_types(detector_types)
+        partition = DetectorTypePartition(detector_types)
         graph_detector_types = tuple(
             detector_type
-            for detector_type in partition.contextual_global_detector_types
+            for detector_type in partition.detector_types_for(
+                DetectorCacheGranularity.CONTEXTUAL_GLOBAL
+            )
             if issubclass(detector_type, SemanticDescentGraphIssueDetector)
         )
         return cls(
             (
-                *partition.per_module_detector_types,
+                *partition.detector_types_for(DetectorCacheGranularity.PER_MODULE),
                 *graph_detector_types,
             )
         )
@@ -3148,9 +3109,7 @@ class IncrementalAnalysisCacheResolver:
         self._semantic_descent_source = semantic_descent_source
         self._report_scope = report_scope
         self._detector_types = default_detector_types_for_analysis()
-        self._detector_partition = DetectorTypePartition.from_detector_types(
-            self._detector_types
-        )
+        self._detector_partition = DetectorTypePartition(self._detector_types)
         self._global_module_context_signature: str | None = None
         self._semantic_descent_graph: SemanticDescentGraph | None = None
 
@@ -3202,7 +3161,10 @@ class IncrementalAnalysisCacheResolver:
         return AnalysisCacheStatus.combine(cache_statuses)
 
     def _per_module_findings(self) -> IncrementalAnalysisResult:
-        if not self._detector_partition.has_per_module_detectors:
+        detector_types = self._detector_partition.detector_types_for(
+            DetectorCacheGranularity.PER_MODULE
+        )
+        if not detector_types:
             return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
 
         findings: list[RefactorFinding] = []
@@ -3213,7 +3175,7 @@ class IncrementalAnalysisCacheResolver:
             tuple[tuple[RefactorFinding, ...] | None, ...]
         ] = []
         detector_bundle_plan = PerModuleDetectorBundlePlan.from_detector_types(
-            self._detector_partition.per_module_detector_types
+            detector_types
         )
         missing_detector_types_by_module: list[tuple[type[IssueDetector], ...]] = []
         for module in self._local_detector_modules():
@@ -3314,13 +3276,16 @@ class IncrementalAnalysisCacheResolver:
         return findings_by_module
 
     def _contextual_module_findings(self) -> IncrementalAnalysisResult:
-        if not self._detector_partition.has_contextual_module_detectors:
+        detector_types = self._detector_partition.detector_types_for(
+            DetectorCacheGranularity.CONTEXTUAL_MODULE
+        )
+        if not detector_types:
             return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
         module_context = tuple(self._modules)
-        for detector_type in self._detector_partition.contextual_module_detector_types:
+        for detector_type in detector_types:
             scan_deadline_checkpoint("contextual_module_signature")
             if not issubclass(detector_type, ContextualModuleIssueDetector):
                 raise TypeError(
@@ -3375,7 +3340,10 @@ class IncrementalAnalysisCacheResolver:
         ]
 
     def _global_findings(self) -> IncrementalAnalysisResult:
-        if not self._detector_partition.has_global_detectors:
+        detector_types = self._detector_partition.detector_types_for(
+            DetectorCacheGranularity.GLOBAL
+        )
+        if not detector_types:
             return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
 
         findings: list[RefactorFinding] = []
@@ -3383,7 +3351,7 @@ class IncrementalAnalysisCacheResolver:
         missing_detector_types: list[type[IssueDetector]] = []
         missing_identities: list[GlobalDetectorAnalysisCacheIdentity] = []
         context_signature = self._global_detector_context_signature()
-        for detector_type in self._detector_partition.global_detector_types:
+        for detector_type in detector_types:
             identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
                 self._config,
                 detector_type,
@@ -3421,13 +3389,16 @@ class IncrementalAnalysisCacheResolver:
         ).findings_by_detector()
 
     def _contextual_global_findings(self) -> IncrementalAnalysisResult:
-        if not self._detector_partition.has_contextual_global_detectors:
+        detector_types = self._detector_partition.detector_types_for(
+            DetectorCacheGranularity.CONTEXTUAL_GLOBAL
+        )
+        if not detector_types:
             return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
         module_context = tuple(self._modules)
-        for detector_type in self._detector_partition.contextual_global_detector_types:
+        for detector_type in detector_types:
             detector_label = (
                 detector_type.effective_detector_id() or detector_type.__qualname__
             )

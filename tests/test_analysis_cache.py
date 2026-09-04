@@ -84,6 +84,7 @@ from nominal_refactor_advisor.cache_checkout import (
 )
 from nominal_refactor_advisor.detectors import (
     CrossModuleCandidateDetector,
+    DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
     PerModuleIssueDetector,
@@ -3812,9 +3813,7 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
         cache_dir=cache_dir,
         analysis_cache_dir=tmp_path / ".nra-cache" / "analysis",
     )
-    partition = DetectorTypePartition.from_detector_types(
-        default_detector_types_for_analysis()
-    )
+    partition = DetectorTypePartition(default_detector_types_for_analysis())
     families = tuple(
         dict.fromkeys(
             family
@@ -6133,9 +6132,7 @@ def test_compact_analysis_returns_semantic_graph_on_cold_and_aggregate_hits(
 
 
 def test_global_projection_partition_tracks_migrated_detector_boundary() -> None:
-    partition = DetectorTypePartition.from_detector_types(
-        default_detector_types_for_analysis()
-    )
+    partition = DetectorTypePartition(default_detector_types_for_analysis())
 
     assert (
         runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
@@ -6247,8 +6244,31 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert all(
         detector_type.detector_id
         not in {"simple_property_alias_class", "simple_property_alias_method"}
-        for detector_type in partition.per_module_detector_types
+        for detector_type in partition.detector_types_for(
+            DetectorCacheGranularity.PER_MODULE
+        )
     )
+
+
+def test_detector_cache_granularity_owns_partition_projection() -> None:
+    detector_types = default_detector_types_for_analysis()
+    partition = DetectorTypePartition(detector_types)
+
+    assert partition.detector_types == detector_types
+    for granularity in DetectorCacheGranularity:
+        assert partition.detector_types_for(granularity) == tuple(
+            detector_type
+            for detector_type in detector_types
+            if detector_type.cache_granularity is granularity
+        )
+    assert DetectorCacheGranularity.PER_MODULE.retains_repository_context is False
+    assert all(
+        granularity.retains_repository_context
+        for granularity in DetectorCacheGranularity
+        if granularity is not DetectorCacheGranularity.PER_MODULE
+    )
+    assert not hasattr(partition, "per_module_detector_types")
+    assert not hasattr(partition, "global_detector_types")
 
 
 def test_parse_cache_persists_semantic_source_hash(
