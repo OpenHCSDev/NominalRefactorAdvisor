@@ -7,14 +7,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from typing import Callable, Self, TypeAlias
+from typing import Callable, Self, TypeAlias, cast
 
+from .ast_tools import CollectedFamily
 from .class_index import (
     CompactClassMemberDeclaration,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
     CompactProductAuthority,
     CompactPublicNameExposure,
     CompactRepositoryPublicExposureIndex,
@@ -33,6 +35,7 @@ from .product_flow import (
     CompactFunctionFlow,
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
+    CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
     CurrentClassMemberMethodReference,
     LexicalValueReference,
@@ -325,6 +328,27 @@ class CompactProductFlowRepository:
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
+
+    @classmethod
+    def from_projection_groups(
+        cls,
+        projections_by_family: dict[
+            type[CollectedFamily],
+            tuple[object, ...],
+        ],
+    ) -> Self:
+        """Recover the typed product-flow join declared by its fact families."""
+
+        return cls(
+            product_projections=cast(
+                tuple[CompactProductFlowModuleProjection, ...],
+                projections_by_family[CompactProductFlowModuleProjectionFamily],
+            ),
+            class_projections=cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+        )
 
     @classmethod
     def require(cls, context: object | None) -> Self:

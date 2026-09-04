@@ -24,7 +24,7 @@ from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
 from pathlib import Path
-from typing import ClassVar, Generic, TypeAlias, TypeVar
+from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -4069,6 +4069,30 @@ class CompactSemanticDescentRepository:
     semantic_projections: tuple[CompactSemanticModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
     class_index: CompactClassFamilyIndex
+
+    @classmethod
+    def from_projection_groups(
+        cls,
+        projections_by_family: dict[
+            type[CollectedFamily],
+            tuple[object, ...],
+        ],
+        *,
+        class_index: CompactClassFamilyIndex,
+    ) -> "CompactSemanticDescentRepository":
+        """Recover the typed semantic join declared by its fact families."""
+
+        return cls.from_projections(
+            cast(
+                tuple[CompactSemanticModuleProjection, ...],
+                projections_by_family[CompactSemanticModuleProjectionFamily],
+            ),
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            ),
+            class_index=class_index,
+        )
 
     @classmethod
     def from_projections(

@@ -4916,12 +4916,12 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
         systemic_detectors.ImplicitSelfContractMixinDetector,
     )
     calls = 0
-    original_builder = systemic_detectors.compact_class_index_from_projection_groups
+    original_builder = class_index_module.CompactClassFamilyIndex.from_projection_groups
 
-    def counting_builder(projections_by_family, config):
+    def counting_builder(projections_by_family):
         nonlocal calls
         calls += 1
-        return original_builder(projections_by_family, config)
+        return original_builder(projections_by_family)
 
     for detector_type in detector_types:
         monkeypatch.setattr(
@@ -6068,9 +6068,8 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     assert released_edge_refs
     assert all(edge_ref() is None for edge_ref in released_edge_refs)
 
-    class_index = base_detectors.compact_class_index_from_projection_groups(
-        groups,
-        config,
+    class_index = class_index_module.CompactClassFamilyIndex.from_projection_groups(
+        groups
     )
     finding_stream = detector._stream_findings_from_compact_projection_groups_context(
         groups,

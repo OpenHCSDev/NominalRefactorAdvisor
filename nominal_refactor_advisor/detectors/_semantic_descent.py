@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterator, cast
+from typing import Callable, Iterator
 
 from ._base import (
+    CompactClassIndexMultiProjectionDetector,
     CompactFindingStream,
-    CompactMultiModuleProjectionDetectorMixin,
+    CompactProjectionGroups,
     ContextualGlobalCacheContract,
     DetectorConfig,
     SemanticMirrorIssueDetector,
-    compact_class_index_from_projection_groups,
     high_confidence_certified_spec,
 )
-from ..ast_tools import CollectedFamily, ParsedModule
+from ..ast_tools import ParsedModule
 from ..class_index import (
     CompactClassFamilyIndex,
-    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
 from ..models import (
@@ -29,7 +28,6 @@ from ..models import (
 from ..patterns import PatternId
 from ..semantic_descent import (
     CompactSemanticDescentRepository,
-    CompactSemanticModuleProjection,
     CompactSemanticModuleProjectionFamily,
     DescentCertificate,
     MirrorEdge,
@@ -86,7 +84,7 @@ class SemanticMirrorClassKeySourceResolver(AliasOverlapClassKeySourceResolver):
 
 
 class SemanticMirrorWithoutDescentDetector(
-    CompactMultiModuleProjectionDetectorMixin,
+    CompactClassIndexMultiProjectionDetector,
     ContextualGlobalCacheContract,
     SemanticMirrorIssueDetector,
 ):
@@ -96,9 +94,6 @@ class SemanticMirrorWithoutDescentDetector(
     module_projection_families = (
         CompactSemanticModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -130,94 +125,45 @@ class SemanticMirrorWithoutDescentDetector(
         del cls, config
         return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
 
-    def _findings_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        semantic_projections = cast(
-            tuple[CompactSemanticModuleProjection, ...],
-            projections_by_family[CompactSemanticModuleProjectionFamily],
-        )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-        return self._findings_from_compact_resolver(
-            semantic_projections,
-            class_projections,
-        )
-
     def _findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        if not isinstance(context, CompactClassFamilyIndex):
-            raise TypeError("shared compact class index is unavailable")
-        semantic_projections = cast(
-            tuple[CompactSemanticModuleProjection, ...],
-            projections_by_family[CompactSemanticModuleProjectionFamily],
-        )
-        class_projections = cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-        return self._findings_from_compact_resolver(
-            semantic_projections,
-            class_projections,
-            class_index=context,
+        del config
+        return list(
+            self._finding_stream_from_repository(
+                self._repository(projections_by_family, context)
+            )
         )
 
     def _stream_findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> CompactFindingStream:
         del config
-        if not isinstance(context, CompactClassFamilyIndex):
-            raise TypeError("shared compact class index is unavailable")
-        return self._finding_stream_from_compact_resolver(
-            cast(
-                tuple[CompactSemanticModuleProjection, ...],
-                projections_by_family[CompactSemanticModuleProjectionFamily],
-            ),
-            cast(
-                tuple[CompactModuleClassProjection, ...],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
-            class_index=context,
+        return self._finding_stream_from_repository(
+            self._repository(projections_by_family, context)
         )
 
-    def _findings_from_compact_resolver(
-        self,
-        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-        class_projections: tuple[CompactModuleClassProjection, ...],
-        *,
-        class_index: CompactClassFamilyIndex | None = None,
-    ) -> list[RefactorFinding]:
-        return list(
-            self._finding_stream_from_compact_resolver(
-                semantic_projections,
-                class_projections,
-                class_index=class_index,
-            )
+    @staticmethod
+    def _repository(
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
+    ) -> CompactSemanticDescentRepository:
+        return CompactSemanticDescentRepository.from_projection_groups(
+            projections_by_family,
+            class_index=CompactClassFamilyIndex.require(context),
         )
 
-    def _finding_stream_from_compact_resolver(
+    def _finding_stream_from_repository(
         self,
-        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-        class_projections: tuple[CompactModuleClassProjection, ...],
-        *,
-        class_index: CompactClassFamilyIndex | None = None,
+        repository: CompactSemanticDescentRepository,
     ) -> CompactFindingStream:
-        compact_resolution = CompactSemanticDescentRepository.from_projections(
-            semantic_projections,
-            class_projections,
-            class_index=class_index,
-        ).resolve()
+        compact_resolution = repository.resolve()
         graph_space = compact_resolution.graph_space
         edge_queue: list[MirrorEdge | None] = [
             edge

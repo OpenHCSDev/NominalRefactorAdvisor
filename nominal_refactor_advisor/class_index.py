@@ -21,7 +21,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import Callable, ClassVar, Iterable, NamedTuple, Self, TypeAlias
+from typing import Callable, ClassVar, Iterable, NamedTuple, Self, TypeAlias, cast
 
 from .annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
@@ -2052,6 +2052,29 @@ class CompactClassFamilyIndex:
         return CompactClassFamilyIndexBuilder(
             CompactModuleClassProjectionFamily.collect_modules(modules)
         ).build()
+
+    @classmethod
+    def from_projection_groups(
+        cls,
+        projections_by_family: dict[
+            type[CollectedFamily],
+            tuple[object, ...],
+        ],
+    ) -> Self:
+        """Build the class anchor declared by a compact multi-family join."""
+
+        return CompactClassFamilyIndexBuilder(
+            cast(
+                tuple[CompactModuleClassProjection, ...],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            )
+        ).build()
+
+    @classmethod
+    def require(cls, context: object | None) -> Self:
+        if not isinstance(context, cls):
+            raise TypeError("shared compact class index is unavailable")
+        return context
 
     def class_for(self, symbol: str) -> CompactIndexedClass | None:
         return self.classes_by_symbol.get(symbol)

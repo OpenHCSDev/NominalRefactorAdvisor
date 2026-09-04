@@ -851,8 +851,20 @@ class ContextualGlobalCacheContract(ABC):
 
 
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
+CompactProjectionGroups: TypeAlias = dict[
+    type[CollectedFamily],
+    tuple[object, ...],
+]
+CompactProjectionContextBuilder: TypeAlias = Callable[
+    [tuple[object, ...], DetectorConfig],
+    object,
+]
+CompactProjectionGroupContextBuilder: TypeAlias = Callable[
+    [CompactProjectionGroups],
+    object,
+]
 CompactReportContextPromotionPredicate: TypeAlias = Callable[
-    [dict[type[CollectedFamily], tuple[object, ...]], DetectorConfig],
+    [CompactProjectionGroups, DetectorConfig],
     bool,
 ]
 CompactDerivedContextT = TypeVar("CompactDerivedContextT")
@@ -905,26 +917,13 @@ class CompactClassRepositoryContext:
         self._derived.clear()
 
 
-def compact_class_index_from_projection_groups(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-    config: DetectorConfig,
-) -> CompactClassFamilyIndex:
-    """Build the shared class anchor for compact multi-family joins."""
-
-    del config
-    return build_compact_class_family_index(
-        cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        )
-    )
-
-
 class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
     module_projection_family: ClassVar[type[CollectedFamily]]
-    compact_shared_context_builder: ClassVar[Callable[..., object] | None] = None
+    compact_shared_context_builder: ClassVar[
+        CompactProjectionContextBuilder | None
+    ] = None
     compact_report_class_header_core_safe: ClassVar[bool] = False
     compact_report_context_promotion_predicate: ClassVar[
         CompactReportContextPromotionPredicate | None
@@ -940,7 +939,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     @classmethod
     def compact_report_context_can_promote(
         cls,
-        target_projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        target_projections_by_family: CompactProjectionGroups,
         config: DetectorConfig,
     ) -> bool:
         """Conservatively admit context unless an exact witness rejects it."""
@@ -974,7 +973,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     def compact_module_projection_groups(
         cls,
         modules: Sequence[ParsedModule],
-    ) -> dict[type[CollectedFamily], tuple[object, ...]]:
+    ) -> CompactProjectionGroups:
         return {
             family: tuple(
                 projection
@@ -1051,11 +1050,7 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
     compact_shared_group_context_builder: ClassVar[
-        Callable[
-            [dict[type[CollectedFamily], tuple[object, ...]], DetectorConfig],
-            object,
-        ]
-        | None
+        CompactProjectionGroupContextBuilder | None
     ] = None
 
     @classmethod
@@ -1085,17 +1080,29 @@ class CompactMultiModuleProjectionDetectorMixin(
         del projections, config
         raise TypeError(f"{type(self).__name__} requires grouped compact projections")
 
-    @abstractmethod
+    @classmethod
+    def compact_projection_group_context(
+        cls,
+        projections_by_family: CompactProjectionGroups,
+    ) -> object | None:
+        builder = cls.compact_shared_group_context_builder
+        return None if builder is None else builder(projections_by_family)
+
     def _findings_from_compact_projection_groups(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        raise NotImplementedError
+        return self._findings_from_compact_projection_groups_context(
+            projections_by_family,
+            type(self).compact_projection_group_context(projections_by_family),
+            config,
+        )
 
+    @abstractmethod
     def _findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1107,12 +1114,23 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     def _stream_findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> "CompactFindingStream | None":
         del projections_by_family, context, config
         return None
+
+
+class CompactClassIndexMultiProjectionDetector(
+    CompactMultiModuleProjectionDetectorMixin,
+    ABC,
+):
+    """Multi-family detector whose join is anchored by one compact class graph."""
+
+    compact_shared_group_context_builder = staticmethod(
+        CompactClassFamilyIndex.from_projection_groups
+    )
 
 
 @dataclass(frozen=True)
@@ -1879,27 +1897,16 @@ class CompactMultiProjectionCandidateDetector(
         modules: list[ParsedModule],
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
-        return self._candidates_from_compact_projection_groups(
-            type(self).compact_module_projection_groups(modules),
-            config,
-        )
-
-    def _findings_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            self._candidates_from_compact_projection_groups(
-                projections_by_family,
-                config,
-            ),
+        projections_by_family = type(self).compact_module_projection_groups(modules)
+        return self._candidates_from_compact_projection_groups_context(
+            projections_by_family,
+            type(self).compact_projection_group_context(projections_by_family),
             config,
         )
 
     def _findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1913,24 +1920,13 @@ class CompactMultiProjectionCandidateDetector(
         )
 
     @abstractmethod
-    def _candidates_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> Sequence[CandidateItemT]:
-        raise NotImplementedError
-
     def _candidates_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
-        del context
-        return self._candidates_from_compact_projection_groups(
-            projections_by_family,
-            config,
-        )
+        raise NotImplementedError
 
 
 class CompactContextCandidateDetector(

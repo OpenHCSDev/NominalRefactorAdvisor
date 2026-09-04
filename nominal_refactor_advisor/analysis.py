@@ -60,6 +60,7 @@ from .cache_paths import (
 )
 from .cache_checkout import absolute_checkout_path
 from .class_index import (
+    CompactClassFamilyIndex,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -69,6 +70,8 @@ from .detectors import (
     CompactFindingStream,
     CompactMultiModuleProjectionDetectorMixin,
     CompactModuleProjectionDetectorMixin,
+    CompactProjectionContextBuilder,
+    CompactProjectionGroupContextBuilder,
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
     DetectorCacheGranularity,
@@ -76,7 +79,6 @@ from .detectors import (
     IssueDetector,
     SourceLocalIssueDetectorMixin,
     SemanticDescentGraphIssueDetector,
-    compact_class_index_from_projection_groups,
     default_detectors,
 )
 from .deadline import scan_deadline_checkpoint
@@ -744,6 +746,21 @@ class CompactGlobalProjectionAccumulator:
         return retains_python_ast(value, seen_ids)
 
 
+@dataclass(frozen=True)
+class CompactProjectionContextCacheKey:
+    """Identity of one shared single-family detector context."""
+
+    family: type[CollectedFamily]
+    context_builder: CompactProjectionContextBuilder
+
+
+@dataclass(frozen=True)
+class CompactProjectionGroupContextCacheKey:
+    """Identity of one shared multi-family detector context."""
+
+    context_builder: CompactProjectionGroupContextBuilder
+
+
 def _compact_findings_by_detector(
     detector_types: tuple[type[IssueDetector], ...],
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
@@ -794,11 +811,12 @@ def _compact_findings_by_detector(
             ).compact_shared_group_context_builder
             group_context: object | None = None
             if group_context_builder is not None:
-                group_context_key = ("compact-group", group_context_builder)
+                group_context_key = CompactProjectionGroupContextCacheKey(
+                    group_context_builder
+                )
                 if group_context_key not in active_shared_contexts:
                     active_shared_contexts[group_context_key] = group_context_builder(
                         grouped_projections,
-                        config,
                     )
                 group_context = active_shared_contexts[group_context_key]
             if finding_consumer is not None and not retain_findings:
@@ -825,7 +843,10 @@ def _compact_findings_by_detector(
         projections = projections_by_family.get(family, ())
         context: object | None = None
         if context_builder is not None:
-            context_key = (family, context_builder)
+            context_key = CompactProjectionContextCacheKey(
+                family,
+                context_builder,
+            )
             if context_key not in active_shared_contexts:
                 active_shared_contexts[context_key] = context_builder(
                     projections,
@@ -834,7 +855,9 @@ def _compact_findings_by_detector(
             context = active_shared_contexts[context_key]
             if isinstance(context, CompactClassRepositoryContext):
                 active_shared_contexts.setdefault(
-                    ("compact-group", compact_class_index_from_projection_groups),
+                    CompactProjectionGroupContextCacheKey(
+                        CompactClassFamilyIndex.from_projection_groups
+                    ),
                     context.class_index,
                 )
         detector_findings = detector._findings_from_compact_context(

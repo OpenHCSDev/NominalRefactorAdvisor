@@ -3149,12 +3149,13 @@ class EnumKeyedDerivedMapFacadeDetector(
         CompactModuleClassProjectionFamily,
     )
 
-    def _candidates_from_compact_projection_groups(
+    def _candidates_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
         config: DetectorConfig,
     ) -> Sequence[EnumKeyedDerivedMapFacadeComponent]:
-        del config
+        del context, config
         return _enum_keyed_derived_map_facade_components(projections_by_family)
 
     def _finding_for_candidate(

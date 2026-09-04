@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import cast
 
-from ..ast_tools import CollectedFamily
 from ..carrier_collapse import ClosedCarrierCollapseComponent
 from ..carrier_expansion import DeclaredCarrierExpansionBuilder
-from ..class_index import (
-    CompactModuleClassProjection,
-    CompactModuleClassProjectionFamily,
-)
+from ..class_index import CompactModuleClassProjectionFamily
 from ..codemod import (
     CarrierCollapseFindingRecipeSynthesizer,
     CarrierCollapseOperationABC,
@@ -22,34 +17,15 @@ from ..codemod import (
 from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
 from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
 from ..patterns import PatternId
-from ..product_flow import (
-    CompactProductFlowModuleProjection,
-    CompactProductFlowModuleProjectionFamily,
-)
+from ..product_flow import CompactProductFlowModuleProjectionFamily
 from ..product_flow_authority import CompactProductFlowRepository
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CompactMultiProjectionCandidateDetector,
+    CompactProjectionGroups,
     DetectorConfig,
     high_confidence_certified_spec,
 )
-
-
-def _compact_product_flow_repository(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-    config: DetectorConfig,
-) -> CompactProductFlowRepository:
-    del config
-    return CompactProductFlowRepository(
-        product_projections=cast(
-            tuple[CompactProductFlowModuleProjection, ...],
-            projections_by_family[CompactProductFlowModuleProjectionFamily],
-        ),
-        class_projections=cast(
-            tuple[CompactModuleClassProjection, ...],
-            projections_by_family[CompactModuleClassProjectionFamily],
-        ),
-    )
 
 
 class CarrierCollapseCandidateDetector(
@@ -64,21 +40,12 @@ class CarrierCollapseCandidateDetector(
         CompactModuleClassProjectionFamily,
     )
     compact_shared_group_context_builder = staticmethod(
-        _compact_product_flow_repository
+        CompactProductFlowRepository.from_projection_groups
     )
-
-    def _candidates_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
-        return self._proven_components(
-            _compact_product_flow_repository(projections_by_family, config)
-        )
 
     def _candidates_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:

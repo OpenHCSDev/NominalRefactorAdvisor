@@ -24,6 +24,7 @@ from ..ast_tools import (
     SourceModule,
 )
 from ..class_index import (
+    CompactClassFamilyIndex,
     CompactClosedAxisBranchFunction,
     CompactIndexedClass,
     CompactNamedProjectionSurface,
@@ -3482,14 +3483,8 @@ class ManualStructuralRecordMechanicsDetector(
         )
 
 
-def _shared_compact_class_index(context: object | None) -> CompactClassFamilyIndex:
-    if not isinstance(context, CompactClassFamilyIndex):
-        raise TypeError("shared compact class index is unavailable")
-    return context
-
-
 class RepeatedConcreteTypeCaseAnalysisDetector(
-    CompactMultiModuleProjectionDetectorMixin,
+    CompactClassIndexMultiProjectionDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[
         RepeatedConcreteTypeCaseAnalysisCandidate
     ],
@@ -3497,9 +3492,6 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -3519,27 +3511,9 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         ),
     )
 
-    def _findings_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_repeated_concrete_type_case_candidates(
-            cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                tuple[CompactModuleClassProjection, ...],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
-            config,
-        )
-        return self._findings_for_candidates(candidates, config)
-
     def _findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -3553,7 +3527,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
-            class_index=_shared_compact_class_index(context),
+            class_index=CompactClassFamilyIndex.require(context),
         )
         return self._findings_for_candidates(candidates, config)
 
@@ -3600,15 +3574,12 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
 
 
 class ImplicitSelfContractMixinDetector(
-    CompactMultiModuleProjectionDetectorMixin,
+    CompactClassIndexMultiProjectionDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
-    )
-    compact_shared_group_context_builder = staticmethod(
-        compact_class_index_from_projection_groups
     )
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
@@ -3628,27 +3599,9 @@ class ImplicitSelfContractMixinDetector(
         ),
     )
 
-    def _findings_from_compact_projection_groups(
-        self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_implicit_self_contract_mixin_candidates(
-            cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                tuple[CompactModuleClassProjection, ...],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
-            config,
-        )
-        return self._findings_for_candidates(candidates, config)
-
     def _findings_from_compact_projection_groups_context(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -3662,7 +3615,7 @@ class ImplicitSelfContractMixinDetector(
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
-            class_index=_shared_compact_class_index(context),
+            class_index=CompactClassFamilyIndex.require(context),
         )
         return self._findings_for_candidates(candidates, config)
 
