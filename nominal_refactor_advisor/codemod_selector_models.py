@@ -8,12 +8,20 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import (
+    ClassVar,
+    Self,
+)
 
+from .codemod_paths import SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
+    EmptyDefaultStringPayloadValueCodec,
+    FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
+    PayloadRecordValueCodec,
     PayloadValueCodec,
     codemod_payload_field,
 )
@@ -26,7 +34,170 @@ from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
     SourceIndex,
+    SourceTargetIdentity,
 )
+
+
+@dataclass(frozen=True)
+class SourceRewriteTarget(
+    SourceTargetIdentity[str | None],
+    CodemodPayloadRecord,
+):
+    """Source-index target selector for a planned rewrite."""
+
+    target_id: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+    qualname: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        field_name="target_qualname",
+        default=None,
+    )
+    file_path: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+
+    @classmethod
+    def from_semantic_target(cls, target: AstTargetDigest) -> Self:
+        """Address a declaration by stable source path and nominal identity."""
+
+        return cls(file_path=target.file_path, qualname=target.qualname)
+
+    def optional_file_path(self, source_index: SourceIndex) -> str | None:
+        if self.file_path is None:
+            return None
+        return SourcePathResolutionAuthority.from_source_index(
+            self.file_path,
+            source_index,
+        ).required_path()
+
+    def required_file_path(self, source_index: SourceIndex) -> str:
+        file_path = self.optional_file_path(source_index)
+        if file_path is None:
+            raise ValueError("Source rewrite target requires file_path")
+        return file_path
+
+    def optional_target_id(
+        self,
+        source_index: SourceIndex,
+        *,
+        eligible_target_ids: Iterable[str] | None = None,
+    ) -> str | None:
+        eligible_ids = (
+            set(eligible_target_ids) if eligible_target_ids is not None else None
+        )
+        if self.target_id is not None:
+            if self.target_id in source_index.target_by_id and (
+                eligible_ids is None or self.target_id in eligible_ids
+            ):
+                return self.target_id
+            return None
+        file_path = self.optional_file_path(source_index)
+        if self.qualname is None:
+            return self._optional_module_target_id(
+                source_index,
+                eligible_ids,
+                file_path,
+            )
+        matching_target_ids = [
+            target.target_id
+            for target in self.candidate_targets(source_index, file_path)
+            if eligible_ids is None or target.target_id in eligible_ids
+        ]
+        if len(matching_target_ids) != 1:
+            return None
+        return matching_target_ids[0]
+
+    def _optional_module_target_id(
+        self,
+        source_index: SourceIndex,
+        eligible_target_ids: set[str] | None,
+        file_path: str | None,
+    ) -> str | None:
+        if file_path is None:
+            return None
+        matching_target_ids = [
+            target.target_id
+            for target in source_index.targets_by_file[file_path]
+            if target.is_module
+            and (eligible_target_ids is None or target.target_id in eligible_target_ids)
+        ]
+        if len(matching_target_ids) != 1:
+            return None
+        return matching_target_ids[0]
+
+    def candidate_targets(
+        self,
+        source_index: SourceIndex,
+        file_path: str | None,
+    ) -> tuple[AstTargetDigest, ...]:
+        if self.qualname is None:
+            return ()
+        if file_path is not None:
+            if file_path not in source_index.targets_by_file:
+                return ()
+            return tuple(
+                target
+                for target in source_index.targets_by_file[file_path]
+                if target.qualname == self.qualname
+            )
+        return source_index.targets_by_qualname.tuple_for_key(self.qualname)
+
+    def required_target_id(
+        self,
+        source_index: SourceIndex,
+        *,
+        eligible_target_ids: Iterable[str] | None = None,
+    ) -> str:
+        target_id = self.optional_target_id(
+            source_index,
+            eligible_target_ids=eligible_target_ids,
+        )
+        if target_id is not None:
+            return target_id
+        raise ValueError(
+            "Source rewrite target did not resolve to exactly one eligible "
+            "source-index target"
+        )
+
+
+@dataclass(frozen=True)
+class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
+    """Typed source target retained by a failed operation preflight."""
+
+    target: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteTargetReference:
+    """Shared owner for DSL records that reference source-index targets."""
+
+    target: SourceRewriteTarget = codemod_payload_field(
+        FlattenedPayloadRecordValueCodec(SourceRewriteTarget),
+        default_factory=SourceRewriteTarget,
+    )
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (self.target,)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewritePlanItem(SourceRewriteTargetReference):
+    """Common target and rationale state for source rewrite plan items."""
+
+    rationale: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+
+    def rationale_text(self, default: str) -> str:
+        if self.rationale:
+            return self.rationale
+        return default
 
 
 @dataclass(frozen=True)

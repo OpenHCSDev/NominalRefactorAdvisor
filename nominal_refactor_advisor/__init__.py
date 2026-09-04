@@ -39,9 +39,7 @@ from .codemod import (
     ReplaceFieldsWithCarrierOperation,
     ReplaceFunctionBodyOperation,
     ReplaceTargetOperation,
-    SourceRewritePlanItem,
     SourceRewriteSimulationAuthority,
-    SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
     format_codemod_unified_diff,
@@ -182,6 +180,10 @@ from .codemod_source_edits import (
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
     ResolvedSourceRewrite,
+)
+from .codemod_selector_models import (
+    SourceRewritePlanItem,
+    SourceRewriteTarget,
 )
 
 

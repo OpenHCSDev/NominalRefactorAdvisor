@@ -420,6 +420,10 @@ def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> N
         codemod.SelectionCountPayloadValueCodec,
         codemod.RegexPatternSet,
         codemod.CallSiteDigest,
+        codemod.SourceRewriteTarget,
+        codemod.SourceRewriteTargetPreflightDetail,
+        codemod.SourceRewriteTargetReference,
+        codemod.SourceRewritePlanItem,
     )
 
     assert all(
@@ -429,6 +433,10 @@ def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> N
     )
     assert not hasattr(codemod.SelectionCountExpectation, "from_mapping")
     assert not hasattr(codemod.CallSiteDigest, "to_source_location")
+    assert (
+        codemod.CodemodSourceIndexReport.__module__
+        == "nominal_refactor_advisor.source_index"
+    )
 
 
 def test_codemod_authority_claim_boundary_is_owned_outside_execution() -> None:

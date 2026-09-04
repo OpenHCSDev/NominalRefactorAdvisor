@@ -17,17 +17,16 @@ from .ast_tools import (
     PythonModulePathIdentity,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .models import (
-    RefactorFinding,
-    SourceLocation,
-    stable_source_location_id,
-)
 from .json_reports import (
     DataclassJsonReport,
     json_report_field,
     json_report_property,
 )
-
+from .models import (
+    RefactorFinding,
+    SourceLocation,
+    stable_source_location_id,
+)
 
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
@@ -568,6 +567,46 @@ class SourceIndex(DataclassJsonReport):
         return tuple(
             keys_by_target_id[target_id] for target_id in sorted(keys_by_target_id)
         )
+
+
+@dataclass(frozen=True)
+class CodemodSourceIndexReport(DataclassJsonReport):
+    """JSON-ready target discovery report for codemod DSL authors."""
+
+    source_index: SourceIndex = json_report_field(included=False)
+
+    @json_report_property()
+    def target_count(self) -> int:
+        return len(self.source_index.ast_targets)
+
+    @json_report_property()
+    def file_count(self) -> int:
+        return len(self.source_index.files)
+
+    @json_report_property()
+    def evidence_count(self) -> int:
+        return len(self.source_index.evidence)
+
+    @json_report_property()
+    def files(self) -> tuple[SourceFileDigest, ...]:
+        return self.source_index.files
+
+    @json_report_property(field_name="targets")
+    def ast_targets(self) -> tuple[AstTargetDigest, ...]:
+        return self.source_index.ast_targets
+
+    @json_report_property()
+    def evidence(self) -> tuple[EvidenceDigest, ...]:
+        return self.source_index.evidence
+
+    @json_report_property()
+    def target_ids_by_finding_id(self) -> TupleIndex[str, str]:
+        return self.source_index.target_ids_by_finding_id
+
+    @json_report_property()
+    def finding_ids_by_target_id(self) -> TupleIndex[str, str]:
+        return self.source_index.finding_ids_by_target_id
+
 
 @dataclass(frozen=True)
 class AstTargetNodeIndex:

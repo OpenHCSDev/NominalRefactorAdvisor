@@ -12,8 +12,8 @@ from ..codemod import (
     CarrierCollapseOperationABC,
     CollapseClosedParameterConveyorOperation,
     CollapseDeclaredCarrierExpansionOperation,
-    SourceRewriteTarget,
 )
+from ..codemod_selector_models import SourceRewriteTarget
 from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
 from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
 from ..patterns import PatternId

@@ -296,7 +296,6 @@ from .codemod_payload import (
     CodemodPayloadRecord,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
-    FlattenedPayloadRecordValueCodec,
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
@@ -521,11 +520,10 @@ from .source_index import (
     AstTargetDigest,
     AstTargetNodeIndex,
     AstTargetNodeKind,
-    EvidenceDigest,
     SourceFileDigest,
     SourceIndex,
-    TupleIndex,
     build_source_index_artifacts,
+    CodemodSourceIndexReport as CodemodSourceIndexReport,
 )
 from .source_index import (
     AstTargetGeometryKey as AstTargetGeometryKey,
@@ -566,6 +564,10 @@ from .codemod_selector_models import (
     RegexPatternSet as RegexPatternSet,
     SelectionCountExpectation as SelectionCountExpectation,
     SelectionCountPayloadValueCodec as SelectionCountPayloadValueCodec,
+    SourceRewritePlanItem as SourceRewritePlanItem,
+    SourceRewriteTarget as SourceRewriteTarget,
+    SourceRewriteTargetPreflightDetail as SourceRewriteTargetPreflightDetail,
+    SourceRewriteTargetReference as SourceRewriteTargetReference,
 )
 from .codemod_authority_claims import (
     AstTargetAuthorityClaim as AstTargetAuthorityClaim,
@@ -712,153 +714,6 @@ def _parsed_modules_from_source_mapping(
         module_path_authority.source_module(Path(file_path), source).parse()
         for file_path, source in sorted(source_by_path.items())
     )
-
-
-@dataclass(frozen=True)
-class SourceRewriteTarget(
-    SourceTargetIdentity[str | None],
-    CodemodPayloadRecord,
-):
-    """Source-index target selector for a planned rewrite."""
-
-    target_id: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        default=None,
-    )
-    qualname: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        field_name="target_qualname",
-        default=None,
-    )
-    file_path: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        default=None,
-    )
-
-    @classmethod
-    def from_semantic_target(cls, target: AstTargetDigest) -> Self:
-        """Address a declaration by stable source path and nominal identity."""
-
-        return cls(file_path=target.file_path, qualname=target.qualname)
-
-    def optional_file_path(self, source_index: SourceIndex) -> str | None:
-        if self.file_path is None:
-            return None
-        return SourcePathResolutionAuthority.from_source_index(
-            self.file_path,
-            source_index,
-        ).required_path()
-
-    def required_file_path(self, source_index: SourceIndex) -> str:
-        file_path = self.optional_file_path(source_index)
-        if file_path is None:
-            raise ValueError("Source rewrite target requires file_path")
-        return file_path
-
-    def optional_target_id(
-        self,
-        source_index: SourceIndex,
-        *,
-        eligible_target_ids: Iterable[str] | None = None,
-    ) -> str | None:
-        eligible_ids = (
-            set(eligible_target_ids) if eligible_target_ids is not None else None
-        )
-        if self.target_id is not None:
-            if self.target_id in source_index.target_by_id and (
-                eligible_ids is None or self.target_id in eligible_ids
-            ):
-                return self.target_id
-            return None
-        file_path = self.optional_file_path(source_index)
-        if self.qualname is None:
-            return self._optional_module_target_id(
-                source_index,
-                eligible_ids,
-                file_path,
-            )
-        matching_target_ids = [
-            target.target_id
-            for target in self.candidate_targets(source_index, file_path)
-            if eligible_ids is None or target.target_id in eligible_ids
-        ]
-        if len(matching_target_ids) != 1:
-            return None
-        return matching_target_ids[0]
-
-    def _optional_module_target_id(
-        self,
-        source_index: SourceIndex,
-        eligible_target_ids: set[str] | None,
-        file_path: str | None,
-    ) -> str | None:
-        if file_path is None:
-            return None
-        matching_target_ids = [
-            target.target_id
-            for target in source_index.targets_by_file[file_path]
-            if target.is_module
-            and (eligible_target_ids is None or target.target_id in eligible_target_ids)
-        ]
-        if len(matching_target_ids) != 1:
-            return None
-        return matching_target_ids[0]
-
-    def candidate_targets(
-        self,
-        source_index: SourceIndex,
-        file_path: str | None,
-    ) -> tuple[AstTargetDigest, ...]:
-        if self.qualname is None:
-            return ()
-        if file_path is not None:
-            if file_path not in source_index.targets_by_file:
-                return ()
-            return tuple(
-                target
-                for target in source_index.targets_by_file[file_path]
-                if target.qualname == self.qualname
-            )
-        return source_index.targets_by_qualname.tuple_for_key(self.qualname)
-
-    def required_target_id(
-        self,
-        source_index: SourceIndex,
-        *,
-        eligible_target_ids: Iterable[str] | None = None,
-    ) -> str:
-        target_id = self.optional_target_id(
-            source_index,
-            eligible_target_ids=eligible_target_ids,
-        )
-        if target_id is not None:
-            return target_id
-        raise ValueError(
-            "Source rewrite target did not resolve to exactly one eligible "
-            "source-index target"
-        )
-
-
-@dataclass(frozen=True)
-class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
-    """Typed source target retained by a failed operation preflight."""
-
-    target: SourceRewriteTarget = codemod_payload_field(
-        PayloadRecordValueCodec(SourceRewriteTarget)
-    )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceRewriteTargetReference:
-    """Shared owner for DSL records that reference source-index targets."""
-
-    target: SourceRewriteTarget = codemod_payload_field(
-        FlattenedPayloadRecordValueCodec(SourceRewriteTarget),
-        default_factory=SourceRewriteTarget,
-    )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (self.target,)
 
 
 @dataclass(frozen=True)
@@ -1564,45 +1419,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
 
 @dataclass(frozen=True)
-class CodemodSourceIndexReport(DataclassJsonReport):
-    """JSON-ready target discovery report for codemod DSL authors."""
-
-    source_index: SourceIndex = json_report_field(included=False)
-
-    @json_report_property()
-    def target_count(self) -> int:
-        return len(self.source_index.ast_targets)
-
-    @json_report_property()
-    def file_count(self) -> int:
-        return len(self.source_index.files)
-
-    @json_report_property()
-    def evidence_count(self) -> int:
-        return len(self.source_index.evidence)
-
-    @json_report_property()
-    def files(self) -> tuple[SourceFileDigest, ...]:
-        return self.source_index.files
-
-    @json_report_property(field_name="targets")
-    def ast_targets(self) -> tuple[AstTargetDigest, ...]:
-        return self.source_index.ast_targets
-
-    @json_report_property()
-    def evidence(self) -> tuple[EvidenceDigest, ...]:
-        return self.source_index.evidence
-
-    @json_report_property()
-    def target_ids_by_finding_id(self) -> TupleIndex[str, str]:
-        return self.source_index.target_ids_by_finding_id
-
-    @json_report_property()
-    def finding_ids_by_target_id(self) -> TupleIndex[str, str]:
-        return self.source_index.finding_ids_by_target_id
-
-
-@dataclass(frozen=True)
 class CodemodTargetSelector(
     DiscriminatedPayloadRecord,
     ABC,
@@ -2098,21 +1914,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
             rationale=rationale
             or f"Replace source text inside {target_digest.qualname!r}.",
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceRewritePlanItem(SourceRewriteTargetReference):
-    """Common target and rationale state for source rewrite plan items."""
-
-    rationale: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(),
-        default="",
-    )
-
-    def rationale_text(self, default: str) -> str:
-        if self.rationale:
-            return self.rationale
-        return default
 
 
 @dataclass(frozen=True)
