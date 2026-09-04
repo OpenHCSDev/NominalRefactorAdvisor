@@ -864,14 +864,15 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
                     flattened=flattened,
                 )
             )
-        resolved_member_names: set[str] = set()
+        declared_property_names: set[str] = set()
         for owner in owner_type.__mro__:
             for member_name, member in owner.__dict__.items():
-                if member_name in resolved_member_names:
+                if (
+                    member_name in declared_property_names
+                    or not isinstance(member, JsonReportProperty)
+                ):
                     continue
-                resolved_member_names.add(member_name)
-                if not isinstance(member, JsonReportProperty):
-                    continue
+                declared_property_names.add(member_name)
                 bindings.append(
                     JsonReportBinding(
                         source_name=member_name,

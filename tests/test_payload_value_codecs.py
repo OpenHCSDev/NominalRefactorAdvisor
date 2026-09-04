@@ -126,10 +126,14 @@ def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
     class LeafReport(BaseReport):
         leaf_value: str
 
+        @property
+        def status(self) -> str:
+            return "leaf"
+
     assert LeafReport(base_value="base", leaf_value="leaf").to_dict() == {
         "base_value": "base",
         "leaf_value": "leaf",
-        "status": "base",
+        "status": "leaf",
     }
 
 

@@ -451,7 +451,7 @@ class TupleSetIndexBuilder(Generic[IndexKeyT, IndexValueT]):
 
 
 @dataclass(frozen=True)
-class SourceIndex:
+class SourceIndex(SemanticRecord):
     """Bidirectional source-address index derived from parsed code and findings."""
 
     files: tuple[SourceFileDigest, ...] = ()

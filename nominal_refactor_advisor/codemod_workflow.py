@@ -43,7 +43,12 @@ from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
 )
-from .codemod_payload import CodemodJsonReport, DataclassJsonReport, JsonObject
+from .codemod_payload import (
+    CodemodJsonReport,
+    DataclassJsonReport,
+    JsonObject,
+    json_report_property,
+)
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
@@ -321,7 +326,10 @@ class CodemodIdentityTransition(Generic[IdentityT]):
 
 
 @dataclass(frozen=True)
-class CodemodFindingIdTransition(CodemodIdentityTransition[str]):
+class CodemodFindingIdTransition(
+    CodemodIdentityTransition[str],
+    CodemodJsonReport,
+):
     """Finding identity transition for codemod delta reports."""
 
     @classmethod
@@ -351,7 +359,10 @@ class CodemodFindingIdTransition(CodemodIdentityTransition[str]):
 
 
 @dataclass(frozen=True)
-class CodemodDetectorIdTransition(CodemodIdentityTransition[str]):
+class CodemodDetectorIdTransition(
+    CodemodIdentityTransition[str],
+    CodemodJsonReport,
+):
     """Detector provenance before and after one semantic obligation transition."""
 
     @classmethod
@@ -667,7 +678,7 @@ class CodemodRefactorGoalProgress(CodemodFindingIdTransition):
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalStage:
+class CodemodRefactorGoalStage(DataclassJsonReport):
     """One simulated or applied staged plan toward a refactor goal."""
 
     class_plan_report: FindingRecipeClassPlanReport
@@ -675,7 +686,7 @@ class CodemodRefactorGoalStage:
     progress: CodemodRefactorGoalProgress
     applied: bool = False
 
-    @property
+    @json_report_property()
     def finding_delta(self) -> CodemodFindingDelta:
         return CodemodFindingDelta(
             before_ids=self.progress.before_ids,
@@ -704,41 +715,22 @@ class CodemodRefactorGoalStage:
             applied=True,
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "applied": self.applied,
-            "simulation": self.simulation.to_dict(),
-            "progress": self.progress.to_dict(),
-            "finding_delta": self.finding_delta.to_dict(),
-            "class_plan_report": self.class_plan_report.to_dict(),
-        }
-
-
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryObstacle(CodemodJsonReport, ABC):
+class CodemodRefactorTrajectoryObstacle(DataclassJsonReport, ABC):
     """Nominal proof obstacle for one unexhausted exact source state."""
 
     kind: ClassVar[CodemodRefactorTrajectoryObstacleKind]
     source_state_id: str
     depth: int
 
-    @property
+    @json_report_property()
     @abstractmethod
     def reason(self) -> str:
         raise NotImplementedError
 
-    @abstractmethod
-    def evidence_payload(self) -> JsonObject:
-        raise NotImplementedError
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "kind": self.kind.value,
-            "source_state_id": self.source_state_id,
-            "depth": self.depth,
-            "reason": self.reason,
-            **self.evidence_payload(),
-        }
+    @json_report_property(field_name="kind")
+    def report_kind(self) -> CodemodRefactorTrajectoryObstacleKind:
+        return self.kind
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
@@ -757,13 +749,6 @@ class CodemodRefactorRecipeFrontierObstacle(CodemodRefactorTrajectoryObstacle):
     @property
     def reason(self) -> str:
         return "the current-state recipe frontier is incomplete"
-
-    def evidence_payload(self) -> JsonObject:
-        return {
-            "recipe_obstacles": tuple(
-                obstacle.to_dict() for obstacle in self.recipe_obstacles
-            )
-        }
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
@@ -790,10 +775,6 @@ class CodemodRefactorDepthBudgetObstacle(CodemodRefactorTrajectoryObstacle):
             f"reachable transitions exceed the declared depth limit of {self.max_depth}"
         )
 
-    def evidence_payload(self) -> JsonObject:
-        return {"max_depth": self.max_depth}
-
-
 @dataclass(frozen=True)
 class CodemodRefactorStateBudgetObstacle(CodemodRefactorTrajectoryObstacle):
     """Record a reachable state beyond the declared graph-size proof budget."""
@@ -804,10 +785,6 @@ class CodemodRefactorStateBudgetObstacle(CodemodRefactorTrajectoryObstacle):
     @property
     def reason(self) -> str:
         return f"reachable source states exceed the declared limit of {self.max_states}"
-
-    def evidence_payload(self) -> JsonObject:
-        return {"max_states": self.max_states}
-
 
 @dataclass(frozen=True)
 class CodemodRefactorTrajectoryState:
@@ -876,7 +853,7 @@ class CodemodRefactorGuardRejectedTerminal(CodemodRefactorGuardEvaluatedTerminal
 
 
 @dataclass(frozen=True)
-class CodemodRefactorUnjustifiedDebtTerminal:
+class CodemodRefactorUnjustifiedDebtTerminal(CodemodJsonReport):
     """Target-free state that introduced an unproved finding obligation."""
 
     state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
@@ -900,7 +877,7 @@ class CodemodRefactorUnjustifiedDebtTerminal:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryDeadEnd:
+class CodemodRefactorTrajectoryDeadEnd(CodemodJsonReport):
     """One fully explored non-goal state with no executable transition."""
 
     state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
@@ -918,7 +895,7 @@ class CodemodRefactorTrajectoryDeadEnd:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryProof:
+class CodemodRefactorTrajectoryProof(DataclassJsonReport):
     """Complete reachable-state evidence with no local branch preference."""
 
     initial_source_state_id: str
@@ -931,38 +908,31 @@ class CodemodRefactorTrajectoryProof:
     dead_ends: tuple[CodemodRefactorTrajectoryDeadEnd, ...] = ()
     obstacles: tuple[CodemodRefactorTrajectoryObstacle, ...] = ()
 
-    @property
+    @json_report_property()
     def status(self) -> CodemodRefactorTrajectoryStatus:
         return CodemodRefactorTrajectoryStatus.from_proof(self)
+
+    @json_report_property()
+    def terminal_count(self) -> int:
+        return len(self.terminals)
+
+    @json_report_property()
+    def guard_rejected_terminal_count(self) -> int:
+        return len(self.guard_rejected_terminals)
+
+    @json_report_property()
+    def unjustified_debt_terminal_count(self) -> int:
+        return len(self.unjustified_debt_terminals)
+
+    @json_report_property()
+    def dead_end_count(self) -> int:
+        return len(self.dead_ends)
 
     @property
     def proved_terminal(self) -> CodemodRefactorTrajectoryTerminal:
         if not self.status.proved:
             raise TypeError("trajectory proof has no unique proved terminal state")
         return next(iter(self.terminals))
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "status": self.status.value,
-            "initial_source_state_id": self.initial_source_state_id,
-            "budget": self.budget.to_dict(),
-            "visited_state_count": self.visited_state_count,
-            "transition_count": self.transition_count,
-            "terminal_count": len(self.terminals),
-            "terminals": tuple(terminal.to_dict() for terminal in self.terminals),
-            "guard_rejected_terminal_count": len(self.guard_rejected_terminals),
-            "guard_rejected_terminals": tuple(
-                terminal.to_dict() for terminal in self.guard_rejected_terminals
-            ),
-            "unjustified_debt_terminal_count": len(self.unjustified_debt_terminals),
-            "unjustified_debt_terminals": tuple(
-                terminal.to_dict() for terminal in self.unjustified_debt_terminals
-            ),
-            "dead_end_count": len(self.dead_ends),
-            "dead_ends": tuple(dead_end.to_dict() for dead_end in self.dead_ends),
-            "obstacles": tuple(obstacle.to_dict() for obstacle in self.obstacles),
-        }
-
 
 @dataclass(frozen=True)
 class CodemodRefactorGoalReport:

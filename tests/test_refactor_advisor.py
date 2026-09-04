@@ -18391,6 +18391,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
         CodemodRefactorDepthBudgetObstacle,
         CodemodRefactorGuardEvaluatedTerminal,
         CodemodRefactorGuardRejectedTerminal,
+        CodemodRefactorTrajectoryObstacle,
         CodemodRefactorTrajectoryProof,
         CodemodRefactorTrajectoryState,
         CodemodRefactorTrajectoryTerminal,
@@ -18406,6 +18407,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
         guard_report=ArchitectureGuardSuite().clean_report(),
     )
     assert inspect.isabstract(CodemodRefactorGuardEvaluatedTerminal)
+    assert inspect.isabstract(CodemodRefactorTrajectoryObstacle)
     assert "to_dict" in CodemodRefactorGuardEvaluatedTerminal.__dict__
     assert all(
         "to_dict" not in terminal_type.__dict__
@@ -18458,6 +18460,15 @@ def test_trajectory_status_members_own_proof_classification() -> None:
         CodemodRefactorTrajectoryStatus.AMBIGUOUS_TERMINAL_STATES
     )
     assert incomplete.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
+    assert incomplete.to_dict()["obstacles"] == (
+        {
+            "source_state_id": "initial",
+            "depth": 1,
+            "max_depth": 1,
+            "reason": "reachable transitions exceed the declared depth limit of 1",
+            "kind": "depth_budget",
+        },
+    )
     assert all(
         not proof.status.stop_reason.completed
         for proof in (no_terminal, ambiguous, incomplete)

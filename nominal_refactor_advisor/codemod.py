@@ -98,6 +98,8 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
+    json_report_field,
+    json_report_property,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -774,24 +776,19 @@ class AuthorityClaimSourceIndexResolver:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
+class SimulatedSourceRewrite(
+    SourceTargetSpan,
+    SourceRewriteDelta,
+    DataclassJsonReport,
+):
     """Resolved source span and replacement preview for one planned rewrite."""
 
-    original_source: str
+    replacement_source: str = json_report_field(included=False)
+    original_source: str = json_report_field(included=False)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "target_id": self.target_id,
-            "file_path": self.file_path,
-            "qualname": self.qualname,
-            "operation": self.operation.value,
-            "line": self.line,
-            "end_line": self.end_line,
-            "rationale": self.rationale,
-            "contributors": tuple(
-                contributor.to_dict() for contributor in self.contributors
-            ),
-        }
+    @json_report_property(field_name="operation")
+    def report_operation(self) -> RewriteOperation:
+        return self.operation
 
 
 @dataclass(frozen=True)
@@ -11110,7 +11107,7 @@ class CodemodParseValidationReport(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodSimulationReport:
+class CodemodSimulationReport(CodemodJsonReport):
     """Result of simulating planned rewrites without writing files."""
 
     rewrites: tuple[SimulatedSourceRewrite, ...]
@@ -11265,7 +11262,7 @@ class CodemodAfterSnapshotProjection:
 
 
 @dataclass(frozen=True)
-class SourceRewriteSimulationResult:
+class SourceRewriteSimulationResult(DataclassJsonReport):
     """Shared result envelope for executable source rewrite simulations."""
 
     simulation: CodemodSimulationReport
@@ -11275,7 +11272,7 @@ class SourceRewriteSimulationResult:
     def guard_subject(self) -> str:
         return "Codemod simulation"
 
-    @property
+    @json_report_property()
     def is_clean(self) -> bool:
         return self.architecture_guard_report.is_clean
 
@@ -11303,11 +11300,7 @@ class SourceRewriteSimulationResult:
         return apply_codemod_simulation(self.simulation)
 
     def simulation_payload(self) -> JsonObject:
-        return {
-            "simulation": self.simulation.to_dict(),
-            "architecture_guard_report": self.architecture_guard_report.to_dict(),
-            "is_clean": self.is_clean,
-        }
+        return SourceRewriteSimulationResult.report_bindings().payload(self)
 
 
 @dataclass(frozen=True)
@@ -11320,19 +11313,14 @@ class RefactorRecipeSimulation(SourceRewriteSimulationResult):
     def guard_subject(self) -> str:
         return f"Recipe {self.recipe.recipe_id!r}"
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "recipe": self.recipe.to_dict(),
-            **self.simulation_payload(),
-        }
-
-
 @dataclass(frozen=True)
 class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     """Simulation result for an entire codemod plan document."""
 
     document: CodemodPlanDocument
-    after_snapshot_projection: CodemodAfterSnapshotProjection
+    after_snapshot_projection: CodemodAfterSnapshotProjection = json_report_field(
+        included=False
+    )
 
     def __post_init__(self) -> None:
         if self.architecture_guard_report.rules != (
@@ -11366,13 +11354,6 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
             ),
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "document": self.document.to_dict(),
-            **self.simulation_payload(),
-        }
-
-
 @dataclass(frozen=True)
 class CodemodDocumentSimulationCarrier:
     """Record surface for results backed by one codemod document simulation."""
@@ -11381,19 +11362,17 @@ class CodemodDocumentSimulationCarrier:
 
 
 @dataclass(frozen=True)
-class CodemodPlanSequenceStageReport(CodemodDocumentSimulationCarrier):
+class CodemodPlanSequenceStageReport(
+    CodemodDocumentSimulationCarrier,
+    DataclassJsonReport,
+):
     """One staged codemod document plus source indexes before and after it."""
 
+    document_simulation: CodemodPlanDocumentSimulation = json_report_field(
+        flattened=True
+    )
     before_source_index: SourceIndex
     after_source_index: SourceIndex
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "document": self.document_simulation.document.to_dict(),
-            **self.document_simulation.simulation_payload(),
-            "before_source_index": self.before_source_index.to_dict(),
-            "after_source_index": self.after_source_index.to_dict(),
-        }
 
 
 @dataclass(frozen=True)
@@ -11401,8 +11380,11 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
     """Simulation result for an ordered codemod plan sequence."""
 
     sequence: CodemodPlanSequence
-    final_snapshot: CodemodSourceSnapshot
-    stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = ()
+    final_snapshot: CodemodSourceSnapshot = json_report_field(included=False)
+    stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = json_report_field(
+        field_name="stages",
+        default=(),
+    )
 
     def __post_init__(self) -> None:
         if self.architecture_guard_report.rules != self.sequence.guard_suite.rules:
@@ -11411,6 +11393,14 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
     @property
     def stages(self) -> tuple[CodemodPlanDocumentSimulation, ...]:
         return tuple(stage.document_simulation for stage in self.stage_reports)
+
+    @json_report_property()
+    def stage_count(self) -> int:
+        return len(self.stage_reports)
+
+    @json_report_property()
+    def final_source_index(self) -> SourceIndex:
+        return self.final_snapshot.source_index
 
     def continuation_report_from_findings(
         self,
@@ -11430,15 +11420,6 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
             ),
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "sequence": self.sequence.to_dict(),
-            "stage_count": len(self.stage_reports),
-            "stages": tuple(stage.to_dict() for stage in self.stage_reports),
-            "final_source_index": self.final_snapshot.source_index.to_dict(),
-            **self.simulation_payload(),
-        }
-
     def execution_payload(self) -> JsonObject:
         """Project execution evidence without serializing internal source indexes."""
 
@@ -11453,35 +11434,37 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
 
 
 @dataclass(frozen=True)
-class CodemodPlanSequenceContinuationReport:
+class CodemodPlanSequenceContinuationReport(DataclassJsonReport):
     """Executable continuation plan synthesized from a staged final source state."""
 
     sequence: CodemodPlanSequence
     source_index: SourceIndex
     findings: tuple[RefactorFinding, ...]
-    plan: "FindingRecipePlan"
+    plan: "FindingRecipePlan" = json_report_field(
+        field_name="finding_recipe_plan"
+    )
 
-    @property
+    @json_report_property()
     def finding_count(self) -> int:
         return len(self.findings)
 
-    @property
+    @json_report_property()
     def continuation_stage_count(self) -> int:
         if self.plan.document.has_recipes:
             return 1
         return 0
 
-    @property
+    @json_report_property()
     def has_continuation_stage(self) -> bool:
         return bool(self.continuation_stage_count)
 
-    @property
+    @json_report_property()
     def continuation_sequence(self) -> CodemodPlanSequence:
         if not self.has_continuation_stage:
             return CodemodPlanSequence()
         return CodemodPlanSequence.from_document(self.plan.document)
 
-    @property
+    @json_report_property()
     def extended_sequence(self) -> CodemodPlanSequence:
         if not self.has_continuation_stage:
             return self.sequence
@@ -11489,20 +11472,6 @@ class CodemodPlanSequenceContinuationReport:
             self.sequence,
             documents=(*self.sequence.documents, self.plan.document),
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "sequence": self.sequence.to_dict(),
-            "source_index": self.source_index.to_dict(),
-            "finding_count": self.finding_count,
-            "findings": tuple(finding.to_dict() for finding in self.findings),
-            "finding_recipe_plan": self.plan.to_dict(),
-            "has_continuation_stage": self.has_continuation_stage,
-            "continuation_stage_count": self.continuation_stage_count,
-            "continuation_sequence": self.continuation_sequence.to_dict(),
-            "extended_sequence": self.extended_sequence.to_dict(),
-        }
-
 
 @dataclass(frozen=True)
 class FindingRecipeActionIdentity(DataclassJsonReport):
@@ -11908,27 +11877,26 @@ class FindingRecipePlanCandidate:
 @dataclass(frozen=True)
 class FindingRecipeTrajectoryBranch(
     CodemodDocumentSimulationCarrier,
-    CodemodJsonReport,
+    DataclassJsonReport,
 ):
     """One clean current-state transition without recommendation semantics."""
 
+    document_simulation: CodemodPlanDocumentSimulation = json_report_field(
+        included=False
+    )
     finding_ids: tuple[str, ...]
     assessment: FindingRecipeSetAssessment
 
     def __post_init__(self) -> None:
         self.assessment.require_matches_document_simulation(self.document_simulation)
 
-    @property
+    @json_report_property()
     def candidate_indices(self) -> tuple[int, ...]:
         return self.assessment.candidate_indices
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "candidate_indices": self.candidate_indices,
-            "finding_ids": self.finding_ids,
-            "assessment": self.assessment.to_dict(),
-            "document": self.document_simulation.document.to_dict(),
-        }
+    @json_report_property()
+    def document(self) -> CodemodPlanDocument:
+        return self.document_simulation.document
 
 
 @dataclass(frozen=True)
@@ -12032,10 +12000,11 @@ class FindingRecipeSynthesisReport(CodemodJsonReport):
 
 
 @dataclass(frozen=True, kw_only=True)
-class FindingRecipeSynthesisBoundary(CodemodJsonReport):
+class FindingRecipeSynthesisBoundary(DataclassJsonReport):
     """Single payload boundary for finding-backed synthesis projections."""
 
-    report: FindingRecipeSynthesisReport = field(
+    report: FindingRecipeSynthesisReport = json_report_field(
+        field_name=FindingRecipeSynthesisReport.payload_key,
         default_factory=FindingRecipeSynthesisReport
     )
 
@@ -12056,10 +12025,7 @@ class FindingRecipeSynthesisBoundary(CodemodJsonReport):
         return self.report.unsupported_count
 
     def synthesis_payload(self) -> JsonObject:
-        return {self.report.payload_key: self.report.to_dict()}
-
-    def to_dict(self) -> JsonObject:
-        return self.synthesis_payload()
+        return FindingRecipeSynthesisBoundary.report_bindings().payload(self)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -12416,15 +12382,23 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     document: CodemodPlanDocument
     trajectory_frontier: FindingRecipeTrajectoryFrontier
 
-    @property
+    @json_report_property()
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
         return tuple(
             record.finding_id for record in self.records if record.candidate_recipes
         )
 
-    @property
+    @json_report_property()
     def expected_removed_finding_count(self) -> int:
         return len(self.expected_removed_finding_ids)
+
+    @json_report_property()
+    def application_blocked(self) -> bool:
+        return self.report.application_blocked
+
+    @json_report_property()
+    def application_block_reason(self) -> str:
+        return self.report.application_block_reason
 
     def simulate(
         self,
@@ -12448,18 +12422,6 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
             plan=self,
             preflight_report=self.document.preflight_snapshot(snapshot),
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "document": self.document.to_dict(),
-            "expected_removed_finding_ids": self.expected_removed_finding_ids,
-            "expected_removed_finding_count": self.expected_removed_finding_count,
-            "application_blocked": self.report.application_blocked,
-            "application_block_reason": self.report.application_block_reason,
-            "trajectory_frontier": self.trajectory_frontier.to_dict(),
-            **self.synthesis_payload(),
-        }
-
 
 @dataclass(frozen=True)
 class FindingRecipePlanPreflight:
