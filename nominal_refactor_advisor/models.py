@@ -957,6 +957,12 @@ class RefactorFinding(FindingSemantics):
             authority_evidence=authority_evidence,
         )
 
+    @property
+    def primary_evidence(self) -> SourceLocation | None:
+        """Return the finding's primary source witness when one was emitted."""
+
+        return self.evidence[0] if self.evidence else None
+
     @json_report_cached_property()
     def stable_id(self) -> str:
         """Source-derived finding id for compact, repeatable agent targeting."""

@@ -41,6 +41,7 @@ def test_source_identity_joins_native_windows_paths_to_source_evidence() -> None
     source_index = build_source_index((module,), (finding,))
     evidence = source_index.evidence[0]
 
+    assert finding.primary_evidence is location
     assert module.file_path == "C:/repo/pkg/mod.py"
     assert location.file_path == module.file_path
     assert source_path_text(native_path) == module.file_path

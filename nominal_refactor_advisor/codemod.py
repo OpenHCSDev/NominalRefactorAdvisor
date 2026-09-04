@@ -465,7 +465,6 @@ from .manual_registry import (
 from .models import (
     AutoRegisterMetaRentMetrics,
     EnvironmentBooleanDriftMetrics,
-    EvidenceSymbol,
     FindingMetrics,
     MappingMetrics,
     RefactorFinding,
@@ -12573,7 +12572,44 @@ class FindingRecipeSynthesizer(ABC):
         return ()
 
 
-class CandidateCollectorBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+class PrimaryEvidenceActionKeysMixin:
+    """Derive one conflict key from a finding's primary source witness."""
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = finding.primary_evidence
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, evidence.subject_symbol),),
+        )
+
+
+class FindingEvidenceActionKeysMixin:
+    """Derive conflict keys from every source subject carried by a finding."""
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            sorted(
+                {
+                    (evidence.file_path, evidence.subject_symbol)
+                    for evidence in finding.evidence
+                }
+            ),
+        )
+
+
+class CandidateCollectorBoilerplateFindingRecipeSynthesizer(
+    PrimaryEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+):
     """Compile a forwarding-method finding through its current source witness."""
 
     def evaluate_recipe_for_finding(
@@ -12585,7 +12621,7 @@ class CandidateCollectorBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthes
             return self.rejected_evaluation(
                 "candidate collector derivation requires source context"
             )
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if evidence is None:
             return self.rejected_evaluation(
                 "candidate collector derivation requires one primary source witness"
@@ -12598,7 +12634,7 @@ class CandidateCollectorBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthes
             target_ids = SourceIndexTargetSelector(
                 node_kinds=(AstTargetNodeKind.METHOD,),
                 file_paths=(source_path,),
-                qualnames=(evidence.symbol,),
+                qualnames=(evidence.subject_symbol,),
             ).target_ids(context)
             if len(target_ids) != 1:
                 raise ValueError(
@@ -12618,18 +12654,6 @@ class CandidateCollectorBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthes
                     "collector declaration."
                 ),
             ).with_operation(operation)
-        )
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((evidence.file_path, evidence.symbol),),
         )
 
 
@@ -12670,22 +12694,8 @@ class SingleSourcePathFindingMixin:
         return next(iter(file_paths))
 
 
-class SharedActionKeysForFindingMixin:
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
-        )
-
-
 class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
-    SharedActionKeysForFindingMixin,
+    PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 ):
     """Preserve the exact proof gap for environment-boolean drift findings."""
@@ -12713,7 +12723,7 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
 
 
 class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
-    SharedActionKeysForFindingMixin,
+    PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 ):
     """Reject a metaclass edit until its missing rent semantics are proven."""
@@ -12733,6 +12743,7 @@ class AutoRegisterMetaUnderRentedFindingRecipeSynthesizer(
 
 
 class CarrierCollapseFindingRecipeSynthesizer(
+    FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     SemanticCarrierConcept,
     ABC,
@@ -12785,21 +12796,6 @@ class CarrierCollapseFindingRecipeSynthesizer(
             .with_operation(operation)
         )
         return self.executable_evaluation(recipe)
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            sorted(
-                {
-                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
-                    for evidence in finding.evidence
-                }
-            ),
-        )
-
 
 @dataclass(frozen=True)
 class RepeatedCallAuthorityParameter:
@@ -13732,7 +13728,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         ).required_path()
         target_ids = SourceIndexTargetSelector.for_function_or_method(
             file_path=source_path,
-            qualname=EvidenceSymbol(evidence.symbol).subject,
+            qualname=evidence.subject_symbol,
         ).target_ids(context)
         if len(target_ids) != 1:
             raise ValueError(
@@ -13799,7 +13795,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if constructor_name is None:
             return ()
         subjects = {
-            (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
+            (evidence.file_path, evidence.subject_symbol)
             for evidence in finding.evidence
         }
         subjects.add((finding.evidence[0].file_path, constructor_name))
@@ -14707,24 +14703,6 @@ class DeriveRepeatedBuilderAuthorityOperation(
         return self.required_derivation(snapshot).required_source_edits(snapshot)
 
 
-class FindingEvidenceActionKeysMixin:
-    """Derive conflict keys from every source subject carried by a finding."""
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            sorted(
-                {
-                    (evidence.file_path, EvidenceSymbol(evidence.symbol).subject)
-                    for evidence in finding.evidence
-                }
-            ),
-        )
-
-
 class ExactMethodRoleFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
@@ -14887,7 +14865,7 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
 
 
 class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
-    SharedActionKeysForFindingMixin,
+    PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 ):
     """Move source-proved key-facing queries to their enum declaration."""
@@ -14960,7 +14938,7 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "inherited AutoRegister cleanup requires source context"
             )
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if evidence is None:
             return self.rejected_evaluation(
                 "inherited AutoRegister cleanup lacks class evidence"
@@ -15503,7 +15481,7 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         context: CodemodSelectorContext,
     ) -> tuple[RefactorRecipe | None, str]:
         source_path = self.source_path(finding)
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if source_path is None or evidence is None:
             return None, "MRO ordering extraction requires one source file and root"
         if not isinstance(finding.metrics, MappingMetrics):
@@ -15587,7 +15565,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         expected_class_names = frozenset(finding.metrics.plan_class_names)
         if registry_name is None or not expected_class_names:
             return None
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if evidence is None:
             return None
         source_paths = context.resolve_source_paths((evidence.file_path,))
@@ -15656,7 +15634,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if evidence is None:
             return ()
         registry_name = finding.metrics.plan_registry_name
@@ -15828,7 +15806,7 @@ class SemanticMirrorRecipeEndpoint:
 
     @property
     def subject(self) -> str:
-        return EvidenceSymbol(self.location.symbol).subject
+        return self.location.subject_symbol
 
 
 @dataclass(frozen=True)
@@ -19987,7 +19965,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         mapping_name = finding.metrics.plan_mapping_name
         source_name = finding.metrics.plan_source_name
         if evidence is None or mapping_name is None or source_name is None:
@@ -20216,7 +20194,7 @@ class LiteralDispatchFindingRecipeSynthesizer(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
+        evidence = finding.primary_evidence
         if evidence is None:
             return ()
         if finding.metrics.plan_dispatch_axis is None:
@@ -20225,7 +20203,7 @@ class LiteralDispatchFindingRecipeSynthesizer(
             return ()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
-            ((evidence.file_path, EvidenceSymbol(evidence.symbol).subject),),
+            ((evidence.file_path, evidence.subject_symbol),),
         )
 
     def recipe_rejection_reason(
@@ -20294,19 +20272,6 @@ def dispatch_strategy_base_name(function_name: str) -> str:
     if function_suffix:
         return f"{function_suffix}DispatchCase"
     return "DispatchCase"
-
-
-@dataclass(frozen=True)
-class FindingPrimaryEvidence:
-    """Primary source location for one advisor finding."""
-
-    finding: RefactorFinding
-
-    @property
-    def source_location(self) -> SourceLocation | None:
-        if not self.finding.evidence:
-            return None
-        return self.finding.evidence[0]
 
 
 @dataclass(frozen=True)
