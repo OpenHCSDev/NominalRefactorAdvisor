@@ -6,6 +6,7 @@ from collections.abc import (
     Iterable,
 )
 from enum import StrEnum
+from typing import ClassVar
 
 
 class RewriteOperation(StrEnum):
@@ -83,47 +84,82 @@ class FindingRecipeSynthesisDisposition(StrEnum):
     UNCOUNTED = "uncounted"
 
 
-class FindingRecipePlanningHorizon(StrEnum):
-    """Strongest horizon proved for an executable recipe candidate."""
+class FindingRecipePlanningHorizon(str):
+    """MRO-ordered proof horizon for an executable recipe candidate."""
 
-    NONE = ("none", 0, "")
-    CURRENT_SNAPSHOT = (
-        "current_snapshot",
-        1,
-        "application requires a proof across reachable refactor trajectories",
-    )
-    UNPROVED = (
-        "unproved",
-        2,
-        "application requires a complete proof across reachable refactor trajectories",
-    )
+    wire_value: ClassVar[str] = "unproved"
+    NONE: ClassVar["FindingRecipePlanningHorizon"]
+    CURRENT_SNAPSHOT: ClassVar["FindingRecipePlanningHorizon"]
+    UNPROVED: ClassVar["FindingRecipePlanningHorizon"]
 
-    def __new__(
-        cls,
-        value: str,
-        proof_rank: int,
-        application_block_reason: str,
-    ) -> "FindingRecipePlanningHorizon":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._proof_rank = proof_rank
-        member._application_block_reason = application_block_reason
-        return member
+    def __new__(cls) -> "FindingRecipePlanningHorizon":
+        return str.__new__(cls, cls.wire_value)
 
     @classmethod
     def join(
         cls,
         horizons: Iterable["FindingRecipePlanningHorizon"],
     ) -> "FindingRecipePlanningHorizon":
-        return max(horizons, key=lambda horizon: horizon._proof_rank, default=cls.NONE)
+        horizon_tuple = tuple(horizons)
+        if not horizon_tuple:
+            return cls.NONE
+        for candidate in horizon_tuple:
+            if all(
+                isinstance(other_horizon, type(candidate))
+                for other_horizon in horizon_tuple
+            ):
+                return candidate
+        raise TypeError("planning horizons must form one nominal MRO chain")
 
     @property
     def requires_trajectory_proof(self) -> bool:
-        return self is not type(self).NONE
+        return True
 
     @property
     def application_block_reason(self) -> str:
-        return self._application_block_reason
+        return (
+            "application requires a complete proof across reachable refactor "
+            "trajectories"
+        )
+
+
+class CurrentSnapshotFindingRecipePlanningHorizon(
+    FindingRecipePlanningHorizon
+):
+    """Candidate proved only on the current source snapshot."""
+
+    wire_value = "current_snapshot"
+
+    @property
+    def requires_trajectory_proof(self) -> bool:
+        return True
+
+    @property
+    def application_block_reason(self) -> str:
+        return "application requires a proof across reachable refactor trajectories"
+
+
+class CompleteFindingRecipePlanningHorizon(
+    CurrentSnapshotFindingRecipePlanningHorizon
+):
+    """Planning horizon requiring no additional trajectory proof."""
+
+    wire_value = "none"
+
+    @property
+    def requires_trajectory_proof(self) -> bool:
+        return False
+
+    @property
+    def application_block_reason(self) -> str:
+        return ""
+
+
+FindingRecipePlanningHorizon.NONE = CompleteFindingRecipePlanningHorizon()
+FindingRecipePlanningHorizon.CURRENT_SNAPSHOT = (
+    CurrentSnapshotFindingRecipePlanningHorizon()
+)
+FindingRecipePlanningHorizon.UNPROVED = FindingRecipePlanningHorizon()
 
 
 class FindingRecipeSynthesisStatus(StrEnum):

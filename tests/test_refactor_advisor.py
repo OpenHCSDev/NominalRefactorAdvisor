@@ -2136,6 +2136,29 @@ def test_finding_recipe_singleton_without_cost_is_only_a_snapshot_candidate(
     assert record.planning_horizon.requires_trajectory_proof
 
 
+def test_finding_recipe_planning_horizon_join_derives_from_mro() -> None:
+    horizon = FindingRecipePlanningHorizon
+
+    assert horizon.join(()) is horizon.NONE
+    assert horizon.join((horizon.NONE, horizon.CURRENT_SNAPSHOT)) is (
+        horizon.CURRENT_SNAPSHOT
+    )
+    assert horizon.join(
+        (horizon.NONE, horizon.CURRENT_SNAPSHOT, horizon.UNPROVED)
+    ) is horizon.UNPROVED
+    assert isinstance(horizon.NONE, type(horizon.CURRENT_SNAPSHOT))
+    assert isinstance(horizon.CURRENT_SNAPSHOT, type(horizon.UNPROVED))
+    assert not hasattr(horizon, "_proof_rank")
+
+    class IncomparablePlanningHorizon(FindingRecipePlanningHorizon):
+        wire_value = "incomparable"
+
+    with pytest.raises(TypeError, match="one nominal MRO chain"):
+        horizon.join(
+            (horizon.CURRENT_SNAPSHOT, IncomparablePlanningHorizon())
+        )
+
+
 def test_finding_recipe_batch_rejects_order_dependent_composition(
     tmp_path: Path,
 ) -> None:
