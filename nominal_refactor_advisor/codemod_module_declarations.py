@@ -24,7 +24,10 @@ from .ast_tools import (
     ImportBoundNameProjection,
     SharedRegistryRootBase,
 )
-from .class_index import module_public_export_contract
+from .class_index import (
+    ModulePublicExportSourceAuthority,
+    module_public_export_contract,
+)
 from .codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
@@ -57,6 +60,7 @@ from .codemod_source_edits import (
 )
 from .declaration_dependencies import (
     DeclarationDependencyProjection,
+    ModuleLexicalDependencyProjection,
     MovableDeclaration,
 )
 from .semantic_match import single_item
@@ -75,33 +79,6 @@ _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
 
 
 _AVAILABLE_WITHOUT_IMPORT = frozenset(dir(builtins)) | _PYTHON_RUNTIME_GLOBAL_NAMES
-
-
-class CandidateNameReferenceCollector(ast.NodeVisitor):
-    """Collect candidate names referenced by syntax-specific AST leaves."""
-
-    def __init__(self, candidate_names: Iterable[str]) -> None:
-        self.candidate_names = frozenset(candidate_names)
-        self.references: set[str] = set()
-
-    @classmethod
-    def collect(
-        cls,
-        nodes: Iterable[ast.AST],
-        candidate_names: Iterable[str],
-    ) -> frozenset[str]:
-        collector = cls(candidate_names)
-        for node in nodes:
-            collector.visit(node)
-        return frozenset(collector.references)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load) and node.id in self.candidate_names:
-            self.references.add(node.id)
-
-    def visit_Constant(self, node: ast.Constant) -> None:
-        if isinstance(node.value, str) and node.value in self.candidate_names:
-            self.references.add(node.value)
 
 
 @dataclass(frozen=True)
@@ -617,10 +594,20 @@ class ModuleSymbolTable:
                 self.bound_names_for_statement(statement)
             )
         )
-        return CandidateNameReferenceCollector.collect(
-            retained_statements,
-            candidates,
+        retained_module = ast.Module(body=list(retained_statements), type_ignores=[])
+        lexical_names = ModuleLexicalDependencyProjection.from_module(
+            retained_module
+        ).referenced_names_among(
+            candidates
         )
+        public_export = ModulePublicExportSourceAuthority.from_module(retained_module)
+        public_export_names = frozenset(
+            name
+            for name in candidates
+            if public_export is not None
+            and public_export.name_references(name)
+        )
+        return lexical_names | public_export_names
 
 
 @dataclass(frozen=True)

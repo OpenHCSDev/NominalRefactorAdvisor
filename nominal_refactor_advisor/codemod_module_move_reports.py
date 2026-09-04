@@ -26,6 +26,7 @@ class ModuleMoveImportDependency(DataclassJsonReport):
 
     binding: ModuleImportBinding = json_report_field(included=False)
     identity: ModuleImportBindingIdentity = json_report_field(flattened=True)
+    destination_scope: ModuleImportScope
     destination_import_required: bool
     source_removal_required: bool
 
@@ -38,7 +39,7 @@ class ModuleMoveImportDependency(DataclassJsonReport):
         return self.binding.source
 
     @json_report_property()
-    def scope(self) -> ModuleImportScope:
+    def source_scope(self) -> ModuleImportScope:
         return self.binding.scope
 
     def destination_source(
@@ -49,7 +50,7 @@ class ModuleMoveImportDependency(DataclassJsonReport):
         return self.identity.source_for(
             import_graph,
             importing_file_path=destination_path,
-            scope=self.scope,
+            scope=self.destination_scope,
             bound_name=self.name,
         )
 

@@ -4,16 +4,41 @@ from __future__ import annotations
 
 import ast
 import tokenize
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from functools import cached_property
 from importlib import import_module as import_module_by_name
 from importlib.util import find_spec
-from typing import ClassVar
+from typing import (
+    ClassVar,
+    TYPE_CHECKING,
+    cast,
+)
 
-from .ast_tools import AstKeywordSourceProjection, is_docstring_statement
+from .ast_tools import (
+    AstKeywordSourceProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    is_docstring_statement,
+)
 from .class_index import ClassHeaderSourceSpan
-from .codemod_source_edits import SourceTextGeometry, SourceTextSpan
+from .codemod_source_edits import (
+    NominalSourceEdit,
+    PhysicalSourceEditConflictError,
+    SourceInsertion,
+    SourceTargetEditor,
+    SourceTextGeometry,
+    SourceTextSpan,
+    _joined_rationales,
+)
+from .collection_algebra import sorted_tuple
 from .source_geometry import SourceLineSegmentAuthority
+
+if TYPE_CHECKING:
+    from .codemod_selection_context import CodemodSelectorContext
+    from .codemod_source_edits import PhysicalSourceEdit
 
 
 @dataclass(frozen=True)
@@ -377,6 +402,103 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
             trailing_separator = "\n\n"
         body = "\n\n".join(member.rstrip("\r\n") for member in members)
         return f"{leading_separator}{body}{trailing_separator}"
+
+
+@dataclass(frozen=True)
+class ClassMemberSource:
+    """One named class member together with its exact indented source."""
+
+    name: str
+    source: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClassMemberInsertion(NominalSourceEdit):
+    """Coalescible semantic insertion owned by one exact class declaration."""
+
+    target_id: str
+    members: tuple[ClassMemberSource, ...]
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        insertions_by_target: dict[str, list[ClassMemberInsertion]] = defaultdict(list)
+        for peer in peers:
+            insertion = cast(ClassMemberInsertion, peer)
+            insertions_by_target[insertion.target_id].append(insertion)
+        return tuple(
+            self._coalesced_same_target(tuple(insertions_by_target[target_id]))
+            for target_id in sorted(insertions_by_target)
+        )
+
+    @classmethod
+    def _coalesced_same_target(
+        cls,
+        insertions: tuple["ClassMemberInsertion", ...],
+    ) -> "ClassMemberInsertion":
+        first = insertions[0]
+        members_by_name: dict[str, ClassMemberSource] = {}
+        for insertion in insertions:
+            for member in insertion.members:
+                existing = members_by_name.get(member.name)
+                if existing is not None and existing.source != member.source:
+                    raise PhysicalSourceEditConflictError(
+                        f"Class member {member.name!r} has competing derived sources"
+                    )
+                members_by_name.setdefault(member.name, member)
+        return replace(
+            first,
+            members=sorted_tuple(
+                members_by_name.values(),
+                key=lambda member: member.name,
+            ),
+            rationale=_joined_rationales(
+                insertion.rationale for insertion in insertions
+            ),
+            contributors=NominalSourceEdit.merged_contributors(insertions),
+            origins=NominalSourceEdit.merged_origins(insertions),
+        )
+
+    def resolved_edits(
+        self,
+        context: "CodemodSelectorContext",
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        target = context.source_index.target_by_id.get(self.target_id)
+        node = context.ast_target_nodes_by_id.get(self.target_id)
+        if target is None or not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Class member insertion target {self.target_id!r} is unavailable"
+            )
+        existing_member_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        collisions = existing_member_names.intersection(
+            member.name for member in self.members
+        )
+        if collisions:
+            raise ValueError(
+                f"Class {target.qualname!r} already binds members "
+                f"{tuple(sorted(collisions))!r}"
+            )
+        source = context.sources_by_file_path[target.file_path]
+        insertion_point = ClassBodySourceAuthority(node=node, source=source)
+        return (
+            SourceInsertion(
+                file_path=target.file_path,
+                insertion_line=SourceTextGeometry(source).line_number_for_offset(
+                    insertion_point.before_first_method_offset
+                ),
+                inserted_lines=SourceTargetEditor.source_lines(
+                    insertion_point.member_source(
+                        tuple(member.source for member in self.members)
+                    )
+                ),
+                rationale=self.rationale,
+                contributors=self.contributors,
+                origins=self.origins,
+            ),
+        )
 
 
 @dataclass(frozen=True)

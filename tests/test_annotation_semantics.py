@@ -28,9 +28,9 @@ def test_nominal_annotation_authority_projects_exact_name_chains() -> None:
     assert authority.reference_parts_from_source("factory().Result") is None
     assert authority.reference_parts_from_source("list[Result]") is None
     assert authority.reference_parts_from_source("object") is None
-    assert authority.source_or_none(ast.parse("factory().Result", mode="eval").body) is (
-        None
-    )
+    assert authority.source_or_none(
+        ast.parse("factory().Result", mode="eval").body
+    ) is (None)
 
 
 def test_stringized_annotation_surfaces_retain_class_scope() -> None:
@@ -66,6 +66,35 @@ def test_stringized_annotation_surfaces_retain_class_scope() -> None:
             new_name="Outcome",
         )
         == "'Outcome | None'"
+    )
+
+
+def test_stringized_annotation_surfaces_exclude_literal_values_and_metadata() -> None:
+    module = ast.parse(
+        "from typing import Annotated, Literal\n\n"
+        "value: tuple['Result', Literal['Result'], Annotated['Other', 'Result']]\n"
+    )
+
+    surfaces = ModuleLexicalDependencyProjection.from_module(
+        module
+    ).stringized_annotations
+
+    assert tuple(surface.literal.value for surface in surfaces) == ("Result", "Other")
+
+
+def test_stringized_annotation_reference_count_descends_nested_forward_refs() -> None:
+    surface = ModuleLexicalDependencyProjection.from_module(
+        ast.parse("value: \"list[\\'Result\\']\"\n")
+    ).stringized_annotations[0]
+
+    assert surface.reference_count("Result") == 1
+    assert (
+        surface.renamed_source(
+            "\"list[\\'Result\\']\"",
+            old_name="Result",
+            new_name="Outcome",
+        )
+        == "\"list[\\'Outcome\\']\""
     )
 
 

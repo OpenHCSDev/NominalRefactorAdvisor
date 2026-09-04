@@ -49,6 +49,12 @@ class ModuleImportInsertionPoint:
         if imports:
             final_import = imports[-1]
             return (final_import.end_lineno or final_import.lineno) + 1
+        return self.initial_line_number
+
+    @property
+    def initial_line_number(self) -> int:
+        """Return the first import anchor after any module docstring."""
+
         body = self.module.body
         if not body:
             return 1
@@ -56,6 +62,27 @@ class ModuleImportInsertionPoint:
             docstring = body[0]
             return (docstring.end_lineno or docstring.lineno) + 1
         return 1
+
+    def insertion_index_for(self, addition: "RequestedImportStatement") -> int:
+        """Locate the addition among existing canonical import families."""
+
+        return next(
+            (
+                index
+                for index, statement in enumerate(self.leading_import_statements)
+                if RequestedImportStatement(statement).canonical_family_key
+                > addition.canonical_family_key
+            ),
+            len(self.leading_import_statements),
+        )
+
+    def line_number_for_insertion_index(self, insertion_index: int) -> int:
+        """Return the source anchor following the preceding import group."""
+
+        if insertion_index == 0:
+            return self.initial_line_number
+        previous = self.leading_import_statements[insertion_index - 1]
+        return (previous.end_lineno or previous.lineno) + 1
 
     @property
     def module(self) -> ast.Module:
@@ -416,6 +443,21 @@ class ModuleImportMutation(NominalSourceEdit):
         if module is None:
             module = ast.parse(source, filename=self.file_path)
         additions = list(self._coalesced_additions(self.additions))
+        guard_projection = TypeCheckingGuardProjection.from_module(module)
+        if (
+            any(addition.scope.is_guarded for addition in additions)
+            and guard_projection.preferred_reference_source is None
+        ):
+            additions = list(
+                self._coalesced_additions(
+                    (
+                        *additions,
+                        *RequestedImportStatement.from_source(
+                            "from typing import TYPE_CHECKING\n"
+                        ),
+                    )
+                )
+            )
         removals_by_module = {
             (removal.scope, removal.module_name): frozenset(removal.names)
             for removal in self._coalesced_removals(self.removals)
@@ -530,9 +572,11 @@ class ModuleImportMutation(NominalSourceEdit):
                     continue
                 if alias not in aliases:
                     aliases.append(alias)
+            aliases_by_statement[id(target_statement)] = list(
+                sorted_tuple(aliases, key=lambda alias: alias.canonical_key)
+            )
 
         replacements: list[PhysicalSourceEdit] = []
-        guard_projection = TypeCheckingGuardProjection.from_module(module)
         guard_by_statement_id = {
             id(statement): guard
             for guard in guard_projection.guards
@@ -595,6 +639,11 @@ class ModuleImportMutation(NominalSourceEdit):
             aliases = tuple(aliases_by_statement[id(statement)])
             if aliases == original_aliases:
                 continue
+            if _node_contains_comment(source, statement):
+                raise ValueError(
+                    f"Cannot rewrite commented import at {self.file_path!r}:"
+                    f"{statement.lineno}"
+                )
             scope = scope_by_statement_id[id(statement)]
             if not aliases and id(statement) not in preserved_empty_guard_statement_ids:
                 replacements.append(
@@ -662,19 +711,17 @@ class ModuleImportMutation(NominalSourceEdit):
             addition for addition in pending_additions if addition.scope.is_guarded
         )
         if guarded_additions and not guard_projection.guards:
-            return (
-                self._new_guard_insertion(
-                    source=source,
-                    module=module,
-                    runtime_additions=runtime_additions,
-                    guarded_additions=guarded_additions,
-                    guard_projection=guard_projection,
-                ),
+            return self._new_guard_insertions(
+                source=source,
+                module=module,
+                runtime_additions=runtime_additions,
+                guarded_additions=guarded_additions,
+                guard_projection=guard_projection,
             )
         insertions: list[SourceInsertion] = []
         if runtime_additions:
-            insertions.append(
-                self._runtime_import_insertion(source, module, runtime_additions)
+            insertions.extend(
+                self._runtime_import_insertions(source, module, runtime_additions)
             )
         if guarded_additions:
             insertions.append(
@@ -686,32 +733,72 @@ class ModuleImportMutation(NominalSourceEdit):
             )
         return tuple(insertions)
 
-    def _runtime_import_insertion(
+    def _runtime_import_insertions(
         self,
         source: str,
         module: ast.Module,
         additions: tuple[RequestedImportStatement, ...],
-    ) -> SourceInsertion:
+    ) -> tuple[SourceInsertion, ...]:
         insertion_point = ModuleImportInsertionPoint(
             source,
             self.file_path,
             module_node=module,
         )
-        insertion_line = insertion_point.line_number
+        additions_by_insertion_index: dict[int, list[RequestedImportStatement]] = (
+            defaultdict(list)
+        )
+        for addition in additions:
+            additions_by_insertion_index[
+                insertion_point.insertion_index_for(addition)
+            ].append(addition)
+        existing_imports = insertion_point.leading_import_statements
+        return tuple(
+            self._runtime_import_group_insertion(
+                source=source,
+                insertion_point=insertion_point,
+                insertion_index=insertion_index,
+                additions=tuple(additions_by_insertion_index[insertion_index]),
+                existing_imports=existing_imports,
+            )
+            for insertion_index in sorted(additions_by_insertion_index)
+        )
+
+    def _runtime_import_group_insertion(
+        self,
+        *,
+        source: str,
+        insertion_point: ModuleImportInsertionPoint,
+        insertion_index: int,
+        additions: tuple[RequestedImportStatement, ...],
+        existing_imports: tuple[ast.Import | ast.ImportFrom, ...],
+    ) -> SourceInsertion:
+        insertion_line = insertion_point.line_number_for_insertion_index(
+            insertion_index
+        )
+        previous_statement = (
+            existing_imports[insertion_index - 1] if insertion_index else None
+        )
+        inserted_source = RequestedImportBlock(additions).source_after(
+            previous_statement
+        )
         spacing = DestinationInsertionSpacing.from_source(
             source,
             insertion_line,
             inserted_source_is_import_block=True,
         )
+        if insertion_index == len(existing_imports):
+            inserted_source += spacing.trailing_separator
+        elif (
+            additions[-1].source_group_identity
+            != RequestedImportStatement(
+                existing_imports[insertion_index]
+            ).source_group_identity
+        ):
+            inserted_source += "\n" * max(0, 1 - spacing.following_blank_line_count)
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
-            inserted_lines=SourceTargetEditor.source_lines(
-                RequestedImportBlock(additions).source_after(
-                    insertion_point.previous_import_statement
-                )
-                + spacing.trailing_separator
-            ),
+            inserted_lines=SourceTargetEditor.source_lines(inserted_source),
             rationale=self.rationale or f"Ensure imports exist in {self.file_path!r}.",
             contributors=self.contributors,
             origins=self.origins,
@@ -736,7 +823,7 @@ class ModuleImportMutation(NominalSourceEdit):
             origins=self.origins,
         )
 
-    def _new_guard_insertion(
+    def _new_guard_insertions(
         self,
         *,
         source: str,
@@ -744,24 +831,27 @@ class ModuleImportMutation(NominalSourceEdit):
         runtime_additions: tuple[RequestedImportStatement, ...],
         guarded_additions: tuple[RequestedImportStatement, ...],
         guard_projection: TypeCheckingGuardProjection,
-    ) -> SourceInsertion:
+    ) -> tuple[SourceInsertion, ...]:
         reference_source = guard_projection.preferred_reference_source
         if reference_source is None:
             reference_source = "TYPE_CHECKING"
-            runtime_additions = self._coalesced_additions(
-                (
-                    *runtime_additions,
-                    *RequestedImportStatement.from_source(
-                        "from typing import TYPE_CHECKING\n"
-                    ),
-                )
-            )
         insertion_point = ModuleImportInsertionPoint(
             source,
             self.file_path,
             module_node=module,
         )
-        runtime_source = RequestedImportBlock(runtime_additions).source_after(
+        import_boundary_index = len(insertion_point.leading_import_statements)
+        boundary_runtime_additions = tuple(
+            addition
+            for addition in runtime_additions
+            if insertion_point.insertion_index_for(addition) == import_boundary_index
+        )
+        preceding_runtime_additions = tuple(
+            addition
+            for addition in runtime_additions
+            if insertion_point.insertion_index_for(addition) != import_boundary_index
+        )
+        runtime_source = RequestedImportBlock(boundary_runtime_additions).source_after(
             insertion_point.previous_import_statement
         )
         guarded_source = RequestedImportBlock(guarded_additions).source_after(None)
@@ -780,16 +870,23 @@ class ModuleImportMutation(NominalSourceEdit):
             insertion_line,
             inserted_source_is_import_block=False,
         )
-        return SourceInsertion(
-            file_path=self.file_path,
-            insertion_line=insertion_line,
-            inserted_lines=SourceTargetEditor.source_lines(
-                inserted_source.rstrip("\n") + spacing.trailing_separator
+        return (
+            *self._runtime_import_insertions(
+                source,
+                module,
+                preceding_runtime_additions,
             ),
-            rationale=self.rationale
-            or f"Ensure type-checking imports exist in {self.file_path!r}.",
-            contributors=self.contributors,
-            origins=self.origins,
+            SourceInsertion(
+                file_path=self.file_path,
+                insertion_line=insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(
+                    inserted_source.rstrip("\n") + spacing.trailing_separator
+                ),
+                rationale=self.rationale
+                or f"Ensure type-checking imports exist in {self.file_path!r}.",
+                contributors=self.contributors,
+                origins=self.origins,
+            ),
         )
 
 

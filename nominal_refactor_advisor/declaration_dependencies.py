@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import ast
 import sys
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Iterator, TypeAlias
+from typing import TypeAlias
 
 from .annotation_semantics import StringizedAnnotationSurface
-from .ast_tools import ImportBoundNameProjection
+from .ast_tools import ImportBoundNameProjection, ModuleAnnotationEvaluationMode
+from .codemod_import_scopes import ModuleImportScope
 
 MovableDeclaration: TypeAlias = (
     ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign | ast.AnnAssign
@@ -21,7 +23,8 @@ class DeclarationDependencyUse(StrEnum):
     """Execution context in which a declaration resolves an external name."""
 
     EXECUTION = "execution"
-    ANNOTATION = "annotation"
+    EVALUATED_ANNOTATION = "evaluated_annotation"
+    DEFERRED_ANNOTATION = "deferred_annotation"
 
 
 @dataclass(frozen=True)
@@ -29,7 +32,8 @@ class DeclarationDependencyProjection:
     """External names partitioned by their use in moved declarations."""
 
     execution_names: frozenset[str]
-    annotation_names: frozenset[str]
+    evaluated_annotation_names: frozenset[str]
+    deferred_annotation_names: frozenset[str]
     annotation_count: int
 
     @classmethod
@@ -44,11 +48,18 @@ class DeclarationDependencyProjection:
             execution_names=frozenset(
                 collector.names_by_use[DeclarationDependencyUse.EXECUTION]
             ),
-            annotation_names=frozenset(
-                collector.names_by_use[DeclarationDependencyUse.ANNOTATION]
+            evaluated_annotation_names=frozenset(
+                collector.names_by_use[DeclarationDependencyUse.EVALUATED_ANNOTATION]
+            ),
+            deferred_annotation_names=frozenset(
+                collector.names_by_use[DeclarationDependencyUse.DEFERRED_ANNOTATION]
             ),
             annotation_count=collector.annotation_count,
         )
+
+    @property
+    def annotation_names(self) -> frozenset[str]:
+        return self.evaluated_annotation_names | self.deferred_annotation_names
 
     @property
     def names(self) -> frozenset[str]:
@@ -57,6 +68,23 @@ class DeclarationDependencyProjection:
     @property
     def annotation_only_names(self) -> frozenset[str]:
         return self.annotation_names - self.execution_names
+
+    def minimum_import_scope(
+        self,
+        name: str,
+        annotation_evaluation_mode: ModuleAnnotationEvaluationMode,
+    ) -> ModuleImportScope:
+        """Derive the least execution scope preserving one dependency."""
+
+        requires_runtime = name in self.execution_names or (
+            annotation_evaluation_mode.annotations_execute_at_declaration
+            and name in self.evaluated_annotation_names
+        )
+        return (
+            ModuleImportScope.RUNTIME
+            if requires_runtime
+            else ModuleImportScope.TYPE_CHECKING
+        )
 
 
 @dataclass(frozen=True)
@@ -85,6 +113,26 @@ class ModuleLexicalDependencyProjection:
             for reference in self.external_name_references
             if reference.id == name
         )
+
+    def referenced_names_among(self, names: Iterable[str]) -> frozenset[str]:
+        """Project candidate module references from retained source evidence."""
+
+        candidates = frozenset(names)
+        direct_names = frozenset(
+            reference.id
+            for reference in self.external_name_references
+            if reference.id in candidates
+        )
+        deferred_names = frozenset(
+            name
+            for name in candidates
+            if any(
+                surface.reference_count(name)
+                and surface.resolves_module_name(name, None)
+                for surface in self.stringized_annotations
+            )
+        )
+        return direct_names | deferred_names
 
 
 @dataclass(frozen=True)
@@ -355,16 +403,25 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
     ) -> None:
         if evaluation_sensitive:
             self.annotation_count += 1
-        self.stringized_annotation_surfaces.extend(
-            StringizedAnnotationSurface(
-                literal=node,
-                owner_classes=tuple(self.owner_classes),
-            )
-            for node in ast.walk(expression)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        stringized_surfaces = StringizedAnnotationSurface.from_annotation(
+            expression,
+            owner_classes=tuple(self.owner_classes),
         )
-        with self._dependency_use(DeclarationDependencyUse.ANNOTATION):
+        self.stringized_annotation_surfaces.extend(stringized_surfaces)
+        with self._dependency_use(DeclarationDependencyUse.EVALUATED_ANNOTATION):
             self.visit(expression)
+            for surface in stringized_surfaces:
+                if surface.expression is not None:
+                    self._visit_deferred_annotation(surface.expression)
+
+    def _visit_deferred_annotation(self, expression: ast.expr) -> None:
+        """Visit names recursively encoded by one annotation string."""
+
+        with self._dependency_use(DeclarationDependencyUse.DEFERRED_ANNOTATION):
+            self.visit(expression)
+            for surface in StringizedAnnotationSurface.from_annotation(expression):
+                if surface.expression is not None:
+                    self._visit_deferred_annotation(surface.expression)
 
     @contextmanager
     def _type_parameter_scope(

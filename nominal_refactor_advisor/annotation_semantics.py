@@ -132,6 +132,20 @@ class StringizedAnnotationSurface:
     literal: ast.Constant
     owner_classes: tuple[ast.ClassDef, ...]
 
+    @classmethod
+    def from_annotation(
+        cls,
+        expression: ast.expr,
+        *,
+        owner_classes: tuple[ast.ClassDef, ...] = (),
+    ) -> tuple["StringizedAnnotationSurface", ...]:
+        """Project string literals occupying type-expression positions."""
+
+        return tuple(
+            cls(literal=literal, owner_classes=owner_classes)
+            for literal in _StringizedAnnotationLiteralCollector.collect(expression)
+        )
+
     @cached_property
     def expression(self) -> ast.expr | None:
         try:
@@ -144,10 +158,7 @@ class StringizedAnnotationSurface:
         expression = self.expression
         if expression is None:
             return 0
-        return sum(
-            isinstance(node, ast.Name) and node.id == name
-            for node in ast.walk(expression)
-        )
+        return _StringizedAnnotationNameCollector.count(expression, name)
 
     def resolves_module_name(
         self,
@@ -181,3 +192,69 @@ class StringizedAnnotationSurface:
                 "Stringized annotation source does not reconstruct its parsed names"
             )
         return name_pattern.sub(new_name, literal_source)
+
+
+class _StringizedAnnotationLiteralCollector:
+    """Identify deferred type expressions without treating values as types."""
+
+    _VALUE_PARAMETER_ROOTS = frozenset(("Literal",))
+    _TYPE_THEN_VALUE_PARAMETER_ROOTS = frozenset(("Annotated",))
+
+    def __init__(self) -> None:
+        self.literals: list[ast.Constant] = []
+
+    @classmethod
+    def collect(cls, expression: ast.expr) -> tuple[ast.Constant, ...]:
+        collector = cls()
+        collector.visit_type_expression(expression)
+        return tuple(collector.literals)
+
+    def visit_type_expression(self, expression: ast.expr) -> None:
+        if isinstance(expression, ast.Constant):
+            if isinstance(expression.value, str):
+                self.literals.append(expression)
+            return
+        if isinstance(expression, ast.Subscript):
+            root_reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(
+                expression.value
+            )
+            root_name = (
+                NOMINAL_ANNOTATION_SOURCE_AUTHORITY.terminal_name(root_reference)
+                if root_reference is not None
+                else None
+            )
+            parameters = self._subscript_parameters(expression.slice)
+            if root_name in self._VALUE_PARAMETER_ROOTS:
+                return
+            if root_name in self._TYPE_THEN_VALUE_PARAMETER_ROOTS:
+                if parameters:
+                    self.visit_type_expression(parameters[0])
+                return
+        if isinstance(expression, ast.Call):
+            return
+        for child in ast.iter_child_nodes(expression):
+            if isinstance(child, ast.expr):
+                self.visit_type_expression(child)
+
+    @staticmethod
+    def _subscript_parameters(expression: ast.expr) -> tuple[ast.expr, ...]:
+        if isinstance(expression, ast.Tuple):
+            return tuple(expression.elts)
+        return (expression,)
+
+
+class _StringizedAnnotationNameCollector:
+    """Count names recursively exposed by deferred type expressions."""
+
+    @classmethod
+    def count(cls, expression: ast.expr, name: str) -> int:
+        direct_count = sum(
+            isinstance(node, ast.Name) and node.id == name
+            for node in ast.walk(expression)
+        )
+        return direct_count + sum(
+            cls.count(nested_expression, name)
+            for surface in StringizedAnnotationSurface.from_annotation(expression)
+            for nested_expression in (surface.expression,)
+            if nested_expression is not None
+        )

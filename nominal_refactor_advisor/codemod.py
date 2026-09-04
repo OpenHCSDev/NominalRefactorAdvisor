@@ -159,6 +159,8 @@ from .codemod_architecture_guards import (
 )
 from .codemod_declaration_source import (
     ClassBodySourceAuthority as ClassBodySourceAuthority,
+    ClassMemberInsertion as ClassMemberInsertion,
+    ClassMemberSource as ClassMemberSource,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
 )
 from .codemod_declaration_source import (
@@ -236,9 +238,6 @@ from .codemod_module_declarations import (
 )
 from .codemod_module_declarations import (
     AssignedSourceTopLevelDeclaration as AssignedSourceTopLevelDeclaration,
-)
-from .codemod_module_declarations import (
-    CandidateNameReferenceCollector as CandidateNameReferenceCollector,
 )
 from .codemod_module_declarations import (
     ModuleSymbolTable as ModuleSymbolTable,
@@ -1426,103 +1425,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference, SourceTextReplacement)
             self,
             rationale=rationale
             or f"Replace source text inside {target_digest.qualname!r}.",
-        )
-
-
-@dataclass(frozen=True)
-class ClassMemberSource:
-    """One named class member together with its exact indented source."""
-
-    name: str
-    source: str
-
-
-@dataclass(frozen=True, kw_only=True)
-class ClassMemberInsertion(NominalSourceEdit):
-    """Coalescible semantic insertion owned by one exact class declaration."""
-
-    target_id: str
-    members: tuple[ClassMemberSource, ...]
-
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        insertions_by_target: dict[str, list[ClassMemberInsertion]] = defaultdict(list)
-        for peer in peers:
-            insertion = cast(ClassMemberInsertion, peer)
-            insertions_by_target[insertion.target_id].append(insertion)
-        return tuple(
-            self._coalesced_same_target(tuple(insertions_by_target[target_id]))
-            for target_id in sorted(insertions_by_target)
-        )
-
-    @classmethod
-    def _coalesced_same_target(
-        cls,
-        insertions: tuple["ClassMemberInsertion", ...],
-    ) -> "ClassMemberInsertion":
-        first = insertions[0]
-        members_by_name: dict[str, ClassMemberSource] = {}
-        for insertion in insertions:
-            for member in insertion.members:
-                existing = members_by_name.get(member.name)
-                if existing is not None and existing.source != member.source:
-                    raise PhysicalSourceEditConflictError(
-                        f"Class member {member.name!r} has competing derived sources"
-                    )
-                members_by_name.setdefault(member.name, member)
-        return replace(
-            first,
-            members=sorted_tuple(
-                members_by_name.values(),
-                key=lambda member: member.name,
-            ),
-            rationale=_joined_rationales(
-                insertion.rationale for insertion in insertions
-            ),
-            contributors=NominalSourceEdit.merged_contributors(insertions),
-            origins=NominalSourceEdit.merged_origins(insertions),
-        )
-
-    def resolved_edits(
-        self,
-        context: "CodemodSelectorContext",
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        target = context.source_index.target_by_id.get(self.target_id)
-        node = context.ast_target_nodes_by_id.get(self.target_id)
-        if target is None or not isinstance(node, ast.ClassDef):
-            raise ValueError(
-                f"Class member insertion target {self.target_id!r} is unavailable"
-            )
-        existing_member_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
-        collisions = existing_member_names.intersection(
-            member.name for member in self.members
-        )
-        if collisions:
-            raise ValueError(
-                f"Class {target.qualname!r} already binds members "
-                f"{tuple(sorted(collisions))!r}"
-            )
-        source = context.sources_by_file_path[target.file_path]
-        insertion_point = ClassBodySourceAuthority(node=node, source=source)
-        return (
-            SourceInsertion(
-                file_path=target.file_path,
-                insertion_line=SourceTextGeometry(source).line_number_for_offset(
-                    insertion_point.before_first_method_offset
-                ),
-                inserted_lines=SourceTargetEditor.source_lines(
-                    insertion_point.member_source(
-                        tuple(member.source for member in self.members)
-                    )
-                ),
-                rationale=self.rationale,
-                contributors=self.contributors,
-                origins=self.origins,
-            ),
         )
 
 
@@ -7002,9 +6904,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             - source_table.unshadowed_builtin_names
             - source_table.implicit_module_names
         )
-        permits_guarded_import_by_name = {
-            name: name in moved_dependencies.annotation_only_names
-            and not source_annotation_mode.annotations_execute_at_declaration
+        destination_scope_by_name = {
+            name: moved_dependencies.minimum_import_scope(
+                name,
+                source_annotation_mode,
+            )
             for name in external_names
         }
         ambiguous_import_names = tuple(
@@ -7014,7 +6918,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 if source_table.import_dependency_is_ambiguous(
                     name,
                     import_graph=import_graph,
-                    permits_guarded_import=permits_guarded_import_by_name[name],
+                    permits_guarded_import=destination_scope_by_name[name].is_guarded,
                 )
             )
         )
@@ -7026,7 +6930,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 binding_and_identity := source_table.import_binding_for_dependency(
                     name,
                     import_graph=import_graph,
-                    permits_guarded_import=permits_guarded_import_by_name[name],
+                    permits_guarded_import=destination_scope_by_name[name].is_guarded,
                 )
             )
             is not None
@@ -7068,11 +6972,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ModuleMoveImportDependency(
                 binding=binding,
                 identity=identity,
+                destination_scope=destination_scope_by_name[name],
                 destination_import_required=(
                     not destination_table.satisfies_import_binding(
                         name,
                         identity,
-                        binding.scope,
+                        destination_scope_by_name[name],
                         import_graph=import_graph,
                     )
                 ),
@@ -7114,7 +7019,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_dependency_names=destination_dependency_names,
             destination_insertion_line=destination_table.insertion_line_after_bindings(
                 destination_dependency_names,
-                (dependency.scope for dependency in import_dependencies),
+                (
+                    dependency.destination_scope
+                    for dependency in import_dependencies
+                ),
             ),
             source_annotation_evaluation_mode=source_annotation_mode,
             destination_annotation_evaluation_mode=(destination_annotation_mode),
@@ -7172,7 +7080,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                         context.module_import_graph,
                         self.destination_path,
                     ),
-                    scope=dependency.scope,
+                    scope=dependency.destination_scope,
                     rationale=self.rationale
                     or (
                         "Ensure dependencies for moved symbols "
@@ -7207,7 +7115,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ModuleImportMutation.remove_bound_names(
                     file_path=self.source_path,
                     names=(dependency.name,),
-                    scope=dependency.scope,
+                    scope=dependency.source_scope,
                     rationale=self.rationale
                     or (
                         "Remove imports used only by moved symbols "

@@ -78,6 +78,31 @@ def test_annotation_projection_includes_function_local_type_dependencies() -> No
     assert projection.annotation_count == 4
 
 
+def test_annotation_projection_resolves_deferred_type_expressions() -> None:
+    projection = _projection(
+        "from typing import Annotated, Literal\n"
+        "\n"
+        "class Container:\n"
+        "    direct: 'External'\n"
+        "    nested: tuple['Nested', Literal['value']]\n"
+        "    described: Annotated['Described', 'metadata']\n"
+        "    recursive: \"list['Recursive']\"\n"
+    )
+
+    assert projection.annotation_names == frozenset(
+        (
+            "Annotated",
+            "Described",
+            "External",
+            "Literal",
+            "Nested",
+            "Recursive",
+            "list",
+            "tuple",
+        )
+    )
+
+
 def test_enclosing_function_binding_satisfies_nested_closure_dependency() -> None:
     projection = _projection(
         "def outer():\n"

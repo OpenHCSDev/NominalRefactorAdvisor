@@ -371,6 +371,100 @@ def test_import_mutation_renders_bare_imports_as_independent_statements(
     )
 
 
+def test_import_mutation_inserts_absolute_dependency_before_relative_group(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "import ast\n"
+        "from typing import ClassVar\n\n"
+        "from .types import LocalType\n\n\n"
+        "VALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from collections import defaultdict\n",
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert len(physical) == 1
+    assert physical[0].insertion_line == 2
+    assert physical[0].replacement_lines == ("from collections import defaultdict\n",)
+
+
+def test_import_mutation_canonically_merges_existing_from_import_aliases(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "from .types import Zebra, Alpha\n\n\nVALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from .types import Middle\n",
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert len(physical) == 1
+    assert physical[0].replacement_lines == (
+        "from .types import (\n",
+        "    Alpha,\n",
+        "    Middle,\n",
+        "    Zebra,\n",
+        ")\n",
+    )
+
+
+def test_import_mutation_refuses_to_erase_import_comments(tmp_path: Path) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "from .types import (\n"
+        "    Alpha,  # retained explanation\n"
+        ")\n\n\n"
+        "VALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from .types import Beta\n",
+    )
+
+    with pytest.raises(ValueError, match="Cannot rewrite commented import"):
+        mutation.resolved_edits(context)
+
+
+def test_import_mutation_preserves_group_boundaries_for_multiple_additions(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "from .types import LocalType\n\n\nVALUE = 1\n",
+    )
+    mutations = (
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source="from __future__ import annotations\n",
+        ),
+        ModuleImportMutation.from_source(
+            file_path=module_path.as_posix(),
+            import_source="import ast\n",
+        ),
+    )
+    mutation = NominalSourceEdit.coalesced_by_declaration(mutations, context)[0]
+
+    physical = mutation.resolved_edits(context)
+
+    assert len(physical) == 1
+    assert physical[0].insertion_line == 1
+    assert physical[0].replacement_lines == (
+        "from __future__ import annotations\n",
+        "\n",
+        "import ast\n",
+        "\n",
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "expected_separator"),
     (

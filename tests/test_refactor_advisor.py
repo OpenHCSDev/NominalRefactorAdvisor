@@ -5324,7 +5324,7 @@ def test_refactor_recipe_ensure_import_merges_existing_from_import(
 
     assert simulation.simulation.applied_rewrite_count == 1
     assert "from .taxonomy import LabeledStrEnum\n" not in rewritten
-    assert "    CapabilityTag,\n    ObservationTag,\n    LabeledStrEnum,\n" in rewritten
+    assert "    CapabilityTag,\n    LabeledStrEnum,\n    ObservationTag,\n" in rewritten
 
 
 def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
@@ -7213,7 +7213,8 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
         report.imported_dependency_names
     )
     assert report.source_import_removal_names == ()
-    assert simulation.simulation.rewritten_sources[source_path.as_posix()].startswith(
+    assert simulation.simulation.rewritten_sources[source_path.as_posix()] == (
+        "from .destination import Helper as Helper\n"
         "from .shared import Shared as Shared\n"
     )
     simulation.apply()
@@ -7710,7 +7711,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     ]
 
     assert tuple(
-        (dependency.name, dependency.scope)
+        (dependency.name, dependency.destination_scope)
         for dependency in report.import_dependencies
     ) == (
         ("External", ModuleImportScope.TYPE_CHECKING),
@@ -7741,6 +7742,81 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
             "from pkg.destination import Helper; "
             "assert Helper.__annotations__ == {'value': 'External'}; "
             "assert Helper.__dataclass_fields__",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_symbol_move_derives_guarded_import_from_forward_annotation(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/dependencies.py", "class External:\n    pass\n")
+    _write_module(tmp_path, "pkg/existing.py", "VALUE = 1\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "from .dependencies import External\n\n\n"
+        "class Retained:\n"
+        "    values: \"list['External']\"\n\n\n"
+        "class Helper:\n"
+        "    def build(self, value: 'External') -> 'External':\n"
+        "        return value\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n\n"
+        "import ast\n\n"
+        "from .existing import VALUE\n\n\n"
+        "DESTINATION = VALUE\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-forward-annotation").with_operation(
+        operation
+    ).simulate(snapshot)
+    dependency = next(
+        dependency
+        for dependency in report.import_dependencies
+        if dependency.name == "External"
+    )
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert dependency.source_scope is ModuleImportScope.RUNTIME
+    assert dependency.destination_scope is ModuleImportScope.TYPE_CHECKING
+    rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
+    assert "from .dependencies import External" in rewritten_source
+    assert (
+        "import ast\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "from .existing import VALUE\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from .dependencies import External"
+    ) in rewritten_destination
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.destination import Helper; "
+            "assert Helper.__dict__['build'].__annotations__ == "
+            "{'value': \"'External'\", 'return': \"'External'\"}",
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -8144,8 +8220,8 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     assert simulation.simulation.rewritten_sources[
         consumer_path.as_posix()
     ].startswith(
-        "from .source import Unrelated\n"
         "from .extracted import Root\n"
+        "from .source import Unrelated\n"
     )
     simulation.apply()
     imported = subprocess.run(
@@ -8915,8 +8991,8 @@ def test_symbol_move_rewrites_repository_consumer_imports(
     ]
 
     assert rewritten_consumer.startswith(
-        "from .source import Unmoved\n"
         "from .destination import Helper as ImportedHelper\n"
+        "from .source import Unmoved\n"
     )
     assert set(simulation.apply()) == {
         source_path.as_posix(),
