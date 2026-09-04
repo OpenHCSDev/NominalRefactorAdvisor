@@ -58,6 +58,7 @@ from .class_index import (
     ModuleClassReferenceResolver,
     build_class_family_index,
     build_compact_class_family_index,
+    iter_class_definitions,
     overlay_class_family_index,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -1315,6 +1316,73 @@ class SemanticClassSupplement:
     constructed_type_names: tuple[str, ...]
     autoregister_authority_shape: bool
 
+    @classmethod
+    def from_class_declaration(
+        cls,
+        class_symbol: str,
+        node: ast.ClassDef,
+        *,
+        constructed_type_names: Iterable[str] | None = None,
+    ) -> "SemanticClassSupplement | None":
+        """Project one class declaration into its compact semantic facts."""
+
+        authority = AutoRegisterClassAuthority(node)
+        constant_assignments = tuple(
+            (
+                name,
+                value.lineno,
+                value.value if isinstance(value.value, str) else None,
+            )
+            for name, value in authority.assignment_pairs
+            if isinstance(value, ast.Constant)
+        )
+        declared_type_names = sorted_tuple(
+            {
+                terminal_name
+                for _, value in authority.assignment_pairs
+                if (terminal_name := authority.terminal_name(value)) is not None
+            }
+            | {
+                type_name
+                for statement in node.body
+                if isinstance(statement, ast.AnnAssign)
+                for type_name in ProjectionTypeScope.annotation_type_names(
+                    statement.annotation
+                )
+            }
+        )
+        if constructed_type_names is None:
+            collected_constructed_type_names: set[str] = set()
+            for statement in node.body:
+                if not isinstance(
+                    statement,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    continue
+                for child in ast.walk(statement):
+                    if isinstance(child, ast.Call):
+                        collected_constructed_type_names.update(
+                            PresentationAuthorityConstructionCollector.construction_type_names(
+                                child
+                            )
+                        )
+        else:
+            collected_constructed_type_names = set(constructed_type_names)
+        if not (
+            constant_assignments
+            or declared_type_names
+            or collected_constructed_type_names
+            or authority.semantic_authority_shape
+        ):
+            return None
+        return cls(
+            class_symbol=class_symbol,
+            constant_assignments=constant_assignments,
+            declared_type_names=declared_type_names,
+            constructed_type_names=sorted_tuple(collected_constructed_type_names),
+            autoregister_authority_shape=authority.semantic_authority_shape,
+        )
+
 
 @dataclass(frozen=True)
 class CompactSemanticModuleProjection(CompactModuleIdentity):
@@ -1329,30 +1397,6 @@ class CompactSemanticProjectionDemand:
     """Focused-scan view that retains authorities but no context reports."""
 
     include_presentations: bool
-
-
-def _semantic_report_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> CompactSemanticProjectionDemand:
-    del target_items, config
-    return CompactSemanticProjectionDemand(include_presentations=False)
-
-
-def _cached_semantic_demand_projection(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, CompactSemanticProjectionDemand):
-        raise TypeError("semantic projection demand has the wrong authority type")
-    return tuple(
-        replace(
-            item,
-            projections=(item.projections if demand.include_presentations else ()),
-        )
-        for item in items
-        if isinstance(item, CompactSemanticModuleProjection)
-    )
 
 
 def _class_reference_parts(node: ast.AST) -> tuple[str, ...] | None:
@@ -3690,7 +3734,7 @@ class AstSemanticAuthorityBuildContext(SemanticAuthorityBuildContext[IndexedClas
         self,
         indexed_class: IndexedClass,
     ) -> SemanticClassSupplement | None:
-        return _semantic_class_supplement(
+        return SemanticClassSupplement.from_class_declaration(
             indexed_class.symbol,
             indexed_class.node,
             constructed_type_names=(),
@@ -3846,141 +3890,6 @@ class SemanticProjectionCollector:
         )
 
 
-def _semantic_indexed_class_nodes(
-    statements: list[ast.stmt],
-    *,
-    parent_qualname: str | None = None,
-) -> tuple[tuple[str, ast.ClassDef], ...]:
-    classes: list[tuple[str, ast.ClassDef]] = []
-    for statement in statements:
-        if not isinstance(statement, ast.ClassDef):
-            continue
-        qualname = (
-            statement.name
-            if parent_qualname is None
-            else f"{parent_qualname}.{statement.name}"
-        )
-        classes.append((qualname, statement))
-        classes.extend(
-            _semantic_indexed_class_nodes(
-                list(statement.body),
-                parent_qualname=qualname,
-            )
-        )
-    return tuple(classes)
-
-
-def _semantic_class_supplement(
-    class_symbol: str,
-    node: ast.ClassDef,
-    *,
-    constructed_type_names: Iterable[str] | None = None,
-) -> SemanticClassSupplement | None:
-    authority = AutoRegisterClassAuthority(node)
-    constant_assignments = tuple(
-        (
-            name,
-            value.lineno,
-            value.value if isinstance(value.value, str) else None,
-        )
-        for name, value in authority.assignment_pairs
-        if isinstance(value, ast.Constant)
-    )
-    declared_type_names = sorted_tuple(
-        {
-            terminal_name
-            for _, value in authority.assignment_pairs
-            if (terminal_name := authority.terminal_name(value)) is not None
-        }
-        | {
-            type_name
-            for statement in node.body
-            if isinstance(statement, ast.AnnAssign)
-            for type_name in ProjectionTypeScope.annotation_type_names(
-                statement.annotation
-            )
-        }
-    )
-    if constructed_type_names is None:
-        collected_constructed_type_names: set[str] = set()
-        for statement in node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for child in ast.walk(statement):
-                if isinstance(child, ast.Call):
-                    collected_constructed_type_names.update(
-                        PresentationAuthorityConstructionCollector.construction_type_names(
-                            child
-                        )
-                    )
-    else:
-        collected_constructed_type_names = set(constructed_type_names)
-    if not (
-        constant_assignments
-        or declared_type_names
-        or collected_constructed_type_names
-        or authority.semantic_authority_shape
-    ):
-        return None
-    return SemanticClassSupplement(
-        class_symbol=class_symbol,
-        constant_assignments=constant_assignments,
-        declared_type_names=declared_type_names,
-        constructed_type_names=sorted_tuple(collected_constructed_type_names),
-        autoregister_authority_shape=authority.semantic_authority_shape,
-    )
-
-
-def _compact_semantic_class_supplements_from_syntax_index(
-    parsed_module: ParsedModule,
-) -> tuple[SemanticClassSupplement, ...]:
-    """Derive context-only supplements from the shared module event index."""
-
-    indexed_class_nodes = _semantic_indexed_class_nodes(list(parsed_module.module.body))
-    if not indexed_class_nodes:
-        return ()
-    class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}
-    for _qualname, class_node in indexed_class_nodes:
-        for statement in class_node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            class_ids_by_direct_method_id[id(statement)] = (
-                *class_ids_by_direct_method_id.get(id(statement), ()),
-                id(class_node),
-            )
-
-    constructed_type_names_by_class_id: dict[int, set[str]] = {}
-    syntax_index = module_syntax_index(parsed_module.module)
-    for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
-        type_names = PresentationAuthorityConstructionCollector.construction_type_names(
-            call
-        )
-        if not type_names:
-            continue
-        scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-        for function_node_index in scope.function_node_indices:
-            function = syntax_index.depth_first_nodes[function_node_index]
-            for class_id in class_ids_by_direct_method_id.get(id(function), ()):
-                constructed_type_names_by_class_id.setdefault(class_id, set()).update(
-                    type_names
-                )
-
-    return tuple(
-        supplement
-        for qualname, class_node in indexed_class_nodes
-        if (
-            supplement := _semantic_class_supplement(
-                f"{parsed_module.module_name}.{qualname}",
-                class_node,
-                constructed_type_names=constructed_type_names_by_class_id.get(
-                    id(class_node), ()
-                ),
-            )
-        )
-        is not None
-    )
-
-
 class CompactSemanticModuleProjectionFamily(
     CollectedFamily[CompactSemanticModuleProjection]
 ):
@@ -3988,8 +3897,95 @@ class CompactSemanticModuleProjectionFamily(
 
     item_type = CompactSemanticModuleProjection
     cache_payload_max_bytes = 1_000_000
-    report_demand_builder = staticmethod(_semantic_report_demand)
-    cached_demand_projector = staticmethod(_cached_semantic_demand_projection)
+
+    @classmethod
+    def class_supplements_from_syntax_index(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> tuple[SemanticClassSupplement, ...]:
+        """Derive context-only supplements from the shared module event index."""
+
+        indexed_class_nodes = iter_class_definitions(
+            list(parsed_module.module.body)
+        )
+        if not indexed_class_nodes:
+            return ()
+        class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}
+        for _qualname, class_node in indexed_class_nodes:
+            for statement in class_node.body:
+                if not isinstance(
+                    statement,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    continue
+                class_ids_by_direct_method_id[id(statement)] = (
+                    *class_ids_by_direct_method_id.get(id(statement), ()),
+                    id(class_node),
+                )
+
+        constructed_type_names_by_class_id: dict[int, set[str]] = {}
+        syntax_index = module_syntax_index(parsed_module.module)
+        for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
+            type_names = (
+                PresentationAuthorityConstructionCollector.construction_type_names(
+                    call
+                )
+            )
+            if not type_names:
+                continue
+            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+            for function_node_index in scope.function_node_indices:
+                function = syntax_index.depth_first_nodes[function_node_index]
+                for class_id in class_ids_by_direct_method_id.get(id(function), ()):
+                    constructed_type_names_by_class_id.setdefault(
+                        class_id,
+                        set(),
+                    ).update(type_names)
+
+        return tuple(
+            supplement
+            for qualname, class_node in indexed_class_nodes
+            if (
+                supplement := SemanticClassSupplement.from_class_declaration(
+                    f"{parsed_module.module_name}.{qualname}",
+                    class_node,
+                    constructed_type_names=constructed_type_names_by_class_id.get(
+                        id(class_node), ()
+                    ),
+                )
+            )
+            is not None
+        )
+
+    @classmethod
+    def report_demand(
+        cls,
+        target_items: tuple[object, ...],
+        config: object,
+    ) -> CompactSemanticProjectionDemand:
+        """Retain authority supplements while omitting unused presentations."""
+
+        del cls, target_items, config
+        return CompactSemanticProjectionDemand(include_presentations=False)
+
+    @classmethod
+    def project_cached_demand(
+        cls,
+        items: tuple[object, ...],
+        demand: object,
+    ) -> tuple[CompactSemanticModuleProjection, ...]:
+        """Project a cached semantic family through its exact demand."""
+
+        if not isinstance(demand, CompactSemanticProjectionDemand):
+            raise TypeError("semantic projection demand has the wrong authority type")
+        return tuple(
+            replace(
+                item,
+                projections=(item.projections if demand.include_presentations else ()),
+            )
+            for item in items
+            if isinstance(item, cls.item_type)
+        )
 
     @classmethod
     def collect(
@@ -4018,7 +4014,6 @@ class CompactSemanticModuleProjectionFamily(
         *,
         include_presentations: bool,
     ) -> list[CompactSemanticModuleProjection]:
-        del cls
         visitor = None
         if include_presentations:
             visitor = _ProjectionVisitor(parsed_module, None)
@@ -4036,7 +4031,7 @@ class CompactSemanticModuleProjectionFamily(
                     ),
                 ),
                 class_supplements=(
-                    _compact_semantic_class_supplements_from_syntax_index(parsed_module)
+                    cls.class_supplements_from_syntax_index(parsed_module)
                     if visitor is None
                     else visitor.class_supplements
                 ),
@@ -4361,7 +4356,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             if frame is not None:
                 self.class_supplement_stack.pop()
                 self._class_supplements[frame.supplement_index] = (
-                    _semantic_class_supplement(
+                    SemanticClassSupplement.from_class_declaration(
                         f"{self.parsed_module.module_name}.{frame.qualname}",
                         node,
                         constructed_type_names=frame.constructed_type_names,

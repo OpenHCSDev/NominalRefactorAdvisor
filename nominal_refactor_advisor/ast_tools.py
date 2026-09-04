@@ -1854,12 +1854,6 @@ class CollectedFamily(
     ast_demand_collector: ClassVar[
         Callable[[ParsedModule, object], list[object]] | None
     ] = None
-    report_demand_builder: ClassVar[
-        Callable[[tuple[object, ...], object], object] | None
-    ] = None
-    cached_demand_projector: ClassVar[
-        Callable[[tuple[object, ...], object], tuple[object, ...]] | None
-    ] = None
     report_presence_predicate: ClassVar[
         Callable[[tuple[object, ...], object], bool] | None
     ] = None
@@ -1988,8 +1982,6 @@ class CollectedFamily(
     ) -> object | None:
         """Derive context demand from complete report-target family items."""
 
-        if cls.report_demand_builder is not None:
-            return cls.report_demand_builder(target_items, config)
         if cls.report_presence_predicate is not None:
             return CollectedFamilyPresenceDemand(
                 include_context=cls.report_presence_predicate(target_items, config)
@@ -2025,10 +2017,7 @@ class CollectedFamily(
                 if demand.include_context
                 else ()
             )
-        if cls.cached_demand_projector is None:
-            return tuple(item for item in items if isinstance(item, cls.item_type))
-        projected = cls.cached_demand_projector(items, demand)
-        return tuple(item for item in projected if isinstance(item, cls.item_type))
+        return tuple(item for item in items if isinstance(item, cls.item_type))
 
     @classmethod
     @abstractmethod

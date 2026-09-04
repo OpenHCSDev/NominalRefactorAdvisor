@@ -2433,7 +2433,7 @@ class ClassFamilyIndex:
         )
 
 
-def _iter_class_defs(
+def iter_class_definitions(
     statements: list[ast.stmt],
     *,
     parent_qualname: str | None = None,
@@ -2448,7 +2448,9 @@ def _iter_class_defs(
             else f"{parent_qualname}.{statement.name}"
         )
         classes.append((qualname, statement))
-        classes.extend(_iter_class_defs(list(statement.body), parent_qualname=qualname))
+        classes.extend(
+            iter_class_definitions(list(statement.body), parent_qualname=qualname)
+        )
     return tuple(classes)
 
 
@@ -3261,68 +3263,6 @@ class CompactClassProjectionDemand:
     header_core_only: bool = False
 
 
-def _class_report_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> CompactClassProjectionDemand:
-    del config
-    projections = tuple(
-        item for item in target_items if isinstance(item, CompactModuleClassProjection)
-    )
-    return CompactClassProjectionDemand(
-        class_method_names=frozenset(
-            method.method_name
-            for projection in projections
-            for method in projection.class_methods
-        ),
-        include_autoregister_references=any(
-            projection.named_projection_surfaces
-            or any(
-                indexed_class.declares_autoregister_meta
-                or (
-                    indexed_class.keyed_family_key_type_name is not None
-                    and "registry_key_attr" in indexed_class.assignments_by_name
-                )
-                for indexed_class in projection.classes
-            )
-            for projection in projections
-        ),
-    )
-
-
-def _cached_class_demand_projection(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, CompactClassProjectionDemand):
-        raise TypeError("class projection demand has the wrong authority type")
-    projected = tuple(
-        replace(
-            item,
-            class_methods=tuple(
-                method
-                for method in item.class_methods
-                if method.method_name in demand.class_method_names
-            ),
-            autoregister_function_references=(
-                item.autoregister_function_references
-                if demand.include_autoregister_references
-                else ()
-            ),
-            autoregister_reference_index=(
-                item.autoregister_reference_index
-                if demand.include_autoregister_references
-                else None
-            ),
-        )
-        for item in items
-        if isinstance(item, CompactModuleClassProjection)
-    )
-    if not demand.header_core_only:
-        return projected
-    return tuple(item.header_core() for item in projected)
-
-
 def _native_definition_child(node: object, definition_type: str) -> object | None:
     node_type = getattr(node, "type", None)
     if node_type == definition_type:
@@ -3612,7 +3552,9 @@ def _class_nominal_reference_root_names(
     """Return module bindings queried while projecting class declarations."""
 
     reference_nodes: list[ast.AST] = []
-    for _qualname, class_node in _iter_class_defs(list(parsed_module.module.body)):
+    for _qualname, class_node in iter_class_definitions(
+        list(parsed_module.module.body)
+    ):
         reference_nodes.extend(class_node.bases)
         reference_nodes.extend(class_node.decorator_list)
         reference_nodes.extend(keyword.value for keyword in class_node.keywords)
@@ -3639,7 +3581,7 @@ def _repository_refined_class_projection(
     """Refine only binding-sensitive class facts from repository export proof."""
 
     class_nodes_by_qualname = dict(
-        _iter_class_defs(list(parsed_module.module.body))
+        iter_class_definitions(list(parsed_module.module.body))
     )
     binding_snapshots = _module_nominal_binding_snapshots(
         parsed_module,
@@ -3680,11 +3622,77 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
 
     item_type = CompactModuleClassProjection
     cache_payload_max_bytes = 3_000_000
-    report_demand_builder = staticmethod(_class_report_demand)
-    cached_demand_projector = staticmethod(_cached_class_demand_projection)
     source_demand_collector = staticmethod(
         _collect_demanded_class_projection_from_source
     )
+
+    @classmethod
+    def report_demand(
+        cls,
+        target_items: tuple[object, ...],
+        config: object,
+    ) -> CompactClassProjectionDemand:
+        """Derive the exact class facets required by report-target projections."""
+
+        del config
+        projections = tuple(
+            item for item in target_items if isinstance(item, cls.item_type)
+        )
+        return CompactClassProjectionDemand(
+            class_method_names=frozenset(
+                method.method_name
+                for projection in projections
+                for method in projection.class_methods
+            ),
+            include_autoregister_references=any(
+                projection.named_projection_surfaces
+                or any(
+                    indexed_class.declares_autoregister_meta
+                    or (
+                        indexed_class.keyed_family_key_type_name is not None
+                        and "registry_key_attr" in indexed_class.assignments_by_name
+                    )
+                    for indexed_class in projection.classes
+                )
+                for projection in projections
+            ),
+        )
+
+    @classmethod
+    def project_cached_demand(
+        cls,
+        items: tuple[object, ...],
+        demand: object,
+    ) -> tuple[CompactModuleClassProjection, ...]:
+        """Project cached class facts through their exact report demand."""
+
+        if not isinstance(demand, CompactClassProjectionDemand):
+            raise TypeError("class projection demand has the wrong authority type")
+        projected = tuple(
+            replace(
+                item,
+                class_methods=tuple(
+                    method
+                    for method in item.class_methods
+                    if method.method_name in demand.class_method_names
+                ),
+                autoregister_function_references=(
+                    item.autoregister_function_references
+                    if demand.include_autoregister_references
+                    else ()
+                ),
+                autoregister_reference_index=(
+                    item.autoregister_reference_index
+                    if demand.include_autoregister_references
+                    else None
+                ),
+            )
+            for item in items
+            if isinstance(item, cls.item_type)
+        )
+        if not demand.header_core_only:
+            return projected
+        return tuple(item.header_core() for item in projected)
 
     @classmethod
     def collect(
@@ -3746,7 +3754,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         parsed_module: ParsedModule,
     ) -> list[CompactModuleClassProjection]:
         del cls
-        indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         return [
             CompactModuleClassProjection(
                 module_name=parsed_module.module_name,
@@ -3780,7 +3788,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 demand is None or demand.include_autoregister_references
             ),
         )
-        indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         class_methods = _compact_class_methods(
             parsed_module,
             indexed_class_nodes,
@@ -3947,7 +3955,7 @@ def _compact_manual_subclass_roster_roots(
 ) -> tuple[CompactManualSubclassRosterRoot, ...]:
     roots: list[CompactManualSubclassRosterRoot] = []
     file_path = parsed_module.file_path
-    for qualname, node in _iter_class_defs(list(parsed_module.module.body)):
+    for qualname, node in iter_class_definitions(list(parsed_module.module.body)):
         registry_names = _compact_class_list_registry_names(node)
         if not registry_names:
             continue
@@ -6491,7 +6499,9 @@ class ClassFamilyIndexBuilder:
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         records: list[IndexedClass] = []
         for parsed_module in self.modules:
-            indexed_class_nodes = _iter_class_defs(list(parsed_module.module.body))
+            indexed_class_nodes = iter_class_definitions(
+                list(parsed_module.module.body)
+            )
             binding_snapshots = _module_nominal_binding_snapshots(
                 parsed_module,
                 tuple(node.lineno for _qualname, node in indexed_class_nodes),

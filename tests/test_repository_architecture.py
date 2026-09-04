@@ -2,13 +2,20 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
+from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     ExternalEnumCaseRecoveryDetector,
     IssueDetector,
 )
+from nominal_refactor_advisor.detectors._runtime import (
+    RepeatedBuilderCallShapeProjectionFamily,
+)
 from nominal_refactor_advisor.models import FindingObligationClass
+from nominal_refactor_advisor.semantic_descent import (
+    CompactSemanticModuleProjectionFamily,
+)
 
 
 def test_repository_has_no_external_enum_case_recovery() -> None:
@@ -33,6 +40,18 @@ def test_repository_has_no_function_local_imports() -> None:
     )
 
     assert nested_imports == ()
+
+
+def test_exact_report_demand_behavior_is_owned_by_collected_family_declarations() -> None:
+    assert "report_demand_builder" not in vars(CollectedFamily)
+    assert "cached_demand_projector" not in vars(CollectedFamily)
+    for family in (
+        CompactModuleClassProjectionFamily,
+        RepeatedBuilderCallShapeProjectionFamily,
+        CompactSemanticModuleProjectionFamily,
+    ):
+        assert "report_demand" in vars(family)
+        assert "project_cached_demand" in vars(family)
 
 
 def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:

@@ -112,6 +112,7 @@ from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticProjectionDemand,
     SemanticAuthority,
     SemanticAuthorityKind,
+    SemanticClassSupplement,
     SemanticDescentGraph,
     SemanticDescentGraphCache,
     SemanticDescentGraphCacheIdentity,
@@ -5944,13 +5945,12 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     legacy_supplements = tuple(
         supplement
         for module in modules
-        for qualname, node in semantic_descent_module._semantic_indexed_class_nodes(
+        for qualname, node in class_index_module.iter_class_definitions(
             list(module.module.body)
         )
         if (
-            supplement := semantic_descent_module._semantic_class_supplement(
-                f"{module.module_name}.{qualname}",
-                node,
+            supplement := SemanticClassSupplement.from_class_declaration(
+                f"{module.module_name}.{qualname}", node
             )
         )
         is not None

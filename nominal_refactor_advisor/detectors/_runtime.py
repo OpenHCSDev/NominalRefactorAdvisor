@@ -1821,52 +1821,44 @@ class RepeatedBuilderCallProjectionDemand:
 
     exact_mapping_keys: frozenset[tuple[str, str, tuple[str, ...], tuple[str, ...]]]
 
+    @classmethod
+    def from_report_targets(
+        cls,
+        target_items: tuple[object, ...],
+    ) -> "RepeatedBuilderCallProjectionDemand":
+        """Derive exact repository mapping keys from report-target shapes."""
 
-def _repeated_builder_call_projection_demand(
-    target_items: tuple[object, ...],
-    config: object,
-) -> RepeatedBuilderCallProjectionDemand:
-    del config
-    target_builders = tuple(
-        item for item in target_items if isinstance(item, BuilderCallShape)
-    )
-    return RepeatedBuilderCallProjectionDemand(
-        exact_mapping_keys=frozenset(
-            (
-                builder.file_path,
-                builder.callee_name,
-                builder.field_names,
-                builder.value_fingerprint,
+        return cls(
+            exact_mapping_keys=frozenset(
+                (
+                    builder.file_path,
+                    builder.callee_name,
+                    builder.field_names,
+                    builder.value_fingerprint,
+                )
+                for builder in target_items
+                if isinstance(builder, BuilderCallShape)
             )
-            for builder in target_builders
-        ),
-    )
+        )
 
+    def includes(self, builder: BuilderCallShape) -> bool:
+        """Return whether one builder participates in the demanded mapping."""
 
-def _repeated_builder_call_is_demanded(
-    builder: BuilderCallShape,
-    demand: RepeatedBuilderCallProjectionDemand,
-) -> bool:
-    return (
-        builder.file_path,
-        builder.callee_name,
-        builder.field_names,
-        builder.value_fingerprint,
-    ) in demand.exact_mapping_keys
+        return (
+            builder.file_path,
+            builder.callee_name,
+            builder.field_names,
+            builder.value_fingerprint,
+        ) in self.exact_mapping_keys
 
+    def project(self, items: tuple[object, ...]) -> tuple[BuilderCallShape, ...]:
+        """Project cached or freshly collected shapes through this demand."""
 
-def _project_repeated_builder_call_demand(
-    items: tuple[object, ...],
-    demand: object,
-) -> tuple[object, ...]:
-    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
-        return items
-    return tuple(
-        item
-        for item in items
-        if isinstance(item, BuilderCallShape)
-        and _repeated_builder_call_is_demanded(item, demand)
-    )
+        return tuple(
+            item
+            for item in items
+            if isinstance(item, BuilderCallShape) and self.includes(item)
+        )
 
 
 def _collect_repeated_builder_call_ast_demand(
@@ -1880,10 +1872,7 @@ def _collect_repeated_builder_call_ast_demand(
         for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
     )
     return list(
-        _project_repeated_builder_call_demand(
-            tuple(_module_builder_call_shapes(module, callee_names)),
-            demand,
-        )
+        demand.project(tuple(_module_builder_call_shapes(module, callee_names)))
     )
 
 
@@ -1892,10 +1881,12 @@ def _collect_repeated_builder_call_source_demand(
     syntax_index: NativePythonSyntaxIndex,
     demand: object,
 ) -> list[object] | None:
+    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+        raise TypeError("repeated-builder demand has the wrong authority type")
     builders = _native_repeated_builder_call_shapes(source_module, syntax_index)
     if builders is None:
         return None
-    return list(_project_repeated_builder_call_demand(tuple(builders), demand))
+    return list(demand.project(tuple(builders)))
 
 
 class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
@@ -1906,8 +1897,30 @@ class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]
     source_collector = staticmethod(_native_repeated_builder_call_shapes)
     source_demand_collector = staticmethod(_collect_repeated_builder_call_source_demand)
     ast_demand_collector = staticmethod(_collect_repeated_builder_call_ast_demand)
-    report_demand_builder = staticmethod(_repeated_builder_call_projection_demand)
-    cached_demand_projector = staticmethod(_project_repeated_builder_call_demand)
+
+    @classmethod
+    def report_demand(
+        cls,
+        target_items: tuple[object, ...],
+        config: object,
+    ) -> RepeatedBuilderCallProjectionDemand:
+        """Derive the repeated-builder keys needed by the report scope."""
+
+        del cls, config
+        return RepeatedBuilderCallProjectionDemand.from_report_targets(target_items)
+
+    @classmethod
+    def project_cached_demand(
+        cls,
+        items: tuple[object, ...],
+        demand: object,
+    ) -> tuple[BuilderCallShape, ...]:
+        """Project cached builder shapes through their exact demand."""
+
+        del cls
+        if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+            raise TypeError("repeated-builder demand has the wrong authority type")
+        return demand.project(items)
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[BuilderCallShape]:

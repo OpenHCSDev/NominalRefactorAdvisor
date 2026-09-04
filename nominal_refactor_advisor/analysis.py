@@ -1825,12 +1825,7 @@ def analyze_compact_roots_with_cache(
         ),
     )
     report_family_demands: dict[type[CollectedFamily], object] = {}
-    demand_families = tuple(
-        family
-        for family in projection_manifest.projection_families
-        if family.report_demand_builder is not None
-        or family.report_presence_predicate is not None
-    )
+    demand_families = projection_manifest.projection_families
     if demand_families and report_scope is not None and report_scope.has_report_filter:
         target_families = projection_manifest.projection_families
         target_items_by_family: dict[type[CollectedFamily], list[object]] = {
@@ -1900,12 +1895,7 @@ def analyze_compact_roots_with_cache(
                 or target_findings_by_detector.get(detector_type)
             ]
             projection_manifest.detector_types = tuple(missing_global_detector_types)
-            demand_families = tuple(
-                family
-                for family in projection_manifest.projection_families
-                if family.report_demand_builder is not None
-                or family.report_presence_predicate is not None
-            )
+            demand_families = projection_manifest.projection_families
         for family in demand_families:
             demand = family.report_demand(
                 tuple(target_items_by_family[family]),
