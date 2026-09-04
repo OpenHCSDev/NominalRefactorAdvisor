@@ -12709,9 +12709,7 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "environment-boolean drift finding lacks typed drift evidence"
             )
-        authority_location = FindingSemanticMirrorLocations(
-            finding
-        ).optional_authority_location()
+        authority_location = finding.authority_evidence
         authority_symbol = (
             None if authority_location is None else authority_location.symbol
         )
@@ -15695,32 +15693,6 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class FindingSemanticMirrorLocations:
-    """Projection and authority source locations carried by a semantic mirror."""
-
-    finding: RefactorFinding
-
-    def optional_locations(self) -> tuple[SourceLocation, SourceLocation] | None:
-        if len(self.finding.evidence) < 2:
-            return None
-        return self.finding.evidence[0], self.finding.evidence[1]
-
-    def optional_seed_locations(self) -> "SemanticMirrorRecipeSeedLocations | None":
-        locations = self.optional_locations()
-        if locations is None:
-            return None
-        projection_location, authority_location = locations
-        return SemanticMirrorRecipeSeedLocations.from_locations(
-            projection_location=projection_location,
-            authority_location=authority_location,
-        )
-
-    def optional_authority_location(self) -> SourceLocation | None:
-        locations = self.optional_locations()
-        return None if locations is None else locations[1]
-
-
-@dataclass(frozen=True)
 class SemanticMirrorOperationTargets:
     """Exact authority class and projection module for a mirror finding."""
 
@@ -15732,10 +15704,11 @@ class SemanticMirrorOperationTargets:
         context: CodemodSelectorContext,
         finding: RefactorFinding,
     ) -> "SemanticMirrorOperationTargets | None":
-        locations = FindingSemanticMirrorLocations(finding).optional_locations()
-        if locations is None:
+        seed = SemanticMirrorRecipeSeedLocations.from_finding(finding)
+        if seed is None:
             return None
-        projection_location, authority_location = locations
+        projection_location = seed.projection
+        authority_location = seed.authority
         try:
             projection_paths = context.resolve_source_paths(
                 (projection_location.file_path,)
@@ -15776,97 +15749,23 @@ class SemanticMirrorOperationTargets:
         return self.projection_module.file_path
 
 
-class SemanticMirrorEndpointRole(StrEnum):
-    """Nominal roles for the two endpoints in a semantic mirror."""
-
-    PROJECTION = "projection"
-    AUTHORITY = "authority"
-
-
-@dataclass(frozen=True)
-class SemanticMirrorRecipeEndpoint:
-    """One role-tagged source location in a semantic mirror recipe seed."""
-
-    role: SemanticMirrorEndpointRole
-    location: SourceLocation
-
-    @property
-    def file_path(self) -> str:
-        return self.location.file_path
-
-    @property
-    def line(self) -> int:
-        return self.location.line
-
-    @property
-    def symbol(self) -> str:
-        return self.location.symbol
-
-    @property
-    def subject(self) -> str:
-        return self.location.subject_symbol
-
-
 @dataclass(frozen=True)
 class SemanticMirrorRecipeSeedLocations:
-    """Projection and authority locations shared by semantic mirror recipes."""
+    """Declared projection and authority witnesses for a semantic mirror."""
 
-    endpoints: tuple[SemanticMirrorRecipeEndpoint, ...]
+    projection: SourceLocation
+    authority: SourceLocation
 
     @classmethod
-    def from_locations(
+    def from_finding(
         cls,
-        *,
-        projection_location: SourceLocation,
-        authority_location: SourceLocation,
-    ) -> "SemanticMirrorRecipeSeedLocations":
-        return cls(
-            endpoints=(
-                SemanticMirrorRecipeEndpoint(
-                    SemanticMirrorEndpointRole.PROJECTION,
-                    projection_location,
-                ),
-                SemanticMirrorRecipeEndpoint(
-                    SemanticMirrorEndpointRole.AUTHORITY,
-                    authority_location,
-                ),
-            )
-        )
-
-    def endpoint_for(
-        self,
-        role: SemanticMirrorEndpointRole,
-    ) -> SemanticMirrorRecipeEndpoint:
-        matches = tuple(
-            endpoint for endpoint in self.endpoints if endpoint.role is role
-        )
-        if len(matches) != 1:
-            raise ValueError(f"Semantic mirror seed lacks one {role.value} endpoint")
-        return matches[0]
-
-    def projection_endpoint(self) -> SemanticMirrorRecipeEndpoint:
-        return self.endpoint_for(SemanticMirrorEndpointRole.PROJECTION)
-
-    def authority_endpoint(self) -> SemanticMirrorRecipeEndpoint:
-        return self.endpoint_for(SemanticMirrorEndpointRole.AUTHORITY)
-
-    def projection_file_path(self) -> str:
-        return self.projection_endpoint().file_path
-
-    def authority_file_path(self) -> str:
-        return self.authority_endpoint().file_path
-
-    def projection_subject(self) -> str:
-        return self.projection_endpoint().subject
-
-    def projection_line(self) -> int:
-        return self.projection_endpoint().line
-
-    def authority_source_location(self) -> SourceLocation:
-        return self.authority_endpoint().location
-
-    def authority_symbol(self) -> str:
-        return self.authority_endpoint().symbol
+        finding: RefactorFinding,
+    ) -> "SemanticMirrorRecipeSeedLocations | None":
+        projection = finding.primary_evidence
+        authority = finding.authority_evidence
+        if projection is None or authority is None:
+            return None
+        return cls(projection=projection, authority=authority)
 
 
 @dataclass(frozen=True)
@@ -15883,11 +15782,11 @@ class SemanticMirrorImportBoundary:
         context: CodemodSelectorContext,
     ) -> "SemanticMirrorImportBoundary | None":
         projection_path = SourcePathResolutionAuthority.from_source_index(
-            seed.projection_file_path(),
+            seed.projection.file_path,
             context.source_index,
         ).optional_path()
         authority_path = SourcePathResolutionAuthority.from_source_index(
-            seed.authority_file_path(),
+            seed.authority.file_path,
             context.source_index,
         ).optional_path()
         if projection_path is None or authority_path is None:
@@ -17604,7 +17503,7 @@ class DataclassAuthorityMappingRecipeBuilder(
     def is_applicable(self) -> bool:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return False
-        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+        seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
         if seed is None:
             return False
         resolved_target = self.resolved_authority_target(seed)
@@ -17623,7 +17522,7 @@ class DataclassAuthorityMappingRecipeBuilder(
     def parts(self) -> RecipePartsT | None:
         return (
             Maybe.of(
-                FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
+                SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
             )
             .project(self.parts_from_seed)
             .unwrap_or_none()
@@ -17680,7 +17579,7 @@ class DataclassAuthorityMappingRecipeBuilder(
             return None
         return MappingSemanticMirrorRecipeStrategy.authority_class_target(
             self,
-            seed.authority_source_location(),
+            seed.authority,
             authority_name,
         )
 
@@ -18362,15 +18261,13 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     def rejection_reason(self) -> str:
         if not isinstance(self.finding.metrics, MappingMetrics):
             return "dataclass payload projection requires mapping metrics"
-        locations = FindingSemanticMirrorLocations(
-            self.finding
-        ).optional_seed_locations()
-        if locations is None:
+        seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
+        if seed is None:
             return (
                 "dataclass payload projection requires projection and authority "
                 "locations"
             )
-        import_boundary = SemanticMirrorImportBoundary.from_seed(locations, self)
+        import_boundary = SemanticMirrorImportBoundary.from_seed(seed, self)
         if import_boundary is None:
             return "dataclass payload projection requires source-index-resolved files"
         if import_boundary.import_would_create_cycle(self):
@@ -18403,8 +18300,8 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         function_return = FunctionReturnProjectionTarget.from_return_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
         )
         return function_return is not None and isinstance(
             function_return.return_node.value,
@@ -18419,8 +18316,8 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
         return ReturnDictProjectionTargetAuthority.from_function_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
             field_names=self.finding.metrics.plan_field_names,
         )
 
@@ -18486,13 +18383,13 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
         function = ResolvedFunctionProjectionTarget.from_source_line(
             self,
             source_path=source_path,
-            line=seed.projection_line(),
+            line=seed.projection.line,
         )
         return function is not None and any(
             DataclassFieldNameCollectionProjectionTarget.bound_collection(
                 statement,
-                seed.projection_subject(),
-                seed.projection_line(),
+                seed.projection.subject_symbol,
+                seed.projection.line,
             )
             for statement in ast.walk(function.node)
         )
@@ -18505,8 +18402,8 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
         return DataclassFieldNameCollectionProjectionTarget.from_binding_location(
             self,
             source_path=source_path,
-            binding_name=seed.projection_subject(),
-            line=seed.projection_line(),
+            binding_name=seed.projection.subject_symbol,
+            line=seed.projection.line,
             field_names=frozenset(self.finding.metrics.plan_field_names),
         )
 
@@ -18580,8 +18477,8 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         function_return = FunctionReturnProjectionTarget.from_return_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
         )
         if function_return is None or not isinstance(
             function_return.return_node.value,
@@ -18605,8 +18502,8 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
         return ReturnKeyValueSequenceProjectionTargetAuthority.from_function_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
             field_names=self.finding.metrics.plan_field_names,
         )
 
@@ -19103,8 +19000,8 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         function_return = FunctionReturnProjectionTarget.from_return_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
         )
         if function_return is None:
             return False
@@ -19126,8 +19023,8 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         return FunctionReturnProjectionTarget.from_return_location(
             self,
             source_path=source_path,
-            function_qualname=seed.projection_subject(),
-            line=seed.projection_line(),
+            function_qualname=seed.projection.subject_symbol,
+            line=seed.projection.line,
         )
 
     def recipe_parts(
@@ -19886,20 +19783,19 @@ class AutoregisterInstanceViewRecipeBuilder(
         )
 
     def authority_target(self) -> AstTargetDigest | None:
-        locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
+        seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
         assignment_name = self.finding.metrics.plan_registry_name
         expected_class_names = frozenset(self.finding.metrics.plan_class_names)
-        if locations is None or assignment_name is None or not expected_class_names:
+        if seed is None or assignment_name is None or not expected_class_names:
             return None
-        projection_location, authority_location = locations
-        projection_paths = self.resolve_source_paths((projection_location.file_path,))
+        projection_paths = self.resolve_source_paths((seed.projection.file_path,))
         if len(projection_paths) != 1:
             return None
         projection_path = next(iter(projection_paths))
         authority_targets = ClassMemberPromotionTargets.resolve_or_none(
             self,
             source_path=projection_path,
-            class_names=(authority_location.symbol,),
+            class_names=(seed.authority.symbol,),
         )
         if authority_targets is None:
             return None
@@ -19919,8 +19815,7 @@ class AutoregisterInstanceViewRecipeBuilder(
         return authority_target
 
     def rejection_reason(self) -> str:
-        locations = FindingSemanticMirrorLocations(self.finding).optional_locations()
-        if locations is None:
+        if SemanticMirrorRecipeSeedLocations.from_finding(self.finding) is None:
             return "semantic mirror finding does not expose projection and authority locations"
         if self.finding.metrics.plan_registry_name is None:
             return "semantic mirror finding exposes no instance-view assignment"
@@ -19987,7 +19882,7 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
                 ),
                 executable_declaration_type=type(self),
             )
-        seed = FindingSemanticMirrorLocations(finding).optional_seed_locations()
+        seed = SemanticMirrorRecipeSeedLocations.from_finding(finding)
         import_boundary = (
             SemanticMirrorImportBoundary.from_seed(seed, context)
             if seed is not None

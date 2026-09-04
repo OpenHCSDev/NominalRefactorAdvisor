@@ -3436,7 +3436,13 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
         relation_context="projection lacks a semantic-descent certificate",
         evidence=(
             SourceLocation(str(module_path), 26, "build_replacement:return"),
+            SourceLocation(str(module_path), 4, "SourceLineReplacement"),
             SourceLocation(str(module_path), 12, "SourceLineSpan"),
+        ),
+        authority_evidence=SourceLocation(
+            str(module_path),
+            12,
+            "SourceLineSpan",
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -3546,6 +3552,11 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
             SourceLocation(str(module_path), 14, "build_replacement:return"),
             SourceLocation(str(module_path), 9, "SourceLineSpan"),
         ),
+        authority_evidence=SourceLocation(
+            str(module_path),
+            9,
+            "SourceLineSpan",
+        ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             field_names=("end_line", "start_line"),
@@ -3619,6 +3630,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
             SourceLocation(str(report_path), 5, "build:return"),
             SourceLocation(str(model_path), 5, "Span"),
         ),
+        authority_evidence=SourceLocation(str(model_path), 5, "Span"),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             field_names=("start_line", "end_line"),
