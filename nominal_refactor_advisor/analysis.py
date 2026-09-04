@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -15,13 +14,12 @@ import os
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import ClassVar, cast
-
-from metaclass_registry import AutoRegisterMeta
+from typing import cast
 
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheFamilyIdentity,
+    AnalysisCacheResolutionABC,
     AnalysisCacheStatus,
     AnalysisFindingCache,
     AnalysisLatestPointerPolicy,
@@ -1791,12 +1789,12 @@ def analyze_compact_roots_with_cache(
     ).cache_identity()
     aggregate_lookup = analysis_cache.load(cache_identity)
     if (
-        aggregate_lookup.status is AnalysisCacheStatus.HIT
+        aggregate_lookup.status.is_hit
         and not include_semantic_descent_graph
     ):
         return CompactPathAnalysisResult(
             findings=list(aggregate_lookup.findings),
-            cache_status=AnalysisCacheStatus.HIT,
+            cache_status=aggregate_lookup.status,
             cache_identity=cache_identity,
             preparation_seconds=perf_counter() - started,
             analysis_seconds=0.0,
@@ -1842,7 +1840,7 @@ def analyze_compact_roots_with_cache(
             if finding_is_in_report_scope(finding)
         )
 
-    if aggregate_lookup.status is not AnalysisCacheStatus.HIT:
+    if not aggregate_lookup.status.is_hit:
         for detector_type in partition.compact_global_detector_types:
             detector_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
                 config,
@@ -1852,7 +1850,7 @@ def analyze_compact_roots_with_cache(
             )
             global_identity_by_detector[detector_type] = detector_identity
             detector_lookup = analysis_cache.load(detector_identity)
-            if detector_lookup.status is AnalysisCacheStatus.HIT:
+            if detector_lookup.status.is_hit:
                 global_cache_hit_count += 1
                 extend_report_findings(detector_lookup.findings)
             else:
@@ -2020,7 +2018,7 @@ def analyze_compact_roots_with_cache(
                 continue
             streamed_paths.add(normalized_path)
             include_local_findings = (
-                aggregate_lookup.status is not AnalysisCacheStatus.HIT
+                not aggregate_lookup.status.is_hit
                 and (
                     report_scope is None
                     or not report_scope.has_report_filter
@@ -2272,7 +2270,7 @@ def analyze_compact_roots_with_cache(
                 )
                 projection_identity_by_detector[detector_type] = identity
                 lookup = analysis_cache.load(identity)
-                if lookup.status is AnalysisCacheStatus.HIT:
+                if lookup.status.is_hit:
                     global_cache_hit_count += 1
                     extend_report_findings(lookup.findings)
                     continue
@@ -2308,7 +2306,7 @@ def analyze_compact_roots_with_cache(
                 )
                 projection_identity_by_detector[detector_type] = identity
                 lookup = analysis_cache.load(identity)
-                if lookup.status is AnalysisCacheStatus.HIT:
+                if lookup.status.is_hit:
                     global_cache_hit_count += 1
                     extend_report_findings(lookup.findings)
                 else:
@@ -2356,7 +2354,7 @@ def analyze_compact_roots_with_cache(
         )
     findings = (
         list(aggregate_lookup.findings)
-        if aggregate_lookup.status is AnalysisCacheStatus.HIT
+        if aggregate_lookup.status.is_hit
         else SortedFindingsAuthority.sort(
             [
                 *local_findings,
@@ -2385,18 +2383,8 @@ def analyze_compact_roots_with_cache(
     analysis_seconds = local_analysis_seconds + perf_counter() - join_started
     projection_manifest.store_content_signature_indexes()
     analysis_cache.store(cache_identity, findings)
-    cache_status = (
-        AnalysisCacheStatus.HIT
-        if aggregate_lookup.status is AnalysisCacheStatus.HIT
-        else (
-            AnalysisCacheStatus.DISABLED
-            if aggregate_lookup.status is AnalysisCacheStatus.DISABLED
-            else (
-                AnalysisCacheStatus.PARTIAL
-                if local_cache_hit_count or global_cache_hit_count
-                else AnalysisCacheStatus.MISS
-            )
-        )
+    cache_status = aggregate_lookup.status.after_analysis(
+        local_cache_hit_count + global_cache_hit_count
     )
     return CompactPathAnalysisResult(
         findings=findings,
@@ -2886,7 +2874,9 @@ class AnalysisCacheIdentityAuthority:
         return AnalysisCacheFamilyIdentity.from_analysis_identity(cache_identity)
 
 
-class AnalysisCacheResolutionAuthority:
+class AnalysisCacheResolutionAuthority(
+    AnalysisCacheResolutionABC[CachedAnalysisResult]
+):
     """Own cache-status resolution without exposing raw scan state."""
 
     def __init__(
@@ -2925,9 +2915,7 @@ class AnalysisCacheResolutionAuthority:
             )
         return self._cache_result
 
-    def analyze_uncached(
-        self, cache_status: AnalysisCacheStatus
-    ) -> CachedAnalysisResult:
+    def analyze_without_persistence(self) -> CachedAnalysisResult:
         if self._report_scope is not None and self._report_scope.has_report_filter:
             result = IncrementalAnalysisCacheResolver(
                 cache_identity=AnalysisCacheIdentity.from_modules(
@@ -2943,7 +2931,10 @@ class AnalysisCacheResolutionAuthority:
                 semantic_descent_source=self._semantic_descent_source,
                 report_scope=self._report_scope,
             ).result()
-            return CachedAnalysisResult(result.findings, cache_status)
+            return CachedAnalysisResult(
+                result.findings,
+                AnalysisCacheStatus.DISABLED,
+            )
         return CachedAnalysisResult(
             analyze_modules(
                 self._modules,
@@ -2951,7 +2942,7 @@ class AnalysisCacheResolutionAuthority:
                 analysis_workers=self._analysis_workers,
                 semantic_descent_source=self._semantic_descent_source,
             ),
-            cache_status,
+            AnalysisCacheStatus.DISABLED,
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
@@ -2980,7 +2971,7 @@ class AnalysisCacheResolutionAuthority:
                 self._config,
             )
             unscoped_cache_lookup = analysis_cache.load(unscoped_semantic_identity)
-            if unscoped_cache_lookup.status is AnalysisCacheStatus.HIT:
+            if unscoped_cache_lookup.status.is_hit:
                 findings = self._report_scope.filter_findings(
                     unscoped_cache_lookup.findings
                 )
@@ -3024,7 +3015,7 @@ class AnalysisCacheResolutionAuthority:
                     cache_identity=cache_identity,
                 )
             semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
-            if semantic_cache_lookup.status is AnalysisCacheStatus.HIT:
+            if semantic_cache_lookup.status.is_hit:
                 findings = list(semantic_cache_lookup.findings)
                 if semantic_cache_identity != cache_identity:
                     analysis_cache.store(cache_identity, findings)
@@ -3103,7 +3094,7 @@ def analyze_module_detector_types_with_cache(
         identity,
         detector_bundle_plan.detector_registries,
     )
-    if cache_lookup.status is AnalysisCacheStatus.HIT:
+    if cache_lookup.status.is_hit:
         return IncrementalAnalysisResult(
             [
                 finding
@@ -3208,9 +3199,7 @@ class IncrementalAnalysisCacheResolver:
     def _combined_cache_status(
         *cache_statuses: AnalysisCacheStatus,
     ) -> AnalysisCacheStatus:
-        if AnalysisCacheStatus.PARTIAL in cache_statuses:
-            return AnalysisCacheStatus.PARTIAL
-        return AnalysisCacheStatus.MISS
+        return AnalysisCacheStatus.combine(cache_statuses)
 
     def _per_module_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_per_module_detectors:
@@ -3241,7 +3230,7 @@ class IncrementalAnalysisCacheResolver:
                 if cached_findings is not None:
                     hit_count += 1
                     findings.extend(cached_findings)
-            if cache_lookup.status is AnalysisCacheStatus.HIT:
+            if cache_lookup.status.is_hit:
                 continue
             missing_modules.append(module)
             missing_identities.append(identity)
@@ -3270,9 +3259,7 @@ class IncrementalAnalysisCacheResolver:
             )
             findings.extend(module_findings)
 
-        cache_status = (
-            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
-        )
+        cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
     def _missing_per_module_findings(
@@ -3358,7 +3345,7 @@ class IncrementalAnalysisCacheResolver:
                     self._cache_identity.presentation_roots,
                 )
                 cache_lookup = self._analysis_cache.load(identity)
-                if cache_lookup.status is AnalysisCacheStatus.HIT:
+                if cache_lookup.status.is_hit:
                     hit_count += 1
                     findings.extend(cache_lookup.findings)
                     continue
@@ -3374,9 +3361,7 @@ class IncrementalAnalysisCacheResolver:
         # contextual-global phase constructs its separate candidate indexes.
         release_module_analysis_memory(collect_cycles=False)
 
-        cache_status = (
-            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
-        )
+        cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
     def _local_detector_modules(self) -> list[ParsedModule]:
@@ -3406,7 +3391,7 @@ class IncrementalAnalysisCacheResolver:
                 self._cache_identity.presentation_roots,
             )
             cache_lookup = self._analysis_cache.load(identity)
-            if cache_lookup.status is AnalysisCacheStatus.HIT:
+            if cache_lookup.status.is_hit:
                 hit_count += 1
                 findings.extend(cache_lookup.findings)
                 continue
@@ -3421,9 +3406,7 @@ class IncrementalAnalysisCacheResolver:
             self._analysis_cache.store(identity, detector_findings)
             findings.extend(detector_findings)
 
-        cache_status = (
-            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
-        )
+        cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
     def _missing_global_detector_findings(
@@ -3481,7 +3464,7 @@ class IncrementalAnalysisCacheResolver:
                 self._cache_identity.presentation_roots,
             )
             cache_lookup = self._analysis_cache.load(identity)
-            if cache_lookup.status is AnalysisCacheStatus.HIT:
+            if cache_lookup.status.is_hit:
                 hit_count += 1
                 findings.extend(cache_lookup.findings)
                 continue
@@ -3510,7 +3493,7 @@ class IncrementalAnalysisCacheResolver:
             )
             if detector_identity != identity:
                 detector_cache_lookup = self._analysis_cache.load(detector_identity)
-                if detector_cache_lookup.status is AnalysisCacheStatus.HIT:
+                if detector_cache_lookup.status.is_hit:
                     hit_count += 1
                     detector_findings = list(detector_cache_lookup.findings)
                     self._analysis_cache.store(identity, detector_findings)
@@ -3550,9 +3533,7 @@ class IncrementalAnalysisCacheResolver:
                 )
             findings.extend(detector_findings)
 
-        cache_status = (
-            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
-        )
+        cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
     def _semantic_descent_context_graph(self) -> SemanticDescentGraph:
@@ -3572,68 +3553,6 @@ class IncrementalAnalysisCacheResolver:
                 ).cache_token
             )
         return self._global_module_context_signature
-
-
-class AnalysisCacheStatusStrategy(ABC, metaclass=AutoRegisterMeta):
-    """Registered behavior for each persistent-analysis cache status."""
-
-    __registry__: ClassVar[
-        dict[AnalysisCacheStatus, type["AnalysisCacheStatusStrategy"]]
-    ] = {}
-    __registry_key__ = "cache_status"
-    __skip_if_no_key__ = True
-
-    cache_status: ClassVar[AnalysisCacheStatus | None] = None
-
-    @classmethod
-    def for_status(
-        cls,
-        cache_status: AnalysisCacheStatus,
-    ) -> "AnalysisCacheStatusStrategy":
-        return cls.__registry__[cache_status]()
-
-    @abstractmethod
-    def result(
-        self,
-        authority: AnalysisCacheResolutionAuthority,
-    ) -> CachedAnalysisResult:
-        raise NotImplementedError
-
-
-class AnalysisCacheHitStrategy(AnalysisCacheStatusStrategy):
-    """Reuse detector findings loaded from the persistent analysis cache."""
-
-    cache_status = AnalysisCacheStatus.HIT
-
-    def result(
-        self,
-        authority: AnalysisCacheResolutionAuthority,
-    ) -> CachedAnalysisResult:
-        return authority.cache_result
-
-
-class AnalysisCacheDisabledStrategy(AnalysisCacheStatusStrategy):
-    """Run detector analysis without storing findings."""
-
-    cache_status = AnalysisCacheStatus.DISABLED
-
-    def result(
-        self,
-        authority: AnalysisCacheResolutionAuthority,
-    ) -> CachedAnalysisResult:
-        return authority.analyze_uncached(AnalysisCacheStatus.DISABLED)
-
-
-class AnalysisCacheMissStrategy(AnalysisCacheStatusStrategy):
-    """Run detector analysis and store the result for the cache identity."""
-
-    cache_status = AnalysisCacheStatus.MISS
-
-    def result(
-        self,
-        authority: AnalysisCacheResolutionAuthority,
-    ) -> CachedAnalysisResult:
-        return authority.analyze_and_store_miss()
 
 
 def analyze_modules_with_cache(
@@ -3688,9 +3607,7 @@ def analyze_modules_with_cache(
         ),
         report_scope=report_scope,
     )
-    return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
-        authority
-    )
+    return cache_result.cache_status.resolve(authority)
 
 
 def load_analysis_cache_for_roots(
@@ -3718,7 +3635,7 @@ def load_analysis_cache_for_roots(
     cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
-    if cache_lookup.status is AnalysisCacheStatus.HIT:
+    if cache_lookup.status.is_hit:
         return CachedAnalysisResult(
             list(cache_lookup.findings),
             cache_lookup.status,
@@ -3767,7 +3684,7 @@ def load_analysis_summary_for_roots(
         cache_identity
     )
     if (
-        summary_lookup.status is not AnalysisCacheStatus.HIT
+        not summary_lookup.status.is_hit
         or summary_lookup.summary is None
     ):
         return None
@@ -3843,7 +3760,7 @@ class FastCachedPathAnalysisAuthority:
         if not self._request.use_parse_cache:
             return None
         cache_result = self._load_cache_result()
-        if cache_result.cache_status is AnalysisCacheStatus.HIT:
+        if cache_result.cache_status.is_hit:
             return cache_result
         if not self._can_reuse_previous(cache_result):
             return None
@@ -3889,7 +3806,7 @@ class FastCachedPathAnalysisAuthority:
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
-        if partial_cache_lookup.status is AnalysisCacheStatus.PARTIAL:
+        if partial_cache_lookup.status.is_partial:
             return CachedAnalysisResult(
                 list(partial_cache_lookup.findings),
                 AnalysisCacheStatus.PARTIAL,

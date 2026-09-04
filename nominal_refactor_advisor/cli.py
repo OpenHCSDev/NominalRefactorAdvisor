@@ -3588,7 +3588,7 @@ def _main_without_deadline() -> int:
                 source_context_lookup = CodemodSourceContextCache(
                     analysis_cache_dir
                 ).load(fast_cache_result.cache_identity)
-                if source_context_lookup.status is AnalysisCacheStatus.HIT:
+                if source_context_lookup.status.is_hit:
                     cached_source_context = source_context_lookup.context
                 else:
                     fast_cache_result = None
@@ -3600,7 +3600,7 @@ def _main_without_deadline() -> int:
             analysis_cache_identity = fast_cache_result.cache_identity
             findings = path_scope.filter_findings(fast_cache_result.findings)
             analysis_seconds = fast_cache_seconds
-            if analysis_cache_status is AnalysisCacheStatus.PARTIAL:
+            if analysis_cache_status.is_partial:
                 detector_types = default_detector_types_for_analysis()
                 analyzed_detector_count = len(
                     EvidenceLocalPartialDetectorSelection.from_detector_types(
@@ -3659,26 +3659,8 @@ def _main_without_deadline() -> int:
             findings = SortedFindingsAuthority.sort(findings)
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
-            analysis_cache_status = (
-                AnalysisCacheStatus.HIT
-                if module_cache_statuses
-                and all(
-                    status is AnalysisCacheStatus.HIT
-                    for status in module_cache_statuses
-                )
-                else (
-                    AnalysisCacheStatus.PARTIAL
-                    if AnalysisCacheStatus.HIT in module_cache_statuses
-                    else (
-                        AnalysisCacheStatus.DISABLED
-                        if module_cache_statuses
-                        and all(
-                            status is AnalysisCacheStatus.DISABLED
-                            for status in module_cache_statuses
-                        )
-                        else AnalysisCacheStatus.MISS
-                    )
-                )
+            analysis_cache_status = AnalysisCacheStatus.combine(
+                module_cache_statuses
             )
             scan_status = JsonScanStatus(
                 complete=False,
@@ -3805,7 +3787,7 @@ def _main_without_deadline() -> int:
             )
             if (
                 execution_plan_lookup is not None
-                and execution_plan_lookup.status is AnalysisCacheStatus.HIT
+                and execution_plan_lookup.status.is_hit
             ):
                 execution_plan = execution_plan_lookup.plan
             else:

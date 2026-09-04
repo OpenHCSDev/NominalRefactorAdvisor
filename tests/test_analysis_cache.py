@@ -33,6 +33,7 @@ from nominal_refactor_advisor.analysis import (
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
+    AnalysisCacheResolutionABC,
     AnalysisCacheStatus,
     AnalysisCacheStorage,
     AnalysisFindingCacheChunkStreamHeader,
@@ -119,6 +120,79 @@ from nominal_refactor_advisor.semantic_descent import (
     build_semantic_descent_graph,
     build_compact_semantic_descent_graph,
 )
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    (
+        ((), AnalysisCacheStatus.MISS),
+        ((AnalysisCacheStatus.HIT,), AnalysisCacheStatus.HIT),
+        (
+            (AnalysisCacheStatus.HIT, AnalysisCacheStatus.HIT),
+            AnalysisCacheStatus.HIT,
+        ),
+        (
+            (AnalysisCacheStatus.HIT, AnalysisCacheStatus.MISS),
+            AnalysisCacheStatus.PARTIAL,
+        ),
+        (
+            (AnalysisCacheStatus.PARTIAL, AnalysisCacheStatus.MISS),
+            AnalysisCacheStatus.PARTIAL,
+        ),
+        (
+            (AnalysisCacheStatus.DISABLED, AnalysisCacheStatus.DISABLED),
+            AnalysisCacheStatus.DISABLED,
+        ),
+        (
+            (AnalysisCacheStatus.DISABLED, AnalysisCacheStatus.MISS),
+            AnalysisCacheStatus.MISS,
+        ),
+    ),
+)
+def test_analysis_cache_status_owns_combination_algebra(
+    statuses: tuple[AnalysisCacheStatus, ...],
+    expected: AnalysisCacheStatus,
+) -> None:
+    assert AnalysisCacheStatus.combine(statuses) is expected
+
+
+def test_analysis_cache_status_owns_post_analysis_classification() -> None:
+    assert AnalysisCacheStatus.from_reuse_coverage(0, 0) is AnalysisCacheStatus.HIT
+    assert AnalysisCacheStatus.MISS.after_analysis(0) is AnalysisCacheStatus.MISS
+    assert AnalysisCacheStatus.MISS.after_analysis(1) is AnalysisCacheStatus.PARTIAL
+    assert AnalysisCacheStatus.HIT.after_analysis(0) is AnalysisCacheStatus.HIT
+    assert AnalysisCacheStatus.PARTIAL.after_analysis(0) is AnalysisCacheStatus.PARTIAL
+    assert AnalysisCacheStatus.DISABLED.after_analysis(1) is (
+        AnalysisCacheStatus.DISABLED
+    )
+
+
+class _CacheResolutionFixture(AnalysisCacheResolutionABC[str]):
+    @property
+    def cache_result(self) -> str:
+        return "cached"
+
+    def analyze_without_persistence(self) -> str:
+        return "uncached"
+
+    def analyze_and_store_miss(self) -> str:
+        return "stored"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        (AnalysisCacheStatus.DISABLED, "uncached"),
+        (AnalysisCacheStatus.HIT, "cached"),
+        (AnalysisCacheStatus.PARTIAL, "stored"),
+        (AnalysisCacheStatus.MISS, "stored"),
+    ),
+)
+def test_analysis_cache_status_members_own_resolution_policy(
+    status: AnalysisCacheStatus,
+    expected: str,
+) -> None:
+    assert status.resolve(_CacheResolutionFixture()) == expected
 
 
 def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
