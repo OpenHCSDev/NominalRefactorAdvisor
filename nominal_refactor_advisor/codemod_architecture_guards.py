@@ -34,6 +34,7 @@ from .codemod_payload import (
     JsonValue,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
+    PayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
@@ -598,6 +599,27 @@ class ArchitectureGuardSuite:
 
     def to_dict(self) -> tuple[JsonObject, ...]:
         return tuple(rule.to_dict() for rule in self.rules)
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardSuitePayloadValueCodec(
+    PayloadValueCodec[ArchitectureGuardSuite]
+):
+    """Optional architecture-guard array owned by its nominal suite."""
+
+    def read(
+        self,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> ArchitectureGuardSuite:
+        return ArchitectureGuardSuite.from_json_value(payload.get(field_name))
+
+    def serialize(self, value: object) -> JsonValue:
+        if not isinstance(value, ArchitectureGuardSuite):
+            raise TypeError(
+                "architecture-guard payload codec requires ArchitectureGuardSuite"
+            )
+        return value.to_dict()
 
 
 def evaluate_architecture_guards(

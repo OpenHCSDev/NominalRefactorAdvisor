@@ -306,6 +306,7 @@ from .codemod_architecture_guards import (
     ArchitectureGuardRule as ArchitectureGuardRule,
     ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
     ArchitectureGuardSuite as ArchitectureGuardSuite,
+    ArchitectureGuardSuitePayloadValueCodec as ArchitectureGuardSuitePayloadValueCodec,
     ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
     ArchitectureGuardViolation as ArchitectureGuardViolation,
     ArchitectureGuardViolationTarget as ArchitectureGuardViolationTarget,
@@ -1934,27 +1935,6 @@ class NodeKindArrayPayloadValueCodec(OptionalStringArrayPayloadValueCodec):
         ):
             raise TypeError("node-kind payload codec requires AstTargetNodeKind values")
         return tuple(item.value for item in value)
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardSuitePayloadValueCodec(
-    PayloadValueCodec[ArchitectureGuardSuite]
-):
-    """Optional architecture-guard array owned by its nominal suite."""
-
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> ArchitectureGuardSuite:
-        return ArchitectureGuardSuite.from_json_value(payload.get(field_name))
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, ArchitectureGuardSuite):
-            raise TypeError(
-                "architecture-guard payload codec requires ArchitectureGuardSuite"
-            )
-        return value.to_dict()
 
 
 @dataclass(frozen=True)
