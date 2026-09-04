@@ -201,11 +201,12 @@ family collapse while each stage is re-proved against the previous stage's
 projected source.
 ``RenameClassAuthorityOperation`` completes the family-edit chain.  It carries
 one exact class target and the new semantic name, then derives the declaration,
-direct imports, preserved aliases, explicit public exports, and every
-lexically resolved direct, qualified, or forward-annotation reference across
-the repository.  Function parameters, assignments, and class-body bindings
-that shadow the old spelling remain untouched.  Nested imports, rebinding,
-used star imports, unresolved export policy, indirect re-export consumers,
+direct imports, transitive same-name re-exports, preserved aliases, explicit
+public exports, and every lexically resolved direct, qualified, or
+forward-annotation reference across the repository.  Unrelated authorities
+with the same spelling remain unchanged.  Function parameters, assignments,
+and class-body bindings that shadow the old spelling remain untouched.  Nested
+imports, rebinding, affected star-import boundaries, unresolved export policy,
 reflective strings, comments, explicit global/nonlocal declarations, and
 binding collisions fail preflight.
 
@@ -348,7 +349,7 @@ them, and are not published as compatibility aliases.
    :members: ClassMethodBehaviorAuthority, ClassAuthorityCollapseProofContext, RedundantClassAuthorityCollapseProof, IntermediateClassAuthorityCollapseProof
 
 .. automodule:: nominal_refactor_advisor.class_authority_rename
-   :members: ClassAuthorityImportReference, ClassAuthorityModuleRenameProof, ClassAuthorityRenameProof
+   :members: ClassAuthorityImportReference, ClassAuthorityRenameBindingClosure, ClassAuthorityModuleRenameProof, ClassAuthorityRenameProof
 
 Goal Trajectory Surface
 -----------------------
