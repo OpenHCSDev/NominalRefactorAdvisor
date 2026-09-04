@@ -163,6 +163,7 @@ from .taxonomy import (
 from .codemod_architecture_guards import (
     ArchitectureGuardConstraint,
     ArchitectureGuardRule,
+    ArchitectureGuardTargetScope,
     ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint,
     ForbiddenDispatchArchitectureGuardConstraint,

@@ -301,10 +301,13 @@ from .codemod_architecture_guards import (
     ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
     ArchitectureGuardMatch as ArchitectureGuardMatch,
     ArchitectureGuardRule as ArchitectureGuardRule,
+    ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
+    ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
     ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
     ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
     ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
+    ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
     _call_name as _call_name,
 )
 
@@ -691,9 +694,13 @@ class ArchitectureGuardSuite:
     def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
         return replace(
             self,
-            rules=(
-                *self.rules,
-                *(rule for suite in suites for rule in suite.rules),
+            rules=tuple(
+                dict.fromkeys(
+                    (
+                        *self.rules,
+                        *(rule for suite in suites for rule in suite.rules),
+                    )
+                )
             ),
         )
 
@@ -2992,6 +2999,15 @@ class RefactorRecipeOperation(
         del context
         return ()
 
+    def declared_architecture_guard_rules(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        """Derive post-refactor invariants established by this operation."""
+
+        del context
+        return ()
+
     def required_source_path(
         self,
         context: CodemodSelectorContext,
@@ -3071,6 +3087,22 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         """Derive authority claims only from the current source snapshot."""
 
         return super().declared_authority_claims(context)
+
+    def declared_architecture_guard_rules(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        return self.required_reproof(
+            lambda: self.current_source_architecture_guard_rules(context)
+        )
+
+    def current_source_architecture_guard_rules(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        """Derive post-refactor invariants only from the current source snapshot."""
+
+        return super().declared_architecture_guard_rules(context)
 
     def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
         return CodemodOperationPreflightError(
@@ -10412,6 +10444,33 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
             ),
         )
 
+    def current_source_architecture_guard_rules(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        _target_identifier, target_digest, node = self.target_node_from_context(context)
+        source = self.required_source(target_digest, node)
+        source_file = context.source_index.file_by_id[target_digest.file_id]
+        return (
+            ArchitectureGuardRule(
+                rule_id=f"{source.base_name}-declaration-owned-dispatch",
+                constraints=(
+                    ForbiddenDispatchArchitectureGuardConstraint(
+                        (source.dispatch_function.dispatch_axis_name,)
+                    ),
+                ),
+                scopes=(
+                    ArchitectureGuardTargetScope(
+                        file_path=(
+                            source_file.module_path_identity.declared_source_relative_path.as_posix()
+                        ),
+                        target_qualname=target_digest.qualname,
+                    ),
+                ),
+                reason="dispatch cases execute on the generated nominal leaves",
+            ),
+        )
+
     def source_edits_for_target_node(
         self,
         context: CodemodSelectorContext,
@@ -11241,6 +11300,29 @@ class RefactorRecipe(CodemodPayloadRecord):
             for claim in operation.declared_authority_claims(context)
         )
 
+    def declared_architecture_guard_rules(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        return tuple(
+            rule
+            for operation in self.operations
+            for rule in operation.declared_architecture_guard_rules(context)
+        )
+
+    def with_declared_architecture_guards(
+        self,
+        context: CodemodSelectorContext,
+    ) -> "RefactorRecipe":
+        return replace(
+            self,
+            guard_suite=self.guard_suite.merge(
+                ArchitectureGuardSuite(
+                    self.declared_architecture_guard_rules(context)
+                )
+            ),
+        )
+
     def effective_authority_claims(
         self,
         context: CodemodSelectorContext | None,
@@ -11265,7 +11347,7 @@ class RefactorRecipe(CodemodPayloadRecord):
             backend=backend,
         )
         return RefactorRecipeSimulation(
-            recipe=self,
+            recipe=document_simulation.document.recipes[0],
             simulation=document_simulation.simulation,
             architecture_guard_report=document_simulation.architecture_guard_report,
         )
@@ -11397,6 +11479,18 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
     def combined_guard_suite(self) -> ArchitectureGuardSuite:
         return self.guard_suite.merge(*(recipe.guard_suite for recipe in self.recipes))
 
+    def with_declared_architecture_guards(
+        self,
+        context: CodemodSelectorContext,
+    ) -> "CodemodPlanDocument":
+        return replace(
+            self,
+            recipes=tuple(
+                recipe.with_declared_architecture_guards(context)
+                for recipe in self.recipes
+            ),
+        )
+
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
         return tuple(
             target
@@ -11476,6 +11570,9 @@ class CodemodPlanDocumentPreflight:
         rewrites: tuple[PlannedSourceRewrite, ...] = ()
         if report.is_clean:
             try:
+                document = document.with_declared_architecture_guards(
+                    rewrite_snapshot
+                )
                 rewrites = RefactorRecipeOperationCompiler.from_context(
                     rewrite_snapshot
                 ).planned_rewrites_for_recipes(document.recipes)
@@ -11682,14 +11779,20 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
                     after_source_index=active_snapshot.source_index,
                 )
             )
+        materialized_sequence = replace(
+            self,
+            documents=tuple(
+                stage.document_simulation.document for stage in stage_reports
+            ),
+        )
         return CodemodPlanSequenceSimulation(
-            sequence=self,
+            sequence=materialized_sequence,
             stage_reports=tuple(stage_reports),
             final_snapshot=active_snapshot,
             simulation=CodemodSimulationReport.from_sequential_reports(
                 (stage.document_simulation.simulation for stage in stage_reports),
             ),
-            architecture_guard_report=self.guard_suite.evaluate(
+            architecture_guard_report=materialized_sequence.guard_suite.evaluate(
                 active_snapshot.source_index,
                 active_snapshot.sources_by_file_path,
             ),
@@ -12007,6 +12110,10 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
     sequence: CodemodPlanSequence
     final_snapshot: CodemodSourceSnapshot
     stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.architecture_guard_report.rules != self.sequence.guard_suite.rules:
+            raise ValueError("sequence simulation guard evidence has different rules")
 
     @property
     def stages(self) -> tuple[CodemodPlanDocumentSimulation, ...]:
@@ -22184,17 +22291,31 @@ def evaluate_architecture_guards(
     """Evaluate caller-supplied codemod invariants over current source text."""
 
     rule_tuple = tuple(rules)
+    resolved_rules = tuple(rule.resolve(source_index) for rule in rule_tuple)
     violations: list[ArchitectureGuardViolation] = []
     for file_path, source in source_by_path.items():
         active_rules = tuple(
-            rule for rule in rule_tuple if rule.applies_to_file(file_path)
+            resolution
+            for resolution in resolved_rules
+            if resolution.applies_to_file(file_path)
         )
         if not active_rules:
             continue
         module = ast.parse(source, filename=file_path)
-        for rule in active_rules:
-            for match in rule.matches(module):
+        for resolution in active_rules:
+            for match in resolution.matches(module):
                 location = SourceLocation(file_path, match.node.lineno, match.symbol)
+                target = _source_index_target_for_line(
+                    source_index,
+                    file_path,
+                    match.node.lineno,
+                )
+                if not resolution.includes_target(
+                    file_path,
+                    None if target is None else target.qualname,
+                ):
+                    continue
+                rule = resolution.rule
                 violations.append(
                     ArchitectureGuardViolation(
                         rule_id=rule.rule_id,
@@ -22203,11 +22324,7 @@ def evaluate_architecture_guards(
                         target_context=(
                             ArchitectureGuardViolationTarget.from_location_target(
                                 location,
-                                _source_index_target_for_line(
-                                    source_index,
-                                    file_path,
-                                    match.node.lineno,
-                                ),
+                                target,
                             )
                         ),
                         detail=(

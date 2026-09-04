@@ -130,6 +130,7 @@ from nominal_refactor_advisor.exact_method_authority import (
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
+    ArchitectureGuardTargetScope,
     AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
     AstTargetNodeIndex,
@@ -1043,7 +1044,7 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
                     constraints=(
                         ForbiddenCallArchitectureGuardConstraint(("old_alpha",)),
                     ),
-                    file_path_suffixes=("pkg/mod.py",),
+                    scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
                 ),
             )
         ),
@@ -1094,7 +1095,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
                     constraints=(
                         ForbiddenCallArchitectureGuardConstraint(("old_alpha",)),
                     ),
-                    file_path_suffixes=("pkg/mod.py",),
+                    scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
                 ),
             )
         ),
@@ -2296,7 +2297,7 @@ def test_finding_recipe_batch_isolates_dirty_disjoint_recipe(
                     constraints=(
                         ForbiddenCallArchitectureGuardConstraint(("forbidden_call",)),
                     ),
-                    file_path_suffixes=("pkg/mod.py",),
+                    scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
                 ),
             )
         ),
@@ -6270,6 +6271,15 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
     assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert len(simulation.recipe.guard_suite.rules) == 1
+    dispatch_guard = simulation.recipe.guard_suite.rules[0]
+    assert dispatch_guard.scopes == (
+        ArchitectureGuardTargetScope("pkg/mod.py", "render"),
+    )
+    assert dispatch_guard.constraints == (
+        ForbiddenDispatchArchitectureGuardConstraint(("kind",)),
+    )
+    assert simulation.architecture_guard_report.rules == (dispatch_guard,)
     simulation.apply()
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
@@ -6385,6 +6395,75 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
     assert simulation.is_clean
     assert "class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in rewritten
     assert '"""Render one numeric mode."""' in rewritten
+
+
+def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def render(kind):\n"
+        "    if kind == 'csv':\n"
+        "        return 1\n"
+        "    if kind == 'json':\n"
+        "        return 2\n"
+        "    raise ValueError(kind)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    render_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "render"
+    )
+    dispatch_stage = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("dispatch").with_operation(
+                DispatchToPolymorphismOperation(
+                    target=SourceRewriteTarget(target_id=render_target.target_id)
+                )
+            ),
+        )
+    )
+    regression_stage = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("regression").with_operation(
+                ReplaceTextOperation(
+                    target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                    old_source=(
+                        "_dispatch_case_type = "
+                        "RenderDispatchCase.__registry__.get(kind)\n"
+                        "    if _dispatch_case_type is None:\n"
+                        "        raise ValueError(kind)\n"
+                        "    return _dispatch_case_type().apply(kind)"
+                    ),
+                    new_source=(
+                        "if kind == 'csv':\n"
+                        "        return 1\n"
+                        "    return 2"
+                    ),
+                )
+            ),
+        )
+    )
+
+    simulation = CodemodPlanSequence(
+        documents=(dispatch_stage, regression_stage)
+    ).simulate(snapshot)
+
+    assert not simulation.is_clean
+    assert simulation.architecture_guard_report.violation_count == 1
+    violation = simulation.architecture_guard_report.violations[0]
+    assert violation.constraint_type is ForbiddenDispatchArchitectureGuardConstraint
+    assert violation.target_context.qualname == "render"
+    materialized_guard = simulation.sequence.documents[0].recipes[0].guard_suite
+    assert materialized_guard.rules == simulation.architecture_guard_report.rules
+    assert dispatch_stage.combined_guard_suite.is_empty
+    assert (
+        CodemodPlanSequence.from_json_value(simulation.sequence.to_dict())
+        == simulation.sequence
+    )
 
 
 def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
@@ -8621,7 +8700,7 @@ def test_architecture_guard_reports_declaration_owned_constraints(
                         ("module.name", "module_name")
                     ),
                 ),
-                file_path_suffixes=("pkg/mod.py",),
+                scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
                 reason="module semantics must route through declarations",
             ),
         ),
@@ -8666,7 +8745,11 @@ def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
         "        return declaration.name\n"
         "    if declaration is None:\n"
         "        return None\n"
-        "    return declaration.present()\n",
+        "    return declaration.present()\n\n\n"
+        "def unrelated(status):\n"
+        "    if status.phase is Phase.CONNECTED:\n"
+        "        return 'separate axis owner'\n"
+        "    return None\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -8679,6 +8762,12 @@ def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
                 constraints=(
                     ForbiddenDispatchArchitectureGuardConstraint(
                         ("status.phase", "declaration")
+                    ),
+                ),
+                scopes=(
+                    ArchitectureGuardTargetScope(
+                        file_path="pkg/mod.py",
+                        target_qualname="present",
                     ),
                 ),
                 reason="semantic cases must execute on their nominal leaves",
@@ -8695,6 +8784,49 @@ def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
         for violation in report.violations
     )
     assert not any("None" in violation.detail for violation in report.violations)
+
+
+@pytest.mark.parametrize(
+    ("module_paths", "guard_path", "target_qualname", "error_fragment"),
+    (
+        (("pkg/mod.py",), "missing.py", None, "did not resolve"),
+        (("one/mod.py", "two/mod.py"), "mod.py", None, "resolved to multiple"),
+        (("pkg/mod.py",), "pkg/mod.py", "missing", "did not resolve exactly once"),
+    ),
+)
+def test_architecture_guard_scope_resolution_fails_closed(
+    tmp_path: Path,
+    module_paths: tuple[str, ...],
+    guard_path: str,
+    target_qualname: str | None,
+    error_fragment: str,
+) -> None:
+    for index, module_path in enumerate(module_paths):
+        _write_module(
+            tmp_path,
+            module_path,
+            f"def render_{index}(value):\n    return value\n",
+        )
+    paths = tuple(tmp_path / module_path for module_path in module_paths)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+
+    with pytest.raises(ValueError, match=error_fragment):
+        evaluate_architecture_guards(
+            source_index,
+            {path.as_posix(): path.read_text() for path in paths},
+            (
+                ArchitectureGuardRule(
+                    rule_id="exact-source-scope",
+                    constraints=(
+                        ForbiddenDispatchArchitectureGuardConstraint(("value",)),
+                    ),
+                    scopes=(
+                        ArchitectureGuardTargetScope(guard_path, target_qualname),
+                    ),
+                ),
+            ),
+        )
 
 
 def test_detects_generic_cancelable_product_composition_signal(
@@ -15051,7 +15183,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
                             "names": ["legacy_alpha"],
                         },
                     ],
-                    "file_path_suffixes": ["alpha.py"],
+                    "scopes": [{"file_path": "alpha.py"}],
                 }
             ],
             "recipes": [
@@ -15128,7 +15260,17 @@ def test_codemod_plan_document_rejects_parallel_authority_boundary_lane() -> Non
         CodemodPlanDocument.from_json_value({"authority_boundaries": []})
 
 
-def test_architecture_guard_rule_rejects_parallel_constraint_fields() -> None:
+@pytest.mark.parametrize(
+    ("legacy_field", "legacy_value"),
+    (
+        ("forbidden_call_names", ["legacy_call"]),
+        ("file_path_suffixes", ["legacy.py"]),
+    ),
+)
+def test_architecture_guard_rule_rejects_removed_parallel_fields(
+    legacy_field: str,
+    legacy_value: list[str],
+) -> None:
     with pytest.raises(
         ValueError,
         match="Unsupported ArchitectureGuardRule payload field",
@@ -15136,7 +15278,7 @@ def test_architecture_guard_rule_rejects_parallel_constraint_fields() -> None:
         ArchitectureGuardRule.from_json_value(
             {
                 "rule_id": "legacy-parallel-field",
-                "forbidden_call_names": ["legacy_call"],
+                legacy_field: legacy_value,
             }
         )
 
@@ -15198,7 +15340,7 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                                 "names": ["legacy"],
                             }
                         ],
-                        "file_path_suffixes": ["pkg/mod.py"],
+                        "scopes": [{"file_path": "pkg/mod.py"}],
                     }
                 ],
                 "recipes": [
@@ -16956,7 +17098,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 "subjects": ["module.name", "module_name"],
                             },
                         ],
-                        "file_path_suffixes": ["generator.py"],
+                        "scopes": [{"file_path": "generator.py"}],
                         "reason": "module semantics must route through declarations",
                     }
                 ],
@@ -18505,7 +18647,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
                         ("temporary_call", "forbidden_call")
                     ),
                 ),
-                file_path_suffixes=("pkg/mod.py",),
+                scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
             ),
         )
     )
@@ -18713,7 +18855,7 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
                 constraints=(
                     ForbiddenCallArchitectureGuardConstraint(("legacy_call",)),
                 ),
-                file_path_suffixes=("pkg/mod.py",),
+                scopes=(ArchitectureGuardTargetScope("pkg/mod.py"),),
             ),
         )
     )
@@ -20171,7 +20313,7 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
                                 "subjects": ["module_name"],
                             }
                         ],
-                        "file_path_suffixes": ["pkg/mod.py"],
+                        "scopes": [{"file_path": "pkg/mod.py"}],
                         "reason": "module semantics must route through declarations",
                     }
                 ]

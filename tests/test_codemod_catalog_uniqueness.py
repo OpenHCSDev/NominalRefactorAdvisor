@@ -8,6 +8,7 @@ import pytest
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardConstraint,
     ArchitectureGuardRule,
+    ArchitectureGuardTargetScope,
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodTargetSelector,
@@ -251,8 +252,12 @@ def test_payload_records_own_their_wire_schema() -> None:
         ArchitectureGuardRule: (
             ("rule_id", "rule_id"),
             ("constraints", "constraints"),
-            ("file_path_suffixes", "file_path_suffixes"),
+            ("scopes", "scopes"),
             ("reason", "reason"),
+        ),
+        ArchitectureGuardTargetScope: (
+            ("file_path", "file_path"),
+            ("target_qualname", "target_qualname"),
         ),
         RecipeCallReplacement: (
             ("target", "target"),

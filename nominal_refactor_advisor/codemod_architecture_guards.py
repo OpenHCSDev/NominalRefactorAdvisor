@@ -21,12 +21,14 @@ from .codemod_payload import (
     CodemodPayloadRecord,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
-    OptionalStringArrayPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
+from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
+from .source_index import SourceIndex
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,56 @@ class ForbiddenDispatchArchitectureGuardConstraint(ArchitectureGuardConstraint):
 
 
 @dataclass(frozen=True)
+class ArchitectureGuardTargetScope(CodemodPayloadRecord):
+    """One source path and optional nominal target guarded as a unit."""
+
+    file_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    target_qualname: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+
+    def resolve(
+        self,
+        source_index: SourceIndex,
+    ) -> ResolvedArchitectureGuardTargetScope:
+        file_path = SourcePathResolutionAuthority(
+            requested_path=self.file_path,
+            candidate_set=SourcePathCandidateSet.from_paths(
+                source_index.target_file_paths
+            ),
+        ).required_path()
+        if self.target_qualname is not None:
+            matching_targets = tuple(
+                target
+                for target in source_index.targets_by_file[file_path]
+                if target.qualname == self.target_qualname
+            )
+            if len(matching_targets) != 1:
+                raise ValueError(
+                    f"Architecture guard target qualname {self.target_qualname!r} "
+                    f"did not resolve exactly once in {file_path!r}"
+                )
+        return ResolvedArchitectureGuardTargetScope(
+            file_path=file_path,
+            target_qualname=self.target_qualname,
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedArchitectureGuardTargetScope:
+    """One unambiguous indexed source target selected by a guard scope."""
+
+    file_path: str
+    target_qualname: str | None
+
+    def includes_target(self, file_path: str, target_qualname: str | None) -> bool:
+        return self.file_path == file_path and (
+            self.target_qualname is None or self.target_qualname == target_qualname
+        )
+
+
+@dataclass(frozen=True)
 class ArchitectureGuardRule(CodemodPayloadRecord):
     """Caller-supplied invariant for a completed authority-boundary refactor."""
 
@@ -354,8 +406,8 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
         PayloadRecordArrayValueCodec(ArchitectureGuardConstraint),
         default=(),
     )
-    file_path_suffixes: tuple[str, ...] = codemod_payload_field(
-        OptionalStringArrayPayloadValueCodec(),
+    scopes: tuple[ArchitectureGuardTargetScope, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(ArchitectureGuardTargetScope),
         default=(),
     )
     reason: str = codemod_payload_field(
@@ -363,9 +415,13 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
         default="",
     )
 
-    def applies_to_file(self, file_path: str) -> bool:
-        return not self.file_path_suffixes or any(
-            file_path.endswith(suffix) for suffix in self.file_path_suffixes
+    def resolve(
+        self,
+        source_index: SourceIndex,
+    ) -> ArchitectureGuardRuleResolution:
+        return ArchitectureGuardRuleResolution(
+            rule=self,
+            scopes=tuple(scope.resolve(source_index) for scope in self.scopes),
         )
 
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
@@ -374,6 +430,27 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
             for constraint in self.constraints
             for match in constraint.matches(module)
         )
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardRuleResolution:
+    """One guard rule with every source scope resolved exactly once."""
+
+    rule: ArchitectureGuardRule
+    scopes: tuple[ResolvedArchitectureGuardTargetScope, ...]
+
+    def applies_to_file(self, file_path: str) -> bool:
+        return not self.scopes or any(
+            scope.file_path == file_path for scope in self.scopes
+        )
+
+    def includes_target(self, file_path: str, target_qualname: str | None) -> bool:
+        return not self.scopes or any(
+            scope.includes_target(file_path, target_qualname) for scope in self.scopes
+        )
+
+    def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
+        return self.rule.matches(module)
 
 
 def _call_name(node: ast.expr) -> str | None:

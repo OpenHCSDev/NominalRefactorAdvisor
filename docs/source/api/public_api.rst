@@ -278,7 +278,7 @@ them, and are not published as compatibility aliases.
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority
 
 .. automodule:: nominal_refactor_advisor.codemod_architecture_guards
-   :members: ArchitectureGuardConstraint, ForbiddenCallArchitectureGuardConstraint, ForbiddenAttributeArchitectureGuardConstraint, ForbiddenDispatchArchitectureGuardConstraint, ArchitectureGuardRule
+   :members: ArchitectureGuardConstraint, ForbiddenCallArchitectureGuardConstraint, ForbiddenAttributeArchitectureGuardConstraint, ForbiddenDispatchArchitectureGuardConstraint, ArchitectureGuardTargetScope, ArchitectureGuardRule
 
 .. automodule:: nominal_refactor_advisor.codemod
    :members: ArchitectureGuardSuite, ArchitectureGuardViolation, ArchitectureGuardReport, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
@@ -307,10 +307,17 @@ on the final replay document; recipe-owned guards remain transition-local.
 Each constraint declaration owns its JSON key, payload fields, source
 observation, violation kind, and diagnostic.  The supported constraint keys are
 ``forbidden_calls``, ``forbidden_attributes``, and ``forbidden_dispatch``.
+``ArchitectureGuardTargetScope`` keeps a module-relative path and optional
+nominal qualname together, so target-specific rules do not rely on parallel
+path and target arrays and remain portable across checkouts.
 Dispatch subjects are parsed Python expressions.  The dispatch constraint
 matches literal and enum-member comparisons, ``isinstance`` and ``type`` case
 recovery, ``match`` statements, and inline mapping dispatch.  An optionality
 check against ``None`` is not classified as semantic case dispatch.
+``DispatchToPolymorphismOperation`` derives this target-scoped dispatch guard
+from the same current-source proof that derives its strategy family.  Simulation
+materialises the rule into the recipe and staged replay carries it forward, so
+a later operation cannot reintroduce the removed branch axis silently.
 
 .. code-block:: json
 
@@ -321,7 +328,10 @@ check against ``None`` is not classified as semantic case dispatch.
          "constraint": "forbidden_dispatch",
          "subjects": ["status.phase", "declaration"]
        }],
-       "file_path_suffixes": ["presenter.py"],
+       "scopes": [{
+         "file_path": "presenter.py",
+         "target_qualname": "StatusPresenter.present"
+       }],
        "reason": "semantic cases execute on their nominal leaves"
      }]
    }
