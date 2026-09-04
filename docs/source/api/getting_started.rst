@@ -108,6 +108,8 @@ move into a deeper or shallower package does not silently retarget the import.
 An existing destination binding satisfies the dependency only when its resolved
 authority matches; a same-named local declaration or different import fails
 preflight.
+Import aliases are presentation derived from the required bound name; redundant
+same-name aliases do not create a second import authority.
 
 Source and destination modules must use the same annotation evaluation policy
 when moved declarations contain annotations.  Align their

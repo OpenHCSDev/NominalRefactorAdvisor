@@ -37,7 +37,6 @@ class ModuleImportBinding:
         if isinstance(statement, ast.Import):
             return DirectModuleImportBindingIdentity(
                 module_name=alias.name,
-                asname=alias.asname,
             )
         importing_file = import_graph.source_file_for_path(importing_file_path)
         if importing_file is None:
@@ -51,7 +50,6 @@ class ModuleImportBinding:
             return None
         return FromModuleImportBindingIdentity(
             module_name=module_name,
-            asname=alias.asname,
             member_name=alias.name,
         )
 
@@ -61,7 +59,6 @@ class ModuleImportBindingIdentity(CodemodJsonReport, ABC):
     """Canonical import identity independent of source spelling."""
 
     module_name: str
-    asname: str | None
 
     @property
     @abstractmethod
@@ -87,8 +84,20 @@ class ModuleImportBindingIdentity(CodemodJsonReport, ABC):
         return {
             "module_name": self.module_name,
             "imported_name": self.imported_name,
-            "asname": self.asname,
         }
+
+    @staticmethod
+    def alias_for_bound_name(
+        source_name: str,
+        default_bound_name: str,
+        bound_name: str,
+    ) -> ast.alias:
+        """Derive alias syntax from imported identity and required binding."""
+
+        return ast.alias(
+            name=source_name,
+            asname=None if bound_name == default_bound_name else bound_name,
+        )
 
     @abstractmethod
     def source_for(
@@ -97,6 +106,7 @@ class ModuleImportBindingIdentity(CodemodJsonReport, ABC):
         *,
         importing_file_path: str,
         scope: ModuleImportScope,
+        bound_name: str,
     ) -> str:
         """Render this binding relative to its new importing module."""
 
@@ -117,9 +127,14 @@ class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
         *,
         importing_file_path: str,
         scope: ModuleImportScope,
+        bound_name: str,
     ) -> str:
         del import_graph, importing_file_path
-        alias = ast.alias(name=self.module_name, asname=self.asname)
+        alias = self.alias_for_bound_name(
+            self.module_name,
+            self.module_name.partition(".")[0],
+            bound_name,
+        )
         return RequestedImportStatement(
             ast.Import(names=[alias]),
             scope=scope,
@@ -155,6 +170,7 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
         *,
         importing_file_path: str,
         scope: ModuleImportScope,
+        bound_name: str,
     ) -> str:
         imported_file = import_graph.unique_source_file_for_module_name(
             self.module_name
@@ -169,5 +185,11 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
             )
         return ImportFromSource(
             module_name=module_reference,
-            aliases=(ast.alias(name=self.imported_name, asname=self.asname),),
+            aliases=(
+                self.alias_for_bound_name(
+                    self.imported_name,
+                    self.imported_name,
+                    bound_name,
+                ),
+            ),
         ).source

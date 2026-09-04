@@ -6790,6 +6790,48 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_derives_import_authority_independent_of_reexport_spelling(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/shared.py", "class Shared:\n    pass\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .shared import Shared as Shared\n\n\n"
+        "class Helper(Shared):\n"
+        "    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from .shared import Shared\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("reuse-import-authority").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert report.obstacle_details(
+        ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT
+    ) == ()
+    assert report.destination_import_dependencies == ()
+    assert "asname" not in report.import_dependencies[0].to_dict()
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ].count("from .shared import Shared") == 1
+
+
 def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     tmp_path: Path,
 ) -> None:

@@ -45,6 +45,7 @@ class ModuleMoveImportDependency:
             import_graph,
             importing_file_path=destination_path,
             scope=self.scope,
+            bound_name=self.name,
         )
 
     def to_dict(self) -> JsonObject:
