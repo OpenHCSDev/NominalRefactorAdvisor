@@ -7341,6 +7341,45 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_preserves_function_local_annotation_imports(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n"
+        "from typing import Any\n\n\n"
+        "def normalize(value: object) -> object:\n"
+        "    normalized: Any = value\n"
+        "    return normalized\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from __future__ import annotations\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("normalize",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+    simulation = RefactorRecipe("move-local-annotation").with_operation(
+        operation
+    ).simulate(snapshot)
+    rewritten_destination = simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ]
+
+    assert report.imported_dependency_names == ("Any",)
+    assert "from typing import Any" in rewritten_destination
+
+
 def test_symbol_move_renders_relative_dependency_from_destination_identity(
     tmp_path: Path,
 ) -> None:

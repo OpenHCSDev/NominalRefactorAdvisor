@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .codemod_payload import (
-    CodemodJsonReport,
+from .codemod_semantics import CodemodPreflightStatus
+from .json_reports import (
     DataclassJsonReport,
+    JsonReport,
     json_report_field,
     json_report_property,
 )
-from .codemod_semantics import CodemodPreflightStatus
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ class CodemodOperationPreflightReport(DataclassJsonReport):
     operation: str
     status: CodemodPreflightStatus
     message: str
-    detail: CodemodJsonReport = json_report_field(field_name="details")
+    detail: JsonReport = json_report_field(field_name="details")
 
 
 class CodemodOperationPreflightError(ValueError):

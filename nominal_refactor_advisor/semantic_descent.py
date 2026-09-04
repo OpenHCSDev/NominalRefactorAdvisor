@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
-from pathlib import Path
 import pickle
 import re
 import sys
@@ -24,9 +23,11 @@ from dataclasses import dataclass, field, replace
 from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
+from pathlib import Path
 from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
+
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     AstExpressionProjection,
@@ -39,7 +40,6 @@ from .ast_tools import (
     module_syntax_index,
     python_module_path_identities_for_roots,
 )
-from .cache_paths import default_semantic_descent_cache_dir
 from .cache_checkout import (
     CacheCheckoutPathError,
     checkout_relative_path,
@@ -47,14 +47,15 @@ from .cache_checkout import (
     presentation_root_texts,
     rebase_checkout_path,
 )
+from .cache_paths import default_semantic_descent_cache_dir
 from .class_index import (
     ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
-    CompactModuleClassProjectionFamily,
     CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
@@ -62,24 +63,26 @@ from .class_index import (
     iter_class_definitions,
     overlay_class_family_index,
 )
-from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .codemod_payload import (
     CodemodPayloadRecord,
-    DataclassJsonReport,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
-    json_report_property,
 )
+from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
+from .json_reports import (
+    DataclassJsonReport,
+    SemanticRecord,
+    json_report_property,
+)
 from .models import (
     FindingMetrics,
     RefactorFinding,
-    SemanticRecord,
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
@@ -829,7 +832,7 @@ class SemanticAuthority(SemanticAuthorityReference):
 
 
 @dataclass(frozen=True)
-class AuthorityClaim(CodemodPayloadRecord, SemanticRecord):
+class AuthorityClaim(CodemodPayloadRecord):
     """Structured claim that a named authority exists or is being declared."""
 
     claimed_symbol: str = codemod_payload_field(RequiredStringPayloadValueCodec())

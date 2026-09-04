@@ -30,9 +30,7 @@ from typing import (
 
 from .codemod_payload import (
     CodemodPayloadRecord,
-    DataclassJsonReport,
     DataclassPayloadProjection,
-    JsonObject,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -47,6 +45,11 @@ from .source_index import (
     AstTargetDigest,
     SourceIndex,
 )
+from .json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+)
+
 
 if TYPE_CHECKING:
     from .codemod import CodemodSelectorContext, RefactorRecipeOperation

@@ -12,7 +12,7 @@ from .codemod_import_bindings import (
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
-from .codemod_payload import (
+from .json_reports import (
     DataclassJsonReport,
     JsonObject,
     json_report_field,

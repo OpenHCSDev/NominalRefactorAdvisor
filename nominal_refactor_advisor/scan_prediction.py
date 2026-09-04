@@ -11,11 +11,15 @@ from typing import Iterable
 from .analysis import analyze_modules
 from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
-from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
 from .collection_algebra import sorted_tuple
-from .models import RefactorFinding, SemanticRecord
+from .models import RefactorFinding
 from .source_index import build_source_index
+from .json_reports import (
+    SemanticRecord,
+    DataclassJsonReport,
+    json_report_property,
+)
 
 
 @dataclass(frozen=True)

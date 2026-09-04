@@ -14,7 +14,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
-from .codemod_payload import DataclassJsonReport
+from .json_reports import DataclassJsonReport
 
 
 @dataclass(frozen=True)

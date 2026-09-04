@@ -18,7 +18,6 @@ from typing import Iterable, Sequence
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .class_index import DataclassRuntimeDeclaration
-from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
@@ -35,6 +34,11 @@ from .source_index import (
     StableIdPart,
     build_source_index,
 )
+from .json_reports import (
+    DataclassJsonReport,
+    json_report_property,
+)
+
 
 @dataclass(frozen=True)
 class SemanticInspectionRecord(DataclassJsonReport, ABC):

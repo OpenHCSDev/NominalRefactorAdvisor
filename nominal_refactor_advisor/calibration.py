@@ -19,16 +19,17 @@ from typing import Generic, TypeVar, cast
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
-from .codemod_payload import (
+from .detectors import DetectorConfig
+from .economics import ScanEconomicsProof
+from .finding_counts import FindingSummary
+from .planner import build_refactor_plans
+from .json_reports import (
+    SemanticRecord,
     DataclassJsonReport,
     json_report_field,
     json_report_property,
 )
-from .detectors import DetectorConfig
-from .economics import ScanEconomicsProof
-from .finding_counts import FindingSummary
-from .models import SemanticRecord
-from .planner import build_refactor_plans
+
 
 _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
 

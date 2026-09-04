@@ -4,8 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .codemod_payload import DataclassJsonReport
 from .models import RefactorFinding
+from .json_reports import DataclassJsonReport
 
 
 @dataclass(frozen=True)

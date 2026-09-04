@@ -9,9 +9,17 @@ from functools import cached_property
 from typing import TypeAlias
 
 from .collection_algebra import UniqueIdentityIndexAuthority
-from .codemod_payload import DataclassJsonReport, json_report_property
-from .models import FindingMetrics, RefactorFinding, SemanticRecord
+from .models import (
+    FindingMetrics,
+    RefactorFinding,
+)
 from .source_index import SourceIndex
+from .json_reports import (
+    SemanticRecord,
+    DataclassJsonReport,
+    json_report_property,
+)
+
 
 MetricCoordinateProjection: TypeAlias = Callable[[FindingMetrics], tuple[str, ...]]
 

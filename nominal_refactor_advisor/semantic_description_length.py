@@ -9,25 +9,27 @@ or independent writable sources.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
 from typing import Generic, TypeAlias, TypeVar
 
+from metaclass_registry import AutoRegisterMeta
+
 from .collection_algebra import sorted_tuple
+from .json_reports import SemanticRecord
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import (
     GroupedProjectionPartition,
     ObjectFamilyShape,
     ceil_log2_cardinality,
     structural_key,
 )
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from metaclass_registry import AutoRegisterMeta
 
 ObjectT = TypeVar("ObjectT")
 KeyT = TypeVar("KeyT", bound=Hashable)
 
 
-class SemanticDescription(ABC, metaclass=AutoRegisterMeta):
+class SemanticDescription(SemanticRecord, ABC, metaclass=AutoRegisterMeta):
     """ABC for objects with an explicit semantic description cost."""
 
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
@@ -41,7 +43,7 @@ class SemanticDescription(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class SemanticCostVector:
+class SemanticCostVector(SemanticRecord):
     """Object-count cost vector for one semantic description."""
 
     grammar_objects: int = 0

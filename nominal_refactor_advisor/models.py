@@ -7,47 +7,48 @@ record vocabulary.
 
 from __future__ import annotations
 
-
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field, fields, replace
-from enum import StrEnum
-from functools import cache, cached_property
 import hashlib
-from typing import Any, Callable, ClassVar, Self, TypedDict, Unpack
+from abc import ABC, abstractmethod
+from dataclasses import (
+    dataclass,
+    field,
+    fields,
+    replace,
+)
+from enum import StrEnum
+from functools import cache
+from typing import (
+    Callable,
+    ClassVar,
+    Self,
+    TypedDict,
+    Unpack,
+)
+
+from metaclass_registry import AutoRegisterMeta
 
 from .class_composition import CompositeClassSpec
 from .descriptor_algebra import AliasProperty, ConstantProperty
+from .json_reports import (
+    SemanticRecord as SemanticRecord,
+)
+from .json_reports import (
+    json_report_cached_property,
+    json_report_property,
+)
 from .patterns import PatternId
 from .semantic_description_length import CompressionCertificate
 from .source_identity import source_path_text
-
 from .taxonomy import (
+    CERTIFIED,
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
-    CERTIFIED,
     STRONG_HEURISTIC,
     CapabilityTag,
     CertificationLevel,
     ConfidenceLevel,
     ObservationTag,
 )
-from metaclass_registry import AutoRegisterMeta
-
-
-class SemanticRecord(ABC):
-    """Base ABC for frozen records that can be serialized to dictionaries."""
-
-    def dataclass_field_values(self) -> dict[str, object]:
-        """Project the runtime record through its nominal dataclass fields."""
-
-        return {
-            record_field.name: getattr(self, record_field.name)
-            for record_field in fields(self)
-        }
-
-    def to_dict(self) -> dict[str, object]:
-        record: Any = self
-        return asdict(record)
 
 
 @dataclass(frozen=True, order=True)
@@ -959,7 +960,7 @@ class RefactorFinding(FindingSemantics):
             authority_evidence=authority_evidence,
         )
 
-    @cached_property
+    @json_report_cached_property()
     def stable_id(self) -> str:
         """Source-derived finding id for compact, repeatable agent targeting."""
 
@@ -976,13 +977,11 @@ class RefactorFinding(FindingSemantics):
         )
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
-    def to_dict(self) -> dict[str, object]:
-        payload = super().to_dict()
-        payload["stable_id"] = self.stable_id
-        payload["evidence_ids"] = tuple(
-            stable_source_location_id(item) for item in self.evidence
-        )
-        return payload
+    @json_report_property()
+    def evidence_ids(self) -> tuple[str, ...]:
+        """Stable identities for the source evidence projected by this finding."""
+
+        return tuple(stable_source_location_id(item) for item in self.evidence)
 
 @dataclass(frozen=True)
 class FindingSpec(FindingSemantics):

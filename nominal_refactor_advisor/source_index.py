@@ -17,15 +17,15 @@ from .ast_tools import (
     PythonModulePathIdentity,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .codemod_payload import (
-    DataclassJsonReport,
-    json_report_field,
-    json_report_property,
-)
 from .models import (
     RefactorFinding,
     SourceLocation,
     stable_source_location_id,
+)
+from .json_reports import (
+    DataclassJsonReport,
+    json_report_field,
+    json_report_property,
 )
 
 

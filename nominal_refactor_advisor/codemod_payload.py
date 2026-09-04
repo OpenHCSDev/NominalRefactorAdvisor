@@ -5,177 +5,29 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass
 from dataclasses import fields as dataclass_fields
 from enum import StrEnum
-from functools import cached_property, lru_cache, singledispatchmethod
-from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
+from functools import lru_cache
+from typing import (
+    ClassVar,
+    Generic,
+    Self,
+    TypeVar,
+    cast,
+)
 
-from .models import SemanticRecord
+from .json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+    JsonValue,
+    declared_dataclass_field,
+)
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-
-
-class JsonObject(dict[str, "JsonValue"]):
-    """Nominal JSON object payload at codemod and CLI boundaries."""
-
-
-JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
-JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
-ReportOwnerT = TypeVar("ReportOwnerT")
-ReportValueT = TypeVar("ReportValueT")
 StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
 StringPayloadValueT = TypeVar("StringPayloadValueT", bound=str | None)
-
-
-class CodemodJsonReport(ABC):
-    """Nominal boundary for codemod reports that serialize to JSON."""
-
-    @abstractmethod
-    def to_dict(self) -> JsonObject:
-        raise NotImplementedError
-
-
-class JsonReportValueProjection:
-    """Project the closed JSON value algebra through nominal runtime types."""
-
-    @singledispatchmethod
-    def project(self, value: object) -> JsonValue:
-        raise TypeError(
-            f"No JSON report projection is declared for {type(value).__name__}"
-        )
-
-    @project.register
-    def _project_scalar(self, value: JsonScalar) -> JsonScalar:
-        return value
-
-    @project.register
-    def _project_enum(self, value: StrEnum) -> str:
-        return value.value
-
-    @project.register
-    def _project_tuple(self, value: tuple) -> tuple[JsonValue, ...]:
-        return tuple(self.project(item) for item in value)
-
-    @project.register
-    def _project_list(self, value: list) -> list[JsonValue]:
-        return [self.project(item) for item in value]
-
-    @project.register
-    def _project_mapping(self, value: Mapping) -> JsonObject:
-        if not all(isinstance(key, str) for key in value):
-            raise TypeError("JSON report mappings require string keys")
-        return JsonObject(
-            {
-                cast(str, key): self.project(item)
-                for key, item in value.items()
-            }
-        )
-
-    @project.register
-    def _project_report(self, value: CodemodJsonReport) -> JsonObject:
-        return value.to_dict()
-
-    @project.register
-    def _project_semantic_record(self, value: SemanticRecord) -> JsonObject:
-        return self._project_mapping(value.to_dict())
-
-
-JSON_REPORT_VALUE_PROJECTION = JsonReportValueProjection()
-
-
-@dataclass(frozen=True)
-class JsonReportFieldDeclaration:
-    """Output projection semantics attached to one dataclass field."""
-
-    field_name: str | None = None
-    included: bool = True
-    flattened: bool = False
-
-
-_JSON_REPORT_FIELD_DECLARATION = object()
-
-
-class JsonReportProperty(property):
-    """Property whose output projection is derived through its MRO declaration."""
-
-    def __init__(
-        self,
-        getter: Callable[[ReportOwnerT], ReportValueT],
-        *,
-        field_name: str | None = None,
-        flattened: bool = False,
-    ) -> None:
-        super().__init__(getter)
-        self.field_name = field_name
-        self.flattened = flattened
-
-
-class JsonReportCachedProperty(cached_property):
-    """Cached property carrying its declaration-owned output projection."""
-
-    def __init__(
-        self,
-        getter: Callable[[ReportOwnerT], ReportValueT],
-        *,
-        field_name: str | None = None,
-        flattened: bool = False,
-    ) -> None:
-        super().__init__(getter)
-        self.field_name = field_name
-        self.flattened = flattened
-
-
-def json_report_property(
-    *,
-    field_name: str | None = None,
-    flattened: bool = False,
-) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportProperty]:
-    """Declare a computed JSON field without restating it in ``to_dict``."""
-
-    def declare(
-        getter: Callable[[ReportOwnerT], ReportValueT],
-    ) -> JsonReportProperty:
-        return JsonReportProperty(
-            getter,
-            field_name=field_name,
-            flattened=flattened,
-        )
-
-    return declare
-
-
-def json_report_cached_property(
-    *,
-    field_name: str | None = None,
-    flattened: bool = False,
-) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportCachedProperty]:
-    """Declare a computed JSON field whose runtime value is cached once."""
-
-    def declare(
-        getter: Callable[[ReportOwnerT], ReportValueT],
-    ) -> JsonReportCachedProperty:
-        return JsonReportCachedProperty(
-            getter,
-            field_name=field_name,
-            flattened=flattened,
-        )
-
-    return declare
-
-
-class DataclassJsonReport(CodemodJsonReport, SemanticRecord, ABC):
-    """JSON projection derived from nominal fields and report properties."""
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def report_bindings(cls) -> JsonReportBindingSet:
-        return JsonReportBindingSet.from_dataclass(cls)
-
-    def to_dict(self) -> JsonObject:
-        return type(self).report_bindings().payload(self)
 
 
 class DataclassPayloadProjection(DataclassJsonReport, ABC):
@@ -758,57 +610,18 @@ class PayloadFieldDeclaration(Generic[PayloadValueT]):
 
 
 _PAYLOAD_FIELD_DECLARATION = object()
-_NO_PAYLOAD_FIELD_DEFAULT = object()
-
-
-def _codemod_dataclass_field(
-    metadata: Mapping[object, object],
-    *,
-    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    compare: bool = True,
-    repr: bool = True,
-) -> PayloadValueT:
-    if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
-        default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
-    ):
-        raise TypeError("codemod dataclass fields cannot declare two defaults")
-    if default is not _NO_PAYLOAD_FIELD_DEFAULT:
-        return cast(
-            PayloadValueT,
-            field(
-                default=default,
-                metadata=metadata,
-                compare=compare,
-                repr=repr,
-            ),
-        )
-    if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
-        return cast(
-            PayloadValueT,
-            field(
-                default_factory=cast(Callable[[], PayloadValueT], default_factory),
-                metadata=metadata,
-                compare=compare,
-                repr=repr,
-            ),
-        )
-    return cast(
-        PayloadValueT,
-        field(metadata=metadata, compare=compare, repr=repr),
-    )
 
 
 def codemod_payload_field(
     codec: PayloadValueCodec[PayloadValueT],
     *,
     field_name: str | None = None,
-    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    default: PayloadValueT | object = MISSING,
+    default_factory: Callable[[], PayloadValueT] | object = MISSING,
 ) -> PayloadValueT:
     """Declare a constructor field and its derived codemod wire projection."""
 
-    return _codemod_dataclass_field(
+    return declared_dataclass_field(
         {
             _PAYLOAD_FIELD_DECLARATION: PayloadFieldDeclaration(
                 codec=codec,
@@ -818,137 +631,6 @@ def codemod_payload_field(
         default=default,
         default_factory=default_factory,
     )
-
-
-def json_report_field(
-    *,
-    field_name: str | None = None,
-    included: bool = True,
-    flattened: bool = False,
-    default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
-    compare: bool = True,
-    repr: bool = True,
-) -> PayloadValueT:
-    """Declare output-only JSON semantics on one dataclass field."""
-
-    return _codemod_dataclass_field(
-        {
-            _JSON_REPORT_FIELD_DECLARATION: JsonReportFieldDeclaration(
-                field_name=field_name,
-                included=included,
-                flattened=flattened,
-            )
-        },
-        default=default,
-        default_factory=default_factory,
-        compare=compare,
-        repr=repr,
-    )
-
-
-@dataclass(frozen=True)
-class JsonReportBinding:
-    """One declaration-derived runtime value to JSON field projection."""
-
-    source_name: str
-    field_name: str
-    flattened: bool = False
-
-    def payload_items(self, owner: object) -> tuple[tuple[str, JsonValue], ...]:
-        value = JSON_REPORT_VALUE_PROJECTION.project(
-            getattr(owner, self.source_name)
-        )
-        if not self.flattened:
-            return ((self.field_name, value),)
-        if not isinstance(value, Mapping):
-            raise TypeError(
-                f"Flattened JSON report field {self.source_name!r} must project "
-                "to an object"
-            )
-        return tuple((str(key), item) for key, item in value.items())
-
-
-class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
-    """MRO-derived JSON field bindings for one output-only report."""
-
-    def __new__(
-        cls,
-        bindings: Iterable[JsonReportBinding] = (),
-    ) -> Self:
-        binding_tuple = tuple(bindings)
-        explicit_names = tuple(
-            binding.field_name for binding in binding_tuple if not binding.flattened
-        )
-        duplicate_names = tuple(
-            sorted(
-                name
-                for name, count in Counter(explicit_names).items()
-                if count > 1
-            )
-        )
-        if duplicate_names:
-            raise TypeError(
-                f"Duplicate JSON report field declaration(s): {duplicate_names!r}"
-            )
-        return super().__new__(cls, binding_tuple)
-
-    @classmethod
-    def from_dataclass(cls, owner_type: type[object]) -> Self:
-        bindings: list[JsonReportBinding] = []
-        for record_field in dataclass_fields(owner_type):
-            declaration = record_field.metadata.get(_JSON_REPORT_FIELD_DECLARATION)
-            if declaration is not None and not isinstance(
-                declaration,
-                JsonReportFieldDeclaration,
-            ):
-                raise TypeError(
-                    f"Invalid JSON report field declaration on "
-                    f"{owner_type.__name__}.{record_field.name}"
-                )
-            if isinstance(declaration, JsonReportFieldDeclaration):
-                if not declaration.included:
-                    continue
-                field_name = declaration.field_name or record_field.name
-                flattened = declaration.flattened
-            else:
-                field_name = record_field.name
-                flattened = False
-            bindings.append(
-                JsonReportBinding(
-                    source_name=record_field.name,
-                    field_name=field_name,
-                    flattened=flattened,
-                )
-            )
-        declared_property_names: set[str] = set()
-        for owner in owner_type.__mro__:
-            for member_name, member in owner.__dict__.items():
-                if member_name in declared_property_names or not isinstance(
-                    member,
-                    (JsonReportProperty, JsonReportCachedProperty),
-                ):
-                    continue
-                declared_property_names.add(member_name)
-                bindings.append(
-                    JsonReportBinding(
-                        source_name=member_name,
-                        field_name=member.field_name or member_name,
-                        flattened=member.flattened,
-                    )
-                )
-        return cls(bindings)
-
-    def payload(self, owner: object) -> JsonObject:
-        payload = JsonObject()
-        for binding in self:
-            for field_name, value in binding.payload_items(owner):
-                if field_name in payload:
-                    raise TypeError(
-                        f"Duplicate projected JSON report field {field_name!r}"
-                    )
-                payload[field_name] = value
-        return payload
 
 
 @dataclass(frozen=True)

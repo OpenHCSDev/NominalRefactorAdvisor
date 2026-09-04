@@ -28,24 +28,24 @@ from metaclass_registry import AutoRegisterMeta
 from .ast_tools import AstExpressionProjection
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
-    CodemodJsonReport,
     CodemodPayloadRecord,
-    DataclassJsonReport,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
-    JSON_REPORT_VALUE_PROJECTION,
-    JsonObject,
-    JsonValue,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     PayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
+)
+from .collection_algebra import sorted_tuple
+from .json_reports import (
+    JSON_REPORT_VALUE_PROJECTION,
+    DataclassJsonReport,
+    JsonValue,
     json_report_field,
     json_report_property,
 )
-from .collection_algebra import sorted_tuple
 from .models import SourceLocation
 from .source_index import (
     AstTargetDigest,

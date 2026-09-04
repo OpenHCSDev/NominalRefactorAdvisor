@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING, TypeAlias
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import CollectionAttributeProjection
 from .export_tools import PublicExportPolicy, derive_public_exports
-from .models import SemanticRecord
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from metaclass_registry import AutoRegisterMeta
+
+from .json_reports import SemanticRecord
+
 
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule

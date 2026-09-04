@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
 from .codemod_imports import ImportFromSource, RequestedImportStatement
-from .codemod_payload import DataclassJsonReport, json_report_property
+from .json_reports import (
+    DataclassJsonReport,
+    json_report_property,
+)
 
 
 @dataclass(frozen=True)

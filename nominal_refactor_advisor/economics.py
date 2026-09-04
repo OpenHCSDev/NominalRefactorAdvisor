@@ -17,10 +17,14 @@ from typing import Iterable
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
-from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
 from .models import ImpactDelta, RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
+from .json_reports import (
+    DataclassJsonReport,
+    json_report_property,
+)
+
 
 _DEFAULT_SCAN_BUDGET_SECONDS = 20.0
 

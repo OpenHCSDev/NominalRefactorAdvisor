@@ -57,7 +57,7 @@ def test_nested_scope_bindings_do_not_hide_class_dependencies() -> None:
     )
 
 
-def test_annotation_projection_excludes_function_local_annotations() -> None:
+def test_annotation_projection_includes_function_local_type_dependencies() -> None:
     projection = _projection(
         "class Container:\n"
         "    field: FieldType\n"
@@ -72,7 +72,7 @@ def test_annotation_projection_excludes_function_local_annotations() -> None:
     )
 
     assert projection.annotation_names == frozenset(
-        ("ArgumentType", "FieldType", "NestedType", "ReturnType")
+        ("ArgumentType", "FieldType", "LocalType", "NestedType", "ReturnType")
     )
     assert projection.annotation_count == 4
 

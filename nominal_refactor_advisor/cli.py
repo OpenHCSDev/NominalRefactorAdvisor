@@ -66,7 +66,6 @@ from .calibration import (
     run_calibration_manifest,
 )
 from .codemod import (
-    CodemodJsonReport,
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
@@ -80,8 +79,6 @@ from .codemod import (
     FindingRecipePlan,
     FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
-    JsonObject,
-    JsonValue,
     RefactorConcept,
     codemod_class_plan_from_findings,
 )
@@ -93,6 +90,11 @@ from .codemod_architecture_guards import (
 from .codemod_paths import (
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
+)
+from .codemod_preflight import (
+    CodemodOperationPreflightError,
+    CodemodOperationPreflightReport,
+    CodemodPlanPreflightReport,
 )
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
@@ -114,6 +116,7 @@ from .economics import (
     build_economics_proof_report,
 )
 from .finding_counts import FindingSummary
+from .json_reports import DataclassJsonReport, JsonObject, JsonReport, JsonValue
 from .lean_export import LeanExportError
 from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
@@ -143,12 +146,6 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
-from .codemod_preflight import (
-    CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
-    CodemodPlanPreflightReport,
-)
-from .codemod_payload import DataclassJsonReport
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -165,7 +162,7 @@ CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
 CodemodSelectorReportFactory: TypeAlias = Callable[
     [CodemodSourceSnapshot, CodemodTargetSelector],
-    CodemodJsonReport,
+    JsonReport,
 ]
 
 

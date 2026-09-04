@@ -30,20 +30,19 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
-    AstExpressionProjection as AstExpressionProjection,
-    AstKeywordSourceProjection,
-    EagerNameLoadCollector,
-    FunctionDefinitionNode,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
+    AstKeywordSourceProjection,
     AstParentIndex,
     BuiltinCallName,
+    EagerNameLoadCollector,
+    FunctionDefinitionNode,
     ImportBoundNameProjection,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
@@ -54,6 +53,30 @@ from .ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
 )
+from .ast_tools import (
+    AstExpressionProjection as AstExpressionProjection,
+)
+from .cancelable_composition import (
+    CancelableCompositionKind as CancelableCompositionKind,
+)
+from .cancelable_composition import (
+    CancelableCompositionSignal as CancelableCompositionSignal,
+)
+from .cancelable_composition import (
+    CancelableCompositionSignalTargetAuthority as CancelableCompositionSignalTargetAuthority,
+)
+from .cancelable_composition import (
+    ProductForwardCallAuthority as ProductForwardCallAuthority,
+)
+from .cancelable_composition import (
+    ProductForwardFieldProjection as ProductForwardFieldProjection,
+)
+from .cancelable_composition import (
+    ProductForwardIdentity as ProductForwardIdentity,
+)
+from .cancelable_composition import (
+    detect_cancelable_composition_signals as detect_cancelable_composition_signals,
+)
 from .carrier_collapse import (
     CarrierCollapseCallEdge,
     CarrierCollapseParticipant,
@@ -62,10 +85,10 @@ from .carrier_collapse import (
 from .carrier_expansion import DeclaredCarrierExpansionBuilder
 from .class_authority_collapse import RedundantClassAuthorityCollapseProof
 from .class_index import (
+    ClassFamilyIndex,
+    ClassHeaderSourceSpan,
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
-    ClassHeaderSourceSpan,
-    ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
@@ -73,22 +96,205 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
-    build_compact_class_family_index,
     build_class_family_index,
+    build_compact_class_family_index,
     declared_nominal_base_count,
     module_public_export_contract,
 )
+from .codemod_architecture_guards import (
+    ArchitectureGuardConstraint as ArchitectureGuardConstraint,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardDispatchSiteKind as ArchitectureGuardDispatchSiteKind,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardMatch as ArchitectureGuardMatch,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardReport as ArchitectureGuardReport,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardRule as ArchitectureGuardRule,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardSuite as ArchitectureGuardSuite,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardSuitePayloadValueCodec as ArchitectureGuardSuitePayloadValueCodec,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardViolation as ArchitectureGuardViolation,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardViolationTarget as ArchitectureGuardViolationTarget,
+)
+from .codemod_architecture_guards import (
+    ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
+)
+from .codemod_architecture_guards import (
+    ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
+)
+from .codemod_architecture_guards import (
+    ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
+)
+from .codemod_architecture_guards import (
+    ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
+)
+from .codemod_architecture_guards import (
+    ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
+)
+from .codemod_architecture_guards import (
+    evaluate_architecture_guards as evaluate_architecture_guards,
+)
+from .codemod_declaration_source import (
+    ClassBodySourceAuthority as ClassBodySourceAuthority,
+)
+from .codemod_declaration_source import (
+    ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
+)
+from .codemod_declaration_source import (
+    ClassSourceAuthority as ClassSourceAuthority,
+)
+from .codemod_declaration_source import (
+    FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
+)
+from .codemod_declaration_source import (
+    PythonExpressionSourceFormatter as PythonExpressionSourceFormatter,
+)
+from .codemod_import_bindings import (
+    DirectModuleImportBindingIdentity as DirectModuleImportBindingIdentity,
+)
+from .codemod_import_bindings import (
+    FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
+)
+from .codemod_import_bindings import (
+    ModuleImportBinding as ModuleImportBinding,
+)
+from .codemod_import_bindings import (
+    ModuleImportBindingIdentity as ModuleImportBindingIdentity,
+)
+from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
+from .codemod_import_scopes import (
+    ModuleImportScope as ModuleImportScope,
+)
+from .codemod_import_scopes import (
+    TypeCheckingGuardProjection as TypeCheckingGuardProjection,
+)
+from .codemod_import_scopes import (
+    TypeCheckingGuardReference as TypeCheckingGuardReference,
+)
+from .codemod_imports import (
+    ImportAliasRequirement as ImportAliasRequirement,
+)
+from .codemod_imports import (
+    ImportBoundNameRemoval as ImportBoundNameRemoval,
+)
+from .codemod_imports import (
+    ImportFromModuleName as ImportFromModuleName,
+)
+from .codemod_imports import (
+    ImportFromSource as ImportFromSource,
+)
+from .codemod_imports import (
+    ImportNameRemoval as ImportNameRemoval,
+)
+from .codemod_imports import (
+    ModuleImportInsertionPoint as ModuleImportInsertionPoint,
+)
+from .codemod_imports import (
+    ModuleImportMutation as ModuleImportMutation,
+)
+from .codemod_imports import (
+    RequestedImportBlock as RequestedImportBlock,
+)
+from .codemod_imports import (
+    RequestedImportStatement as RequestedImportStatement,
+)
+from .codemod_imports import (
+    TypeCheckingGuardImportInsertionPoint as TypeCheckingGuardImportInsertionPoint,
+)
+from .codemod_module_declarations import (
+    _AVAILABLE_WITHOUT_IMPORT as _AVAILABLE_WITHOUT_IMPORT,
+)
+from .codemod_module_declarations import (
+    _PYTHON_RUNTIME_GLOBAL_NAMES as _PYTHON_RUNTIME_GLOBAL_NAMES,
+)
+from .codemod_module_declarations import (
+    AssignedSourceTopLevelDeclaration as AssignedSourceTopLevelDeclaration,
+)
+from .codemod_module_declarations import (
+    CandidateNameReferenceCollector as CandidateNameReferenceCollector,
+)
+from .codemod_module_declarations import (
+    ModuleSymbolTable as ModuleSymbolTable,
+)
+from .codemod_module_declarations import (
+    MovedTopLevelDeclarationSource as MovedTopLevelDeclarationSource,
+)
+from .codemod_module_declarations import (
+    NamedSourceTopLevelDeclaration as NamedSourceTopLevelDeclaration,
+)
+from .codemod_module_declarations import (
+    SourceTopLevelDeclaration as SourceTopLevelDeclaration,
+)
+from .codemod_module_declarations import (
+    SourceTopLevelDeclarationIndex as SourceTopLevelDeclarationIndex,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveDependencyReport as ModuleMoveDependencyReport,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveImportDependency as ModuleMoveImportDependency,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveObstacle as ModuleMoveObstacle,
+)
+from .codemod_module_move_reports import (
+    ModuleMoveObstacleKind as ModuleMoveObstacleKind,
+)
+from .codemod_paths import (
+    ExactSourcePathResolution as ExactSourcePathResolution,
+)
+from .codemod_paths import (
+    NormalizedSourcePathResolution as NormalizedSourcePathResolution,
+)
+from .codemod_paths import (
+    RelativeSuffixSourcePathResolution as RelativeSuffixSourcePathResolution,
+)
+from .codemod_paths import (
+    ResolvedSourcePathResolution as ResolvedSourcePathResolution,
+)
+from .codemod_paths import (
+    SourceCreationPathAuthority as SourceCreationPathAuthority,
+)
+from .codemod_paths import (
+    SourcePathCandidateAuthority as SourcePathCandidateAuthority,
+)
+from .codemod_paths import (
+    SourcePathCandidateSet as SourcePathCandidateSet,
+)
+from .codemod_paths import (
+    SourcePathResolutionAuthority as SourcePathResolutionAuthority,
+)
+from .codemod_paths import (
+    _source_path_candidate_set as _source_path_candidate_set,
+)
 from .codemod_payload import (
     BooleanPayloadValueCodec,
-    CodemodJsonReport,
     CodemodPayloadRecord,
-    DataclassJsonReport,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
-    JsonObject,
-    JsonValue,
     OptionalStringArrayPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
@@ -98,27 +304,120 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
-    json_report_field,
-    json_report_cached_property,
-    json_report_property,
+)
+from .codemod_preflight import (
+    CodemodOperationPreflightError as CodemodOperationPreflightError,
+)
+from .codemod_preflight import (
+    CodemodOperationPreflightReport as CodemodOperationPreflightReport,
+)
+from .codemod_preflight import (
+    CodemodPlanPreflightReport as CodemodPlanPreflightReport,
+)
+from .codemod_semantics import (
+    CodemodBackend as CodemodBackend,
+)
+from .codemod_semantics import (
+    CodemodPreflightStatus as CodemodPreflightStatus,
+)
+from .codemod_semantics import (
+    CodemodSourceDependencyScope as CodemodSourceDependencyScope,
+)
+from .codemod_semantics import (
+    FindingRecipePlanningHorizon as FindingRecipePlanningHorizon,
+)
+from .codemod_semantics import (
+    FindingRecipeSynthesisDisposition as FindingRecipeSynthesisDisposition,
+)
+from .codemod_semantics import (
+    FindingRecipeSynthesisStatus as FindingRecipeSynthesisStatus,
+)
+from .codemod_semantics import (
+    RewriteOperation as RewriteOperation,
+)
+from .codemod_source_edits import (
+    CodemodSourceRevision as CodemodSourceRevision,
+)
+from .codemod_source_edits import (
+    CodemodSourceRevisionError as CodemodSourceRevisionError,
+)
+from .codemod_source_edits import (
+    NominalSourceEdit as NominalSourceEdit,
+)
+from .codemod_source_edits import (
+    PhysicalSourceEdit as PhysicalSourceEdit,
+)
+from .codemod_source_edits import (
+    PhysicalSourceEditConflictError as PhysicalSourceEditConflictError,
+)
+from .codemod_source_edits import (
+    ReplacementSource as ReplacementSource,
+)
+from .codemod_source_edits import (
+    SourceEditOrigin as SourceEditOrigin,
+)
+from .codemod_source_edits import (
+    SourceFileCreation as SourceFileCreation,
+)
+from .codemod_source_edits import (
+    SourceInsertion as SourceInsertion,
+)
+from .codemod_source_edits import (
+    SourceLineSpan as SourceLineSpan,
+)
+from .codemod_source_edits import (
+    SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
+)
+from .codemod_source_edits import (
+    SourceNodeSpan as SourceNodeSpan,
+)
+from .codemod_source_edits import (
+    SourceRewriteContributor as SourceRewriteContributor,
+)
+from .codemod_source_edits import (
+    SourceSpanDeletion as SourceSpanDeletion,
+)
+from .codemod_source_edits import (
+    SourceSpanEdit as SourceSpanEdit,
+)
+from .codemod_source_edits import (
+    SourceSpanReplacement as SourceSpanReplacement,
+)
+from .codemod_source_edits import (
+    SourceTargetEditor as SourceTargetEditor,
+)
+from .codemod_source_edits import (
+    SourceTextGeometry as SourceTextGeometry,
+)
+from .codemod_source_edits import (
+    SourceTextReplacement as SourceTextReplacement,
+)
+from .codemod_source_edits import (
+    SourceTextSpan as SourceTextSpan,
+)
+from .codemod_source_edits import (
+    SourceTextSpanReplacement as SourceTextSpanReplacement,
+)
+from .codemod_source_edits import (
+    _joined_rationales as _joined_rationales,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
+from .declaration_dependencies import (
+    DeclarationDependencyProjection,
+    FunctionBindingProjection,
+)
+from .descriptor_algebra import ConstantProperty
 from .detectors._base import (
     CandidateCollectorBoilerplateCandidate,
     DerivedCandidateCollectorMixin,
     IssueDetector,
 )
-from .descriptor_algebra import ConstantProperty
-from .declaration_dependencies import (
-    DeclarationDependencyProjection,
-    FunctionBindingProjection,
-)
-from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
+from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .exact_field_authority import (
     ExactDataclassFieldAuthorityComponent,
     ExactDataclassFieldAuthorityComponentBuilder,
@@ -131,6 +430,27 @@ from .exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,
 )
+from .finding_recipe_actions import (
+    FindingRecipeActionIdentity as FindingRecipeActionIdentity,
+)
+from .finding_recipe_actions import (
+    FindingRecipeActionKey as FindingRecipeActionKey,
+)
+from .json_reports import (
+    DataclassJsonReport,
+    JsonObject,
+    JsonReport,
+    JsonValue,
+    json_report_cached_property,
+    json_report_field,
+    json_report_property,
+)
+from .manual_registry import (
+    AutoRegisterInstanceViewComponent,
+    DirectManualRegistryComponent,
+    RegistryAssignment,
+    SourceClassKeyEntry,
+)
 from .models import (
     AutoRegisterMetaRentMetrics,
     EnvironmentBooleanDriftMetrics,
@@ -140,12 +460,6 @@ from .models import (
     RefactorFinding,
     RegistrationMetrics,
     SourceLocation,
-)
-from .manual_registry import (
-    AutoRegisterInstanceViewComponent,
-    DirectManualRegistryComponent,
-    RegistryAssignment,
-    SourceClassKeyEntry,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .parameter_conveyor import (
@@ -192,158 +506,35 @@ from .semantic_match import (
     loaded_nominal_descendants,
     single_item,
 )
+from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
+from .source_identity import canonical_source_mapping
 from .source_index import (
     AstTargetDigest,
-    AstTargetGeometryKey as AstTargetGeometryKey,
     AstTargetNodeIndex,
     AstTargetNodeKind,
     EvidenceDigest,
     SourceFileDigest,
     SourceIndex,
-    SourceTargetIdentity as SourceTargetIdentity,
-    SourceTargetIdentityValueT as SourceTargetIdentityValueT,
-    SourceTargetSpan as SourceTargetSpan,
     TupleIndex,
     build_source_index_artifacts,
 )
-from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
-from .source_identity import canonical_source_mapping
+from .source_index import (
+    AstTargetGeometryKey as AstTargetGeometryKey,
+)
+from .source_index import (
+    SourceTargetIdentity as SourceTargetIdentity,
+)
+from .source_index import (
+    SourceTargetIdentityValueT as SourceTargetIdentityValueT,
+)
+from .source_index import (
+    SourceTargetSpan as SourceTargetSpan,
+)
 from .taxonomy import CertificationLevel, ConfidenceLevel
 from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
-from .codemod_semantics import (
-    CodemodBackend as CodemodBackend,
-    CodemodPreflightStatus as CodemodPreflightStatus,
-    CodemodSourceDependencyScope as CodemodSourceDependencyScope,
-    FindingRecipePlanningHorizon as FindingRecipePlanningHorizon,
-    FindingRecipeSynthesisDisposition as FindingRecipeSynthesisDisposition,
-    FindingRecipeSynthesisStatus as FindingRecipeSynthesisStatus,
-    RewriteOperation as RewriteOperation,
-)
-from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
-from .codemod_import_bindings import (
-    DirectModuleImportBindingIdentity as DirectModuleImportBindingIdentity,
-    FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
-    ModuleImportBinding as ModuleImportBinding,
-    ModuleImportBindingIdentity as ModuleImportBindingIdentity,
-)
-from .codemod_import_scopes import (
-    ModuleImportScope as ModuleImportScope,
-    TypeCheckingGuardProjection as TypeCheckingGuardProjection,
-    TypeCheckingGuardReference as TypeCheckingGuardReference,
-)
-from .codemod_imports import (
-    ImportAliasRequirement as ImportAliasRequirement,
-    ImportBoundNameRemoval as ImportBoundNameRemoval,
-    ImportFromModuleName as ImportFromModuleName,
-    ImportFromSource as ImportFromSource,
-    ImportNameRemoval as ImportNameRemoval,
-    ModuleImportInsertionPoint as ModuleImportInsertionPoint,
-    ModuleImportMutation as ModuleImportMutation,
-    RequestedImportBlock as RequestedImportBlock,
-    RequestedImportStatement as RequestedImportStatement,
-    TypeCheckingGuardImportInsertionPoint as TypeCheckingGuardImportInsertionPoint,
-)
-from .codemod_paths import (
-    ExactSourcePathResolution as ExactSourcePathResolution,
-    NormalizedSourcePathResolution as NormalizedSourcePathResolution,
-    RelativeSuffixSourcePathResolution as RelativeSuffixSourcePathResolution,
-    ResolvedSourcePathResolution as ResolvedSourcePathResolution,
-    SourceCreationPathAuthority as SourceCreationPathAuthority,
-    SourcePathCandidateAuthority as SourcePathCandidateAuthority,
-    SourcePathCandidateSet as SourcePathCandidateSet,
-    SourcePathResolutionAuthority as SourcePathResolutionAuthority,
-    _source_path_candidate_set as _source_path_candidate_set,
-)
-from .codemod_source_edits import (
-    CodemodSourceRevision as CodemodSourceRevision,
-    CodemodSourceRevisionError as CodemodSourceRevisionError,
-    NominalSourceEdit as NominalSourceEdit,
-    PhysicalSourceEdit as PhysicalSourceEdit,
-    PhysicalSourceEditConflictError as PhysicalSourceEditConflictError,
-    ReplacementSource as ReplacementSource,
-    SourceEditOrigin as SourceEditOrigin,
-    SourceInsertion as SourceInsertion,
-    SourceLineSpan as SourceLineSpan,
-    SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
-    SourceNodeSpan as SourceNodeSpan,
-    SourceRewriteContributor as SourceRewriteContributor,
-    SourceSpanDeletion as SourceSpanDeletion,
-    SourceSpanEdit as SourceSpanEdit,
-    SourceSpanReplacement as SourceSpanReplacement,
-    SourceTargetEditor as SourceTargetEditor,
-    SourceTextGeometry as SourceTextGeometry,
-    SourceTextReplacement as SourceTextReplacement,
-    SourceTextSpan as SourceTextSpan,
-    SourceTextSpanReplacement as SourceTextSpanReplacement,
-    _joined_rationales as _joined_rationales,
-    SourceFileCreation as SourceFileCreation,
-)
-from .codemod_module_move_reports import (
-    ModuleMoveDependencyReport as ModuleMoveDependencyReport,
-    ModuleMoveImportDependency as ModuleMoveImportDependency,
-    ModuleMoveObstacle as ModuleMoveObstacle,
-    ModuleMoveObstacleKind as ModuleMoveObstacleKind,
-)
-from .codemod_module_declarations import (
-    AssignedSourceTopLevelDeclaration as AssignedSourceTopLevelDeclaration,
-    CandidateNameReferenceCollector as CandidateNameReferenceCollector,
-    MovedTopLevelDeclarationSource as MovedTopLevelDeclarationSource,
-    NamedSourceTopLevelDeclaration as NamedSourceTopLevelDeclaration,
-    SourceTopLevelDeclaration as SourceTopLevelDeclaration,
-    SourceTopLevelDeclarationIndex as SourceTopLevelDeclarationIndex,
-    ModuleSymbolTable as ModuleSymbolTable,
-    _AVAILABLE_WITHOUT_IMPORT as _AVAILABLE_WITHOUT_IMPORT,
-    _PYTHON_RUNTIME_GLOBAL_NAMES as _PYTHON_RUNTIME_GLOBAL_NAMES,
-)
-from .codemod_architecture_guards import (
-    ArchitectureGuardConstraint as ArchitectureGuardConstraint,
-    ArchitectureGuardDispatchSiteKind as ArchitectureGuardDispatchSiteKind,
-    ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
-    ArchitectureGuardMatch as ArchitectureGuardMatch,
-    ArchitectureGuardReport as ArchitectureGuardReport,
-    ArchitectureGuardRule as ArchitectureGuardRule,
-    ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
-    ArchitectureGuardSuite as ArchitectureGuardSuite,
-    ArchitectureGuardSuitePayloadValueCodec as ArchitectureGuardSuitePayloadValueCodec,
-    ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
-    ArchitectureGuardViolation as ArchitectureGuardViolation,
-    ArchitectureGuardViolationTarget as ArchitectureGuardViolationTarget,
-    ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
-    ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
-    ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
-    ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
-    ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
-    evaluate_architecture_guards as evaluate_architecture_guards,
-)
-from .cancelable_composition import (
-    CancelableCompositionKind as CancelableCompositionKind,
-    CancelableCompositionSignal as CancelableCompositionSignal,
-    CancelableCompositionSignalTargetAuthority as CancelableCompositionSignalTargetAuthority,
-    ProductForwardCallAuthority as ProductForwardCallAuthority,
-    ProductForwardFieldProjection as ProductForwardFieldProjection,
-    ProductForwardIdentity as ProductForwardIdentity,
-    detect_cancelable_composition_signals as detect_cancelable_composition_signals,
-)
-from .codemod_declaration_source import (
-    ClassBodySourceAuthority as ClassBodySourceAuthority,
-    ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
-    ClassSourceAuthority as ClassSourceAuthority,
-    FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
-    PythonExpressionSourceFormatter as PythonExpressionSourceFormatter,
-)
-from .codemod_preflight import (
-    CodemodOperationPreflightError as CodemodOperationPreflightError,
-    CodemodOperationPreflightReport as CodemodOperationPreflightReport,
-    CodemodPlanPreflightReport as CodemodPlanPreflightReport,
-)
-from .finding_recipe_actions import (
-    FindingRecipeActionIdentity as FindingRecipeActionIdentity,
-    FindingRecipeActionKey as FindingRecipeActionKey,
-)
-
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
 
@@ -2322,7 +2513,7 @@ class CodemodTargetSourceRecord(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodTargetSourceReport(CodemodJsonReport):
+class CodemodTargetSourceReport(JsonReport):
     """JSON-ready exact source spans for selected codemod targets."""
 
     selector_resolution: CodemodSelectorResolutionReport
@@ -10599,7 +10790,7 @@ class RefactorRecipe(CodemodPayloadRecord):
         )
 
 
-class CodemodPlanRoot(CodemodJsonReport, ABC):
+class CodemodPlanRoot(JsonReport, ABC):
     """Declared sum boundary for one plan document or staged plan sequence."""
 
     @classmethod

@@ -43,14 +43,14 @@ from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
 )
-from .codemod_payload import (
-    CodemodJsonReport,
+from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
+from .json_reports import (
     DataclassJsonReport,
     JsonObject,
+    JsonReport,
     json_report_field,
     json_report_property,
 )
-from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
 
@@ -322,7 +322,7 @@ class CodemodIdentityTransition(Generic[IdentityT]):
 @dataclass(frozen=True)
 class CodemodFindingIdTransition(
     CodemodIdentityTransition[str],
-    CodemodJsonReport,
+    JsonReport,
 ):
     """Finding identity transition for codemod delta reports."""
 
@@ -355,7 +355,7 @@ class CodemodFindingIdTransition(
 @dataclass(frozen=True)
 class CodemodDetectorIdTransition(
     CodemodIdentityTransition[str],
-    CodemodJsonReport,
+    JsonReport,
 ):
     """Detector provenance before and after one semantic obligation transition."""
 
@@ -1172,7 +1172,7 @@ class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
 
 
 @dataclass(frozen=True)
-class CodemodClassPlanProjectedDeltaReport(CodemodJsonReport):
+class CodemodClassPlanProjectedDeltaReport(JsonReport):
     """Join simulated finding-class deltas back onto synthesized class plans."""
 
     class_plan_report: FindingRecipeClassPlanReport

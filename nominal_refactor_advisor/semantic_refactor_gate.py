@@ -11,7 +11,7 @@ from typing import ClassVar
 
 from .codemod import JsonObject
 from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
-from .models import RefactorFinding, SemanticRecord
+from .models import RefactorFinding
 from .models import SourceLocation
 from .patterns import PatternId
 from .semantic_descent import (
@@ -27,6 +27,8 @@ from .semantic_descent import (
     semantic_descent_finding_projection_id,
 )
 from .taxonomy import CertificationLevel, ConfidenceLevel
+from .json_reports import SemanticRecord
+
 
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
 

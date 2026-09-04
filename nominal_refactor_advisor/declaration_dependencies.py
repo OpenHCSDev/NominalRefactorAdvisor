@@ -208,8 +208,12 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if not self.scopes or isinstance(self.scopes[-1], _ClassScope):
-            self._visit_annotation(node.annotation)
+        self._visit_annotation(
+            node.annotation,
+            evaluation_sensitive=(
+                not self.scopes or isinstance(self.scopes[-1], _ClassScope)
+            ),
+        )
         if node.value is not None:
             self.visit(node.value)
             if not isinstance(node.target, ast.Name):
@@ -308,8 +312,14 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
                 if isinstance(expression, ast.expr):
                     self._visit_annotation(expression)
 
-    def _visit_annotation(self, expression: ast.expr) -> None:
-        self.annotation_count += 1
+    def _visit_annotation(
+        self,
+        expression: ast.expr,
+        *,
+        evaluation_sensitive: bool = True,
+    ) -> None:
+        if evaluation_sensitive:
+            self.annotation_count += 1
         with self._dependency_use(DeclarationDependencyUse.ANNOTATION):
             self.visit(expression)
 

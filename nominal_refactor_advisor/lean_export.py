@@ -14,11 +14,12 @@ from typing import ClassVar, Mapping
 
 from metaclass_registry import AutoRegisterMeta
 
-from .codemod_payload import JsonObject
 from .detectors._base import high_confidence_spec
 from .models import FindingSpec, RefactorFinding, SourceLocation
 from .patterns import PatternId
 from .taxonomy import CapabilityTag, ObservationTag
+from .json_reports import JsonObject
+
 
 LEAN_EXPORT_SCHEMA = "nominal_refactor_advisor.lean_export.v1"
 

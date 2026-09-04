@@ -20,12 +20,10 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     CodemodPayloadRecord,
-    DataclassJsonReport,
     DefaultedStringPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
     IntegerPayloadValueCodec,
-    JsonReportValueProjection,
     ObjectPayloadValueCodec,
     OptionalStrEnumPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -38,8 +36,12 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
-    json_report_field,
+)
+from nominal_refactor_advisor.json_reports import (
+    DataclassJsonReport,
+    JsonReportValueProjection,
     json_report_cached_property,
+    json_report_field,
     json_report_property,
 )
 from nominal_refactor_advisor.semantic_descent import (

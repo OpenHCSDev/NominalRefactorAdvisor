@@ -24,7 +24,6 @@ from .models import (
     ImpactDelta,
     STRONG_HEURISTIC,
     OutcomeEstimate,
-    SemanticRecord,
     RefactorFinding,
     RefactorPatternEvidence,
     RefactorPatternEvidenceCarrier,
@@ -36,6 +35,7 @@ from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
 )
+from .json_reports import SemanticRecord
 
 
 @dataclass(frozen=True)
