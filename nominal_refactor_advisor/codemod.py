@@ -663,9 +663,7 @@ class CodemodPlanPreflightReport:
 
     @property
     def is_clean(self) -> bool:
-        return all(
-            report.status is CodemodPreflightStatus.PASSED for report in self.reports
-        )
+        return all(report.status.is_passed for report in self.reports)
 
     @property
     def preflight_failed(self) -> bool:
@@ -673,7 +671,7 @@ class CodemodPlanPreflightReport:
 
     def require_clean(self) -> None:
         for report in self.reports:
-            if report.status is CodemodPreflightStatus.FAILED:
+            if report.status.is_failed:
                 raise CodemodOperationPreflightError(report)
 
     def to_dict(self) -> JsonObject:
@@ -12774,7 +12772,7 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         )
         if (
             authority_report is None
-            or authority_report.status is CodemodPreflightStatus.PASSED
+            or authority_report.status.is_passed
         ):
             return self
         return RejectedRecipeEvaluation(

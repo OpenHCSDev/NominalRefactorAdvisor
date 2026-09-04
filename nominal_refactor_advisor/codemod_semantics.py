@@ -228,5 +228,27 @@ class CancelableCompositionKind(StrEnum):
 class CodemodPreflightStatus(StrEnum):
     """Machine-readable codemod preflight outcome."""
 
-    PASSED = "passed"
-    FAILED = "failed"
+    PASSED = ("passed", True)
+    FAILED = ("failed", False)
+
+    def __new__(
+        cls,
+        value: str,
+        is_passed: bool,
+    ) -> "CodemodPreflightStatus":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._is_passed = is_passed
+        return member
+
+    @property
+    def is_passed(self) -> bool:
+        """Whether the checked codemod contract is satisfied."""
+
+        return self._is_passed
+
+    @property
+    def is_failed(self) -> bool:
+        """Whether the checked codemod contract is unsatisfied."""
+
+        return not self.is_passed
