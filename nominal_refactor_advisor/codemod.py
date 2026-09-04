@@ -30,7 +30,7 @@ import textwrap
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from itertools import combinations
@@ -269,6 +269,8 @@ from .codemod_source_edits import (
     SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
     SourceNodeSpan as SourceNodeSpan,
     SourceRewriteContributor as SourceRewriteContributor,
+    SourceSpanDeletion as SourceSpanDeletion,
+    SourceSpanEdit as SourceSpanEdit,
     SourceSpanReplacement as SourceSpanReplacement,
     SourceTargetEditor as SourceTargetEditor,
     SourceTextGeometry as SourceTextGeometry,
@@ -300,15 +302,20 @@ from .codemod_architecture_guards import (
     ArchitectureGuardDispatchSiteKind as ArchitectureGuardDispatchSiteKind,
     ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
     ArchitectureGuardMatch as ArchitectureGuardMatch,
+    ArchitectureGuardReport as ArchitectureGuardReport,
     ArchitectureGuardRule as ArchitectureGuardRule,
     ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
+    ArchitectureGuardSuite as ArchitectureGuardSuite,
     ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
+    ArchitectureGuardViolation as ArchitectureGuardViolation,
+    ArchitectureGuardViolationTarget as ArchitectureGuardViolationTarget,
     ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
     ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
     ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
     ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
     _call_name as _call_name,
+    evaluate_architecture_guards as evaluate_architecture_guards,
 )
 
 
@@ -619,108 +626,6 @@ class PlannedSourceRewrite(SourceRewriteDelta):
     """One planned source rewrite against an AST target digest."""
 
     target_id: str
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardViolation:
-    """One concrete source location that violates an architecture guard rule."""
-
-    rule_id: str
-    constraint_type: type[ArchitectureGuardConstraint]
-    location: SourceLocation
-    target_context: "ArchitectureGuardViolationTarget"
-    detail: str = ""
-
-    @property
-    def violation_kind(self) -> str:
-        return self.constraint_type.discriminator_key()
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "rule_id": self.rule_id,
-            "violation_kind": self.violation_kind,
-            "line": self.location.line,
-            "symbol": self.location.symbol,
-            **self.target_context.violation_payload(),
-            "detail": self.detail,
-        }
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardReport:
-    """Result of checking caller-supplied codemod architecture invariants."""
-
-    rules: tuple[ArchitectureGuardRule, ...]
-    violations: tuple[ArchitectureGuardViolation, ...]
-
-    @property
-    def is_clean(self) -> bool:
-        return not self.violations
-
-    @property
-    def violation_count(self) -> int:
-        return len(self.violations)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "is_clean": self.is_clean,
-            "violation_count": self.violation_count,
-            "rules": tuple(rule.to_dict() for rule in self.rules),
-            "violations": tuple(violation.to_dict() for violation in self.violations),
-        }
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardSuite:
-    """Nominal carrier for post-refactor architecture guard rules."""
-
-    rules: tuple[ArchitectureGuardRule, ...] = ()
-
-    @classmethod
-    def from_json_value(cls, value: JsonValue | None) -> "ArchitectureGuardSuite":
-        if value is None:
-            return cls()
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("architecture_guards must be an array")
-        return cls(tuple(ArchitectureGuardRule.from_json_value(row) for row in value))
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.rules
-
-    def with_rule(self, rule: ArchitectureGuardRule) -> "ArchitectureGuardSuite":
-        return replace(self, rules=(*self.rules, rule))
-
-    def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
-        return replace(
-            self,
-            rules=tuple(
-                dict.fromkeys(
-                    (
-                        *self.rules,
-                        *(rule for suite in suites for rule in suite.rules),
-                    )
-                )
-            ),
-        )
-
-    def evaluate(
-        self,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> ArchitectureGuardReport:
-        return evaluate_architecture_guards(source_index, source_by_path, self.rules)
-
-    def clean_report(self) -> ArchitectureGuardReport:
-        """Return the canonical clean report for this suite without source work."""
-
-        return ArchitectureGuardReport(self.rules, ())
-
-    def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
-        return self.rules
-
-    def to_dict(self) -> tuple[JsonObject, ...]:
-        return tuple(rule.to_dict() for rule in self.rules)
 
 
 @dataclass(frozen=True)
@@ -1154,42 +1059,6 @@ class SourceRewriteTarget(
             "Source rewrite target did not resolve to exactly one eligible "
             "source-index target"
         )
-
-
-@dataclass(frozen=True)
-class ArchitectureGuardViolationTarget(SourceRewriteTarget):
-    """Source-index target context for one architecture guard violation."""
-
-    target_id: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        default=None,
-    )
-    qualname: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        field_name="target_qualname",
-        default="<module>",
-    )
-    file_path: str | None = codemod_payload_field(
-        OptionalStringPayloadValueCodec(),
-        default=None,
-    )
-
-    @classmethod
-    def from_location_target(
-        cls,
-        location: SourceLocation,
-        target: AstTargetDigest | None,
-    ) -> "ArchitectureGuardViolationTarget":
-        if target is None:
-            return cls(file_path=location.file_path)
-        return cls(
-            target_id=target.target_id,
-            qualname=target.qualname,
-            file_path=target.file_path,
-        )
-
-    def violation_payload(self) -> JsonObject:
-        return JsonObject(asdict(self))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1629,9 +1498,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def exact_method_role_component_builder(self) -> ExactMethodRoleComponentBuilder:
         """Derive ownerless exact roles from this source state's method proof."""
 
-        return ExactMethodRoleComponentBuilder(
-            self.exact_leaf_method_component_builder
-        )
+        return ExactMethodRoleComponentBuilder(self.exact_leaf_method_component_builder)
 
     @cached_property
     def parallel_mirrored_leaf_family_component_builder(
@@ -1938,8 +1805,7 @@ class CodemodSourceIndexReport:
                 "target_count": self.target_count,
                 "evidence_count": self.evidence_count,
                 "files": tuple(
-                    source_file.to_dict()
-                    for source_file in self.source_index.files
+                    source_file.to_dict() for source_file in self.source_index.files
                 ),
                 "targets": tuple(
                     self.target_payload(target)
@@ -2964,9 +2830,7 @@ class RefactorRecipeOperation(
             plan_item_declaration=type(self).__name__,
             plan_item_index=plan_item_index,
         )
-        return tuple(
-            edit.with_origin(origin) for edit in self.source_edits(context)
-        )
+        return tuple(edit.with_origin(origin) for edit in self.source_edits(context))
 
     def preflight_reports(
         self,
@@ -3054,9 +2918,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         return self.required_reproof(
-            lambda: self.source_edits_from_snapshot(
-                context.execution_snapshot()
-            )
+            lambda: self.source_edits_from_snapshot(context.execution_snapshot())
         )
 
     def required_reproof(
@@ -3169,9 +3031,8 @@ class ReplaceTargetOperation(SourceReprovedOperation):
             raise ValueError(
                 f"Replacement source is not valid Python: {error}"
             ) from error
-        if (
-            len(replacement_module.body) != 1
-            or not isinstance(replacement_module.body[0], _TargetNode)
+        if len(replacement_module.body) != 1 or not isinstance(
+            replacement_module.body[0], _TargetNode
         ):
             raise ValueError(
                 "Replacement source must contain exactly one class or function "
@@ -3271,8 +3132,7 @@ class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
             assignments.append(statement)
         if pending_names:
             raise ValueError(
-                "No assignment statements found for "
-                f"{tuple(sorted(pending_names))!r}"
+                f"No assignment statements found for {tuple(sorted(pending_names))!r}"
             )
         return tuple(assignments)
 
@@ -3918,9 +3778,7 @@ class CollapseDeclaredCarrierExpansionOperation(CarrierCollapseOperationABC):
         authority_target: AstTargetDigest,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
-        builder = DeclaredCarrierExpansionBuilder.from_modules(
-            snapshot.parsed_modules
-        )
+        builder = DeclaredCarrierExpansionBuilder.from_modules(snapshot.parsed_modules)
         return tuple(
             assessment
             for assessment in builder.assessed_components()
@@ -3955,6 +3813,7 @@ class CreateFileOperation(SourcePayloadOperation):
     ) -> tuple[SourceFileCreation, ...]:
         return self.source_file_creations(context.source_index)
 
+
 @dataclass(frozen=True, kw_only=True)
 class DeleteClassAssignmentsOperation(AssignmentDeletionOperationABC):
     """Delete a proven set of class-level assignment statements."""
@@ -3967,7 +3826,7 @@ class DeleteClassAssignmentsOperation(AssignmentDeletionOperationABC):
         if not isinstance(node, ast.ClassDef):
             raise ValueError(f"Target {target.qualname!r} is not a class definition")
         return tuple(
-            SourceSpanReplacement(
+            SourceSpanDeletion(
                 file_path=target.file_path,
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
@@ -4032,11 +3891,10 @@ class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
         )
         module = snapshot.module_nodes_by_file_path[source_path]
         return tuple(
-            SourceSpanReplacement(
+            SourceSpanDeletion(
                 file_path=source_path,
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
-                replacement_lines=(),
                 rationale=self.rationale
                 or f"Delete module assignments {self.assignment_names!r}.",
             )
@@ -4518,9 +4376,8 @@ class ParallelMirroredLeafFamilyTargets:
         if not root_target.is_class:
             raise ValueError("parallel leaf-family authority target must be a class")
         root_symbol = snapshot.source_index.symbol_for_target(root_target)
-        component = (
-            snapshot.parallel_mirrored_leaf_family_component_builder
-            .required_proven_component(root_symbol)
+        component = snapshot.parallel_mirrored_leaf_family_component_builder.required_proven_component(
+            root_symbol
         )
         targets = cls.resolve(snapshot, component)
         failure = targets.validation_failure()
@@ -4575,9 +4432,7 @@ class ParallelMirroredLeafFamilyTargets:
             self.component.roots[0].file_path
         ]
         bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
-        colliding_names = tuple(
-            name for name in authority_names if name in bound_names
-        )
+        colliding_names = tuple(name for name in authority_names if name in bound_names)
         if colliding_names:
             return f"Role authority names are already bound: {colliding_names!r}"
         for role_targets in self.role_classes:
@@ -4637,7 +4492,7 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
             for index, statement in enumerate(promoted_statements):
                 member_statement = self.statement_type(statement)
                 replacements.append(
-                    SourceSpanReplacement(
+                    SourceSpanEdit.from_replacement_lines(
                         file_path=class_target.file_path,
                         start_line=member_statement.deletion_start_line(
                             source,
@@ -4898,12 +4753,10 @@ class ExactDataclassFieldEvidence:
     ) -> ExactDataclassFieldAuthorityComponent:
         if target.node_kind is not AstTargetNodeKind.CLASS:
             raise ValueError("Exact dataclass field factoring requires a class target")
-        return (
-            snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
-                file_path=target.file_path,
-                class_qualname=target.qualname,
-                field_name=self.field_name,
-            )
+        return snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
+            file_path=target.file_path,
+            class_qualname=target.qualname,
+            field_name=self.field_name,
         )
 
 
@@ -5006,9 +4859,7 @@ class FactorExactDataclassFieldAuthorityOperation(
         snapshot: CodemodSourceSnapshot,
     ) -> ExactDataclassFieldAuthorityComponent:
         _target_id, target, _node = self.target_node_from_context(snapshot)
-        return ExactDataclassFieldEvidence(
-            self.evidence_field_name
-        ).required_component(
+        return ExactDataclassFieldEvidence(self.evidence_field_name).required_component(
             snapshot,
             target,
         )
@@ -5043,10 +4894,13 @@ class ExistingDataclassFieldAuthorityTargets:
                 "Existing field authority must own exactly the repeated fields"
             )
         executable_body = tuple(statements_without_docstring(authority.node.body))
-        if tuple(
-            ClassDeclarationPromotionStatement(statement).name
-            for statement in executable_body
-        ) != component.field_names:
+        if (
+            tuple(
+                ClassDeclarationPromotionStatement(statement).name
+                for statement in executable_body
+            )
+            != component.field_names
+        ):
             raise ValueError(
                 "Existing field authority must be behavior-free outside its fields"
             )
@@ -5113,7 +4967,8 @@ class ExistingDataclassFieldAuthorityTargets:
         intervening_statements = tuple(
             statement
             for statement in module.body
-            if self.participants.insertion_line <= statement.lineno
+            if self.participants.insertion_line
+            <= statement.lineno
             < self.authority_span.start_line
         )
         if EagerNameLoadCollector.collect(
@@ -5153,11 +5008,10 @@ class ExistingDataclassFieldAuthorityTargets:
                 ),
                 rationale=rationale,
             ),
-            SourceSpanReplacement(
+            SourceSpanDeletion(
                 file_path=self.authority.file_path,
                 start_line=self.authority_span.start_line - 2,
                 end_line=self.authority_span.end_line,
-                replacement_lines=(),
                 rationale=rationale,
             ),
         )
@@ -7346,9 +7200,7 @@ class CarrierFieldProjection(CodemodPayloadRecord):
     """One explicit primitive-field to carrier-attribute relation."""
 
     source_field: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    carrier_attribute: str = codemod_payload_field(
-        RequiredStringPayloadValueCodec()
-    )
+    carrier_attribute: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def __post_init__(self) -> None:
         if not self.source_field.isidentifier():
@@ -7673,7 +7525,7 @@ class DeleteTargetOperation(RefactorRecipeOperation):
                 SourceNodeDecoratorPolicy.INCLUDE,
             )
             return (
-                SourceSpanReplacement(
+                SourceSpanDeletion(
                     file_path=target_digest.file_path,
                     start_line=target_span.start_line,
                     end_line=target_span.end_line,
@@ -7682,7 +7534,7 @@ class DeleteTargetOperation(RefactorRecipeOperation):
                 ),
             )
         return (
-            SourceSpanReplacement.delete_target(
+            SourceSpanDeletion.for_target(
                 target_digest,
                 rationale=self.rationale,
             ),
@@ -7709,6 +7561,7 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
         self.selection_count.require_actual_count(len(target_ids))
         return target_ids
 
+
 @dataclass(frozen=True, kw_only=True)
 class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     """Delete every source-index target selected by a registered selector."""
@@ -7725,8 +7578,8 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     def line_replacement_for(
         self,
         target_digest: AstTargetDigest,
-    ) -> SourceSpanReplacement:
-        return SourceSpanReplacement.delete_target(
+    ) -> SourceSpanDeletion:
+        return SourceSpanDeletion.for_target(
             target_digest,
             rationale=self.rationale,
         )
@@ -7834,7 +7687,7 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
-            SourceSpanReplacement.delete_target(
+            SourceSpanDeletion.for_target(
                 target_digest,
                 rationale=self.rationale
                 or f"Delete helper target {target_digest.qualname!r}.",
@@ -8146,8 +7999,7 @@ class SourceTopLevelSymbolMoveSelection:
             root_symbol_qualnames,
         )
         selected_by_name = {
-            declaration.name: declaration
-            for declaration in root_selection.declarations
+            declaration.name: declaration for declaration in root_selection.declarations
         }
         while True:
             source_dependencies = frozenset(
@@ -8158,15 +8010,12 @@ class SourceTopLevelSymbolMoveSelection:
                         (declaration.node,)
                     ).names
                 )
-                if name in source_table.top_level_names
-                and name not in selected_by_name
+                if name in source_table.top_level_names and name not in selected_by_name
             )
             additions = tuple(
                 declaration
                 for name in sorted(source_dependencies)
-                if (
-                    declaration := declaration_index.declaration_if_unambiguous(name)
-                )
+                if (declaration := declaration_index.declaration_if_unambiguous(name))
                 is not None
             )
             if not additions:
@@ -8211,9 +8060,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             module=context.module_nodes_by_file_path[request.destination_path],
         )
         declarations = request.selection.declarations
-        moved_symbol_names = tuple(
-            declaration.name for declaration in declarations
-        )
+        moved_symbol_names = tuple(declaration.name for declaration in declarations)
         cls._validate_destination(
             destination_table,
             moved_symbol_names,
@@ -8301,7 +8148,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph = context.module_import_graph
         source_module_name = import_graph.module_name_for_file_path(source_path)
         if source_module_name is None:
-            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
+            raise ValueError(
+                f"Source module identity is unavailable for {source_path!r}"
+            )
         moved_names = frozenset(moved_symbol_names)
         mutations: list[ModuleImportMutation] = []
         for source_file in context.source_index.files:
@@ -8381,9 +8230,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         destination_table: ModuleSymbolTable,
         declarations: tuple[SourceTopLevelDeclaration, ...],
     ) -> ModuleMoveDependencyReport:
-        moved_names = frozenset(
-            declaration.name for declaration in declarations
-        )
+        moved_names = frozenset(declaration.name for declaration in declarations)
         moved_dependencies = DeclarationDependencyProjection.from_declarations(
             tuple(declaration.node for declaration in declarations)
         )
@@ -8506,9 +8353,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         return ModuleMoveDependencyReport(
             source_path=source_table.file_path,
             destination_path=destination_table.file_path,
-            moved_symbol_names=tuple(
-                declaration.name for declaration in declarations
-            ),
+            moved_symbol_names=tuple(declaration.name for declaration in declarations),
             import_dependencies=import_dependencies,
             destination_dependency_names=destination_dependency_names,
             destination_insertion_line=destination_table.insertion_line_after_bindings(
@@ -8516,9 +8361,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 (dependency.scope for dependency in import_dependencies),
             ),
             source_annotation_evaluation_mode=source_annotation_mode,
-            destination_annotation_evaluation_mode=(
-                destination_annotation_mode
-            ),
+            destination_annotation_evaluation_mode=(destination_annotation_mode),
             moved_annotation_count=moved_dependencies.annotation_count,
             obstacles=(
                 ModuleMoveObstacle(
@@ -8711,9 +8554,7 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
             context.source_index,
         ).required_path()
         if source_path == destination_path:
-            raise ValueError(
-                "Module symbol move destination must differ from source"
-            )
+            raise ValueError("Module symbol move destination must differ from source")
         return SourceTopLevelSymbolClosureMovePlan.from_request(
             SourceTopLevelSymbolClosureMoveRequest(
                 selection=self.move_selection(context, source_path),
@@ -9239,7 +9080,7 @@ class CandidateCollectorMigration:
             or "Declare the detector candidate collector strategy.",
         )
 
-    def candidate_method_deletion(self) -> SourceSpanReplacement:
+    def candidate_method_deletion(self) -> SourceSpanDeletion:
         method = next(
             (
                 statement
@@ -9256,9 +9097,8 @@ class CandidateCollectorMigration:
         return SourceNodeSpan(
             method,
             SourceNodeDecoratorPolicy.INCLUDE,
-        ).line_span.line_replacement(
+        ).line_span.line_deletion(
             file_path=self.target.file_path,
-            replacement_lines=(),
             rationale=self.rationale
             or "Delete candidate traversal now owned by the collector base.",
         )
@@ -9947,11 +9787,10 @@ class ConvertManualRegistryToAutoregisterOperation(
                 ),
             )
         return tuple(
-            SourceSpanReplacement(
+            SourceSpanDeletion(
                 file_path=source_path,
                 start_line=statement.lineno,
                 end_line=statement.end_lineno or statement.lineno,
-                replacement_lines=(),
                 rationale=self.rationale_text("Delete manual registry write."),
             )
             for statement in component.registration_statements
@@ -10419,9 +10258,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        target_identifier, target_digest, node = self.target_node_from_context(
-            snapshot
-        )
+        target_identifier, target_digest, node = self.target_node_from_context(snapshot)
         return self.source_edits_for_target_node(
             snapshot,
             target_identifier,
@@ -10691,8 +10528,7 @@ class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
                     SourceTargetEditor(snapshot.sources_by_file_path, target),
                     body_start,
                 ),
-                rationale=self.rationale
-                or f"Replace body of {target.qualname!r}.",
+                rationale=self.rationale or f"Replace body of {target.qualname!r}.",
             ),
         )
 
@@ -11188,8 +11024,7 @@ class RefactorRecipe(CodemodPayloadRecord):
         source_index: SourceIndex,
     ) -> tuple[str, ...]:
         return tuple(
-            creation.file_path
-            for creation in self.source_file_creations(source_index)
+            creation.file_path for creation in self.source_file_creations(source_index)
         )
 
     def source_file_creations(
@@ -11228,9 +11063,7 @@ class RefactorRecipe(CodemodPayloadRecord):
     ) -> CodemodOperationPreflightReport | None:
         try:
             declared_claims = (
-                self.declared_authority_claims(context)
-                if context is not None
-                else ()
+                self.declared_authority_claims(context) if context is not None else ()
             )
         except CodemodOperationPreflightError as error:
             return CodemodOperationPreflightReport(
@@ -11317,9 +11150,7 @@ class RefactorRecipe(CodemodPayloadRecord):
         return replace(
             self,
             guard_suite=self.guard_suite.merge(
-                ArchitectureGuardSuite(
-                    self.declared_architecture_guard_rules(context)
-                )
+                ArchitectureGuardSuite(self.declared_architecture_guard_rules(context))
             ),
         )
 
@@ -11570,9 +11401,7 @@ class CodemodPlanDocumentPreflight:
         rewrites: tuple[PlannedSourceRewrite, ...] = ()
         if report.is_clean:
             try:
-                document = document.with_declared_architecture_guards(
-                    rewrite_snapshot
-                )
+                document = document.with_declared_architecture_guards(rewrite_snapshot)
                 rewrites = RefactorRecipeOperationCompiler.from_context(
                     rewrite_snapshot
                 ).planned_rewrites_for_recipes(document.recipes)
@@ -12428,9 +12257,7 @@ class FindingRecipeSetSimulation:
             if self.assessment.disposition.clean:
                 raise ValueError("clean recipe-set evidence lost its simulation")
             return
-        self.assessment.require_matches_document_simulation(
-            self.document_simulation
-        )
+        self.assessment.require_matches_document_simulation(self.document_simulation)
 
     @property
     def required_document_simulation(self) -> CodemodPlanDocumentSimulation:
@@ -12638,9 +12465,7 @@ class FindingRecipeTrajectoryBranch(
     assessment: FindingRecipeSetAssessment
 
     def __post_init__(self) -> None:
-        self.assessment.require_matches_document_simulation(
-            self.document_simulation
-        )
+        self.assessment.require_matches_document_simulation(self.document_simulation)
 
     @property
     def candidate_indices(self) -> tuple[int, ...]:
@@ -13733,9 +13558,7 @@ class CarrierCollapseFindingRecipeSynthesizer(
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         if context is None:
-            return self.rejected_evaluation(
-                "carrier collapse requires source context"
-            )
+            return self.rejected_evaluation("carrier collapse requires source context")
         authority_location = finding.authority_evidence
         if authority_location is None:
             return self.rejected_evaluation(
@@ -14126,10 +13949,7 @@ class ConsumerFamilyBuilderAuthorityCandidate:
             return len(referenced_parameters) == 1
         return bool(
             isinstance(expression, ast.Constant)
-            or (
-                isinstance(expression, ast.Name)
-                and expression.id == receiver_name
-            )
+            or (isinstance(expression, ast.Name) and expression.id == receiver_name)
             or (
                 isinstance(expression, ast.Call)
                 and isinstance(expression.func, ast.Name)
@@ -14228,9 +14048,7 @@ class ConsumerFamilyBuilderCallProjection:
         receiver_name = ClassMethodReceiverRequirements.receiver_name(
             call_site.participant.node
         )
-        call_keyword_names = tuple(
-            keyword.arg for keyword in call_site.call.keywords
-        )
+        call_keyword_names = tuple(keyword.arg for keyword in call_site.call.keywords)
         if (
             receiver_name is None
             or candidate.constructor.keyword_names != call_keyword_names
@@ -14385,9 +14203,7 @@ class RepeatedBuilderSourceDerivation(ABC):
             )
         anchor_key = anchor_sites[0].mapping_key
         return tuple(
-            call_site
-            for call_site in call_sites
-            if call_site.mapping_key == anchor_key
+            call_site for call_site in call_sites if call_site.mapping_key == anchor_key
         )
 
     @property
@@ -14434,7 +14250,9 @@ class RepeatedBuilderSourceDerivation(ABC):
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         participants = tuple(
-            dict.fromkeys(call_site.participant for call_site in self.rewrite_call_sites)
+            dict.fromkeys(
+                call_site.participant for call_site in self.rewrite_call_sites
+            )
         )
         edits = list(self.authority_source_edits(context))
         for participant in participants:
@@ -14514,9 +14332,7 @@ class InheritedConsumerBuilderAuthorityDescent(
             )
             is not None
         )
-        if len(consumer_call_sites) < 2 or len(projections) != len(
-            consumer_call_sites
-        ):
+        if len(consumer_call_sites) < 2 or len(projections) != len(consumer_call_sites):
             return None
         return cls(
             authority=authority,
@@ -14752,7 +14568,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         evidence_targets: tuple[tuple[AstTargetDigest, ast.Call], ...],
         constructor_symbol: str,
     ) -> AstTargetDigest:
-        participants = tuple(dict.fromkeys(target for target, _call in evidence_targets))
+        participants = tuple(
+            dict.fromkeys(target for target, _call in evidence_targets)
+        )
         candidates = tuple(
             target
             for target in participants
@@ -15522,9 +15340,7 @@ class RepeatedBuilderAuthorityDerivation(
                     ),
                 )
             )
-            participants = tuple(
-                dict.fromkeys(site.participant for site in call_sites)
-            )
+            participants = tuple(dict.fromkeys(site.participant for site in call_sites))
             if len(participants) < 2:
                 continue
             method = cls.authority_method_or_none(
@@ -15571,9 +15387,8 @@ class RepeatedBuilderAuthorityDerivation(
         resolver = context.class_reference_resolver_for_source_path(authority.file_path)
         call_sites: list[RepeatedBuilderCallSite] = []
         for target in context.source_index.targets_by_file[authority.file_path]:
-            if (
-                not target.is_function_like
-                or target.qualname.startswith(f"{authority.target.qualname}.")
+            if not target.is_function_like or target.qualname.startswith(
+                f"{authority.target.qualname}."
             ):
                 continue
             participant = ResolvedFunctionProjectionTarget.from_target(
@@ -16525,8 +16340,7 @@ class AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer(
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-derive-mro-ordering",
             reason=(
-                "Derive registered-family precedence from one nominal MRO "
-                "composition."
+                "Derive registered-family precedence from one nominal MRO composition."
             ),
         ).with_operation(operation)
         return (
@@ -16628,17 +16442,13 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
         finding: RefactorFinding,
         parts: ManualRegistryRecipeParts,
     ) -> RefactorRecipe:
-        return (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-convert-manual-registry",
-                reason="Replace manual registry writes with AutoRegisterMeta.",
-            ).with_operation(
-                ConvertManualRegistryToAutoregisterOperation(
-                    target=SourceRewriteTarget(
-                        target_id=parts.anchor_target.target_id
-                    ),
-                    rationale="",
-                )
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-convert-manual-registry",
+            reason="Replace manual registry writes with AutoRegisterMeta.",
+        ).with_operation(
+            ConvertManualRegistryToAutoregisterOperation(
+                target=SourceRewriteTarget(target_id=parts.anchor_target.target_id),
+                rationale="",
             )
         )
 
@@ -17266,9 +17076,7 @@ class EnumSubsetDerivation:
 
     def assignment_source(self) -> str:
         projection = self.projection
-        value_source = (
-            f"{self.authority.target.name}.{projection.accessor_name}()"
-        )
+        value_source = f"{self.authority.target.name}.{projection.accessor_name}()"
         if isinstance(projection.statement, ast.AnnAssign):
             return (
                 f"{projection.assignment_name}: "
@@ -17475,9 +17283,7 @@ class FunctionProjectionTarget:
     def owner_qualname(self) -> str | None:
         """Return the enclosing nominal declaration, when this is a method."""
 
-        owner_qualname, separator, _member_name = self.function_qualname.rpartition(
-            "."
-        )
+        owner_qualname, separator, _member_name = self.function_qualname.rpartition(".")
         return owner_qualname if separator else None
 
 
@@ -17533,9 +17339,9 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         source_path: str,
         line: int,
     ) -> "ResolvedFunctionProjectionTarget | None":
-        target = _source_index_target_for_line(
-            context.source_index,
+        target = context.source_index.targets_by_file.smallest_enclosing_target(
             source_path,
+            line,
             line,
         )
         if target is None:
@@ -18318,9 +18124,7 @@ class DataclassInstanceFieldProjection:
             file_path=projection.source_path,
             qualname=projection.owner_qualname,
         )
-        return class_symbol is not None and class_symbol == authority.symbol(
-            context
-        )
+        return class_symbol is not None and class_symbol == authority.symbol(context)
 
     @staticmethod
     def enclosing_class_node(
@@ -22283,72 +22087,6 @@ def detect_cancelable_composition_signals(
     )
 
 
-def evaluate_architecture_guards(
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-    rules: Iterable[ArchitectureGuardRule],
-) -> ArchitectureGuardReport:
-    """Evaluate caller-supplied codemod invariants over current source text."""
-
-    rule_tuple = tuple(rules)
-    resolved_rules = tuple(rule.resolve(source_index) for rule in rule_tuple)
-    violations: list[ArchitectureGuardViolation] = []
-    for file_path, source in source_by_path.items():
-        active_rules = tuple(
-            resolution
-            for resolution in resolved_rules
-            if resolution.applies_to_file(file_path)
-        )
-        if not active_rules:
-            continue
-        module = ast.parse(source, filename=file_path)
-        for resolution in active_rules:
-            for match in resolution.matches(module):
-                location = SourceLocation(file_path, match.node.lineno, match.symbol)
-                target = _source_index_target_for_line(
-                    source_index,
-                    file_path,
-                    match.node.lineno,
-                )
-                if not resolution.includes_target(
-                    file_path,
-                    None if target is None else target.qualname,
-                ):
-                    continue
-                rule = resolution.rule
-                violations.append(
-                    ArchitectureGuardViolation(
-                        rule_id=rule.rule_id,
-                        constraint_type=match.constraint_type,
-                        location=location,
-                        target_context=(
-                            ArchitectureGuardViolationTarget.from_location_target(
-                                location,
-                                target,
-                            )
-                        ),
-                        detail=(
-                            f"{match.message}: {rule.reason}"
-                            if rule.reason
-                            else match.message
-                        ),
-                    )
-                )
-    return ArchitectureGuardReport(
-        rules=rule_tuple,
-        violations=sorted_tuple(
-            violations,
-            key=lambda item: (
-                item.location.file_path,
-                item.location.line,
-                item.rule_id,
-                item.violation_kind,
-                item.location.symbol,
-            ),
-        ),
-    )
-
-
 def libcst_available() -> bool:
     """Return whether LibCST is importable in the current environment."""
 
@@ -22800,9 +22538,7 @@ class AstTargetNodeIndex(IndexedSourceAuthority):
     def nodes_by_file_geometry(
         self,
     ) -> AstTargetNodeGeometryIndex:
-        return AstTargetNodeGeometryIndex.from_source_mapping(
-            self.sources_by_file_path
-        )
+        return AstTargetNodeGeometryIndex.from_source_mapping(self.sources_by_file_path)
 
 
 @dataclass(frozen=True)
@@ -23082,17 +22818,3 @@ def _consistent_source_name(current: str | None, candidate: str) -> str | None:
     if current == candidate:
         return current
     return None
-
-
-def _source_index_target_for_line(
-    source_index: SourceIndex,
-    file_path: str,
-    line: int,
-) -> AstTargetDigest | None:
-    if file_path not in source_index.targets_by_file:
-        return None
-    return source_index.targets_by_file.smallest_enclosing_target(
-        file_path,
-        line,
-        line,
-    )

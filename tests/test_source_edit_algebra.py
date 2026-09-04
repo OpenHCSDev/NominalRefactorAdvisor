@@ -33,6 +33,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceEditOrigin,
     SourceFileCreation,
     SourceInsertion,
+    SourceSpanDeletion,
+    SourceSpanEdit,
     SourceSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
@@ -164,17 +166,89 @@ def test_span_replacement_owns_deduplication_and_conflict_proof(
             ),
             context,
         )
+    with pytest.raises(
+        ValueError,
+        match="use SourceSpanDeletion",
+    ):
+        SourceSpanReplacement(
+            file_path=first.file_path,
+            start_line=1,
+            end_line=1,
+            replacement_lines=(),
+        )
+    assert isinstance(
+        SourceSpanEdit.from_replacement_lines(
+            file_path=first.file_path,
+            start_line=1,
+            end_line=1,
+            replacement_lines=(),
+        ),
+        SourceSpanDeletion,
+    )
     with pytest.raises(ValueError, match="Physical source edits conflict"):
         PhysicalSourceEdit.require_compatible(
             (
                 first,
-                SourceSpanReplacement(
+                SourceSpanDeletion(
                     file_path=first.file_path,
                     start_line=1,
                     end_line=2,
                 ),
             )
         )
+
+
+def test_span_deletion_coalesces_overlapping_spans(tmp_path: Path) -> None:
+    _, context = _snapshot(tmp_path, "FIRST = 1\nSECOND = 2\nTHIRD = 3\n")
+    file_path = next(iter(context.sources_by_file_path))
+    first_origin = SourceEditOrigin("recipe", "FirstDeletion", 0)
+    second_origin = SourceEditOrigin("recipe", "SecondDeletion", 1)
+    first = SourceSpanDeletion(
+        file_path=file_path,
+        start_line=1,
+        end_line=2,
+        origins=(first_origin,),
+    )
+    second = SourceSpanDeletion(
+        file_path=file_path,
+        start_line=2,
+        end_line=3,
+        origins=(second_origin,),
+    )
+
+    coalesced = NominalSourceEdit.coalesced_by_declaration((first, second), context)
+
+    assert coalesced == (
+        SourceSpanDeletion(
+            file_path=file_path,
+            start_line=1,
+            end_line=3,
+            origins=(first_origin, second_origin),
+        ),
+    )
+
+
+def test_span_deletion_preserves_adjacent_insertion_boundary(tmp_path: Path) -> None:
+    _, context = _snapshot(tmp_path, "FIRST = 1\nSECOND = 2\n")
+    file_path = next(iter(context.sources_by_file_path))
+    deletions = (
+        SourceSpanDeletion(file_path=file_path, start_line=1, end_line=1),
+        SourceSpanDeletion(file_path=file_path, start_line=2, end_line=2),
+    )
+
+    coalesced = NominalSourceEdit.coalesced_by_declaration(deletions, context)
+
+    assert coalesced == deletions
+    assert PhysicalSourceEdit.require_compatible(
+        (
+            *coalesced,
+            SourceInsertion(
+                file_path=file_path,
+                insertion_line=2,
+                inserted_lines=("INSERTED = 3\n",),
+            ),
+        )
+    )
 
 
 def test_insertion_owns_exact_deduplication_and_order(tmp_path: Path) -> None:
@@ -292,9 +366,7 @@ def test_import_mutation_renders_bare_imports_as_independent_statements(
     physical = mutation.resolved_edits(context)
 
     assert "".join(physical[0].inserted_lines).startswith(
-        "import ast\n"
-        "import io\n"
-        "import tokenize\n"
+        "import ast\nimport io\nimport tokenize\n"
     )
 
 

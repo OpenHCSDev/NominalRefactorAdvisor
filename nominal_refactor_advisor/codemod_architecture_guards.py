@@ -7,28 +7,43 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from dataclasses import dataclass
+from collections.abc import (
+    Iterable,
+    Mapping,
+)
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from enum import StrEnum
 from functools import cached_property
-from metaclass_registry import AutoRegisterMeta
 from typing import (
     ClassVar,
     Self,
     cast,
 )
 
+from metaclass_registry import AutoRegisterMeta
+
+from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
+    JsonObject,
+    JsonValue,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
-from .source_index import SourceIndex
+from .collection_algebra import sorted_tuple
+from .models import SourceLocation
+from .source_index import (
+    AstTargetDigest,
+    SourceIndex,
+)
 
 
 @dataclass(frozen=True)
@@ -451,6 +466,204 @@ class ArchitectureGuardRuleResolution:
 
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return self.rule.matches(module)
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardViolationTarget:
+    """Source-index target context for one architecture guard violation."""
+
+    target_id: str | None = None
+    file_path: str | None = None
+    qualname: str | None = "<module>"
+
+    @classmethod
+    def from_location_target(
+        cls,
+        location: SourceLocation,
+        target: AstTargetDigest | None,
+    ) -> "ArchitectureGuardViolationTarget":
+        if target is None:
+            return cls(file_path=location.file_path)
+        return cls(
+            target_id=target.target_id,
+            qualname=target.qualname,
+            file_path=target.file_path,
+        )
+
+    def violation_payload(self) -> JsonObject:
+        return {
+            "target_id": self.target_id,
+            "file_path": self.file_path,
+            "qualname": self.qualname,
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardViolation:
+    """One concrete source location that violates an architecture guard rule."""
+
+    rule_id: str
+    constraint_type: type[ArchitectureGuardConstraint]
+    location: SourceLocation
+    target_context: "ArchitectureGuardViolationTarget"
+    detail: str = ""
+
+    @property
+    def violation_kind(self) -> str:
+        return self.constraint_type.discriminator_key()
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "rule_id": self.rule_id,
+            "violation_kind": self.violation_kind,
+            "line": self.location.line,
+            "symbol": self.location.symbol,
+            **self.target_context.violation_payload(),
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardReport:
+    """Result of checking caller-supplied codemod architecture invariants."""
+
+    rules: tuple[ArchitectureGuardRule, ...]
+    violations: tuple[ArchitectureGuardViolation, ...]
+
+    @property
+    def is_clean(self) -> bool:
+        return not self.violations
+
+    @property
+    def violation_count(self) -> int:
+        return len(self.violations)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "is_clean": self.is_clean,
+            "violation_count": self.violation_count,
+            "rules": tuple(rule.to_dict() for rule in self.rules),
+            "violations": tuple(violation.to_dict() for violation in self.violations),
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardSuite:
+    """Nominal carrier for post-refactor architecture guard rules."""
+
+    rules: tuple[ArchitectureGuardRule, ...] = ()
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue | None) -> "ArchitectureGuardSuite":
+        if value is None:
+            return cls()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("architecture_guards must be an array")
+        return cls(tuple(ArchitectureGuardRule.from_json_value(row) for row in value))
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.rules
+
+    def with_rule(self, rule: ArchitectureGuardRule) -> "ArchitectureGuardSuite":
+        return replace(self, rules=(*self.rules, rule))
+
+    def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
+        return replace(
+            self,
+            rules=tuple(
+                dict.fromkeys(
+                    (
+                        *self.rules,
+                        *(rule for suite in suites for rule in suite.rules),
+                    )
+                )
+            ),
+        )
+
+    def evaluate(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> ArchitectureGuardReport:
+        return evaluate_architecture_guards(source_index, source_by_path, self.rules)
+
+    def clean_report(self) -> ArchitectureGuardReport:
+        """Return the canonical clean report for this suite without source work."""
+
+        return ArchitectureGuardReport(self.rules, ())
+
+    def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
+        return self.rules
+
+    def to_dict(self) -> tuple[JsonObject, ...]:
+        return tuple(rule.to_dict() for rule in self.rules)
+
+
+def evaluate_architecture_guards(
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    rules: Iterable[ArchitectureGuardRule],
+) -> ArchitectureGuardReport:
+    """Evaluate caller-supplied codemod invariants over current source text."""
+
+    rule_tuple = tuple(rules)
+    resolved_rules = tuple(rule.resolve(source_index) for rule in rule_tuple)
+    violations: list[ArchitectureGuardViolation] = []
+    for file_path, source in source_by_path.items():
+        active_rules = tuple(
+            resolution
+            for resolution in resolved_rules
+            if resolution.applies_to_file(file_path)
+        )
+        if not active_rules:
+            continue
+        module = ast.parse(source, filename=file_path)
+        for resolution in active_rules:
+            for match in resolution.matches(module):
+                location = SourceLocation(file_path, match.node.lineno, match.symbol)
+                target = source_index.targets_by_file.smallest_enclosing_target(
+                    file_path,
+                    match.node.lineno,
+                    match.node.lineno,
+                )
+                if not resolution.includes_target(
+                    file_path,
+                    None if target is None else target.qualname,
+                ):
+                    continue
+                rule = resolution.rule
+                violations.append(
+                    ArchitectureGuardViolation(
+                        rule_id=rule.rule_id,
+                        constraint_type=match.constraint_type,
+                        location=location,
+                        target_context=(
+                            ArchitectureGuardViolationTarget.from_location_target(
+                                location,
+                                target,
+                            )
+                        ),
+                        detail=(
+                            f"{match.message}: {rule.reason}"
+                            if rule.reason
+                            else match.message
+                        ),
+                    )
+                )
+    return ArchitectureGuardReport(
+        rules=rule_tuple,
+        violations=sorted_tuple(
+            violations,
+            key=lambda item: (
+                item.location.file_path,
+                item.location.line,
+                item.rule_id,
+                item.violation_kind,
+                item.location.symbol,
+            ),
+        ),
+    )
 
 
 def _call_name(node: ast.expr) -> str | None:

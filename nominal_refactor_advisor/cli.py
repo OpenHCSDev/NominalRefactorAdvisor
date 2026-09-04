@@ -27,10 +27,11 @@ from .analysis import (
     CachedPathAnalysisRequest,
     DetectorTypePartition,
     EvidenceLocalPartialDetectorSelection,
-    FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
-    SemanticDescentGraphCacheContext,
+    FastCacheReusePolicy,
     SemanticDescentGraphAnalysisSource,
+    SemanticDescentGraphCacheContext,
+    SortedFindingsAuthority,
     analysis_cache_dir_for_root,
     analyze_compact_roots_with_cache,
     analyze_lean_export,
@@ -42,7 +43,6 @@ from .analysis import (
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     release_module_analysis_memory,
-    SortedFindingsAuthority,
 )
 from .analysis_cache import (
     AnalysisCacheStatus,
@@ -66,7 +66,6 @@ from .calibration import (
     run_calibration_manifest,
 )
 from .codemod import (
-    ArchitectureGuardReport,
     CodemodJsonReport,
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
@@ -75,19 +74,23 @@ from .codemod import (
     CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodPlanSequenceSimulation,
-    CodemodTargetSelector,
     CodemodSimulationReport,
     CodemodSourceContext,
     CodemodSourceSnapshot,
+    CodemodTargetSelector,
     FindingRecipeClassPlanReport,
+    FindingRecipeFrontierBudget,
     FindingRecipePlan,
     FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
-    FindingRecipeFrontierBudget,
     JsonObject,
     JsonValue,
     RefactorConcept,
     codemod_class_plan_from_findings,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardReport,
+    ArchitectureGuardRule,
     evaluate_architecture_guards,
 )
 from .codemod_paths import (
@@ -96,15 +99,15 @@ from .codemod_paths import (
 )
 from .codemod_source_cache import CodemodSourceContextCache
 from .codemod_workflow import (
-    CodemodWorkflowScan,
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryBudget,
     CodemodSimulationFindingProjection,
+    CodemodWorkflowScan,
 )
-from .detectors import DetectorConfig
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
+from .detectors import DetectorConfig
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,
@@ -115,11 +118,6 @@ from .economics import (
 )
 from .finding_counts import FindingSummary
 from .lean_export import LeanExportError
-from .structural_overlap import (
-    StructuralOverlapReport,
-    StructuralOverlapReportLimits,
-    build_structural_overlap_report,
-)
 from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PatternId
@@ -133,18 +131,21 @@ from .scan_prediction import (
     ScanTiming,
     build_scan_prediction_report,
 )
-from .semantic_refactor_gate import (
-    SemanticRefactorGateReport,
-    ssot_authority_findings,
-)
 from .semantic_descent import (
     SemanticDescentGraph,
     SemanticDescentGraphPayloadReport,
     build_finding_backed_semantic_descent_graph,
 )
+from .semantic_refactor_gate import (
+    SemanticRefactorGateReport,
+    ssot_authority_findings,
+)
 from .source_index import build_source_index
-from .codemod_architecture_guards import ArchitectureGuardRule
-
+from .structural_overlap import (
+    StructuralOverlapReport,
+    StructuralOverlapReportLimits,
+    build_structural_overlap_report,
+)
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -2225,9 +2226,7 @@ class ArchitectureGuardSourceEvaluator:
             ).parse()
             for parsed_module in self.modules
         ]
-        known_file_paths = {
-            parsed_module.file_path for parsed_module in self.modules
-        }
+        known_file_paths = {parsed_module.file_path for parsed_module in self.modules}
         for file_path, source in sorted(source_by_path.items()):
             if file_path in known_file_paths:
                 continue

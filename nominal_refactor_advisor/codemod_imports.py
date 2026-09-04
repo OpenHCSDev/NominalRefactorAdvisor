@@ -22,6 +22,7 @@ from .codemod_source_edits import (
     PhysicalSourceEdit,
     SourceInsertion,
     SourceLineSpan,
+    SourceSpanDeletion,
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextSpan,
@@ -572,7 +573,7 @@ class ModuleImportMutation(NominalSourceEdit):
             )
         )
         replacements.extend(
-            SourceSpanReplacement(
+            SourceSpanDeletion(
                 file_path=self.file_path,
                 start_line=guard.lineno,
                 end_line=guard.end_lineno or guard.lineno,
@@ -595,13 +596,26 @@ class ModuleImportMutation(NominalSourceEdit):
             if aliases == original_aliases:
                 continue
             scope = scope_by_statement_id[id(statement)]
-            replacement = RequestedImportStatement(
-                statement,
-                scope=scope,
-            ).with_aliases(aliases)
-            replacement_source = replacement.source if aliases else ""
-            if id(statement) in preserved_empty_guard_statement_ids:
-                replacement_source = "pass\n"
+            if not aliases and id(statement) not in preserved_empty_guard_statement_ids:
+                replacements.append(
+                    SourceSpanDeletion(
+                        file_path=self.file_path,
+                        start_line=statement.lineno,
+                        end_line=statement.end_lineno or statement.lineno,
+                        rationale=self.rationale
+                        or f"Remove import bindings in {self.file_path!r}.",
+                        contributors=self.contributors,
+                        origins=self.origins,
+                    )
+                )
+                continue
+            replacement_source = (
+                "pass\n"
+                if id(statement) in preserved_empty_guard_statement_ids
+                else RequestedImportStatement(statement, scope=scope)
+                .with_aliases(aliases)
+                .source
+            )
             if scope.is_guarded and replacement_source:
                 replacement_source = _indented_source_for_statement(
                     source,

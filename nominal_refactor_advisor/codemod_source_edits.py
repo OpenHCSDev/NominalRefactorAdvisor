@@ -335,30 +335,72 @@ class PhysicalSourceEdit(NominalSourceEdit, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceSpanReplacement(PhysicalSourceEdit):
-    """Replace or delete one non-empty absolute line span."""
+class SourceSpanEdit(PhysicalSourceEdit, ABC):
+    """Physical edit over one non-empty absolute line span."""
 
     start_line: int
     end_line: int
-    replacement_lines: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.start_line > self.end_line:
-            raise ValueError("Source span replacement requires a non-empty span")
+            raise ValueError("Source span edits require a non-empty span")
 
     @classmethod
-    def delete_target(
+    def from_replacement_lines(
         cls,
-        target_digest: AstTargetDigest,
         *,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        replacement_lines: tuple[str, ...],
         rationale: str = "",
-    ) -> "SourceSpanReplacement":
-        return cls(
-            file_path=target_digest.file_path,
-            start_line=target_digest.line,
-            end_line=target_digest.end_line,
-            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        contributors: tuple[SourceRewriteContributor, ...] = (),
+        origins: tuple[SourceEditOrigin, ...] = (),
+    ) -> "SourceSpanEdit":
+        """Classify replacement output once at the physical-edit boundary."""
+
+        if not replacement_lines:
+            return SourceSpanDeletion(
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                rationale=rationale,
+                contributors=contributors,
+                origins=origins,
+            )
+        return SourceSpanReplacement(
+            file_path=file_path,
+            start_line=start_line,
+            end_line=end_line,
+            replacement_lines=replacement_lines,
+            rationale=rationale,
+            contributors=contributors,
+            origins=origins,
         )
+
+    def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
+        return other.conflicts_with_span(self.start_line, self.end_line)
+
+    def conflicts_with_span(self, start_line: int, end_line: int) -> bool:
+        return self.start_line <= end_line and start_line <= self.end_line
+
+    def conflicts_with_insertion(self, insertion_line: int) -> bool:
+        return self.start_line < insertion_line <= self.end_line
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceSpanReplacement(SourceSpanEdit):
+    """Replace one non-empty absolute line span with explicit source lines."""
+
+    replacement_lines: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.replacement_lines:
+            raise ValueError(
+                "Source span replacements require replacement lines; "
+                "use SourceSpanDeletion to remove source"
+            )
 
     def coalesced_with_peers(
         self,
@@ -382,15 +424,6 @@ class SourceSpanReplacement(PhysicalSourceEdit):
             for replacements in replacements_by_span.values()
         )
 
-    def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
-        return other.conflicts_with_span(self.start_line, self.end_line)
-
-    def conflicts_with_span(self, start_line: int, end_line: int) -> bool:
-        return self.start_line <= end_line and start_line <= self.end_line
-
-    def conflicts_with_insertion(self, insertion_line: int) -> bool:
-        return self.start_line < insertion_line <= self.end_line
-
     @staticmethod
     def _coalesced_same_span(
         replacements: tuple["SourceSpanReplacement", ...],
@@ -412,6 +445,66 @@ class SourceSpanReplacement(PhysicalSourceEdit):
             contributors=NominalSourceEdit.merged_contributors(replacements),
             origins=NominalSourceEdit.merged_origins(replacements),
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceSpanDeletion(SourceSpanEdit):
+    """Delete one non-empty absolute line span."""
+
+    @property
+    def replacement_lines(self) -> tuple[str, ...]:
+        return ()
+
+    @classmethod
+    def for_target(
+        cls,
+        target_digest: AstTargetDigest,
+        *,
+        rationale: str = "",
+    ) -> Self:
+        return cls(
+            file_path=target_digest.file_path,
+            start_line=target_digest.line,
+            end_line=target_digest.end_line,
+            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: "CodemodSelectorContext",
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        deletions = sorted_tuple(
+            (cast(SourceSpanDeletion, peer) for peer in peers),
+            key=lambda deletion: (
+                deletion.file_path,
+                deletion.start_line,
+                deletion.end_line,
+            ),
+        )
+        coalesced: list[SourceSpanDeletion] = []
+        for deletion in deletions:
+            if (
+                coalesced
+                and coalesced[-1].file_path == deletion.file_path
+                and deletion.start_line <= coalesced[-1].end_line
+            ):
+                previous = coalesced[-1]
+                coalesced[-1] = replace(
+                    previous,
+                    end_line=max(previous.end_line, deletion.end_line),
+                    rationale=_joined_rationales(
+                        (previous.rationale, deletion.rationale)
+                    ),
+                    contributors=NominalSourceEdit.merged_contributors(
+                        (previous, deletion)
+                    ),
+                    origins=NominalSourceEdit.merged_origins((previous, deletion)),
+                )
+                continue
+            coalesced.append(deletion)
+        return tuple(coalesced)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -866,7 +959,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             line_windows.append((start_line, end_line, [replacement]))
 
         span_replacements = tuple(
-            SourceSpanReplacement(
+            SourceSpanEdit.from_replacement_lines(
                 file_path=file_path,
                 start_line=start_line,
                 end_line=end_line,
@@ -1014,7 +1107,7 @@ class SourceTargetEditor:
         new_source: str,
         *,
         rationale: str = "",
-    ) -> SourceSpanReplacement:
+    ) -> SourceSpanEdit:
         target_source = "".join(self.target_lines)
         match_count = target_source.count(old_source)
         if match_count != 1:
@@ -1037,7 +1130,7 @@ class SourceTargetEditor:
         replacement_source = (
             f"{span_source[:relative_start]}{new_source}{span_source[relative_end:]}"
         )
-        return SourceSpanReplacement(
+        return SourceSpanEdit.from_replacement_lines(
             file_path=self.target.file_path,
             start_line=self.target.line + start_index,
             end_line=self.target.line + end_index,
@@ -1143,7 +1236,7 @@ class SourceLineSpan:
         self,
         *,
         file_path: str,
-        replacement_lines: tuple[str, ...] = (),
+        replacement_lines: tuple[str, ...],
         rationale: str = "",
     ) -> PhysicalSourceEdit:
         if self.start_line > self.end_line:
@@ -1153,11 +1246,24 @@ class SourceLineSpan:
                 inserted_lines=replacement_lines,
                 rationale=rationale,
             )
-        return SourceSpanReplacement(
+        return SourceSpanEdit.from_replacement_lines(
             file_path=file_path,
             start_line=self.start_line,
             end_line=self.end_line,
             replacement_lines=replacement_lines,
+            rationale=rationale,
+        )
+
+    def line_deletion(
+        self,
+        *,
+        file_path: str,
+        rationale: str = "",
+    ) -> SourceSpanDeletion:
+        return SourceSpanDeletion(
+            file_path=file_path,
+            start_line=self.start_line,
+            end_line=self.end_line,
             rationale=rationale,
         )
 

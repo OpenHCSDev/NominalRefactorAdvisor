@@ -7681,6 +7681,33 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_symbol_move_removes_orphaned_end_of_file_separator(tmp_path: Path) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "def retained():\n"
+        "    return 1\n\n\n"
+        "class Helper:\n"
+        "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = RefactorRecipe("move-final-symbol").with_operation(
+        MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=("Helper",),
+            destination_path=destination_path.as_posix(),
+        )
+    ).simulate(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
+
+    assert rewritten_source.endswith("    return 1\n")
+
+
 def test_existing_module_move_follows_destination_declaration_dependencies(
     tmp_path: Path,
 ) -> None:

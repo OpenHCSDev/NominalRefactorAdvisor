@@ -48,7 +48,7 @@ from .codemod_imports import (
 from .codemod_source_edits import (
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
-    SourceSpanReplacement,
+    SourceSpanDeletion,
 )
 from .declaration_dependencies import MovableDeclaration
 from .semantic_match import single_item
@@ -595,18 +595,24 @@ class MovedTopLevelDeclarationSource:
         *,
         source: str,
         rationale: str,
-    ) -> SourceSpanReplacement:
+    ) -> SourceSpanDeletion:
         source_lines = source.splitlines(keepends=True)
+        deletion_start_line = self.source_start_line
         deletion_end_line = self.source_end_line
         while (
             deletion_end_line < len(source_lines)
             and not source_lines[deletion_end_line].strip()
         ):
             deletion_end_line += 1
-        return SourceSpanReplacement(
+        if deletion_end_line == len(source_lines):
+            while (
+                deletion_start_line > 1
+                and not source_lines[deletion_start_line - 2].strip()
+            ):
+                deletion_start_line -= 1
+        return SourceSpanDeletion(
             file_path=self.declaration.source_path,
-            start_line=self.source_start_line,
+            start_line=deletion_start_line,
             end_line=deletion_end_line,
-            replacement_lines=(),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
         )

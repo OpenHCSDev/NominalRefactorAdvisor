@@ -27,21 +27,23 @@ from .ast_tools import (
     parse_python_module_roots,
 )
 from .codemod import (
-    ArchitectureGuardReport,
-    ArchitectureGuardSuite,
-    CodemodPlanDocumentSimulation,
     CodemodJsonReport,
+    CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
-    FindingRecipeSynthesisRecord,
     FindingRecipeFrontierBudget,
+    FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
     JsonObject,
     RefactorConcept,
+)
+from .codemod_architecture_guards import (
+    ArchitectureGuardReport,
+    ArchitectureGuardSuite,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import FindingObligationClass, RefactorFinding
@@ -206,27 +208,35 @@ class CodemodFindingClassStatus(StrEnum):
     )
     MOVED = (
         "moved",
-        lambda change: bool(change.before_finding_ids)
-        and bool(change.after_finding_ids)
-        and change.before_finding_count == change.after_finding_count
-        and bool(change.removed_finding_ids or change.added_finding_ids),
+        lambda change: (
+            bool(change.before_finding_ids)
+            and bool(change.after_finding_ids)
+            and change.before_finding_count == change.after_finding_count
+            and bool(change.removed_finding_ids or change.added_finding_ids)
+        ),
     )
     EXPANDED = (
         "expanded",
-        lambda change: bool(change.before_finding_ids)
-        and change.after_finding_count > change.before_finding_count,
+        lambda change: (
+            bool(change.before_finding_ids)
+            and change.after_finding_count > change.before_finding_count
+        ),
     )
     PARTIALLY_ELIMINATED = (
         "partially_eliminated",
-        lambda change: bool(change.after_finding_ids)
-        and change.after_finding_count < change.before_finding_count,
+        lambda change: (
+            bool(change.after_finding_ids)
+            and change.after_finding_count < change.before_finding_count
+        ),
     )
     PERSISTED = (
         "persisted",
-        lambda change: bool(change.before_finding_ids)
-        and change.before_finding_count == change.after_finding_count
-        and not change.removed_finding_ids
-        and bool(change.expected_removed_finding_ids),
+        lambda change: (
+            bool(change.before_finding_ids)
+            and change.before_finding_count == change.after_finding_count
+            and not change.removed_finding_ids
+            and bool(change.expected_removed_finding_ids)
+        ),
     )
     INTRODUCED = (
         "introduced",
