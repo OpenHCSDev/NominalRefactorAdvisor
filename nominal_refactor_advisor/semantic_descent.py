@@ -439,15 +439,11 @@ class DescentStatus(StrEnum):
     DESCENDS_TO_AUTHORITY = "descends_to_authority"
 
 
-class SemanticDescentGraphCacheReadError(RuntimeError):
-    """Raised when an existing semantic-descent graph cache entry is invalid."""
-
-
 @dataclass(frozen=True)
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 11
+    version: int = 12
     digest_size: int = 16
 
 
@@ -641,6 +637,25 @@ class SemanticDescentGraphCacheIdentity:
         """Bind checkout-independent semantics to a current presentation root."""
 
         return replace(self, presentation_roots=presentation_root_texts(roots))
+
+    @property
+    def module_paths(self) -> frozenset[str]:
+        """Source-set membership used for incremental predecessor selection."""
+
+        return frozenset(module.path for module in self.modules)
+
+    def is_incremental_predecessor_of(
+        self,
+        requested_identity: SemanticDescentGraphCacheIdentity,
+    ) -> bool:
+        """Whether this graph can be safely overlaid toward the requested graph."""
+
+        return (
+            self.schema == requested_identity.schema
+            and self.implementation == requested_identity.implementation
+            and self.python_version == requested_identity.python_version
+            and self.module_paths <= requested_identity.module_paths
+        )
 
     @property
     def cache_token(self) -> str:
@@ -3239,6 +3254,7 @@ class SemanticDescentGraphCacheLookup:
     """Base result of loading one semantic-descent graph cache entry."""
 
     graph: SemanticDescentGraph | None = None
+    identity: SemanticDescentGraphCacheIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -3256,7 +3272,7 @@ class SemanticDescentGraphCacheHit(SemanticDescentGraphCacheLookup):
     """Graph cache lookup result with a valid graph payload."""
 
     graph: SemanticDescentGraph
-    identity: SemanticDescentGraphCacheIdentity | None = None
+    identity: SemanticDescentGraphCacheIdentity
 
 
 def _rebase_source_location(
@@ -3408,24 +3424,85 @@ def rebase_semantic_descent_graph(
 
 
 @dataclass(frozen=True)
+class SemanticDescentGraphCacheEntry:
+    """Persisted exact semantic graph and its invalidation identity."""
+
+    identity: SemanticDescentGraphCacheIdentity
+    graph: SemanticDescentGraph
+
+    def lookup(
+        self,
+        requested_identity: SemanticDescentGraphCacheIdentity,
+    ) -> SemanticDescentGraphCacheLookup:
+        if (
+            not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
+            or not isinstance(self.graph, SemanticDescentGraph)
+            or self.identity != requested_identity
+        ):
+            return SemanticDescentGraphCacheMiss()
+        try:
+            graph = rebase_semantic_descent_graph(
+                self.graph,
+                self.identity.presentation_roots,
+                requested_identity.presentation_roots,
+            )
+        except CacheCheckoutPathError:
+            return SemanticDescentGraphCacheMiss()
+        return SemanticDescentGraphCacheHit(graph, requested_identity)
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphLatestPointer:
+    """Persisted lightweight pointer to the latest exact graph in one family."""
+
+    family_identity: SemanticDescentGraphCacheFamilyIdentity
+    identity: SemanticDescentGraphCacheIdentity
+
+    @classmethod
+    def from_identity(
+        cls,
+        identity: SemanticDescentGraphCacheIdentity,
+    ) -> SemanticDescentGraphLatestPointer:
+        return cls(
+            SemanticDescentGraphCacheFamilyIdentity.from_identity(identity),
+            identity,
+        )
+
+    def identity_for(
+        self,
+        requested_family_identity: SemanticDescentGraphCacheFamilyIdentity,
+    ) -> SemanticDescentGraphCacheIdentity | None:
+        if (
+            not isinstance(
+                self.family_identity,
+                SemanticDescentGraphCacheFamilyIdentity,
+            )
+            or not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
+            or self.family_identity != requested_family_identity
+            or SemanticDescentGraphCacheFamilyIdentity.from_identity(self.identity)
+            != self.family_identity
+        ):
+            return None
+        return self.identity.relocated_to(
+            requested_family_identity.presentation_roots
+        )
+
+
+SemanticDescentGraphCachePayloadT = TypeVar("SemanticDescentGraphCachePayloadT")
+
+
+@dataclass(frozen=True)
 class SemanticDescentGraphCache:
     """Persistent graph cache for repo-wide semantic descent context."""
 
     storage_root: Path | None
     max_exact_entry_count: int = 4
 
-    def _load_payload(
+    def _load_typed_payload(
         self,
         cache_path: Path,
-    ) -> (
-        dict[
-            str,
-            SemanticDescentGraph
-            | SemanticDescentGraphCacheIdentity
-            | SemanticDescentGraphCacheFamilyIdentity,
-        ]
-        | None
-    ):
+        payload_type: type[SemanticDescentGraphCachePayloadT],
+    ) -> SemanticDescentGraphCachePayloadT | None:
         scan_deadline_checkpoint("semantic_descent_cache_load")
         try:
             with cache_path.open("rb") as handle:
@@ -3448,10 +3525,8 @@ class SemanticDescentGraphCache:
             # failure: verify it as a miss and rebuild from authoritative
             # source instead.
             return None
-        if not isinstance(payload, dict):
-            return None
         scan_deadline_checkpoint("semantic_descent_cache_validation")
-        return payload
+        return payload if isinstance(payload, payload_type) else None
 
     def load(
         self,
@@ -3459,26 +3534,13 @@ class SemanticDescentGraphCache:
     ) -> SemanticDescentGraphCacheLookup:
         if self.storage_root is None:
             return SemanticDescentGraphCacheDisabled()
-        payload = self._load_payload(self._entry_path(identity))
-        if payload is None:
+        entry = self._load_typed_payload(
+            self._entry_path(identity),
+            SemanticDescentGraphCacheEntry,
+        )
+        if entry is None:
             return SemanticDescentGraphCacheMiss()
-        stored_identity = payload.get("identity")
-        if not isinstance(stored_identity, SemanticDescentGraphCacheIdentity):
-            return SemanticDescentGraphCacheMiss()
-        if stored_identity != identity:
-            return SemanticDescentGraphCacheMiss()
-        graph = payload.get("graph")
-        if not isinstance(graph, SemanticDescentGraph):
-            return SemanticDescentGraphCacheMiss()
-        try:
-            graph = rebase_semantic_descent_graph(
-                graph,
-                stored_identity.presentation_roots,
-                identity.presentation_roots,
-            )
-        except CacheCheckoutPathError:
-            return SemanticDescentGraphCacheMiss()
-        return SemanticDescentGraphCacheHit(graph, identity)
+        return entry.lookup(identity)
 
     def load_latest(
         self,
@@ -3486,41 +3548,67 @@ class SemanticDescentGraphCache:
     ) -> SemanticDescentGraphCacheLookup:
         if self.storage_root is None:
             return SemanticDescentGraphCacheDisabled()
-        payload = self._load_payload(self._latest_path(family_identity))
-        if payload is None:
+        pointer = self._load_typed_payload(
+            self._latest_path(family_identity),
+            SemanticDescentGraphLatestPointer,
+        )
+        if pointer is None:
             return SemanticDescentGraphCacheMiss()
-        if payload.get("family_identity") != family_identity:
+        identity = pointer.identity_for(family_identity)
+        if identity is None:
             return SemanticDescentGraphCacheMiss()
-        identity = payload.get("identity")
-        if not isinstance(identity, SemanticDescentGraphCacheIdentity):
-            return SemanticDescentGraphCacheMiss()
-        if (
+        return self.load(identity)
+
+    def load_incremental_predecessor(
+        self,
+        identity: SemanticDescentGraphCacheIdentity,
+    ) -> SemanticDescentGraphCacheLookup:
+        """Load the nearest exact graph that can be overlaid toward identity."""
+
+        exact_family_lookup = self.load_latest(
             SemanticDescentGraphCacheFamilyIdentity.from_identity(identity)
-            != family_identity
-        ):
-            return SemanticDescentGraphCacheMiss()
-        target_identity = identity.relocated_to(family_identity.presentation_roots)
-        identity_lookup = self.load(target_identity)
-        if identity_lookup.graph is not None:
-            return identity_lookup
-        # Read compatibility for graph-bearing latest entries produced before
-        # latest pointers became lightweight.  New stores always publish the
-        # exact entry first and the latest identity pointer second.
-        graph = payload.get("graph")
-        if not isinstance(graph, SemanticDescentGraph):
-            return SemanticDescentGraphCacheMiss()
-        try:
-            graph = rebase_semantic_descent_graph(
-                graph,
-                identity.presentation_roots,
-                target_identity.presentation_roots,
+        )
+        if exact_family_lookup.graph is not None or self.storage_root is None:
+            return exact_family_lookup
+        nearest_identity = max(
+            (
+                candidate
+                for candidate in self._latest_identities()
+                if candidate.is_incremental_predecessor_of(identity)
+            ),
+            key=lambda candidate: (
+                len(candidate.modules),
+                candidate.cache_token,
+            ),
+            default=None,
+        )
+        if nearest_identity is None:
+            return exact_family_lookup
+        return self.load(
+            nearest_identity.relocated_to(identity.presentation_roots)
+        )
+
+    def _latest_identities(self) -> tuple[SemanticDescentGraphCacheIdentity, ...]:
+        if self.storage_root is None:
+            return ()
+        identities: list[SemanticDescentGraphCacheIdentity] = []
+        for latest_path in self.storage_root.glob("latest-*.pickle"):
+            pointer = self._load_typed_payload(
+                latest_path,
+                SemanticDescentGraphLatestPointer,
             )
-        except CacheCheckoutPathError:
-            return SemanticDescentGraphCacheMiss()
-        return SemanticDescentGraphCacheHit(graph, target_identity)
+            if pointer is None:
+                continue
+            identity = pointer.identity_for(pointer.family_identity)
+            if identity is not None:
+                identities.append(identity)
+        return tuple(identities)
 
     @staticmethod
-    def _store_payload_atomic(cache_path: Path, payload: object) -> None:
+    def _store_typed_payload_atomic(
+        cache_path: Path,
+        payload: SemanticDescentGraphCachePayloadT,
+    ) -> None:
         """Publish one pickle only after its complete bytes are durable."""
 
         file_descriptor, temporary_path_text = tempfile.mkstemp(
@@ -3579,19 +3667,14 @@ class SemanticDescentGraphCache:
                 identity.presentation_roots,
             )
             self.storage_root.mkdir(parents=True, exist_ok=True)
-            self._store_payload_atomic(
+            self._store_typed_payload_atomic(
                 self._entry_path(identity),
-                {"identity": identity, "graph": validated_graph},
+                SemanticDescentGraphCacheEntry(identity, validated_graph),
             )
-            family_identity = SemanticDescentGraphCacheFamilyIdentity.from_identity(
-                identity
-            )
-            self._store_payload_atomic(
-                self._latest_path(family_identity),
-                {
-                    "family_identity": family_identity,
-                    "identity": identity,
-                },
+            pointer = SemanticDescentGraphLatestPointer.from_identity(identity)
+            self._store_typed_payload_atomic(
+                self._latest_path(pointer.family_identity),
+                pointer,
             )
             self._prune_exact_entries(self._entry_path(identity))
         except (OSError, CacheCheckoutPathError):

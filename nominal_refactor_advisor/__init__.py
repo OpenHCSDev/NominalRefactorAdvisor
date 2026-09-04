@@ -128,7 +128,6 @@ from .semantic_descent import (
     SemanticDescentGraphCacheIdentity,
     SemanticDescentGraphCacheLookup,
     SemanticDescentGraphCacheMiss,
-    SemanticDescentGraphCacheReadError,
     SemanticDescentGraphCacheSchema,
     SemanticDescentGraphPayloadReport,
     SemanticDescentGraphReport,

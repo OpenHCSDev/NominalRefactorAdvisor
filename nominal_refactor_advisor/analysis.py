@@ -92,9 +92,7 @@ from .semantic_descent import (
     CompactSemanticModuleProjectionFamily,
     SemanticDescentGraph,
     SemanticDescentGraphCache,
-    SemanticDescentGraphCacheFamilyIdentity,
     SemanticDescentGraphCacheIdentity,
-    SemanticDescentGraphCacheLookup,
     SemanticDescentModuleSignature,
     build_compact_semantic_descent_graph,
     build_semantic_descent_graph,
@@ -2634,9 +2632,9 @@ class SemanticDescentGraphCacheContext:
         if cache is None or not self.roots:
             return None
         current_identity = self.root_identity()
-        lookup = self._latest_compatible_lookup(cache, current_identity)
+        lookup = cache.load_incremental_predecessor(current_identity)
         graph = lookup.graph
-        identity = getattr(lookup, "identity", None)
+        identity = lookup.identity
         if (
             graph is not None
             and graph.class_index is None
@@ -2677,9 +2675,9 @@ class SemanticDescentGraphCacheContext:
         module_cache_graph = cache.load(identity).graph
         if module_cache_graph is not None:
             return module_cache_graph
-        latest_lookup = self._latest_compatible_lookup(cache, identity)
+        latest_lookup = cache.load_incremental_predecessor(identity)
         latest_graph = latest_lookup.graph
-        latest_identity = getattr(latest_lookup, "identity", None)
+        latest_identity = latest_lookup.identity
         if latest_graph is not None and isinstance(
             latest_identity, SemanticDescentGraphCacheIdentity
         ):
@@ -2716,53 +2714,6 @@ class SemanticDescentGraphCacheContext:
         cache.store(identity, graph)
         self._loaded_graphs_by_token[identity.cache_token] = graph
         return graph
-
-    def _latest_compatible_lookup(
-        self,
-        cache: SemanticDescentGraphCache,
-        identity: SemanticDescentGraphCacheIdentity,
-    ) -> SemanticDescentGraphCacheLookup:
-        """Load the nearest cached source-set predecessor for this exact root.
-
-        Module-family latest pointers intentionally distinguish source-set
-        membership.  A newly added module therefore needs one bounded fallback
-        within this root-specific cache directory so the graph overlay can add
-        that module instead of rebuilding the entire repository graph.
-        """
-
-        exact_family_lookup = cache.load_latest(
-            SemanticDescentGraphCacheFamilyIdentity.from_identity(identity)
-        )
-        if exact_family_lookup.graph is not None or cache.storage_root is None:
-            return exact_family_lookup
-        current_paths = frozenset(module.path for module in identity.modules)
-        compatible_identities: list[SemanticDescentGraphCacheIdentity] = []
-        for latest_path in cache.storage_root.glob("latest-*.pickle"):
-            payload = cache._load_payload(latest_path)
-            if payload is None:
-                continue
-            candidate = payload.get("identity")
-            if not isinstance(candidate, SemanticDescentGraphCacheIdentity):
-                continue
-            if (
-                candidate.schema != identity.schema
-                or candidate.implementation != identity.implementation
-                or candidate.python_version != identity.python_version
-            ):
-                continue
-            candidate_paths = frozenset(module.path for module in candidate.modules)
-            if candidate_paths <= current_paths:
-                compatible_identities.append(candidate)
-        if not compatible_identities:
-            return exact_family_lookup
-        nearest_identity = max(
-            compatible_identities,
-            key=lambda candidate: (
-                len(candidate.modules),
-                candidate.cache_token,
-            ),
-        )
-        return cache.load(nearest_identity.relocated_to(identity.presentation_roots))
 
     def graph_cache(self) -> SemanticDescentGraphCache | None:
         if not self.use_cache or self.storage_root is None:

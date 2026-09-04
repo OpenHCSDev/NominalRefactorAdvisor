@@ -767,6 +767,21 @@ def test_semantic_graph_cache_treats_truncated_payload_as_miss(
     assert cache.load(identity).graph is None
 
 
+def test_semantic_graph_cache_rejects_legacy_dictionary_payload(
+    tmp_path: Path,
+) -> None:
+    cache = SemanticDescentGraphCache(tmp_path)
+    identity = SemanticDescentGraphCacheIdentity.from_roots((tmp_path,))
+    with cache._entry_path(identity).open("wb") as handle:
+        pickle.dump(
+            {"identity": identity, "graph": _empty_semantic_descent_graph()},
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+
+    assert cache.load(identity).graph is None
+
+
 def test_semantic_module_signature_projects_its_content_independent_family() -> None:
     signature = SemanticDescentModuleSignature(
         path="package/module.py",
@@ -835,9 +850,43 @@ def test_semantic_graph_latest_cache_is_lightweight_identity_pointer(
     )
     exact_path = cache._entry_path(identity)
     latest_path = cache._latest_path(family_identity)
+    with exact_path.open("rb") as handle:
+        exact_entry = pickle.load(handle)
+    with latest_path.open("rb") as handle:
+        latest_pointer = pickle.load(handle)
 
     assert cache.load_latest(family_identity).graph == graph
+    assert type(exact_entry) is semantic_descent_module.SemanticDescentGraphCacheEntry
+    assert (
+        type(latest_pointer)
+        is semantic_descent_module.SemanticDescentGraphLatestPointer
+    )
     assert latest_path.stat().st_size < exact_path.stat().st_size
+
+
+def test_semantic_graph_cache_loads_nearest_incremental_predecessor(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    cache = SemanticDescentGraphCache(tmp_path / "cache")
+    predecessor_identity = SemanticDescentGraphCacheIdentity.from_roots(
+        (source_root,)
+    )
+    predecessor_graph = _empty_semantic_descent_graph("Predecessor")
+    cache.store(predecessor_identity, predecessor_graph)
+
+    (source_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8")
+    requested_identity = SemanticDescentGraphCacheIdentity.from_roots((source_root,))
+    lookup = cache.load_incremental_predecessor(requested_identity)
+
+    assert predecessor_identity.is_incremental_predecessor_of(requested_identity)
+    assert not requested_identity.is_incremental_predecessor_of(
+        predecessor_identity
+    )
+    assert lookup.graph == predecessor_graph
+    assert lookup.identity == predecessor_identity.relocated_to((source_root,))
 
 
 def test_semantic_graph_cache_publishes_when_directory_sync_is_unsupported(
