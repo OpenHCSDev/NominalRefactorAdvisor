@@ -90,11 +90,17 @@ class PythonExpressionSourceFormatter:
 
 
 @dataclass(frozen=True)
-class ClassHeaderSpanSourceAuthority:
-    """Rewrite a class header over its full source span."""
+class ClassSourceAuthority:
+    """Class declaration and source text shared by rewrite projections."""
 
     node: ast.ClassDef
     source: str
+
+
+@dataclass(frozen=True)
+class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
+    """Rewrite a class header over its full source span."""
+
     single_line_header_limit: ClassVar[int] = 88
 
     @cached_property
@@ -232,14 +238,6 @@ class ClassHeaderSpanSourceAuthority:
             *(f"{indentation}    {item},\n" for item in items),
             f"{indentation}):\n",
         )
-
-
-@dataclass(frozen=True)
-class ClassSourceAuthority:
-    """Class declaration and source text shared by rewrite projections."""
-
-    node: ast.ClassDef
-    source: str
 
 
 @dataclass(frozen=True)
