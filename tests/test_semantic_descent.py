@@ -37,12 +37,18 @@ from nominal_refactor_advisor.detectors import (
     SemanticMirrorWithoutDescentDetector,
 )
 from nominal_refactor_advisor.models import (
+    BranchCountMetrics,
     ConstructorOwnedMappingMetrics,
+    EmptyFindingMetrics,
     MappingMetrics,
+    ParameterThreadMetrics,
+    ProbeCountMetrics,
     RefactorFinding,
     RegistrationMetrics,
+    RepeatedMethodMetrics,
     SemanticMirrorMetricRelation,
     SourceLocation,
+    WitnessCarrierMetrics,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
@@ -145,6 +151,42 @@ def test_semantic_authority_mirror_policy_mro_owns_metric_projection() -> None:
         SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY: MappingMetrics,
     }
     assert not hasattr(SemanticAuthorityKind.CLASS_FAMILY, "uses_registration_metrics")
+
+
+def test_metric_declarations_own_finding_backed_fact_projection() -> None:
+    assert EmptyFindingMetrics().semantic_authority_name_candidates() == ()
+    assert EmptyFindingMetrics().semantic_fact_names() == ()
+    assert RepeatedMethodMetrics(
+        duplicate_site_count=2,
+        statement_count=3,
+        class_count=2,
+        method_symbols=("Alpha.run", "Beta.run"),
+    ).semantic_fact_names() == ("Alpha", "Beta")
+    assert WitnessCarrierMetrics(
+        class_count=2,
+        shared_role_count=2,
+        class_names=("Alpha", "Beta"),
+        shared_role_names=("encode", "decode"),
+    ).semantic_fact_names() == ("encode", "decode")
+    assert MappingMetrics.from_field_names(
+        mapping_site_count=2,
+        field_names=(),
+        identity_field_names=("mode",),
+    ).semantic_fact_names() == ("mode",)
+    assert RegistrationMetrics.from_class_names(
+        registration_site_count=2,
+        class_names=("Alpha", "Beta"),
+    ).semantic_fact_names() == ("Alpha", "Beta")
+    assert BranchCountMetrics(
+        branch_site_count=2,
+        literal_cases=("alpha", "beta"),
+    ).semantic_fact_names() == ("alpha", "beta")
+    assert ProbeCountMetrics(probe_site_count=2).semantic_fact_names() == ()
+    assert ParameterThreadMetrics(
+        function_count=2,
+        shared_parameter_count=2,
+        shared_parameter_names=("context", "config"),
+    ).semantic_fact_names() == ("context", "config")
 
 
 def test_authority_claim_status_owns_actionability_and_resolution_shape() -> None:

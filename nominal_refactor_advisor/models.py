@@ -314,21 +314,12 @@ class FindingMetrics(SemanticRecord, ABC):
     def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
         """Return declaration-owned authority candidates for descent graphs."""
 
-        return (
-            self.plan_source_name,
-            self.plan_mapping_name,
-            self.plan_registry_name,
-        )
+        return ()
 
     def semantic_fact_names(self) -> tuple[str, ...]:
         """Return declaration-owned fact names for descent graphs."""
 
-        return (
-            self.plan_field_names
-            or self.plan_identity_field_names
-            or self.plan_class_names
-            or self.plan_literal_cases
-        )
+        return ()
 
 
 @dataclass(frozen=True)
@@ -430,6 +421,9 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
                 names.append(symbol.split(".", 1)[0])
         return tuple(names)
 
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.plan_class_names
+
 
 @dataclass(frozen=True)
 class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics, ABC):
@@ -503,6 +497,9 @@ class WitnessCarrierMetrics(BehaviorFindingMetrics):
         "class_names"
     )
 
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.shared_role_names
+
 
 @dataclass(frozen=True)
 class MappingMetrics(MappingFindingMetrics):
@@ -565,6 +562,9 @@ class MappingMetrics(MappingFindingMetrics):
 
     def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
         return self.source_name, self.mapping_name
+
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.field_names or self.identity_field_names
 
 
 @dataclass(frozen=True)
@@ -691,6 +691,9 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegister
             dispatch_sites_eliminated=count,
         )
 
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.plan_literal_cases
+
 
 @dataclass(frozen=True)
 class BranchCountMetrics(CountedDispatchMetrics):
@@ -796,6 +799,9 @@ class ParameterThreadMetrics(FindingMetrics):
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "shared_parameter_names"
     )
+
+    def semantic_fact_names(self) -> tuple[str, ...]:
+        return self.shared_parameter_names
 
 
 @dataclass(frozen=True, kw_only=True)
