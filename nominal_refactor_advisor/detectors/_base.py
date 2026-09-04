@@ -668,7 +668,25 @@ class SsotAuthorityBoundaryDetector(IssueDetector):
 
 
 class SemanticMirrorIssueDetector(SsotAuthorityBoundaryDetector):
-    """Detector base for semantic mirrors that need authority-boundary priority."""
+    """Semantic mirror whose projection witness is explicit and authority may be unknown."""
+
+    @staticmethod
+    def _normalize_findings(
+        findings: list[RefactorFinding],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        normalized = IssueDetector._normalize_findings(findings, config)
+        missing_projection = tuple(
+            finding.stable_id
+            for finding in normalized
+            if finding.projection_evidence is None
+        )
+        if missing_projection:
+            raise TypeError(
+                "Semantic mirror findings require declared projection evidence: "
+                f"{missing_projection!r}"
+            )
+        return normalized
 
 
 class PerModuleIssueDetector(IssueDetector):

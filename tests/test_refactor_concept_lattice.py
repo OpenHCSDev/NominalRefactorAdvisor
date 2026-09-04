@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -325,6 +326,31 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
         codemod.NominalBoundaryConcept,
         snapshot,
     )
+
+
+def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_authority() -> None:
+    projection = advisor.SourceLocation("module.py", 3, "ROLE_TABLE")
+    finding = advisor.RefactorFinding(
+        detector_id="semantic_mirror_without_descent",
+        pattern_id=advisor.PatternId.NOMINAL_BOUNDARY,
+        title="Semantic mirror",
+        summary="A projection has no proven authority.",
+        why="Projection semantics may drift.",
+        capability_gap="A declared derivation path.",
+        relation_context="Authority remains unknown.",
+        evidence=(projection,),
+        projection_evidence=projection,
+    )
+
+    assert detectors.SemanticMirrorIssueDetector._normalize_findings(
+        [finding],
+        detectors.DetectorConfig(),
+    ) == [finding]
+    with pytest.raises(TypeError, match="require declared projection evidence"):
+        detectors.SemanticMirrorIssueDetector._normalize_findings(
+            [replace(finding, projection_evidence=None)],
+            detectors.DetectorConfig(),
+        )
 
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:
