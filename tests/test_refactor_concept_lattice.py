@@ -593,6 +593,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
     for operation_type in (
         codemod.MoveSymbolsToModuleOperation,
         codemod.RelocateSymbolsToModuleOperation,
+        codemod.RelocateSymbolsToNewModuleOperation,
         codemod.MoveSymbolClosureToModuleOperation,
         codemod.ExtractSymbolsToNewModuleOperation,
         codemod.ExtractSymbolClosureToNewModuleOperation,
@@ -613,6 +614,16 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         binding.field_name
         for binding in codemod.RelocateSymbolsToModuleOperation.payload_bindings()
     ) == ("target", "rationale", "destination_path", "symbol_qualnames")
+    assert tuple(
+        binding.field_name
+        for binding in codemod.RelocateSymbolsToNewModuleOperation.payload_bindings()
+    ) == (
+        "target",
+        "rationale",
+        "destination_path",
+        "symbol_qualnames",
+        "destination_source",
+    )
     assert tuple(
         binding.field_name
         for binding in codemod.MoveSymbolClosureToModuleOperation.payload_bindings()

@@ -209,6 +209,7 @@ from nominal_refactor_advisor.codemod import (
     MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation,
     RelocateSymbolsToModuleOperation,
+    RelocateSymbolsToNewModuleOperation,
     ModuleImportScope,
     ModuleMoveDependencyReport,
     ModuleMoveObstacleKind,
@@ -6873,6 +6874,73 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
             "from pkg.consumer import Moved, value; "
             "from pkg.source import Kept; "
             "assert Moved.__module__ == 'pkg.destination'; "
+            "assert issubclass(Moved, Kept); assert value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_refactor_recipe_relocates_symbol_into_new_module(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/relocated.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Kept:\n"
+        "    pass\n\n\n"
+        "class Moved(Kept):\n"
+        "    value = 3\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from .source import Moved\n\n"
+        "value = Moved.value\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=destination_path.as_posix(),
+    )
+    payload = json_report_object(operation)
+
+    decoded = RefactorRecipeOperation.from_json_value(payload)
+    simulation = RefactorRecipe("relocate-moved-new-module").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert payload["operation"] == "relocate_symbols_to_new_module"
+    assert type(decoded) is RelocateSymbolsToNewModuleOperation
+    assert simulation.is_clean
+    assert "class Kept:" in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
+    assert "Moved" not in simulation.simulation.rewritten_sources[
+        source_path.as_posix()
+    ]
+    assert simulation.simulation.rewritten_sources[
+        destination_path.as_posix()
+    ] == "from .source import Kept\n\n\nclass Moved(Kept):\n    value = 3\n"
+    assert "from .relocated import Moved" in simulation.simulation.rewritten_sources[
+        consumer_path.as_posix()
+    ]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumer import Moved, value; "
+            "from pkg.source import Kept; "
+            "assert Moved.__module__ == 'pkg.relocated'; "
             "assert issubclass(Moved, Kept); assert value == 3",
         ],
         cwd=tmp_path,

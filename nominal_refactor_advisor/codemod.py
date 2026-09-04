@@ -7349,6 +7349,15 @@ class RelocateSymbolsToModuleOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
+class RelocateSymbolsToNewModuleOperation(
+    NewModuleSymbolMoveOperationABC,
+    ExplicitModuleSymbolSelectionOperationABC,
+    SourceBindingRelocatingModuleSymbolMoveOperationABC,
+):
+    """Create a module, move exact symbols, and remove their former bindings."""
+
+
+@dataclass(frozen=True, kw_only=True)
 class MoveSymbolClosureToModuleOperation(
     ExistingModuleSymbolMoveOperationABC,
     DependencyClosureModuleSymbolSelectionOperationABC,
