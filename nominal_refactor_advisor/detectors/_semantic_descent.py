@@ -28,6 +28,7 @@ from ..models import (
 )
 from ..patterns import PatternId
 from ..semantic_descent import (
+    CompactSemanticDescentRepository,
     CompactSemanticModuleProjection,
     CompactSemanticModuleProjectionFamily,
     DescentCertificate,
@@ -38,7 +39,6 @@ from ..semantic_descent import (
     SemanticDescentGraphCacheIdentity,
     SemanticDescentGraphSpace,
     SemanticFact,
-    build_compact_semantic_mirror_resolution,
     normalized_name_variants,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
@@ -213,17 +213,18 @@ class SemanticMirrorWithoutDescentDetector(
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> CompactFindingStream:
-        graph_space, resolution = build_compact_semantic_mirror_resolution(
+        compact_resolution = CompactSemanticDescentRepository.from_projections(
             semantic_projections,
             class_projections,
             class_index=class_index,
-        )
+        ).resolve()
+        graph_space = compact_resolution.graph_space
         edge_queue: list[MirrorEdge | None] = [
             edge
-            for relation in resolution.relations
+            for relation in compact_resolution.relation_resolution.relations
             for edge in relation.missing_descent_relations()
         ]
-        del resolution
+        del compact_resolution
 
         def finding_chunks() -> Iterator[tuple[RefactorFinding, ...]]:
             chunk: list[RefactorFinding] = []

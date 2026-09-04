@@ -6095,8 +6095,8 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
         raise AssertionError("positive relations must load from the graph cache")
 
     monkeypatch.setattr(
-        semantic_descent_module,
-        "_build_semantic_descent_graph_cached",
+        semantic_descent_module.SemanticDescentGraphBuildRequest,
+        "graph",
         unexpected_graph_rebuild,
     )
     cached_graph = build_semantic_descent_graph(

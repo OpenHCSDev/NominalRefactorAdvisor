@@ -6035,24 +6035,22 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         compact_graph.missing_descent_certificates
     )
     config = DetectorConfig()
-    original_resolution = (
-        semantic_descent_detectors.build_compact_semantic_mirror_resolution
-    )
+    original_resolution = semantic_descent_module.CompactSemanticDescentRepository.resolve
     released_edge_refs: list[weakref.ReferenceType[object]] = []
 
-    def tracked_resolution(*args, **kwargs):
-        graph_space, resolution = original_resolution(*args, **kwargs)
+    def tracked_resolution(repository):
+        resolution = original_resolution(repository)
         missing_edge = next(
             missing_edge
-            for relation in resolution.relations
+            for relation in resolution.relation_resolution.relations
             for missing_edge in relation.missing_descent_relations()
         )
         released_edge_refs.append(weakref.ref(missing_edge))
-        return graph_space, resolution
+        return resolution
 
     monkeypatch.setattr(
-        semantic_descent_detectors,
-        "build_compact_semantic_mirror_resolution",
+        semantic_descent_module.CompactSemanticDescentRepository,
+        "resolve",
         tracked_resolution,
     )
     expected_findings = detector._collect_findings_from_graph(

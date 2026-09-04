@@ -491,7 +491,8 @@ class SemanticDescentImplementationSignature:
 
         return implementation_module_names(
             (
-                _build_semantic_descent_graph_cached,
+                SemanticDescentGraphBuildRequest,
+                CompactSemanticDescentRepository,
                 build_compact_semantic_descent_graph,
                 CompactSemanticModuleProjectionFamily,
                 CompactModuleClassProjectionFamily,
@@ -2775,7 +2776,10 @@ class FindingBackedSemanticDescentGraphRequest:
 
     findings: tuple[RefactorFinding, ...]
 
-    def build_graph(self) -> SemanticDescentGraph:
+    @lru_cache(maxsize=16)
+    def graph(self) -> SemanticDescentGraph:
+        """Derive and cache the graph owned by this immutable request."""
+
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
         projections: list[PresentationProjection] = []
@@ -3039,15 +3043,7 @@ def build_finding_backed_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    request = FindingBackedSemanticDescentGraphRequest(findings)
-    return _build_finding_backed_semantic_descent_graph_cached(request)
-
-
-@lru_cache(maxsize=16)
-def _build_finding_backed_semantic_descent_graph_cached(
-    request: FindingBackedSemanticDescentGraphRequest,
-) -> SemanticDescentGraph:
-    return request.build_graph()
+    return FindingBackedSemanticDescentGraphRequest(findings).graph()
 
 
 class FindingAuthorityNamePolicy:
@@ -3487,6 +3483,47 @@ class SemanticDescentGraphCache:
         return self.storage_root / f"latest-{family_identity.cache_token}.pickle"
 
 
+@dataclass(frozen=True)
+class SemanticDescentGraphBuildRequest:
+    """Immutable authority for deriving one repository semantic-descent graph."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @lru_cache(maxsize=None)
+    def graph(self) -> SemanticDescentGraph:
+        """Build this request's graph once across equal source snapshots."""
+
+        scan_deadline_checkpoint("semantic_descent_class_index")
+        class_index = build_class_family_index(list(self.modules))
+        scan_deadline_checkpoint("semantic_descent_authorities")
+        authority_catalog = SemanticAuthorityBuilder.from_class_index(
+            class_index
+        ).build()
+        scan_deadline_checkpoint("semantic_descent_projections")
+        projections = SemanticProjectionCollector(
+            self.modules,
+            class_index,
+        ).collect()
+        scan_deadline_checkpoint("semantic_descent_mirror_edges")
+        resolution = SemanticMirrorResolver(
+            authority_catalog.authorities,
+            authority_catalog.facts,
+            projections,
+            class_index,
+        ).resolve()
+        graph_space = SemanticDescentGraphSpace(
+            authority_catalog.authorities,
+            authority_catalog.facts,
+            projections,
+        )
+        scan_deadline_checkpoint("semantic_descent_certificates")
+        return SemanticDescentGraph.from_resolution(
+            graph_space,
+            resolution,
+            class_index=class_index,
+        )
+
+
 def build_semantic_descent_graph(
     modules: list[ParsedModule],
     *,
@@ -3495,22 +3532,22 @@ def build_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Build the cached semantic-descent graph for parsed modules."""
 
-    module_tuple = tuple(modules)
+    request = SemanticDescentGraphBuildRequest(tuple(modules))
     resolved_cache_dir = (
         cache_dir
         if cache_dir is not None
-        else SemanticDescentGraphCacheDirAuthority(module_tuple).cache_dir()
+        else SemanticDescentGraphCacheDirAuthority(request.modules).cache_dir()
     )
     if use_cache and resolved_cache_dir is not None:
-        identity = SemanticDescentGraphCacheIdentity.from_modules(module_tuple)
+        identity = SemanticDescentGraphCacheIdentity.from_modules(request.modules)
         cache = SemanticDescentGraphCache(resolved_cache_dir)
         cache_lookup = cache.load(identity)
         if cache_lookup.graph is not None:
             return cache_lookup.graph
-        graph = _build_semantic_descent_graph_cached(module_tuple)
+        graph = request.graph()
         cache.store(identity, graph)
         return graph
-    return _build_semantic_descent_graph_cached(module_tuple)
+    return request.graph()
 
 
 def load_cached_semantic_descent_graph_for_roots(
@@ -3566,36 +3603,6 @@ class SemanticDescentGraphCacheDirAuthority:
             )
         )
         return default_semantic_descent_cache_dir(common_root)
-
-
-@lru_cache(maxsize=None)
-def _build_semantic_descent_graph_cached(
-    modules: tuple[ParsedModule, ...],
-) -> SemanticDescentGraph:
-    scan_deadline_checkpoint("semantic_descent_class_index")
-    class_index = build_class_family_index(list(modules))
-    scan_deadline_checkpoint("semantic_descent_authorities")
-    authority_catalog = SemanticAuthorityBuilder.from_class_index(class_index).build()
-    scan_deadline_checkpoint("semantic_descent_projections")
-    projections = SemanticProjectionCollector(tuple(modules), class_index).collect()
-    scan_deadline_checkpoint("semantic_descent_mirror_edges")
-    resolution = SemanticMirrorResolver(
-        authority_catalog.authorities,
-        authority_catalog.facts,
-        projections,
-        class_index,
-    ).resolve()
-    graph_space = SemanticDescentGraphSpace(
-        authority_catalog.authorities,
-        authority_catalog.facts,
-        projections,
-    )
-    scan_deadline_checkpoint("semantic_descent_certificates")
-    return SemanticDescentGraph.from_resolution(
-        graph_space,
-        resolution,
-        class_index=class_index,
-    )
 
 
 @dataclass(frozen=True)
@@ -4041,149 +4048,180 @@ class CompactSemanticModuleProjectionFamily(
         ]
 
 
-def _resolved_compact_class_symbols(
-    resolver: CompactClassReferenceResolver,
-    *,
-    module_name: str,
-    reference_parts: tuple[tuple[str, ...], ...],
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            symbol
-            for parts in reference_parts
-            if (
-                symbol := resolver.symbol_for(
-                    module_name=module_name,
-                    reference_parts=parts,
-                    allow_unique_unqualified=False,
-                )
-            )
-            is not None
-        }
-    )
+@dataclass(frozen=True)
+class CompactSemanticDescentResolution:
+    """Resolved compact graph space and its declaration-to-view relations."""
+
+    graph_space: SemanticDescentGraphSpace
+    relation_resolution: SemanticAuthorityProjectionResolution
+
+    def graph(self) -> SemanticDescentGraph:
+        return SemanticDescentGraph.from_resolution(
+            self.graph_space,
+            self.relation_resolution,
+        )
 
 
-def _resolved_compact_semantic_projections(
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    class_index: CompactClassFamilyIndex,
-) -> tuple[PresentationProjection, ...]:
-    resolver = CompactClassReferenceResolver.from_index(
-        class_projections,
-        class_index,
-    )
-    resolved: list[PresentationProjection] = []
-    for module_projection in semantic_projections:
-        for projection in module_projection.projections:
-            class_symbols = _resolved_compact_class_symbols(
-                resolver,
-                module_name=module_projection.module_name,
-                reference_parts=projection.class_reference_parts,
-            )
-            key_value_pairs: list[PresentationKeyValuePair] = []
-            for pair in projection.key_value_pairs:
-                value_class_symbols = _resolved_compact_class_symbols(
-                    resolver,
-                    module_name=module_projection.module_name,
-                    reference_parts=pair.value_class_reference_parts,
-                )
-                value_tokens = sorted_tuple(
-                    set(pair.value_tokens)
-                    | _class_reference_normalized_tokens(
-                        class_index,
-                        value_class_symbols,
-                    )
-                )
+@dataclass(frozen=True)
+class CompactSemanticDescentRepository:
+    """Nominal owner of an AST-free repository semantic-descent derivation."""
+
+    semantic_projections: tuple[CompactSemanticModuleProjection, ...]
+    class_projections: tuple[CompactModuleClassProjection, ...]
+    class_index: CompactClassFamilyIndex
+
+    @classmethod
+    def from_projections(
+        cls,
+        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
+        class_projections: tuple[CompactModuleClassProjection, ...],
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> "CompactSemanticDescentRepository":
+        return cls(
+            semantic_projections=semantic_projections,
+            class_projections=class_projections,
+            class_index=(
+                build_compact_class_family_index(class_projections)
+                if class_index is None
+                else class_index
+            ),
+        )
+
+    @cached_property
+    def class_reference_resolver(self) -> CompactClassReferenceResolver:
+        return CompactClassReferenceResolver.from_index(
+            self.class_projections,
+            self.class_index,
+        )
+
+    @cached_property
+    def supplements(self) -> tuple[SemanticClassSupplement, ...]:
+        return tuple(
+            supplement
+            for projection in self.semantic_projections
+            for supplement in projection.class_supplements
+        )
+
+    @cached_property
+    def authority_catalog(self) -> SemanticAuthorityCatalog:
+        return SemanticAuthorityBuilder.from_compact_class_index(
+            self.class_index,
+            {
+                supplement.class_symbol: supplement
+                for supplement in self.supplements
+            },
+        ).build()
+
+    def resolved_class_symbols(
+        self,
+        *,
+        module_name: str,
+        reference_parts: tuple[tuple[str, ...], ...],
+    ) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                symbol
+                for parts in reference_parts
                 if (
-                    pair.value_tokens == value_tokens
-                    and pair.value_class_symbols == value_class_symbols
-                    and not pair.value_class_reference_parts
-                ):
-                    key_value_pairs.append(pair)
-                    continue
-                key_value_pairs.append(
-                    replace(
-                        pair,
-                        value_tokens=value_tokens,
-                        value_class_symbols=value_class_symbols,
-                        value_class_reference_parts=(),
+                    symbol := self.class_reference_resolver.symbol_for(
+                        module_name=module_name,
+                        reference_parts=parts,
+                        allow_unique_unqualified=False,
                     )
                 )
-            resolved_key_value_pairs = tuple(key_value_pairs)
-            if (
-                projection.key_value_pairs == resolved_key_value_pairs
-                and projection.class_symbols == class_symbols
-                and not projection.class_reference_parts
-            ):
-                resolved.append(projection)
-                continue
-            resolved.append(
-                replace(
-                    projection,
-                    key_value_pairs=resolved_key_value_pairs,
-                    class_symbols=class_symbols,
-                    class_reference_parts=(),
-                )
+                is not None
+            }
+        )
+
+    def resolved_key_value_pair(
+        self,
+        module_name: str,
+        pair: PresentationKeyValuePair,
+    ) -> PresentationKeyValuePair:
+        value_class_symbols = self.resolved_class_symbols(
+            module_name=module_name,
+            reference_parts=pair.value_class_reference_parts,
+        )
+        value_tokens = sorted_tuple(
+            set(pair.value_tokens)
+            | _class_reference_normalized_tokens(
+                self.class_index,
+                value_class_symbols,
             )
-    return sorted_tuple(
-        resolved,
-        key=lambda item: (item.location.file_path, item.location.line, item.label),
-    )
+        )
+        if (
+            pair.value_tokens == value_tokens
+            and pair.value_class_symbols == value_class_symbols
+            and not pair.value_class_reference_parts
+        ):
+            return pair
+        return replace(
+            pair,
+            value_tokens=value_tokens,
+            value_class_symbols=value_class_symbols,
+            value_class_reference_parts=(),
+        )
 
+    def resolved_projection(
+        self,
+        module_projection: CompactSemanticModuleProjection,
+        projection: PresentationProjection,
+    ) -> PresentationProjection:
+        class_symbols = self.resolved_class_symbols(
+            module_name=module_projection.module_name,
+            reference_parts=projection.class_reference_parts,
+        )
+        key_value_pairs = tuple(
+            self.resolved_key_value_pair(module_projection.module_name, pair)
+            for pair in projection.key_value_pairs
+        )
+        if (
+            projection.key_value_pairs == key_value_pairs
+            and projection.class_symbols == class_symbols
+            and not projection.class_reference_parts
+        ):
+            return projection
+        return replace(
+            projection,
+            key_value_pairs=key_value_pairs,
+            class_symbols=class_symbols,
+            class_reference_parts=(),
+        )
 
-def build_compact_semantic_mirror_resolver(
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> SemanticMirrorResolver:
-    """Build one reusable exact resolver from AST-free repository projections."""
+    @cached_property
+    def resolved_projections(self) -> tuple[PresentationProjection, ...]:
+        return sorted_tuple(
+            (
+                self.resolved_projection(module_projection, projection)
+                for module_projection in self.semantic_projections
+                for projection in module_projection.projections
+            ),
+            key=lambda item: (item.location.file_path, item.location.line, item.label),
+        )
 
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
-    supplements = tuple(
-        supplement
-        for projection in semantic_projections
-        for supplement in projection.class_supplements
-    )
-    authority_catalog = SemanticAuthorityBuilder.from_compact_class_index(
-        class_index,
-        {supplement.class_symbol: supplement for supplement in supplements},
-    ).build()
-    projections = _resolved_compact_semantic_projections(
-        semantic_projections,
-        class_projections,
-        class_index,
-    )
-    return SemanticMirrorResolver(
-        authority_catalog.authorities,
-        authority_catalog.facts,
-        projections,
-        class_index,
-        supplements,
-    )
+    def resolve(self) -> CompactSemanticDescentResolution:
+        """Resolve mirror relations without retaining matching-only caches."""
 
+        resolver = SemanticMirrorResolver(
+            self.authority_catalog.authorities,
+            self.authority_catalog.facts,
+            self.resolved_projections,
+            self.class_index,
+            self.supplements,
+        )
+        relation_resolution = resolver.resolve()
+        return CompactSemanticDescentResolution(
+            graph_space=SemanticDescentGraphSpace(
+                resolver.authorities,
+                resolver.facts,
+                resolver.projections,
+            ),
+            relation_resolution=relation_resolution,
+        )
 
-def build_compact_semantic_mirror_resolution(
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[SemanticDescentGraphSpace, SemanticAuthorityProjectionResolution]:
-    """Resolve edges, then release matching-only caches before publication."""
-
-    resolver = build_compact_semantic_mirror_resolver(
-        semantic_projections,
-        class_projections,
-        class_index=class_index,
-    )
-    resolution = resolver.resolve()
-    graph_space = SemanticDescentGraphSpace(
-        resolver.authorities,
-        resolver.facts,
-        resolver.projections,
-    )
-    return graph_space, resolution
+    def graph(self) -> SemanticDescentGraph:
+        return self.resolve().graph()
 
 
 def build_compact_semantic_descent_graph(
@@ -4194,12 +4232,11 @@ def build_compact_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Build the exact semantic graph from AST-free repository projections."""
 
-    graph_space, resolution = build_compact_semantic_mirror_resolution(
+    return CompactSemanticDescentRepository.from_projections(
         semantic_projections,
         class_projections,
         class_index=class_index,
-    )
-    return SemanticDescentGraph.from_resolution(graph_space, resolution)
+    ).graph()
 
 
 @dataclass
