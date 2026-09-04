@@ -99,6 +99,7 @@ from .codemod_payload import (
     StringArrayPayloadValueCodec,
     codemod_payload_field,
     json_report_field,
+    json_report_cached_property,
     json_report_property,
 )
 from .codemod_spacing import DestinationInsertionSpacing
@@ -632,40 +633,19 @@ class AuthorityClaimContextPreflightDetail(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True)
-class AuthorityClaimDeclarationPreflightDetail(CodemodJsonReport):
+class AuthorityClaimDeclarationPreflightDetail(DataclassJsonReport):
     """Typed nesting of a failed declaration-derived authority check."""
 
     recipe_id: str
     declaration_preflight: CodemodOperationPreflightReport
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "recipe_id": self.recipe_id,
-                "declaration_preflight": self.declaration_preflight.to_dict(),
-            }
-        )
-
-
 @dataclass(frozen=True)
-class AuthorityClaimResolutionPreflightDetail(CodemodJsonReport):
+class AuthorityClaimResolutionPreflightDetail(DataclassJsonReport):
     """Typed authority resolutions and findings retained until JSON emission."""
 
     recipe_id: str
     resolutions: tuple[AuthorityClaimResolution, ...]
     findings: tuple[RefactorFinding, ...]
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "recipe_id": self.recipe_id,
-                "resolutions": tuple(
-                    resolution.to_dict() for resolution in self.resolutions
-                ),
-                "findings": tuple(finding.to_dict() for finding in self.findings),
-            }
-        )
-
 
 class AstTargetAuthorityClaim:
     """Authority claim derived from a concrete source-index AST target."""
@@ -2288,7 +2268,7 @@ class CallSiteTargetSelector(CodemodTargetSelector):
 
 
 @dataclass(frozen=True)
-class CodemodSelectorResolutionReport(CodemodJsonReport):
+class CodemodSelectorResolutionReport(DataclassJsonReport):
     """JSON-ready report for a codemod target selector dry run."""
 
     selector: CodemodTargetSelector
@@ -2296,7 +2276,7 @@ class CodemodSelectorResolutionReport(CodemodJsonReport):
     selected_targets: tuple[AstTargetDigest, ...]
     missing_target_ids: tuple[str, ...] = ()
 
-    @property
+    @json_report_property()
     def selected_count(self) -> int:
         return len(self.selected_targets)
 
@@ -2324,23 +2304,9 @@ class CodemodSelectorResolutionReport(CodemodJsonReport):
             missing_target_ids=missing_target_ids,
         )
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "selector": self.selector.to_dict(),
-                "selected_count": self.selected_count,
-                "selected_target_ids": self.selected_target_ids,
-                "selected_targets": tuple(
-                    CodemodSourceIndexReport.target_payload(target)
-                    for target in self.selected_targets
-                ),
-                "missing_target_ids": self.missing_target_ids,
-            }
-        )
-
 
 @dataclass(frozen=True)
-class CodemodTargetSourceRecord:
+class CodemodTargetSourceRecord(DataclassJsonReport):
     """One selected source-index target with its exact source span."""
 
     target: AstTargetDigest
@@ -2359,18 +2325,9 @@ class CodemodTargetSourceRecord:
             ),
         )
 
-    @property
+    @json_report_property()
     def line_count(self) -> int:
         return self.target.end_line - self.target.line + 1
-
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "target": CodemodSourceIndexReport.target_payload(self.target),
-                "source": self.source,
-                "line_count": self.line_count,
-            }
-        )
 
 
 @dataclass(frozen=True)
@@ -12332,11 +12289,15 @@ class FindingRecipePlanSimulation(CodemodDocumentSimulationCarrier):
 
 
 @dataclass(frozen=True)
-class FindingRecipeClassPlan(CodemodJsonReport):
+class FindingRecipeClassPlan(DataclassJsonReport):
     """One graph-clustered smell class with executable DSL planning context."""
 
-    execution_class: RefactorExecutionClass
-    finding_plan: FindingRecipePlan
+    execution_class: RefactorExecutionClass = json_report_field(included=False)
+    finding_plan: FindingRecipePlan = json_report_field(included=False)
+
+    @json_report_property()
+    def class_id(self) -> str:
+        return self.execution_class.class_id
 
     @cached_property
     def synthesis_records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
@@ -12347,7 +12308,7 @@ class FindingRecipeClassPlan(CodemodJsonReport):
             if record.finding_id in finding_ids
         )
 
-    @property
+    @json_report_property()
     def document(self) -> CodemodPlanDocument:
         return self.document_from_records(self.synthesis_records)
 
@@ -12372,21 +12333,17 @@ class FindingRecipeClassPlan(CodemodJsonReport):
         )
         return CodemodPlanDocument(recipes=recipes)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "class_id": self.execution_class.class_id,
-            "document": self.document.to_dict(),
-        }
-
 
 @dataclass(frozen=True)
-class FindingRecipeClassPlanReport(CodemodJsonReport):
+class FindingRecipeClassPlanReport(DataclassJsonReport):
     """Executable plan mode grouped by graph-derived refactor classes."""
 
     execution_plan: RefactorExecutionPlanReport
-    finding_plan: FindingRecipePlan
+    finding_plan: FindingRecipePlan = json_report_field(
+        field_name="finding_recipe_plan"
+    )
 
-    @cached_property
+    @json_report_cached_property()
     def classes(self) -> tuple[FindingRecipeClassPlan, ...]:
         return tuple(
             FindingRecipeClassPlan(execution_class, self.finding_plan)
@@ -12512,14 +12469,6 @@ class FindingRecipeClassPlanReport(CodemodJsonReport):
             )
             for execution_class in execution_plan.classes
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "execution_plan": self.execution_plan.to_dict(),
-            "finding_recipe_plan": self.finding_plan.to_dict(),
-            "classes": tuple(class_plan.to_dict() for class_plan in self.classes),
-        }
-
 
 def codemod_class_plan_from_findings(
     findings: Iterable[RefactorFinding],

@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from enum import StrEnum
-from functools import lru_cache, singledispatchmethod
+from functools import cached_property, lru_cache, singledispatchmethod
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from .models import SemanticRecord
@@ -113,6 +113,21 @@ class JsonReportProperty(property):
         self.flattened = flattened
 
 
+class JsonReportCachedProperty(cached_property):
+    """Cached property carrying its declaration-owned output projection."""
+
+    def __init__(
+        self,
+        getter: Callable[[ReportOwnerT], ReportValueT],
+        *,
+        field_name: str | None = None,
+        flattened: bool = False,
+    ) -> None:
+        super().__init__(getter)
+        self.field_name = field_name
+        self.flattened = flattened
+
+
 def json_report_property(
     *,
     field_name: str | None = None,
@@ -124,6 +139,25 @@ def json_report_property(
         getter: Callable[[ReportOwnerT], ReportValueT],
     ) -> JsonReportProperty:
         return JsonReportProperty(
+            getter,
+            field_name=field_name,
+            flattened=flattened,
+        )
+
+    return declare
+
+
+def json_report_cached_property(
+    *,
+    field_name: str | None = None,
+    flattened: bool = False,
+) -> Callable[[Callable[[ReportOwnerT], ReportValueT]], JsonReportCachedProperty]:
+    """Declare a computed JSON field whose runtime value is cached once."""
+
+    def declare(
+        getter: Callable[[ReportOwnerT], ReportValueT],
+    ) -> JsonReportCachedProperty:
+        return JsonReportCachedProperty(
             getter,
             field_name=field_name,
             flattened=flattened,
@@ -886,9 +920,9 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
         declared_property_names: set[str] = set()
         for owner in owner_type.__mro__:
             for member_name, member in owner.__dict__.items():
-                if (
-                    member_name in declared_property_names
-                    or not isinstance(member, JsonReportProperty)
+                if member_name in declared_property_names or not isinstance(
+                    member,
+                    (JsonReportProperty, JsonReportCachedProperty),
                 ):
                     continue
                 declared_property_names.add(member_name)

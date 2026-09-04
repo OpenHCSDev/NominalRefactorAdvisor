@@ -41,6 +41,7 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
+    json_report_field,
     json_report_property,
 )
 from .collection_algebra import sorted_tuple
@@ -487,28 +488,30 @@ class ArchitectureGuardViolationTarget(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class ArchitectureGuardViolation(CodemodJsonReport):
+class ArchitectureGuardViolation(DataclassJsonReport):
     """One concrete source location that violates an architecture guard rule."""
 
     rule_id: str
-    constraint_type: type[ArchitectureGuardConstraint]
-    location: SourceLocation
-    target_context: "ArchitectureGuardViolationTarget"
+    constraint_type: type[ArchitectureGuardConstraint] = json_report_field(
+        included=False
+    )
+    location: SourceLocation = json_report_field(included=False)
+    target_context: "ArchitectureGuardViolationTarget" = json_report_field(
+        flattened=True
+    )
     detail: str = ""
 
-    @property
+    @json_report_property()
     def violation_kind(self) -> str:
         return self.constraint_type.discriminator_key()
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "rule_id": self.rule_id,
-            "violation_kind": self.violation_kind,
-            "line": self.location.line,
-            "symbol": self.location.symbol,
-            **self.target_context.to_dict(),
-            "detail": self.detail,
-        }
+    @json_report_property()
+    def line(self) -> int:
+        return self.location.line
+
+    @json_report_property()
+    def symbol(self) -> str:
+        return self.location.symbol
 
 
 @dataclass(frozen=True)

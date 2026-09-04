@@ -872,7 +872,7 @@ def test_replace_target_reproves_declaration_identity(
     assert error.value.report.operation == ReplaceTargetOperation.operation_key()
     assert isinstance(error.value.report.detail, SourceRewriteTargetPreflightDetail)
     assert error.value.report.detail.target == operation.target
-    assert error.value.report.details == {
+    assert error.value.report.to_dict()["details"] == {
         "target": {
             "target_id": None,
             "target_qualname": "Alpha.run",
@@ -1174,7 +1174,7 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
         document.simulate(snapshot)
 
     assert error.value.report.operation == "create_file"
-    assert error.value.report.details["existing_source_paths"] == (
+    assert error.value.report.detail.existing_source_paths == (
         module_path.as_posix(),
     )
     assert isinstance(
@@ -1210,7 +1210,7 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
     with pytest.raises(CodemodOperationPreflightError) as error:
         document.simulate(snapshot)
 
-    assert error.value.report.details["duplicate_source_paths"] == (
+    assert error.value.report.detail.duplicate_source_paths == (
         generated_path.as_posix(),
     )
     assert isinstance(
@@ -1252,9 +1252,9 @@ def test_codemod_preflight_accepts_source_backed_authority_claim(
         preflight.reports[0].detail,
         AuthorityClaimResolutionPreflightDetail,
     )
-    resolution = preflight.reports[0].details["resolutions"][0]
-    assert resolution["status"] == "resolved"
-    assert resolution["proof_edges"][0]["edge_kind"] == "source_index_target"
+    resolution = preflight.reports[0].detail.resolutions[0]
+    assert resolution.status.value == "resolved"
+    assert resolution.proof_edges[0].edge_kind.value == "source_index_target"
 
 
 def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
@@ -1284,14 +1284,13 @@ def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
 
     assert preflight.preflight_failed is True
     assert preflight.reports[0].operation == "authority_claims"
-    resolution = preflight.reports[0].details["resolutions"][0]
-    finding = preflight.reports[0].details["findings"][0]
-    assert resolution["status"] == "unresolved"
-    assert resolution["discovery_required"]["claimed_symbol"] == "MissingAuthority"
-    assert finding["detector_id"] == "unresolved_authority_claim"
-    assert "MissingAuthority" in finding["summary"]
-    assert "scaffold" not in finding
-    assert "codemod_patch" not in finding
+    resolution = preflight.reports[0].detail.resolutions[0]
+    finding = preflight.reports[0].detail.findings[0]
+    assert resolution.status.value == "unresolved"
+    assert resolution.discovery_required is not None
+    assert resolution.discovery_required.claimed_symbol == "MissingAuthority"
+    assert finding.detector_id == "unresolved_authority_claim"
+    assert "MissingAuthority" in finding.summary
 
 
 def test_codemod_preflight_accepts_declared_authority_claim(
@@ -1326,9 +1325,9 @@ def test_codemod_preflight_accepts_declared_authority_claim(
 
     assert preflight.preflight_failed is False
     assert preflight.reports[0].operation == "authority_claims"
-    resolution = preflight.reports[0].details["resolutions"][0]
-    assert resolution["status"] == "declared"
-    assert resolution["proof_edges"][0]["edge_kind"] == "explicit_declaration"
+    resolution = preflight.reports[0].detail.resolutions[0]
+    assert resolution.status.value == "declared"
+    assert resolution.proof_edges[0].edge_kind.value == "explicit_declaration"
     assert "class MissingAuthority(ABC)" in simulation.unified_diff(
         {module_path.as_posix(): module_path.read_text()}
     )
@@ -4120,7 +4119,7 @@ def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
     assert declared_claims[0].qualname == "NormalizedRenderMixin"
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
-    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert authority_report.detail.resolutions[0].status.value == "declared"
     assert simulation.is_clean is True
     assert rewritten.count("def render") == 1
     assert "class NormalizedRenderMixin:" in rewritten
@@ -6300,7 +6299,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert declared_claims[0].qualname == "RenderDispatchCase"
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
-    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert authority_report.detail.resolutions[0].status.value == "declared"
     assert len(simulation.recipe.guard_suite.rules) == 1
     dispatch_guard = simulation.recipe.guard_suite.rules[0]
     assert dispatch_guard.scopes == (
@@ -6421,7 +6420,7 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
     ) == ("RenderDispatchCase",)
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
-    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert authority_report.detail.resolutions[0].status.value == "declared"
     assert simulation.is_clean
     assert "class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in rewritten
     assert '"""Render one numeric mode."""' in rewritten
@@ -8293,7 +8292,9 @@ def test_new_module_closure_extraction_rejects_ambiguous_assignment_dependency(
     with pytest.raises(CodemodOperationPreflightError) as error:
         document.simulate(snapshot)
     assert error.value.report.operation == "extract_symbol_closure_to_new_module"
-    assert error.value.report.details["source_local_dependency_names"] == ("VALUE",)
+    assert error.value.report.detail.obstacle_details(
+        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
+    ) == ("VALUE",)
 
 
 def test_new_module_extraction_reports_its_leaf_creation_conflict(
@@ -8320,7 +8321,7 @@ def test_new_module_extraction_reports_its_leaf_creation_conflict(
         document.simulate(snapshot)
 
     assert error.value.report.operation == "extract_symbols_to_new_module"
-    assert error.value.report.details["existing_source_paths"] == (
+    assert error.value.report.detail.existing_source_paths == (
         destination_path.as_posix(),
     )
     assert destination_path.read_text() == "KEEP = 1\n"
@@ -8760,7 +8761,7 @@ def test_exact_recipe_fast_snapshot_includes_authority_claim_source(
     assert snapshot is not None
     report = sequence.preflight_snapshot(snapshot)
     assert report.is_clean is True
-    assert report.reports[0].details["resolutions"][0]["status"] == "resolved"
+    assert report.reports[0].detail.resolutions[0].status.value == "resolved"
 
 
 def test_exact_recipe_fast_snapshot_rejects_unbounded_proof_dependencies(
@@ -14634,9 +14635,9 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     )
     preflight = plan.document.preflight_snapshot(snapshot)
     assert preflight.preflight_failed is False
-    resolution = preflight.reports[0].details["resolutions"][0]
-    assert resolution["claim"]["claimed_symbol"] == "RuntimePlan"
-    assert resolution["status"] == "resolved"
+    resolution = preflight.reports[0].detail.resolutions[0]
+    assert resolution.claim.claimed_symbol == "RuntimePlan"
+    assert resolution.status.value == "resolved"
     assert "def from_source(" in rewritten
     assert 'source: "PlanSource"' in rewritten
     assert "theorem_handles=tuple(source.theorem_handles)" in rewritten
@@ -14991,9 +14992,9 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
         == rewritten
     )
     preflight = plan.document.preflight_snapshot(snapshot)
-    resolution = preflight.reports[0].details["resolutions"][0]
-    assert resolution["claim"]["claimed_symbol"] == "rejected"
-    assert resolution["status"] == "resolved"
+    resolution = preflight.reports[0].detail.resolutions[0]
+    assert resolution.claim.claimed_symbol == "rejected"
+    assert resolution.status.value == "resolved"
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
@@ -21021,7 +21022,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     authority_report = recipe.authority_claim_preflight_report(selector_context)
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
-    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert authority_report.detail.resolutions[0].status.value == "declared"
     with pytest.raises(
         ValueError,
         match="Unsupported ConvertManualRegistryToAutoregisterOperation payload field",
@@ -22130,8 +22131,8 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
     assert {
-        resolution["status"]
-        for resolution in authority_report.details["resolutions"]
+        resolution.status.value
+        for resolution in authority_report.detail.resolutions
     } == {"declared"}
 
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

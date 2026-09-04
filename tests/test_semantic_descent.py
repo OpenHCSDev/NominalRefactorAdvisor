@@ -1579,7 +1579,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     authority_report = recipe.authority_claim_preflight_report(snapshot)
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
-    assert authority_report.details["resolutions"][0]["status"] == "declared"
+    assert authority_report.detail.resolutions[0].status.value == "declared"
     assert type(RefactorRecipeOperation.from_dict(operations[0])).__name__ == (
         "DeriveAutoRegisterMroOrderingOperation"
     )

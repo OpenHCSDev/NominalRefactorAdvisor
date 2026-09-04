@@ -12,27 +12,32 @@ from .codemod_import_bindings import (
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
-from .codemod_payload import CodemodJsonReport, JsonObject
+from .codemod_payload import (
+    DataclassJsonReport,
+    JsonObject,
+    json_report_field,
+    json_report_property,
+)
 
 
 @dataclass(frozen=True)
-class ModuleMoveImportDependency:
+class ModuleMoveImportDependency(DataclassJsonReport):
     """One proved import transfer in a multi-symbol module move."""
 
-    binding: ModuleImportBinding
-    identity: ModuleImportBindingIdentity
+    binding: ModuleImportBinding = json_report_field(included=False)
+    identity: ModuleImportBindingIdentity = json_report_field(flattened=True)
     destination_import_required: bool
     source_removal_required: bool
 
-    @property
+    @json_report_property()
     def name(self) -> str:
         return self.binding.name
 
-    @property
+    @json_report_property()
     def source(self) -> str:
         return self.binding.source
 
-    @property
+    @json_report_property()
     def scope(self) -> ModuleImportScope:
         return self.binding.scope
 
@@ -47,16 +52,6 @@ class ModuleMoveImportDependency:
             scope=self.scope,
             bound_name=self.name,
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "name": self.name,
-            "source": self.source,
-            **self.identity.to_dict(),
-            "scope": self.scope.value,
-            "destination_import_required": self.destination_import_required,
-            "source_removal_required": self.source_removal_required,
-        }
 
 
 class ModuleMoveObstacleKind(StrEnum):
@@ -138,7 +133,7 @@ class ModuleMoveObstacle:
 
 
 @dataclass(frozen=True)
-class ModuleMoveDependencyReport(CodemodJsonReport):
+class ModuleMoveDependencyReport(DataclassJsonReport):
     """Dependency closure report for a multi-symbol module move."""
 
     source_path: str
@@ -150,7 +145,7 @@ class ModuleMoveDependencyReport(CodemodJsonReport):
     source_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
     destination_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
     moved_annotation_count: int
-    obstacles: tuple[ModuleMoveObstacle, ...]
+    obstacles: tuple[ModuleMoveObstacle, ...] = json_report_field(included=False)
 
     @property
     def destination_import_dependencies(
@@ -170,13 +165,13 @@ class ModuleMoveDependencyReport(CodemodJsonReport):
             if dependency.source_removal_required
         )
 
-    @property
+    @json_report_property()
     def imported_dependency_names(self) -> tuple[str, ...]:
         return tuple(
             dependency.name for dependency in self.destination_import_dependencies
         )
 
-    @property
+    @json_report_property()
     def import_sources(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
@@ -184,11 +179,11 @@ class ModuleMoveDependencyReport(CodemodJsonReport):
             )
         )
 
-    @property
+    @json_report_property()
     def source_import_removal_names(self) -> tuple[str, ...]:
         return tuple(dependency.name for dependency in self.source_removal_dependencies)
 
-    @property
+    @json_report_property()
     def is_clean(self) -> bool:
         return not any(obstacle.is_present for obstacle in self.obstacles)
 
@@ -203,7 +198,7 @@ class ModuleMoveDependencyReport(CodemodJsonReport):
             for detail in obstacle.details
         )
 
-    @property
+    @json_report_property()
     def annotation_evaluation_is_preserved(self) -> bool:
         return not self.obstacle_details(
             ModuleMoveObstacleKind.ANNOTATION_EVALUATION_CHANGE
@@ -227,32 +222,8 @@ class ModuleMoveDependencyReport(CodemodJsonReport):
         )
         return "; ".join(parts)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_path": self.source_path,
-            "destination_path": self.destination_path,
-            "moved_symbol_names": self.moved_symbol_names,
-            "import_dependencies": tuple(
-                dependency.to_dict() for dependency in self.import_dependencies
-            ),
-            "imported_dependency_names": self.imported_dependency_names,
-            "import_sources": self.import_sources,
-            "source_import_removal_names": self.source_import_removal_names,
-            "destination_dependency_names": self.destination_dependency_names,
-            "destination_insertion_line": self.destination_insertion_line,
-            "source_annotation_evaluation_mode": (
-                self.source_annotation_evaluation_mode.value
-            ),
-            "destination_annotation_evaluation_mode": (
-                self.destination_annotation_evaluation_mode.value
-            ),
-            "moved_annotation_count": self.moved_annotation_count,
-            "annotation_evaluation_is_preserved": (
-                self.annotation_evaluation_is_preserved
-            ),
-            **{
-                kind.value: self.obstacle_details(kind)
-                for kind in ModuleMoveObstacleKind
-            },
-            "is_clean": self.is_clean,
-        }
+    @json_report_property(flattened=True)
+    def obstacle_payload(self) -> JsonObject:
+        return JsonObject(
+            {kind.value: self.obstacle_details(kind) for kind in ModuleMoveObstacleKind}
+        )

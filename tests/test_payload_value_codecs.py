@@ -39,6 +39,7 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     json_report_field,
+    json_report_cached_property,
     json_report_property,
 )
 from nominal_refactor_advisor.semantic_descent import (
@@ -135,6 +136,25 @@ def test_dataclass_json_report_properties_follow_mro_declarations() -> None:
         "leaf_value": "leaf",
         "status": "leaf",
     }
+
+
+def test_dataclass_json_report_preserves_cached_projection_members() -> None:
+    evaluations: list[str] = []
+
+    @dataclass(frozen=True)
+    class CachedReport(DataclassJsonReport):
+        value: str
+
+        @json_report_cached_property()
+        def normalized_value(self) -> str:
+            evaluations.append(self.value)
+            return self.value.upper()
+
+    report = CachedReport(value="cached")
+
+    assert report.to_dict()["normalized_value"] == "CACHED"
+    assert report.to_dict()["normalized_value"] == "CACHED"
+    assert evaluations == ["cached"]
 
 
 def test_json_report_projection_rejects_undeclared_runtime_values() -> None:
