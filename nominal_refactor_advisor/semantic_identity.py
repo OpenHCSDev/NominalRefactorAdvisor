@@ -141,3 +141,34 @@ class SemanticRoleIdentityToken(StrEnum):
     @staticmethod
     def _pluralized_values(values: frozenset[str]) -> frozenset[str]:
         return frozenset((*values, *(f"{value}s" for value in values)))
+
+
+class InheritanceIdentityAttributeProjection:
+    """Select shared declaration attributes that can identify hierarchy leaves."""
+
+    @staticmethod
+    def is_identity_name(name: str) -> bool:
+        normalized = name.lower()
+        return (
+            normalized in SemanticRoleIdentityToken.inheritance_identity_attr_names()
+            or any(
+                normalized.endswith(f"_{suffix}")
+                for suffix in SemanticRoleIdentityToken.inheritance_identity_attr_suffixes()
+            )
+        )
+
+    @classmethod
+    def common_names(
+        cls,
+        declared_name_groups: tuple[tuple[str, ...], ...],
+    ) -> tuple[str, ...]:
+        if not declared_name_groups:
+            return ()
+        identity_name_sets = tuple(
+            frozenset(name for name in names if cls.is_identity_name(name))
+            for names in declared_name_groups
+        )
+        common_names = set(identity_name_sets[0])
+        for identity_names in identity_name_sets[1:]:
+            common_names &= identity_names
+        return tuple(sorted(common_names))

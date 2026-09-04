@@ -31,7 +31,7 @@ from ..exact_method_authority import (
     ExactMethodRoleComponent,
     ExactMethodRoleComponentBuilder,
 )
-from ..semantic_identity import SemanticRoleIdentityToken
+from ..semantic_identity import InheritanceIdentityAttributeProjection
 import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -168,24 +168,18 @@ class HelperSupportProjectionAuthority:
     def common_semantic_key_attr_names(
         self, concrete_descendants: tuple[IndexedClass, ...]
     ) -> tuple[str, ...]:
-        if not concrete_descendants:
-            return ()
-        assignment_name_sets = tuple(
-            (
-                frozenset(
+        return InheritanceIdentityAttributeProjection.common_names(
+            tuple(
+                tuple(
                     name
                     for name, value in CLASS_NODE_AUTHORITY.direct_assignments(
                         descendant.node
                     ).items()
-                    if value is not None and _looks_like_semantic_key_attr(name)
+                    if value is not None
                 )
                 for descendant in concrete_descendants
             )
         )
-        common_names = set(assignment_name_sets[0])
-        for assignment_names in assignment_name_sets[1:]:
-            common_names &= set(assignment_names)
-        return sorted_tuple(common_names)
 
     def derivable_nominal_root_names(
         self, shapes: Sequence[NominalAuthorityShape]
@@ -1457,24 +1451,6 @@ def _dynamic_self_field_selection_candidates(
         module.module,
         ast.ClassDef,
         _dynamic_self_field_selection_candidates_for_class,
-    )
-
-
-_SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES = (
-    SemanticRoleIdentityToken.inheritance_identity_attr_suffixes()
-)
-_SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES = (
-    SemanticRoleIdentityToken.inheritance_identity_attr_names()
-)
-
-
-def _looks_like_semantic_key_attr(name: str) -> bool:
-    normalized = name.lower()
-    return normalized in _SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES or any(
-        (
-            normalized.endswith(f"_{suffix}")
-            for suffix in _SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES
-        )
     )
 
 

@@ -78,6 +78,7 @@ from ..models import (
 )
 from ..patterns import PatternId
 from ..semantic_identity import (
+    InheritanceIdentityAttributeProjection,
     SemanticIdentifierTokenProjection,
     SemanticRoleIdentityToken,
 )
@@ -2475,7 +2476,12 @@ def _compact_latent_implementation_roster_candidates(
         )
         key_values_by_attr = tuple(
             (key_attr_name, key_values)
-            for key_attr_name in _compact_semantic_key_attr_names(descendants)
+            for key_attr_name in InheritanceIdentityAttributeProjection.common_names(
+                tuple(
+                    descendant.direct_non_none_assignment_names
+                    for descendant in descendants
+                )
+            )
             if len(
                 key_values := _compact_descendant_key_values(
                     descendants,
@@ -2621,25 +2627,6 @@ def _compact_family_has_registration_authority(
         )
         for candidate in (class_index.class_for(symbol),)
     )
-
-
-def _compact_semantic_key_attr_names(
-    descendants: tuple[CompactIndexedClass, ...],
-) -> tuple[str, ...]:
-    if not descendants:
-        return ()
-    assignment_name_sets = tuple(
-        frozenset(
-            name
-            for name, value in descendant.direct_assignment_expressions
-            if value is not None and _looks_like_semantic_key_attr(name)
-        )
-        for descendant in descendants
-    )
-    common_names = set(assignment_name_sets[0])
-    for assignment_names in assignment_name_sets[1:]:
-        common_names &= set(assignment_names)
-    return sorted_tuple(common_names)
 
 
 def _compact_inherited_autoregister_registry_key_attr_name(
