@@ -3100,8 +3100,6 @@ class IncrementalAnalysisCacheResolver:
         self._report_scope = report_scope
         self._detector_types = default_detector_types_for_analysis()
         self._detector_partition = DetectorTypePartition(self._detector_types)
-        self._global_module_context_signature: str | None = None
-        self._semantic_descent_graph: SemanticDescentGraph | None = None
 
     def result(self) -> IncrementalAnalysisResult:
         cyclic_gc_was_enabled = gc.isenabled()
@@ -3289,7 +3287,7 @@ class IncrementalAnalysisCacheResolver:
             # lets cache lookup happen before constructing detector-specific
             # whole-repository projections; those projections are now built
             # only on an actual local shard miss.
-            context_signature = self._global_detector_context_signature()
+            context_signature = self.global_detector_context_signature
             for module in self._local_detector_modules():
                 scan_deadline_checkpoint("contextual_module_detection")
                 identity = ContextualModuleAnalysisCacheIdentity.from_module_context(
@@ -3340,7 +3338,7 @@ class IncrementalAnalysisCacheResolver:
         hit_count = 0
         missing_detector_types: list[type[IssueDetector]] = []
         missing_identities: list[GlobalDetectorAnalysisCacheIdentity] = []
-        context_signature = self._global_detector_context_signature()
+        context_signature = self.global_detector_context_signature
         for detector_type in detector_types:
             identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
                 self._config,
@@ -3408,7 +3406,7 @@ class IncrementalAnalysisCacheResolver:
             # with it before constructing a detector-specific whole-repository
             # projection: those projections can take seconds each and are only
             # useful when the detector shard is actually missing.
-            context_signature = self._global_detector_context_signature()
+            context_signature = self.global_detector_context_signature
             focused_semantic_detector = (
                 self._report_scope is not None
                 and self._report_scope.has_report_filter
@@ -3466,14 +3464,14 @@ class IncrementalAnalysisCacheResolver:
                 )
                 if focused_semantic_detector:
                     detector_findings = detector._collect_focused_findings_from_graph(
-                        self._semantic_descent_context_graph(),
+                        self.semantic_descent_context_graph,
                         self._modules,
                         self._config,
                         includes_path=(self._report_scope.includes_report_path),
                     )
                 else:
                     detector_findings = detector._collect_findings_from_graph(
-                        self._semantic_descent_context_graph(),
+                        self.semantic_descent_context_graph,
                         self._modules,
                         self._config,
                     )
@@ -3497,23 +3495,21 @@ class IncrementalAnalysisCacheResolver:
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
-    def _semantic_descent_context_graph(self) -> SemanticDescentGraph:
-        scan_deadline_checkpoint("semantic_descent_context_graph")
-        if self._semantic_descent_graph is None:
-            self._semantic_descent_graph = (
-                self._semantic_descent_source.graph_for_modules(self._modules)
-            )
-        return self._semantic_descent_graph
+    @cached_property
+    def semantic_descent_context_graph(self) -> SemanticDescentGraph:
+        """Materialize the shared repository graph at most once per resolution."""
 
-    def _global_detector_context_signature(self) -> str:
-        if self._global_module_context_signature is None:
-            self._global_module_context_signature = (
-                GlobalModuleContextSignature.from_modules(
-                    tuple(self._modules),
-                    self._cache_identity.presentation_roots,
-                ).cache_token
-            )
-        return self._global_module_context_signature
+        scan_deadline_checkpoint("semantic_descent_context_graph")
+        return self._semantic_descent_source.graph_for_modules(self._modules)
+
+    @cached_property
+    def global_detector_context_signature(self) -> str:
+        """Derive the shared global detector cache signature once."""
+
+        return GlobalModuleContextSignature.from_modules(
+            tuple(self._modules),
+            self._cache_identity.presentation_roots,
+        ).cache_token
 
 
 def analyze_modules_with_cache(
