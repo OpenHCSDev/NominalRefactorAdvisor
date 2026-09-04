@@ -431,6 +431,26 @@ def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> N
     assert not hasattr(codemod.CallSiteDigest, "to_source_location")
 
 
+def test_codemod_authority_claim_boundary_is_owned_outside_execution() -> None:
+    authority_claim_types = (
+        codemod.AuthorityClaimPayload,
+        codemod.CodemodPlanEvidenceLocation,
+        codemod.AuthorityClaimPreflightFinding,
+        codemod.SourceCreationConflictPreflightDetail,
+        codemod.AuthorityClaimContextPreflightDetail,
+        codemod.AuthorityClaimDeclarationPreflightDetail,
+        codemod.AuthorityClaimResolutionPreflightDetail,
+        codemod.AstTargetAuthorityClaim,
+        codemod.AuthorityClaimSourceIndexResolver,
+    )
+
+    assert all(
+        declaration.__module__
+        == "nominal_refactor_advisor.codemod_authority_claims"
+        for declaration in authority_claim_types
+    )
+
+
 def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     synthesizer_type = (
         codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer
