@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import Generic, Iterable, Mapping, TypeAlias, TypeVar
+from typing import Generic, TypeAlias, TypeVar
 
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
@@ -567,6 +568,14 @@ class SourceIndex(DataclassJsonReport):
         return tuple(
             keys_by_target_id[target_id] for target_id in sorted(keys_by_target_id)
         )
+
+
+@dataclass(frozen=True)
+class IndexedSourceAuthority:
+    """One source index paired with the exact source texts it indexes."""
+
+    source_index: SourceIndex
+    sources_by_file_path: Mapping[str, str]
 
 
 @dataclass(frozen=True)

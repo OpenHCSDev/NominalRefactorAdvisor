@@ -12,6 +12,28 @@ from typing import ClassVar
 from .ast_tools import AstKeywordSourceProjection, is_docstring_statement
 from .class_index import ClassHeaderSourceSpan
 from .codemod_source_edits import SourceTextGeometry
+from .source_geometry import SourceLineSegmentAuthority
+
+
+@dataclass(frozen=True)
+class DirectClassDeclarationAuthority:
+    """Project direct annotated class fields to exact source declarations."""
+
+    source_segments: SourceLineSegmentAuthority
+    node: ast.ClassDef
+
+    def declarations_by_name(self) -> dict[str, str]:
+        declaration_by_name: dict[str, str] = {}
+        for statement in self.node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if not isinstance(statement.target, ast.Name):
+                continue
+            source_segment = self.source_segments.segment_for_node(statement)
+            if source_segment is None:
+                return {}
+            declaration_by_name[statement.target.id] = source_segment.strip()
+        return declaration_by_name
 
 
 @dataclass(frozen=True)

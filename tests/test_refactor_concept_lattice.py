@@ -437,6 +437,15 @@ def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> N
         codemod.CodemodSourceIndexReport.__module__
         == "nominal_refactor_advisor.source_index"
     )
+    assert (
+        codemod.IndexedSourceAuthority.__module__
+        == "nominal_refactor_advisor.source_index"
+    )
+    assert (
+        codemod.DirectClassDeclarationAuthority.__module__
+        == "nominal_refactor_advisor.codemod_declaration_source"
+    )
+    assert not hasattr(codemod, "PositionalCallNameIndex")
 
 
 def test_codemod_authority_claim_boundary_is_owned_outside_execution() -> None:

@@ -157,6 +157,7 @@ from .codemod_architecture_guards import (
 )
 from .codemod_declaration_source import (
     ClassBodySourceAuthority as ClassBodySourceAuthority,
+    DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
 )
 from .codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
@@ -524,6 +525,7 @@ from .source_index import (
     SourceIndex,
     build_source_index_artifacts,
     CodemodSourceIndexReport as CodemodSourceIndexReport,
+    IndexedSourceAuthority as IndexedSourceAuthority,
 )
 from .source_index import (
     AstTargetGeometryKey as AstTargetGeometryKey,
@@ -586,14 +588,6 @@ SourceReproofValueT = TypeVar("SourceReproofValueT")
 
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
-
-
-@dataclass(frozen=True)
-class IndexedSourceAuthority:
-    """One source index paired with the exact source texts it indexes."""
-
-    source_index: SourceIndex
-    sources_by_file_path: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -819,10 +813,6 @@ class CodemodSelectorContext(IndexedSourceAuthority):
             )
         return cache[file_path]
 
-    @cached_property
-    def positional_call_name_index(self) -> "PositionalCallNameIndex":
-        return PositionalCallNameIndex.from_module_nodes(self.module_nodes_by_file_path)
-
     def module_node_for_source_path(self, source_path: str) -> ast.Module | None:
         resolved_path = SourcePathResolutionAuthority.from_source_index(
             source_path,
@@ -1017,27 +1007,6 @@ class ResolvedClassTarget:
 
 
 @dataclass(frozen=True)
-class DirectClassDeclarationAuthority:
-    """Project direct annotated class fields to exact source declarations."""
-
-    source_segments: SourceLineSegmentAuthority
-    node: ast.ClassDef
-
-    def declarations_by_name(self) -> dict[str, str]:
-        declaration_by_name: dict[str, str] = {}
-        for statement in self.node.body:
-            if not isinstance(statement, ast.AnnAssign):
-                continue
-            if not isinstance(statement.target, ast.Name):
-                continue
-            source_segment = self.source_segments.segment_for_node(statement)
-            if source_segment is None:
-                return {}
-            declaration_by_name[statement.target.id] = source_segment.strip()
-        return declaration_by_name
-
-
-@dataclass(frozen=True)
 class ClassDirectDeclarationIndex:
     """Direct class field declarations keyed by source-index target id."""
 
@@ -1071,40 +1040,6 @@ class ClassDirectDeclarationIndex:
                 ).declarations_by_name()
             )
         return cls(declarations_by_target_id=declarations_by_target_id)
-
-
-@dataclass(frozen=True)
-class PositionalCallNameIndex:
-    """Names called with positional arguments, keyed by source file."""
-
-    names_by_file_path: Mapping[str, frozenset[str]]
-
-    @classmethod
-    def from_module_nodes(
-        cls,
-        module_nodes_by_file_path: Mapping[str, ast.Module],
-    ) -> "PositionalCallNameIndex":
-        return cls(
-            names_by_file_path={
-                file_path: cls.positional_call_names(module_node)
-                for file_path, module_node in module_nodes_by_file_path.items()
-            }
-        )
-
-    @staticmethod
-    def positional_call_names(module_node: ast.Module) -> frozenset[str]:
-        return frozenset(
-            call_name
-            for node in ast.walk(module_node)
-            if isinstance(node, ast.Call) and node.args
-            for call_name in (AstExpressionProjection.qualified_name(node.func),)
-            if call_name is not None
-        )
-
-    def contains_any(self, file_path: str, call_names: Iterable[str]) -> bool:
-        return bool(
-            self.names_by_file_path.get(file_path, frozenset()).intersection(call_names)
-        )
 
 
 @dataclass(frozen=True)
