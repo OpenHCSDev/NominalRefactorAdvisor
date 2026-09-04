@@ -253,7 +253,7 @@ class _CompactMethodFamilyDetectorBase(
         config: DetectorConfig,
     ) -> Sequence[MethodFamilyCandidateT]:
         del config
-        return context.candidates_for(type(self).candidate_type)
+        return context.candidates_for(type(self).required_candidate_type())
 
 
 class _CompactExactTinyMethodRoleDetectorBase(

@@ -15,7 +15,7 @@ from .json_reports import (
     json_report_field,
     json_report_property,
 )
-from .models import NominalDeclarationIdentity, RequiredRelationIdentity
+from .models import NominalDeclarationIdentity, RequiredRelationIdentity, SourceLocation
 from .patterns import PatternId
 from .refactor_concepts import RefactorConcept
 
@@ -57,6 +57,10 @@ class DetectorRefactorCapability(DataclassJsonReport):
     def required_relation(self) -> RequiredRelationIdentity:
         declaration = self.detector_type.required_relation_declaration_type()
         return declaration.required_relation_identity()
+
+    @json_report_property()
+    def required_relation_source(self) -> SourceLocation:
+        return self.detector_type.required_relation_source()
 
     @json_report_property()
     def required_relation_pattern(self) -> PatternId:

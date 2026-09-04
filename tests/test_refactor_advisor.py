@@ -2770,7 +2770,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
     assert detector_id is not None
     before_finding = RefactorFinding(
         detector_id=detector_id,
-        pattern_id=per_module_detector_type.finding_spec.pattern_id,
+        pattern_id=per_module_detector_type.required_relation_pattern_id(),
         title="Changed file finding",
         summary="changed file before finding",
         why="changed file requires a rerun",

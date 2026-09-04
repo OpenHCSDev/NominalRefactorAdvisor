@@ -79,7 +79,7 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
     assert competing_declarations == ()
 
 
-def test_concrete_candidate_detectors_own_their_collector_declaration() -> None:
+def test_concrete_candidate_detectors_have_one_collector_authority() -> None:
     collector_detector_types = tuple(
         detector_type
         for detector_type in IssueDetector.registered_detector_types()
@@ -87,10 +87,39 @@ def test_concrete_candidate_detectors_own_their_collector_declaration() -> None:
     )
 
     assert collector_detector_types
-    assert all(
-        "candidate_collector" in vars(detector_type)
-        for detector_type in collector_detector_types
+    for detector_type in collector_detector_types:
+        declaration = detector_type.resolved_detector_declaration()
+        if declaration is None:
+            assert "candidate_collector" in vars(detector_type)
+        else:
+            assert declaration.options.candidate_collector is not None
+            assert "candidate_collector" not in vars(detector_type)
+
+
+def test_generated_detector_types_retain_their_nominal_declaration() -> None:
+    generated_detector_types = tuple(
+        detector_type
+        for detector_type in IssueDetector.registered_detector_types()
+        if detector_type.resolved_detector_declaration() is not None
     )
+
+    assert generated_detector_types
+    for detector_type in generated_detector_types:
+        declaration = detector_type.resolved_detector_declaration()
+        assert declaration is not None
+        assert vars(detector_type)["detector_declaration"] is declaration
+        assert {
+            "candidate_type",
+            "finding_spec",
+            "finding_renderer",
+            "candidate_collector",
+            "source_candidate_collector",
+        }.isdisjoint(vars(detector_type))
+        assert detector_type.required_relation_finding_spec() is declaration.finding_spec
+        assert detector_type.required_relation_source() == declaration.source
+        assert detector_type.__module__ == declaration.module_name
+        assert vars(detector_type)["__firstlineno__"] == declaration.source_line
+        assert Path(declaration.source.file_path).is_file()
 
 
 def test_exact_report_demand_behavior_is_owned_by_collected_family_declarations() -> None:
@@ -110,12 +139,16 @@ def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:
         record_field.name for record_field in fields(FindingObligationClass)
     ) == ("declaration",)
     for detector_type in IssueDetector.registered_detector_types():
-        declaration = detector_type.required_relation_declaration_type()
-        assert vars(declaration)["finding_spec"] is detector_type.finding_spec
-        assert (
-            declaration.required_relation_pattern_id()
-            is detector_type.finding_spec.pattern_id
-        )
+        declaration_type = detector_type.required_relation_declaration_type()
+        detector_declaration = detector_type.resolved_detector_declaration()
+        finding_spec = detector_type.required_relation_finding_spec()
+        if detector_declaration is None:
+            assert vars(declaration_type)["finding_spec"] is finding_spec
+        else:
+            assert vars(declaration_type)["detector_declaration"] is detector_declaration
+            assert "finding_spec" not in vars(declaration_type)
+            assert detector_declaration.finding_spec is finding_spec
+        assert declaration_type.required_relation_pattern_id() is finding_spec.pattern_id
 
 
 def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
@@ -148,6 +181,11 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
         for capability in report.capabilities
     )
     assert all(
+        capability.required_relation_source
+        == capability.detector_type.required_relation_source()
+        for capability in report.capabilities
+    )
+    assert all(
         capability.direct_recipe_evaluator is not None
         for capability in report.capabilities
         if capability.direct_executable_refactor is not None
@@ -161,6 +199,11 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
     payload = json_report_object(report)
     assert len(payload["capabilities"]) == len(detector_types)
     assert all(
-        {"required_relation", "required_relation_pattern"} <= capability.keys()
+        {
+            "required_relation",
+            "required_relation_pattern",
+            "required_relation_source",
+        }
+        <= capability.keys()
         for capability in payload["capabilities"]
     )

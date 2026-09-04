@@ -218,7 +218,11 @@ def _detector_id_value_from_class_name(name: str) -> str | None:
 
 
 def _has_finding_spec_contract(cls: type[object]) -> bool:
-    return any(("finding_spec" in base.__dict__ for base in cls.__mro__))
+    return any(
+        "finding_spec" in vars(base)
+        or vars(base).get("detector_declaration") is not None
+        for base in cls.__mro__
+    )
 
 
 def _detector_id_from_class_name(name: str, cls: type[object]) -> str | None:
@@ -486,6 +490,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
+    detector_declaration: ClassVar["DetectorDeclaration[object] | None"] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -526,7 +531,11 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         """Return the MRO declaration that supplies the executed finding spec."""
 
         for declaration_type in cls.__mro__:
-            if "finding_spec" in vars(declaration_type):
+            declaration_namespace = vars(declaration_type)
+            if (
+                "finding_spec" in declaration_namespace
+                or declaration_namespace.get("detector_declaration") is not None
+            ):
                 if not issubclass(declaration_type, RequiredRelationDeclaration):
                     raise TypeError(
                         f"{declaration_type.__name__} supplies finding_spec outside "
@@ -534,6 +543,38 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
                     )
                 return declaration_type
         raise TypeError(f"{cls.__name__} has no finding_spec declaration")
+
+    @classmethod
+    def resolved_detector_declaration(cls) -> "DetectorDeclaration[object] | None":
+        """Return the generated detector's retained nominal authority, if any."""
+
+        for declaration_type in cls.__mro__:
+            declaration = vars(declaration_type).get("detector_declaration")
+            if declaration is None:
+                continue
+            if not isinstance(declaration, DetectorDeclaration):
+                raise TypeError(
+                    f"{declaration_type.__name__}.detector_declaration must be "
+                    "a DetectorDeclaration"
+                )
+            return declaration
+        return None
+
+    @classmethod
+    def required_relation_source(cls) -> SourceLocation:
+        """Recover the source declaration that owns the executed relation."""
+
+        detector_declaration = cls.resolved_detector_declaration()
+        if detector_declaration is not None:
+            return detector_declaration.source
+        declaration_type = cls.required_relation_declaration_type()
+        source_path = inspect.getsourcefile(declaration_type)
+        if source_path is None:
+            raise TypeError(
+                f"Cannot recover source for {declaration_type.__qualname__}"
+            )
+        _source_lines, first_line = inspect.getsourcelines(declaration_type)
+        return SourceLocation(source_path, first_line, declaration_type.__qualname__)
 
     @classmethod
     def required_relation_pattern_id(cls) -> PatternId:
@@ -545,6 +586,9 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     def required_relation_finding_spec(cls) -> FindingSpec:
         """Return the finding semantics owned by the selected MRO declaration."""
 
+        detector_declaration = cls.resolved_detector_declaration()
+        if detector_declaration is not None:
+            return detector_declaration.finding_spec
         declaration_type = cls.required_relation_declaration_type()
         return cast(FindingSpec, vars(declaration_type)["finding_spec"])
 
@@ -637,7 +681,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         detector_id = type(self).effective_detector_id()
         if detector_id is None:
             raise TypeError(f"{type(self).__name__} has no detector_id")
-        return type(self).finding_spec.build(
+        return type(self).required_relation_finding_spec().build(
             detector_id,
             summary,
             evidence,
@@ -1459,11 +1503,34 @@ class RenderedFindingMixin(Generic[CandidateItemT]):
     candidate_type: ClassVar[type[CandidateItemT]]
     finding_renderer: ClassVar[CandidateFindingRenderer[CandidateItemT] | None] = None
 
-    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
-        renderer = type(self).finding_renderer
+    @classmethod
+    def required_candidate_type(cls) -> type[CandidateItemT]:
+        detector_declaration = cast(
+            type[IssueDetector], cls
+        ).resolved_detector_declaration()
+        if detector_declaration is not None:
+            return cast(type[CandidateItemT], detector_declaration.candidate_type)
+        return cls.candidate_type
+
+    @classmethod
+    def required_finding_renderer(cls) -> CandidateFindingRenderer[CandidateItemT]:
+        detector_declaration = cast(
+            type[IssueDetector], cls
+        ).resolved_detector_declaration()
+        if detector_declaration is not None:
+            return cast(
+                CandidateFindingRenderer[CandidateItemT],
+                detector_declaration.finding_renderer,
+            )
+        renderer = cls.finding_renderer
         if renderer is None:
             raise NotImplementedError
-        return renderer.build(cast(IssueDetector, self), candidate)
+        return renderer
+
+    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
+        return type(self).required_finding_renderer().build(
+            cast(IssueDetector, self), candidate
+        )
 
 
 class CandidateFindingDetector(
@@ -1581,10 +1648,34 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-        if _has_finding_spec_contract(cls) and "candidate_collector" not in vars(cls):
+        detector_declaration = vars(cls).get("detector_declaration")
+        declaration_owns_collector = (
+            detector_declaration is not None
+            and isinstance(detector_declaration, DetectorDeclaration)
+            and detector_declaration.options.candidate_collector is not None
+        )
+        if (
+            _has_finding_spec_contract(cls)
+            and "candidate_collector" not in vars(cls)
+            and not declaration_owns_collector
+        ):
             raise TypeError(
                 f"{cls.__name__} must own its candidate_collector declaration"
             )
+
+    @classmethod
+    def required_candidate_collector(cls) -> DetectorCollector[CandidateItemT]:
+        detector_declaration = cast(
+            type[IssueDetector], cls
+        ).resolved_detector_declaration()
+        if detector_declaration is not None:
+            collector = detector_declaration.options.candidate_collector
+            if collector is None:
+                raise TypeError(
+                    f"{cls.__name__}'s declaration has no candidate collector"
+                )
+            return cast(DetectorCollector[CandidateItemT], collector)
+        return cls.candidate_collector
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
@@ -1687,7 +1778,7 @@ class ModuleCollectorCandidateDetector(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
-        return type(self).candidate_collector(module)
+        return type(self).required_candidate_collector()(module)
 
 
 class ConfiguredModuleCollectorCandidateDetector(
@@ -1707,7 +1798,7 @@ class ConfiguredModuleCollectorCandidateDetector(
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
-        return type(self).candidate_collector(module, config)
+        return type(self).required_candidate_collector()(module, config)
 
 
 class SourceModuleCollectorCandidateDetector(
@@ -1720,13 +1811,31 @@ class SourceModuleCollectorCandidateDetector(
 
     source_candidate_collector: ClassVar[SourceModuleCandidateCollector[CandidateItemT]]
 
+    @classmethod
+    def required_source_candidate_collector(
+        cls,
+    ) -> SourceModuleCandidateCollector[CandidateItemT]:
+        detector_declaration = cast(
+            type[IssueDetector], cls
+        ).resolved_detector_declaration()
+        if detector_declaration is not None:
+            collector = detector_declaration.options.source_candidate_collector
+            if collector is None:
+                raise TypeError(
+                    f"{cls.__name__}'s declaration has no source candidate collector"
+                )
+            return cast(SourceModuleCandidateCollector[CandidateItemT], collector)
+        return cls.source_candidate_collector
+
     def _findings_for_source(
         self,
         module: SourceModule,
         syntax_index: NativePythonSyntaxIndex,
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
-        candidates = type(self).source_candidate_collector(module, syntax_index, config)
+        candidates = type(self).required_source_candidate_collector()(
+            module, syntax_index, config
+        )
         if candidates is None:
             return None
         return [self._finding_for_candidate(candidate) for candidate in candidates]
@@ -1830,7 +1939,7 @@ class CrossModuleCollectorCandidateDetector(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
-        return type(self).candidate_collector(modules)
+        return type(self).required_candidate_collector()(modules)
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
@@ -1852,7 +1961,7 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
-        return type(self).candidate_collector(modules, config)
+        return type(self).required_candidate_collector()(modules, config)
 
 
 CompactCandidateContextT = TypeVar("CompactCandidateContextT")
@@ -2067,7 +2176,7 @@ class FlattenedModuleCollectorCandidateDetector(
             tuple(
                 item
                 for module in modules
-                for item in type(self).candidate_collector(module)
+                for item in type(self).required_candidate_collector()(module)
             )
         )
 
@@ -2094,7 +2203,7 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
             tuple(
                 item
                 for module in modules
-                for item in type(self).candidate_collector(module, config)
+                for item in type(self).required_candidate_collector()(module, config)
             )
         )
 
@@ -2135,14 +2244,63 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
     source_candidate_collector: SourceModuleCandidateCollector[CandidateItemT]
 
 
+@dataclass(frozen=True)
+class DetectorDeclaration(Generic[CandidateItemT]):
+    candidate_type: type[CandidateItemT]
+    finding_spec: FindingSpec
+    finding_renderer: CandidateFindingRenderer[CandidateItemT]
+    module_name: str
+    source_file_path: str
+    source_line: int
+    options: DetectorDeclarationOptions[CandidateItemT] = (
+        _DEFAULT_DETECTOR_DECLARATION_OPTIONS
+    )
+
+    @property
+    def class_name(self) -> str:
+        return self.options.detector_name or _detector_name_from_candidate_type(
+            self.candidate_type
+        )
+
+    @property
+    def source(self) -> SourceLocation:
+        return SourceLocation(
+            self.source_file_path,
+            self.source_line,
+            self.class_name,
+        )
+
+    @classmethod
+    def required_class_shell_field_names(cls) -> tuple[str, ...]:
+        return ("finding_spec", "finding_renderer")
+
+    def runtime_namespace(
+        self,
+    ) -> dict[str, DetectorNamespaceValue[CandidateItemT]]:
+        return {
+            "__module__": self.module_name,
+            "__firstlineno__": self.source_line,
+            "detector_declaration": self,
+        }
+
+    def install(
+        self,
+        caller_globals: DetectorModuleNamespace[CandidateItemT],
+    ) -> type[IssueDetector]:
+        detector_type = cast(
+            type[IssueDetector],
+            type(
+                self.class_name,
+                (self.options.detector_base,),
+                self.runtime_namespace(),
+            ),
+        )
+        caller_globals.install_detector(self.class_name, detector_type)
+        return detector_type
+
+
 DetectorNamespaceValue: TypeAlias = (
-    str
-    | int
-    | FindingSpec
-    | CandidateFindingRenderer[CandidateItemT]
-    | DetectorCollector[CandidateItemT]
-    | SourceModuleCandidateCollector[CandidateItemT]
-    | type[CandidateItemT]
+    str | int | DetectorDeclaration[CandidateItemT] | type[IssueDetector]
 )
 
 
@@ -2163,66 +2321,11 @@ class DetectorModuleNamespace(Generic[CandidateItemT]):
         self.values[class_name] = detector_type
 
 
-@dataclass(frozen=True)
-class DetectorDeclaration(Generic[CandidateItemT]):
-    candidate_type: type[CandidateItemT]
-    finding_spec: FindingSpec
-    finding_renderer: CandidateFindingRenderer[CandidateItemT]
-    options: DetectorDeclarationOptions[CandidateItemT] = (
-        _DEFAULT_DETECTOR_DECLARATION_OPTIONS
-    )
-
-    @property
-    def class_name(self) -> str:
-        return self.options.detector_name or _detector_name_from_candidate_type(
-            self.candidate_type
-        )
-
-    @classmethod
-    def required_namespace_field_names(cls) -> tuple[str, ...]:
-        return ("finding_spec", "finding_renderer")
-
-    def namespace(
-        self, module_name: str, firstlineno: int
-    ) -> dict[str, DetectorNamespaceValue[CandidateItemT]]:
-        namespace: dict[str, DetectorNamespaceValue[CandidateItemT]] = {
-            "__module__": module_name,
-            "__firstlineno__": firstlineno,
-            "candidate_type": self.candidate_type,
-            "finding_spec": self.finding_spec,
-            "finding_renderer": self.finding_renderer,
-        }
-        if self.options.candidate_collector is not None:
-            namespace["candidate_collector"] = self.options.candidate_collector
-        if self.options.source_candidate_collector is not None:
-            namespace["source_candidate_collector"] = (
-                self.options.source_candidate_collector
-            )
-        return namespace
-
-    def install(
-        self,
-        caller_globals: DetectorModuleNamespace[CandidateItemT],
-        firstlineno: int,
-    ) -> type[IssueDetector]:
-        detector_type = cast(
-            type[IssueDetector],
-            type(
-                self.class_name,
-                (self.options.detector_base,),
-                self.namespace(caller_globals.module_name, firstlineno),
-            ),
-        )
-        caller_globals.install_detector(self.class_name, detector_type)
-        return detector_type
-
-
 def _declare_module_detector_in(
     caller_globals: DetectorModuleNamespace[CandidateItemT],
-    firstlineno: int,
     declaration: DetectorDeclaration[CandidateItemT],
 ) -> type[IssueDetector]:
-    return declaration.install(caller_globals, firstlineno)
+    return declaration.install(caller_globals)
 
 
 def declare_module_detector(
@@ -2235,13 +2338,16 @@ def declare_module_detector(
     caller = None if frame is None else frame.f_back
     if caller is None:
         raise RuntimeError("declare_module_detector() requires a caller frame")
+    module_namespace = DetectorModuleNamespace(caller.f_globals)
     return _declare_module_detector_in(
-        DetectorModuleNamespace(caller.f_globals),
-        caller.f_lineno,
+        module_namespace,
         DetectorDeclaration(
             candidate_type,
             finding_spec,
             finding_renderer,
+            module_namespace.module_name,
+            caller.f_code.co_filename,
+            caller.f_lineno,
             DetectorDeclarationOptions[CandidateItemT].from_kwargs(detector_options),
         ),
     )
@@ -2280,13 +2386,16 @@ def declare_candidate_rule_detector(
         authority_evidence=authority_evidence,
     )
     try:
+        module_namespace = DetectorModuleNamespace(helper_frame.f_globals)
         return _declare_module_detector_in(
-            DetectorModuleNamespace(helper_frame.f_globals),
-            helper_frame.f_lineno,
+            module_namespace,
             DetectorDeclaration(
                 candidate_type,
                 finding_spec,
                 renderer,
+                module_namespace.module_name,
+                helper_frame.f_code.co_filename,
+                helper_frame.f_lineno,
                 DetectorDeclarationOptions[CandidateItemT].from_kwargs(
                     detector_options
                 ),

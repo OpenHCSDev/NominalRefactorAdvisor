@@ -4335,7 +4335,7 @@ def _declarative_detector_class_candidates(
             )
         )
         assignment_names = _class_assignment_names(node)
-        required_assignment_names = DetectorDeclaration.required_namespace_field_names()
+        required_assignment_names = DetectorDeclaration.required_class_shell_field_names()
         if base_part is None or not set(required_assignment_names).issubset(
             assignment_names
         ):

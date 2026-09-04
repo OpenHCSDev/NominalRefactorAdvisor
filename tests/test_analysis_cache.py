@@ -5896,7 +5896,7 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
     for detector_type, candidate_type in detector_candidate_pairs:
         detector = detector_type()
         compact_candidates = context.candidates_for(candidate_type)
-        assert detector_type.candidate_type is candidate_type
+        assert detector_type.required_candidate_type() is candidate_type
         assert detector._candidate_items(list(modules), config) == compact_candidates
         assert detector._findings_from_compact_context(
             projections, context, config
