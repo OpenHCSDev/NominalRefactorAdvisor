@@ -67,10 +67,7 @@ from .calibration import (
 )
 from .codemod import (
     CodemodJsonReport,
-    CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
     CodemodPlanDocument,
-    CodemodPlanPreflightReport,
     CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodPlanSequenceSimulation,
@@ -146,6 +143,12 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
+from .codemod_preflight import (
+    CodemodOperationPreflightError,
+    CodemodOperationPreflightReport,
+    CodemodPlanPreflightReport,
+)
+
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {

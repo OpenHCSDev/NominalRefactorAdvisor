@@ -31,6 +31,7 @@ import nominal_refactor_advisor.codemod_imports as codemod_imports_module
 import nominal_refactor_advisor.codemod_module_declarations as codemod_module_declarations_module
 import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
 import nominal_refactor_advisor.codemod_paths as codemod_paths_module
+import nominal_refactor_advisor.codemod_preflight as codemod_preflight_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
 import nominal_refactor_advisor.detectors._structural as structural_detectors
@@ -136,6 +137,7 @@ from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardTargetScope,
+    AuthorityClaimResolutionPreflightDetail,
     AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
     AddClassBaseOperation,
@@ -201,6 +203,7 @@ from nominal_refactor_advisor.codemod import (
     MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation,
     ModuleImportScope,
+    ModuleMoveDependencyReport,
     ModuleMoveObstacleKind,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
@@ -223,6 +226,8 @@ from nominal_refactor_advisor.codemod import (
     SourceEditOrigin,
     TupleDictReturnNominalizationConcept,
     SourceRewriteTarget,
+    SourceRewriteTargetPreflightDetail,
+    SourceCreationConflictPreflightDetail,
     SourceRewriteContributor,
     SourceTextSpanReplacement,
     SourceTextGeometry,
@@ -865,6 +870,8 @@ def test_replace_target_reproves_declaration_identity(
         operation.source_edits(snapshot)
 
     assert error.value.report.operation == ReplaceTargetOperation.operation_key()
+    assert isinstance(error.value.report.detail, SourceRewriteTargetPreflightDetail)
+    assert error.value.report.detail.target == operation.target
     assert error.value.report.details == {
         "target": {
             "target_id": None,
@@ -1170,6 +1177,10 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
     assert error.value.report.details["existing_source_paths"] == (
         module_path.as_posix(),
     )
+    assert isinstance(
+        error.value.report.detail,
+        SourceCreationConflictPreflightDetail,
+    )
     assert module_path.read_text() == original_source
 
 
@@ -1202,6 +1213,10 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
     assert error.value.report.details["duplicate_source_paths"] == (
         generated_path.as_posix(),
     )
+    assert isinstance(
+        error.value.report.detail,
+        SourceCreationConflictPreflightDetail,
+    )
     assert generated_path.exists() is False
 
 
@@ -1233,6 +1248,10 @@ def test_codemod_preflight_accepts_source_backed_authority_claim(
     assert preflight.preflight_failed is False
     assert preflight.reports[0].operation == "authority_claims"
     assert preflight.reports[0].status.value == "passed"
+    assert isinstance(
+        preflight.reports[0].detail,
+        AuthorityClaimResolutionPreflightDetail,
+    )
     resolution = preflight.reports[0].details["resolutions"][0]
     assert resolution["status"] == "resolved"
     assert resolution["proof_edges"][0]["edge_kind"] == "source_index_target"
@@ -6775,10 +6794,16 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
     )
 
     report = operation.dependency_report(snapshot)
+    preflight = operation.preflight_reports(snapshot)
     simulation = RefactorRecipe("preserve-explicit-reexport").with_operation(
         operation
     ).simulate(snapshot)
 
+    assert isinstance(preflight[0].detail, ModuleMoveDependencyReport)
+    assert preflight[0].detail.moved_symbol_names == report.moved_symbol_names
+    assert preflight[0].detail.imported_dependency_names == (
+        report.imported_dependency_names
+    )
     assert report.source_import_removal_names == ()
     assert simulation.simulation.rewritten_sources[source_path.as_posix()].startswith(
         "from .shared import Shared as Shared\n"
@@ -25185,6 +25210,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
         codemod_module_declarations_module,
         codemod_module_move_reports_module,
         codemod_paths_module,
+        codemod_preflight_module,
         codemod_semantics_module,
         codemod_source_edits_module,
     ),

@@ -12,7 +12,7 @@ from .codemod_import_bindings import (
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
-from .codemod_payload import JsonObject
+from .codemod_payload import CodemodJsonReport, JsonObject
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ class ModuleMoveObstacle:
 
 
 @dataclass(frozen=True)
-class ModuleMoveDependencyReport:
+class ModuleMoveDependencyReport(CodemodJsonReport):
     """Dependency closure report for a multi-symbol module move."""
 
     source_path: str

@@ -254,6 +254,9 @@ them, and are not published as compatibility aliases.
 .. automodule:: nominal_refactor_advisor.codemod_semantics
    :members: RewriteOperation, CodemodSourceDependencyScope, CodemodBackend, FindingRecipePlanningHorizon, FindingRecipeSynthesisStatus, CodemodPreflightStatus
 
+.. automodule:: nominal_refactor_advisor.codemod_preflight
+   :members: CodemodOperationPreflightReport, CodemodOperationPreflightError, CodemodPlanPreflightReport
+
 .. automodule:: nominal_refactor_advisor.codemod_import_scopes
    :members: ModuleImportScope, TypeCheckingGuardReference, TypeCheckingGuardProjection
 

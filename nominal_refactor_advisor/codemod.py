@@ -328,6 +328,11 @@ from .codemod_declaration_source import (
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
     PythonExpressionSourceFormatter as PythonExpressionSourceFormatter,
 )
+from .codemod_preflight import (
+    CodemodOperationPreflightError as CodemodOperationPreflightError,
+    CodemodOperationPreflightReport as CodemodOperationPreflightReport,
+    CodemodPlanPreflightReport as CodemodPlanPreflightReport,
+)
 
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
@@ -600,6 +605,61 @@ class AuthorityClaimPreflightFinding:
         )
 
 
+@dataclass(frozen=True)
+class SourceCreationConflictPreflightDetail(CodemodPayloadRecord):
+    """Conflicting source paths retained as typed failed-preflight evidence."""
+
+    duplicate_source_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    existing_source_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+
+
+@dataclass(frozen=True)
+class AuthorityClaimContextPreflightDetail(CodemodPayloadRecord):
+    """Recipe identity for an authority check lacking source context."""
+
+    recipe_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+
+@dataclass(frozen=True)
+class AuthorityClaimDeclarationPreflightDetail(CodemodJsonReport):
+    """Typed nesting of a failed declaration-derived authority check."""
+
+    recipe_id: str
+    declaration_preflight: CodemodOperationPreflightReport
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "recipe_id": self.recipe_id,
+                "declaration_preflight": self.declaration_preflight.to_dict(),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class AuthorityClaimResolutionPreflightDetail(CodemodJsonReport):
+    """Typed authority resolutions and findings retained until JSON emission."""
+
+    recipe_id: str
+    resolutions: tuple[AuthorityClaimResolution, ...]
+    findings: tuple[RefactorFinding, ...]
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "recipe_id": self.recipe_id,
+                "resolutions": tuple(
+                    resolution.to_dict() for resolution in self.resolutions
+                ),
+                "findings": tuple(finding.to_dict() for finding in self.findings),
+            }
+        )
+
+
 class AstTargetAuthorityClaim:
     """Authority claim derived from a concrete source-index AST target."""
 
@@ -632,60 +692,6 @@ class PlannedSourceRewrite(SourceRewriteDelta):
     """One planned source rewrite against an AST target digest."""
 
     target_id: str
-
-
-@dataclass(frozen=True)
-class CodemodOperationPreflightReport:
-    """Machine-readable failed preflight for one codemod operation."""
-
-    operation: str
-    status: CodemodPreflightStatus
-    message: str
-    details: JsonObject
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "operation": self.operation,
-            "status": self.status.value,
-            "message": self.message,
-            "details": self.details,
-        }
-
-
-class CodemodOperationPreflightError(ValueError):
-    """Raised when a codemod operation can report why it is not executable yet."""
-
-    def __init__(self, report: CodemodOperationPreflightReport) -> None:
-        super().__init__(report.message)
-        self.report = report
-
-
-@dataclass(frozen=True)
-class CodemodPlanPreflightReport:
-    """Preflight results for one executable codemod plan document."""
-
-    reports: tuple[CodemodOperationPreflightReport, ...]
-
-    @property
-    def is_clean(self) -> bool:
-        return all(report.status.is_passed for report in self.reports)
-
-    @property
-    def preflight_failed(self) -> bool:
-        return not self.is_clean
-
-    def require_clean(self) -> None:
-        for report in self.reports:
-            if report.status.is_failed:
-                raise CodemodOperationPreflightError(report)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "preflight_failed": self.preflight_failed,
-            "is_clean": self.is_clean,
-            "report_count": len(self.reports),
-            "reports": tuple(report.to_dict() for report in self.reports),
-        }
 
 
 @dataclass(frozen=True)
@@ -1038,6 +1044,15 @@ class SourceRewriteTarget(
             "Source rewrite target did not resolve to exactly one eligible "
             "source-index target"
         )
+
+
+@dataclass(frozen=True)
+class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
+    """Typed source target retained by a failed operation preflight."""
+
+    target: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1628,10 +1643,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                     operation=conflicting_creation.operation_key,
                     status=CodemodPreflightStatus.FAILED,
                     message="Source creation requires one authority per new path",
-                    details={
-                        "duplicate_source_paths": duplicate_paths,
-                        "existing_source_paths": existing_paths,
-                    },
+                    detail=SourceCreationConflictPreflightDetail(
+                        duplicate_source_paths=duplicate_paths,
+                        existing_source_paths=existing_paths,
+                    ),
                 )
             )
         return self.with_virtual_sources(
@@ -2790,7 +2805,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
                 operation=self.operation_key(),
                 status=CodemodPreflightStatus.FAILED,
                 message=message,
-                details={"target": self.target.to_dict()},
+                detail=SourceRewriteTargetPreflightDetail(self.target),
             )
         )
 
@@ -8156,7 +8171,7 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
                 operation=self.operation_key(),
                 status=status,
                 message=message,
-                details=dependency_report.to_dict(),
+                detail=dependency_report,
             ),
         )
 
@@ -10522,10 +10537,10 @@ class RefactorRecipe(CodemodPayloadRecord):
                 operation=AuthorityClaimPayload.field_name,
                 status=CodemodPreflightStatus.FAILED,
                 message=error.report.message,
-                details={
-                    "recipe_id": self.recipe_id,
-                    "declaration_preflight": error.report.to_dict(),
-                },
+                detail=AuthorityClaimDeclarationPreflightDetail(
+                    recipe_id=self.recipe_id,
+                    declaration_preflight=error.report,
+                ),
             )
         claims = tuple(dict.fromkeys((*self.authority_claims, *declared_claims)))
         if not claims:
@@ -10538,7 +10553,7 @@ class RefactorRecipe(CodemodPayloadRecord):
                     "generated recipe authority claims require source-index "
                     "preflight context"
                 ),
-                details={"recipe_id": self.recipe_id},
+                detail=AuthorityClaimContextPreflightDetail(self.recipe_id),
             )
         resolver = AuthorityClaimSourceIndexResolver(
             context.source_index,
@@ -10560,19 +10575,17 @@ class RefactorRecipe(CodemodPayloadRecord):
                 if failed_resolutions
                 else "authority claims resolved"
             ),
-            details={
-                "recipe_id": self.recipe_id,
-                "resolutions": tuple(
-                    resolution.to_dict() for resolution in resolutions
-                ),
-                "findings": tuple(
+            detail=AuthorityClaimResolutionPreflightDetail(
+                recipe_id=self.recipe_id,
+                resolutions=resolutions,
+                findings=tuple(
                     AuthorityClaimPreflightFinding.unresolved_resolution(
                         self.recipe_id,
                         resolution,
-                    ).to_dict()
+                    )
                     for resolution in failed_resolutions
                 ),
-            },
+            ),
         )
 
     def declared_authority_claims(
