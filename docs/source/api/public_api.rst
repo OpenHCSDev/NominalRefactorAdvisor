@@ -63,8 +63,10 @@ object decoding and unknown-field rejection from the same nominal declaration;
 projection while each polymorphic family resolves its own nominal registry.
 ``PayloadRecordValueCodec`` and ``PayloadRecordArrayValueCodec`` reuse those
 declarations for nested records, including proof-carrying ``AuthorityClaim``
-values.  No parallel schema, payload carrier, or boundary-role catalogue is
-maintained.
+values.  ``RecipeCallReplacement`` composes the target-reference and exact
+source-transformation declarations through nominal inheritance, so its flat
+payload does not require a second old/new source schema.  No parallel schema,
+payload carrier, or boundary-role catalogue is maintained.
 ``CodemodPlanRoot`` owns the document-or-sequence input sum.  Exact document
 and sequence declarations reject each other's fields; each variant provides
 its own execution-sequence projection without making the sequence parser a
@@ -112,11 +114,12 @@ the targeted declaration supplies its function name and sync or async kind.
 Whole-target replacements parse exactly one class or function declaration and
 re-prove its concrete declaration kind and name against the current indexed
 target before producing a physical edit.
-``PatchTargetOperation`` applies an ordered sequence of exact old/new source
-transformations to one current indexed target.  Each transformation sees the
-result of the preceding transformation, and the complete patch compiles to one
-revision-checked physical rewrite.  A missing or ambiguous intermediate match
-fails preflight without applying a partial patch.
+``SourceTextPatch`` owns a non-empty ordered sequence of exact old/new source
+transformations and applies each transformation to the preceding result.
+``PatchTargetOperation`` composes that declaration with the source-reproved
+target operation axis and compiles the result to one revision-checked physical
+rewrite.  A missing or ambiguous intermediate match fails preflight without
+applying a partial patch.
 Direct class-base mutations share one current-source proof and edit shell; the
 nominal add and remove operation leaves own only their respective header
 transformation.  Semantic no-ops preserve the original header source.
@@ -330,7 +333,7 @@ them, and are not published as compatibility aliases.
    :members: DeclarationDependencyUse, DeclarationDependencyProjection, FunctionBindingProjection
 
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
-   :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
+   :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
 .. automodule:: nominal_refactor_advisor.codemod_declaration_source
    :members: PythonExpressionSourceFormatter, ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, FunctionSignatureSourceAuthority

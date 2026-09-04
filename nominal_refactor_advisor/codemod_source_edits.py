@@ -34,6 +34,7 @@ from .codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
     EmptyDefaultStringPayloadValueCodec,
+    PayloadRecordArrayValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -757,6 +758,32 @@ class SourceTextReplacement(CodemodPayloadRecord):
         return source.index(self.old_source)
 
 
+@dataclass(frozen=True, kw_only=True)
+class SourceTextPatch:
+    """Non-empty ordered exact transformations over one source surface."""
+
+    replacements: tuple[SourceTextReplacement, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceTextReplacement)
+    )
+
+    def __post_init__(self) -> None:
+        if not self.replacements:
+            raise ValueError("Source text patch requires at least one replacement")
+
+    def apply(self, source: str, *, subject: str) -> str:
+        """Apply every exact transformation to the preceding result."""
+
+        replacement_source = source
+        for replacement in self.replacements:
+            replacement_source = replacement.apply_exactly_once(
+                replacement_source,
+                subject=subject,
+            )
+        if replacement_source == source:
+            raise ValueError("Source text patch leaves its source unchanged")
+        return replacement_source
+
+
 @dataclass(frozen=True)
 class SourceNodeSpan:
     """AST statement span projected into source line coordinates."""
@@ -1139,15 +1166,10 @@ class SourceTargetEditor:
 
     def exact_text_replacement(
         self,
-        old_source: str,
-        new_source: str,
+        replacement: SourceTextReplacement,
         *,
         rationale: str = "",
     ) -> SourceSpanEdit:
-        replacement = SourceTextReplacement(
-            old_source=old_source,
-            new_source=new_source,
-        )
         target_source = "".join(self.target_lines)
         start_offset = replacement.exact_match_offset(
             target_source, subject=self.target.qualname
@@ -1176,24 +1198,16 @@ class SourceTargetEditor:
             or f"Replace source text inside {self.target.qualname!r}.",
         )
 
-    def exact_text_replacements(
+    def exact_text_patch(
         self,
-        replacements: Iterable[SourceTextReplacement],
+        patch: SourceTextPatch,
         *,
         rationale: str = "",
     ) -> PhysicalSourceEdit:
         """Apply ordered exact transformations as one target-level rewrite."""
 
-        replacement_tuple = tuple(replacements)
-        if not replacement_tuple:
-            raise ValueError("Target patch requires at least one source replacement")
         target_source = "".join(self.target_lines)
-        replacement_source = target_source
-        for replacement in replacement_tuple:
-            replacement_source = replacement.apply_exactly_once(
-                replacement_source,
-                subject=self.target.qualname,
-            )
+        replacement_source = patch.apply(target_source, subject=self.target.qualname)
         return self.minimal_replacement_edit(
             replacement_source,
             rationale=rationale

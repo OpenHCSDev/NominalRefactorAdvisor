@@ -237,6 +237,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTargetPreflightDetail,
     SourceCreationConflictPreflightDetail,
     SourceRewriteContributor,
+    SourceTextPatch,
     SourceTextReplacement,
     SourceTextSpanReplacement,
     SourceTextGeometry,
@@ -3082,6 +3083,8 @@ def test_patch_target_operation_chains_dependent_exact_transformations(
         "        return Formatter.normalize(value)\n"
     )
     assert RefactorRecipeOperation.from_json_value(payload) == operation
+    assert issubclass(PatchTargetOperation, SourceTextPatch)
+    assert "replacements" not in PatchTargetOperation.__dict__
     assert payload["replacements"] == (
         {
             "old_source": "legacy(value)",
@@ -9034,7 +9037,22 @@ def test_refactor_recipe_extracts_authority(
     operation = recipe.operations[0]
     assert isinstance(operation, ExtractAuthorityOperation)
     payload = json_report_object(operation)
+    call_replacement = operation.call_replacements[0]
+    call_replacement_payload = payload["call_replacements"][0]
     assert payload["authority_kind"] == "class_family"
+    assert call_replacement_payload == {
+        "old_source": "old_helper(value)",
+        "new_source": "HelperAuthority.normalize(value)",
+        "target_id": None,
+        "file_path": module_path.as_posix(),
+        "target_qualname": "Parser.parse",
+    }
+    assert RecipeCallReplacement.from_json_value(call_replacement_payload) == (
+        call_replacement
+    )
+    assert issubclass(RecipeCallReplacement, SourceTextReplacement)
+    assert "old_source" not in RecipeCallReplacement.__dict__
+    assert "new_source" not in RecipeCallReplacement.__dict__
     assert "authority_claim" not in payload
     assert "claimed_symbol" not in payload
     assert "qualname" not in payload

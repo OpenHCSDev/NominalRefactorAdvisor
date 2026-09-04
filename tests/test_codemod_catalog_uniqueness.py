@@ -2,23 +2,17 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, fields
+from typing import TypeVar
 
 import pytest
 
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardConstraint,
-    ArchitectureGuardRule,
-    ArchitectureGuardTargetScope,
-    CodemodPlanDocument,
-    CodemodPlanSequence,
     CodemodTargetSelector,
-    RefactorRecipe,
     RefactorRecipeOperation,
-    RecipeCallReplacement,
     SelectionCountExpectation,
     SourceEditOrigin,
     SourceRewriteTarget,
-    SourceRewriteContributor,
 )
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
@@ -29,7 +23,8 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.semantic_descent import AuthorityClaim
+
+DeclarationT = TypeVar("DeclarationT")
 
 
 def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
@@ -40,14 +35,18 @@ def _binding(field_name: str, constructor_argument_name: str) -> PayloadBinding:
     )
 
 
-def _concrete_operation_descendants() -> frozenset[type[RefactorRecipeOperation]]:
-    descendants: set[type[RefactorRecipeOperation]] = set()
-    pending = list(RefactorRecipeOperation.__subclasses__())
+def _production_concrete_descendants(
+    declaration_type: type[DeclarationT],
+) -> frozenset[type[DeclarationT]]:
+    descendants: set[type[DeclarationT]] = set()
+    pending = list(declaration_type.__subclasses__())
     while pending:
-        operation_type = pending.pop()
-        pending.extend(operation_type.__subclasses__())
-        if not inspect.isabstract(operation_type):
-            descendants.add(operation_type)
+        descendant_type = pending.pop()
+        pending.extend(descendant_type.__subclasses__())
+        if descendant_type.__module__.startswith(
+            "nominal_refactor_advisor"
+        ) and not inspect.isabstract(descendant_type):
+            descendants.add(descendant_type)
     return frozenset(descendants)
 
 
@@ -161,7 +160,7 @@ def test_architecture_guard_constraint_registry_owns_the_complete_family() -> No
 
 def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> None:
     registered_operations = dict(RefactorRecipeOperation.__registry__.items())
-    concrete_operation_types = _concrete_operation_descendants()
+    concrete_operation_types = _production_concrete_descendants(RefactorRecipeOperation)
     operation_keys = {
         operation_type: operation_type.operation_key()
         for operation_type in concrete_operation_types
@@ -232,75 +231,17 @@ def test_selector_payload_derivation_rejects_unbound_constructor_fields() -> Non
 
 
 def test_payload_records_own_their_wire_schema() -> None:
-    expected_binding_names = {
-        AuthorityClaim: (
-            ("claimed_symbol", "claimed_symbol"),
-            ("authority_kind", "authority_kind"),
-            ("file_path", "file_path"),
-            ("qualname", "qualname"),
-            ("authority_id", "authority_id"),
-        ),
-        SourceRewriteContributor: (
-            ("recipe_id", "recipe_id"),
-            ("plan_item_declaration", "plan_item_declaration"),
-            ("plan_item_index", "plan_item_index"),
-            ("file_path", "file_path"),
-            ("line", "line"),
-            ("end_line", "end_line"),
-            ("source_hash", "source_hash"),
-        ),
-        ArchitectureGuardRule: (
-            ("rule_id", "rule_id"),
-            ("constraints", "constraints"),
-            ("scopes", "scopes"),
-            ("reason", "reason"),
-        ),
-        ArchitectureGuardTargetScope: (
-            ("file_path", "file_path"),
-            ("target_qualname", "target_qualname"),
-        ),
-        RecipeCallReplacement: (
-            ("target", "target"),
-            ("old_source", "old_source"),
-            ("new_source", "new_source"),
-        ),
-        RefactorRecipe: (
-            ("recipe_id", "recipe_id"),
-            ("operations", "operations"),
-            ("architecture_guards", "guard_suite"),
-            ("reason", "reason"),
-            ("authority_claims", "authority_claims"),
-        ),
-        CodemodPlanDocument: (
-            ("recipes", "recipes"),
-            ("architecture_guards", "guard_suite"),
-        ),
-        CodemodPlanSequence: (("stages", "documents"),),
-    }
+    record_types = _production_concrete_descendants(CodemodPayloadRecord)
 
-    assert issubclass(RefactorRecipeOperation, CodemodPayloadRecord)
-    assert issubclass(SourceRewriteContributor, CodemodPayloadRecord)
-    for record_type, binding_names in expected_binding_names.items():
-        assert issubclass(record_type, CodemodPayloadRecord)
+    assert record_types
+    for record_type in record_types:
         binding_set = record_type.payload_bindings()
-        assert (
-            tuple(
-                (binding.field_name, binding.constructor_argument_name)
-                for binding in binding_set
-            )
-            == binding_names
-        )
+        assert frozenset(
+            binding.constructor_argument_name for binding in binding_set
+        ) == frozenset(record_field.name for record_field in fields(record_type))
         assert record_type.payload_bindings() is binding_set
         assert "payload_bindings" not in record_type.__dict__
         assert "to_dict" not in record_type.__dict__
-
-    assert RecipeCallReplacement.payload_bindings().payload_field_names == (
-        "target_id",
-        "file_path",
-        "target_qualname",
-        "old_source",
-        "new_source",
-    )
 
 
 def test_payload_helpers_derive_their_wire_schema_from_fields() -> None:

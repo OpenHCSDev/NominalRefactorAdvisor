@@ -415,6 +415,9 @@ from .codemod_source_edits import (
     SourceTextGeometry as SourceTextGeometry,
 )
 from .codemod_source_edits import (
+    SourceTextPatch as SourceTextPatch,
+)
+from .codemod_source_edits import (
     SourceTextReplacement as SourceTextReplacement,
 )
 from .codemod_source_edits import (
@@ -1404,12 +1407,9 @@ def _call_surface_name(node: ast.AST) -> str:
     return ""
 
 
-@dataclass(frozen=True)
-class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
+@dataclass(frozen=True, kw_only=True)
+class RecipeCallReplacement(SourceRewriteTargetReference, SourceTextReplacement):
     """One exact call-site replacement inside an authority extraction recipe."""
-
-    old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    new_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def line_replacement(
         self,
@@ -1423,8 +1423,7 @@ class RecipeCallReplacement(SourceRewriteTargetReference, CodemodPayloadRecord):
             context.sources_by_file_path,
             target_digest,
         ).exact_text_replacement(
-            self.old_source,
-            self.new_source,
+            self,
             rationale=rationale
             or f"Replace source text inside {target_digest.qualname!r}.",
         )
@@ -1976,16 +1975,8 @@ class ClassBaseMutationOperationABC(SourceReprovedOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PatchTargetOperation(SourceReprovedOperation):
+class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
     """Compile ordered exact transformations into one current-target rewrite."""
-
-    replacements: tuple[SourceTextReplacement, ...] = codemod_payload_field(
-        PayloadRecordArrayValueCodec(SourceTextReplacement)
-    )
-
-    def __post_init__(self) -> None:
-        if not self.replacements:
-            raise ValueError("Target patch requires at least one source replacement")
 
     def source_edits_from_snapshot(
         self,
@@ -1996,8 +1987,8 @@ class PatchTargetOperation(SourceReprovedOperation):
             SourceTargetEditor(
                 snapshot.sources_by_file_path,
                 target_digest,
-            ).exact_text_replacements(
-                self.replacements,
+            ).exact_text_patch(
+                self,
                 rationale=self.rationale
                 or f"Patch exact source text inside {target_digest.qualname!r}.",
             ),
@@ -17591,11 +17582,7 @@ class SourceDerivedDataclassProjectionOperation(
             target=SourceRewriteTarget(
                 target_id=derivation.projection.target.target_id,
             ),
-            replacements=(
-                SourceTextReplacement(
-                    old_source=replacement.old_source, new_source=replacement.new_source
-                ),
-            ),
+            replacements=(replacement,),
             rationale=("Replace mirrored fields with an authority-owned projection."),
         ).source_edits(snapshot)
         return (*edits, *replacement_edits)
