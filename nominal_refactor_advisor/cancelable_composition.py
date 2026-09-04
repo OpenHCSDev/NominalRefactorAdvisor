@@ -349,7 +349,7 @@ class ProductForwardFieldProjection:
         argument: ast.expr,
     ) -> "ProductForwardFieldProjection | None":
         return (
-            Maybe.of(AstExpressionProjection(argument).attribute_projection())
+            Maybe.of(AstExpressionProjection.attribute_projection(argument))
             .project(lambda projected: self.with_projected_field(*projected))
             .unwrap_or_none()
         )
@@ -361,9 +361,9 @@ class ProductForwardFieldProjection:
         return (
             Maybe.of(keyword.arg)
             .combine(
-                lambda _keyword_name: AstExpressionProjection(
+                lambda _keyword_name: AstExpressionProjection.attribute_projection(
                     keyword.value
-                ).attribute_projection(),
+                ),
                 lambda keyword_name, projected: (keyword_name, *projected),
             )
             .filter(
@@ -419,7 +419,7 @@ class ProductForwardCallAuthority:
 
     def product_forward(self) -> _ProductForward | None:
         return (
-            Maybe.of(AstExpressionProjection(self.call.func).qualified_name())
+            Maybe.of(AstExpressionProjection.qualified_name(self.call.func))
             .combine(
                 lambda carrier_name: self.field_projection(),
                 lambda carrier_name, projection: projection.product_forward(

@@ -21,6 +21,7 @@ from typing import Callable, Generic, TypeAlias, TypeVar, cast
 from tree_sitter import Node
 
 from ..ast_tools import (
+    AstExpressionProjection,
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
@@ -4303,7 +4304,7 @@ def _construction_shape(function: _RuntimeFunctionNode) -> str | None:
     call = _single_return_call(function)
     if call is None:
         return None
-    callee_name = _call_name(call.func)
+    callee_name = AstExpressionProjection.terminal_name(call.func)
     if callee_name is None:
         return None
     keyword_names = sorted_tuple(

@@ -310,7 +310,6 @@ from .codemod_architecture_guards import (
     ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
     ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
     ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
-    _call_name as _call_name,
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
 from .cancelable_composition import (
@@ -1435,7 +1434,7 @@ class PositionalCallNameIndex:
             call_name
             for node in ast.walk(module_node)
             if isinstance(node, ast.Call) and node.args
-            for call_name in (_call_name(node.func),)
+            for call_name in (AstExpressionProjection.qualified_name(node.func),)
             if call_name is not None
         )
 
@@ -14559,9 +14558,11 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         annotation_node = DataclassAuthorityReferenceProof.annotation_reference(
             annotation_node
         )
-        if not isinstance(annotation_node, ast.Subscript) or _terminal_name(
-            annotation_node.value
-        ) not in {"tuple", "Tuple"}:
+        if (
+            not isinstance(annotation_node, ast.Subscript)
+            or AstExpressionProjection.terminal_name(annotation_node.value)
+            not in {"tuple", "Tuple"}
+        ):
             return None
         slice_node = annotation_node.slice
         if not isinstance(slice_node, ast.Tuple) or len(slice_node.elts) != 2:
@@ -15456,7 +15457,8 @@ class AutoRegisterMroOrderingDerivation:
                 base_names = {
                     base_name
                     for base in target.node.bases
-                    if (base_name := _terminal_name(base)) is not None
+                    if (base_name := AstExpressionProjection.terminal_name(base))
+                    is not None
                 }
                 if family_names.isdisjoint(base_names):
                     continue
@@ -15492,7 +15494,7 @@ class AutoRegisterMroOrderingDerivation:
                 )
             ):
                 return None
-            base_name = _terminal_name(target.node.bases[0])
+            base_name = AstExpressionProjection.terminal_name(target.node.bases[0])
             if base_name not in family_names:
                 return None
             child_names_by_parent[base_name].add(class_name)
@@ -15584,7 +15586,8 @@ class AutoRegisterMroOrderingDerivation:
             for class_name, target in class_nodes_by_name.items()
             if class_name in annotation_names
             and PYTHON_ENUM_BASE_AUTHORITY.matches_any(
-                _terminal_name(base) for base in target.node.bases
+                AstExpressionProjection.terminal_name(base)
+                for base in target.node.bases
             )
         )
         return enum_declarations[0] if len(enum_declarations) == 1 else None
@@ -15628,7 +15631,8 @@ class AutoRegisterMroOrderingDerivation:
     @staticmethod
     def has_plain_root_bases(root_node: ast.ClassDef) -> bool:
         return all(
-            _terminal_name(base) in {"ABC", "Generic", "object"}
+            AstExpressionProjection.terminal_name(base)
+            in {"ABC", "Generic", "object"}
             for base in root_node.bases
         ) and not any(
             isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -17127,7 +17131,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
     def decorator_name(cls, node: ast.expr) -> str | None:
         if isinstance(node, ast.Call):
             return cls.decorator_name(node.func)
-        return _terminal_name(node)
+        return AstExpressionProjection.terminal_name(node)
 
     @staticmethod
     def field_names_for_node(node: ast.ClassDef) -> tuple[str, ...]:
@@ -17220,7 +17224,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
             and isinstance(statement.target, ast.Name)
             and statement.target.id in self.field_names
             and isinstance(statement.value, ast.Call)
-            and _terminal_name(statement.value.func) == "field"
+            and AstExpressionProjection.terminal_name(statement.value.func) == "field"
             and self.call_keyword_bool(statement.value, "init", default=True)
             is not True
             for statement in self.node.body
@@ -17551,7 +17555,7 @@ class DataclassInstanceFieldProjection:
             for statement in authority.node.body
             if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
             and any(
-                _terminal_name(decorator) == "classmethod"
+                AstExpressionProjection.terminal_name(decorator) == "classmethod"
                 for decorator in statement.decorator_list
             )
             and statement.returns is not None
@@ -21664,59 +21668,4 @@ class PlannedRewriteSelectionAuthority:
             and first.line <= second.end_line
             and second.line <= first.end_line
         )
-
-
-def _name_id(node: ast.expr) -> str | None:
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def _terminal_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-@dataclass(frozen=True)
-class ContainingClassTargetBoundaryPolicy:
-    """Resolve the nominal class target that owns one source-index member target."""
-
-    source_index: SourceIndex
-
-    def target_for(self, target_id: str) -> AstTargetDigest | None:
-        return (
-            Maybe.of(self.source_index.target_by_id.get(target_id))
-            .filter(lambda target: "." in target.qualname)
-            .combine(
-                self.class_candidates,
-                lambda _target, candidates: min(
-                    candidates,
-                    key=lambda item: item.end_line - item.line,
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-    def class_candidates(
-        self,
-        target: AstTargetDigest,
-    ) -> tuple[AstTargetDigest, ...] | None:
-        class_qualname = self.class_qualname(target)
-        if target.file_path not in self.source_index.targets_by_file:
-            return None
-        candidates = tuple(
-            candidate
-            for candidate in self.source_index.targets_by_file[target.file_path]
-            if candidate.is_class
-            and candidate.qualname == class_qualname
-            and candidate.line <= target.line <= candidate.end_line
-        )
-        return candidates or None
-
-    @staticmethod
-    def class_qualname(target: AstTargetDigest) -> str:
-        return target.qualname.rsplit(".", 1)[0]
-
-
 _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef

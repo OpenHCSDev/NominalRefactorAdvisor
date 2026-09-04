@@ -28,18 +28,41 @@ def test_repository_has_no_external_enum_case_recovery() -> None:
     assert findings == [], "\n".join(finding.summary for finding in findings)
 
 
-def test_repository_has_no_function_local_imports() -> None:
+def test_repository_has_no_function_local_imports_or_ast_name_projection_duplicates() -> None:
     package_root = Path(__file__).resolve().parents[1] / "nominal_refactor_advisor"
+    modules = tuple(parse_python_modules(package_root))
     nested_imports = tuple(
         (module.file_path, nested.lineno, ast.unparse(nested))
-        for module in parse_python_modules(package_root)
+        for module in modules
         for function in ast.walk(module.module)
         if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
         for nested in ast.walk(function)
         if isinstance(nested, (ast.Import, ast.ImportFrom))
     )
+    legacy_declaration_names = {
+        "AttributeChainAuthority",
+        "_AstAttributeChainProjection",
+        "_CallNameProjection",
+        "_TerminalNameProjection",
+        "_ast_attribute_chain",
+        "_ast_terminal_name",
+        "_call_name",
+        "_subscript_base_name",
+        "_terminal_name",
+    }
+    competing_declarations = tuple(
+        (module.file_path, declaration.lineno, declaration.name)
+        for module in modules
+        for declaration in ast.walk(module.module)
+        if isinstance(
+            declaration,
+            (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+        )
+        if declaration.name in legacy_declaration_names
+    )
 
     assert nested_imports == ()
+    assert competing_declarations == ()
 
 
 def test_exact_report_demand_behavior_is_owned_by_collected_family_declarations() -> None:

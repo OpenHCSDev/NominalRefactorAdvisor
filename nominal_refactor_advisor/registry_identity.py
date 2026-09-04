@@ -10,6 +10,7 @@ from functools import cached_property
 from typing import TypeVar
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+from .ast_projection import AstExpressionProjection
 
 RegisteredDeclarationT = TypeVar("RegisteredDeclarationT")
 RegisteredValueT = TypeVar("RegisteredValueT")
@@ -82,7 +83,8 @@ class AutoRegisterClassAuthority:
     def uses_autoregister_metaclass(self) -> bool:
         return any(
             keyword.arg == "metaclass"
-            and self.terminal_name(keyword.value) == AUTOREGISTER_META_NAME
+            and AstExpressionProjection.terminal_name(keyword.value)
+            == AUTOREGISTER_META_NAME
             for keyword in self.node.keywords
         )
 
@@ -136,12 +138,4 @@ class AutoRegisterClassAuthority:
             return value.value
         if isinstance(value, ast.Name) and value.id == "DEFAULT_REGISTRY_KEY_ATTRIBUTE":
             return DEFAULT_REGISTRY_KEY_ATTRIBUTE
-        return None
-
-    @staticmethod
-    def terminal_name(node: ast.AST) -> str | None:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
         return None

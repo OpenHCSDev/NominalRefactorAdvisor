@@ -90,6 +90,7 @@ if TYPE_CHECKING:
     from ..semantic_descent import SemanticDescentGraph
 
 from ..ast_tools import (
+    AstExpressionProjection,
     BuilderCallShape,
     BuilderCallShapeFamily,
     ClassMarkerObservation,
@@ -2800,7 +2801,8 @@ def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
         return value
     if (
         isinstance(value, ast.Call)
-        and _call_name(value.func) in {"MappingProxyType", "dict"}
+        and AstExpressionProjection.terminal_name(value.func)
+        in {"MappingProxyType", "dict"}
         and (len(value.args) == 1)
         and isinstance(value.args[0], ast.Dict)
     ):
@@ -2851,7 +2853,7 @@ def _enum_projection_tables(
         for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
             if key is None or item_value is None:
                 break
-            key_chain = _ast_attribute_chain(key)
+            key_chain = AstExpressionProjection.attribute_chain(key)
             if key_chain is None or len(key_chain) != 2:
                 break
             summary = _enum_projection_table_value_summary(item_value)
@@ -3010,7 +3012,8 @@ def _module_builder_call_shapes(
                 continue
             if (
                 callee_names is not None
-                and _ast_terminal_name(node.func) not in callee_names
+                and AstExpressionProjection.terminal_name(node.func)
+                not in callee_names
             ):
                 continue
             shape = _builder_call_shape(
@@ -3254,7 +3257,10 @@ class SyntaxProjectionAuthority:
         for base in node.bases:
             if not isinstance(base, ast.Subscript):
                 continue
-            if _call_name(base.value) != "KeyedNominalFamily":
+            if (
+                AstExpressionProjection.terminal_name(base.value)
+                != "KeyedNominalFamily"
+            ):
                 continue
             type_names = _annotation_type_names(base.slice)
             if type_names:
@@ -3266,7 +3272,7 @@ class SyntaxProjectionAuthority:
     ) -> dict[str, tuple[str, ...]]:
         refs: dict[str, set[str]] = defaultdict(set)
         for subnode in _walk_nodes(node):
-            parts = _ast_attribute_chain(subnode)
+            parts = AstExpressionProjection.attribute_chain(subnode)
             if parts is None or len(parts) < 2:
                 continue
             key_type_name = parts[-2]
@@ -3817,7 +3823,7 @@ def _comprehension_builder_names(
                 ):
                     candidate_calls.append(nested)
         for call in candidate_calls:
-            call_name = _call_name(call.func)
+            call_name = AstExpressionProjection.terminal_name(call.func)
             if call_name is not None:
                 builder_names.add(call_name)
     return sorted_tuple(builder_names)
@@ -3851,7 +3857,10 @@ def _derived_wrapper_spec_shadow_candidates(
         ):
             continue
         entry_calls = cast(tuple[ast.Call, ...], elements)
-        constructor_names = {_call_name(element.func) for element in entry_calls}
+        constructor_names = {
+            AstExpressionProjection.terminal_name(element.func)
+            for element in entry_calls
+        }
         if len(constructor_names) != 1 or None in constructor_names:
             continue
         keyword_maps: list[dict[str, ast.AST]] = []
@@ -4174,7 +4183,10 @@ def _array_protocol_probe_calls(
 ) -> tuple[tuple[int, str], ...]:
     probes: list[tuple[int, str]] = []
     for call in _typed_ast_nodes(module.module, ast.Call):
-        if _ast_terminal_name(call.func) not in _ARRAY_PROTOCOL_PROBE_CALL_NAMES:
+        if (
+            AstExpressionProjection.terminal_name(call.func)
+            not in _ARRAY_PROTOCOL_PROBE_CALL_NAMES
+        ):
             continue
         if len(call.args) < 2:
             continue
@@ -4417,7 +4429,8 @@ def _module_keyed_selection_helper_candidates(
             if not all(
                 (
                     isinstance(element, ast.Call)
-                    and _call_name(element.func) == node.name
+                    and AstExpressionProjection.terminal_name(element.func)
+                    == node.name
                     for element in elements
                 )
             ):
@@ -4443,7 +4456,10 @@ def _module_keyed_selection_helper_candidates(
             continue
         helper_names = {helper.function_name for helper in matching_helpers}
         for call_name, (line, call) in sorted(named_calls.items()):
-            if _call_name(call.func) not in helper_names or not call.args:
+            if (
+                AstExpressionProjection.terminal_name(call.func) not in helper_names
+                or not call.args
+            ):
                 continue
             argument = call.args[0]
             if isinstance(argument, ast.Name) and argument.id in rule_table_names:
@@ -5027,7 +5043,7 @@ def _parallel_registry_projection_family_candidates(
 def _is_classmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
-            _ast_terminal_name(decorator) == "classmethod"
+            AstExpressionProjection.terminal_name(decorator) == "classmethod"
             for decorator in node.decorator_list
         )
     )
@@ -5509,7 +5525,7 @@ def _manual_record_registration_constructor(
     assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
     if assignment_call is None:
         return None
-    if _call_name(assignment_call.func) != "cls":
+    if AstExpressionProjection.terminal_name(assignment_call.func) != "cls":
         return None
     return (
         tuple(
@@ -5624,7 +5640,7 @@ def _returns_constructor_call(
     return_value, _ = returned
     if not isinstance(return_value, ast.Call):
         return False
-    call_name = _call_name(return_value.func)
+    call_name = AstExpressionProjection.terminal_name(return_value.func)
     return call_name in accepted_names
 
 
@@ -5822,7 +5838,7 @@ def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
         return _flatten_union_member_type_names(
             node.left
         ) + _flatten_union_member_type_names(node.right)
-    type_name = _ast_terminal_name(node)
+    type_name = AstExpressionProjection.terminal_name(node)
     if type_name in {None, "None", "NoneType"}:
         return ()
     return (type_name,)
@@ -5861,7 +5877,7 @@ def _resolved_isinstance_type_names(
     concrete_names: list[str] = []
     abstract_names: list[str] = []
     for item in items:
-        type_name = _ast_terminal_name(item)
+        type_name = AstExpressionProjection.terminal_name(item)
         if type_name in {None, "None", "NoneType"}:
             continue
         indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
@@ -5954,7 +5970,9 @@ def _concrete_type_case_function_candidates_for_function(
             isinstance(subnode, ast.Call)
             and len(subnode.args) == 2
             and (not subnode.keywords)
-            and (_ast_terminal_name(subnode.func) == "isinstance")
+            and (
+                AstExpressionProjection.terminal_name(subnode.func) == "isinstance"
+            )
         ):
             continue
         subject_expression = _attribute_family_subject_expression(
@@ -6073,7 +6091,7 @@ def _repeated_concrete_type_case_analysis_candidates(
 def _self_cast_type_name(node: ast.AST) -> str | None:
     if not (
         isinstance(node, ast.Call)
-        and _ast_terminal_name(node.func) == "cast"
+        and AstExpressionProjection.terminal_name(node.func) == "cast"
         and (len(node.args) == 2)
         and (not node.keywords)
         and isinstance(node.args[1], ast.Name)
@@ -6271,7 +6289,9 @@ class GuardValidatorPipeline:
                 call_name
                 for subnode in _walk_nodes(function)
                 if isinstance(subnode, ast.Call)
-                for call_name in (_call_name(subnode.func),)
+                for call_name in (
+                    AstExpressionProjection.terminal_name(subnode.func),
+                )
                 if call_name is not None
             }
         )
@@ -6376,7 +6396,7 @@ def _is_fail_loud_guard_raise(statement: ast.stmt) -> bool:
         return False
     exc = statement.exc
     if isinstance(exc, ast.Call):
-        error_name = _call_name(exc.func)
+        error_name = AstExpressionProjection.terminal_name(exc.func)
     elif isinstance(exc, ast.Name):
         error_name = exc.id
     else:
@@ -8650,7 +8670,11 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
             )
         )
         returned_call = return_call(single_item(body)) if len(body) == 1 else None
-        collector_name = _call_name(returned_call.func) if returned_call else None
+        collector_name = (
+            AstExpressionProjection.terminal_name(returned_call.func)
+            if returned_call
+            else None
+        )
         if collector_name is None:
             return None
         arg_names = tuple(name_id(argument) for argument in returned_call.args)

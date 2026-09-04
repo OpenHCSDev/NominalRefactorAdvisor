@@ -9,12 +9,12 @@ from functools import cached_property
 from itertools import combinations
 
 from .ast_tools import (
+    AstExpressionProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
 from .class_index import (
-    ATTRIBUTE_CHAIN_AUTHORITY,
     ClassHeaderSourceSpan,
     ClassFamilyIndex,
     CompactDataclassFieldRole,
@@ -51,7 +51,7 @@ class ExactDataclassDecorator:
             )
         decorator = decorators[0]
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        parts = ATTRIBUTE_CHAIN_AUTHORITY.project(target)
+        parts = AstExpressionProjection.attribute_chain(target)
         if parts is None:
             raise ValueError("Dataclass decorator has no nominal reference")
         binding = binding_snapshot.binding_for(parts[0])

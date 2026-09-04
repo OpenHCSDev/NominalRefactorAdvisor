@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_projection import AstExpressionProjection, AstNameFamily
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
 from .deadline import scan_deadline_checkpoint
@@ -82,38 +83,6 @@ from .semantic_match import (
 )
 
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
-
-
-@dataclass(frozen=True)
-class AstExpressionProjection:
-    """Nominal projections from an AST expression into source-level names."""
-
-    node: ast.expr
-
-    def qualified_name(self) -> str | None:
-        """Return the complete spelling of a name or attribute expression."""
-
-        match self.node:
-            case ast.Name() | ast.Attribute():
-                return ast.unparse(self.node)
-            case _:
-                return None
-
-    def base_name(self) -> str | None:
-        match self.node:
-            case ast.Name(id=name) | ast.Attribute(attr=name):
-                return name
-            case ast.Subscript(value=value):
-                return AstExpressionProjection(value).base_name()
-            case _:
-                return None
-
-    def attribute_projection(self) -> tuple[str, str] | None:
-        match self.node:
-            case ast.Attribute(value=owner, attr=field_name):
-                return ast.unparse(owner), field_name
-            case _:
-                return None
 
 
 @dataclass(frozen=True)
@@ -1157,11 +1126,6 @@ def retains_python_ast(
     if isinstance(value, (tuple, list, set, frozenset)):
         return any(retains_python_ast(item, seen) for item in value)
     return False
-
-
-@dataclass(frozen=True)
-class AstNameFamily:
-    names: frozenset[str]
 
 
 class BuiltinCallName(StrEnum):
@@ -2999,20 +2963,6 @@ def _builder_value_key(node: AstFingerprintInput) -> str:
     return repr(node)
 
 
-def _terminal_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _subscript_base_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Subscript):
-        return None
-    return _terminal_name(node.value)
-
-
 _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
 _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
 _HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
@@ -3023,26 +2973,6 @@ REGISTRATION_CALL_FAMILY = AstNameFamily(
 REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
     REGISTRATION_CALL_FAMILY.names | frozenset({"auto_register"})
 )
-
-
-def _node_matches_family(node: ast.AST, family: AstNameFamily) -> bool:
-    if isinstance(node, ast.Call):
-        return _node_matches_family(node.func, family)
-    return (
-        _terminal_name(node) in family.names
-        or _subscript_base_name(node) in family.names
-    )
-
-
-def _terminal_name_in_family(node: ast.AST, family: AstNameFamily) -> str | None:
-    terminal_name = _terminal_name(node)
-    if terminal_name in family.names:
-        return terminal_name
-    return None
-
-
-def _name_family(names: set[str] | frozenset[str]) -> AstNameFamily:
-    return AstNameFamily(frozenset(names))
 
 
 @dataclass(frozen=True)
@@ -3258,7 +3188,7 @@ def _iter_attribute_family_calls(
 def _attribute_call_family_name(node: ast.Call, family: AstNameFamily) -> str | None:
     if not isinstance(node.func, ast.Attribute):
         return None
-    return _terminal_name_in_family(node.func, family)
+    return family.matching_name(node.func)
 
 
 def _iter_class_decorator_family_calls(
@@ -3271,7 +3201,7 @@ def _iter_class_decorator_family_calls(
         for decorator in node.decorator_list:
             if not isinstance(decorator, ast.Call):
                 continue
-            matched_name = _terminal_name_in_family(decorator.func, family)
+            matched_name = family.matching_name(decorator.func)
             if matched_name is None:
                 continue
             observations.append((node, decorator, matched_name))
@@ -3279,7 +3209,7 @@ def _iter_class_decorator_family_calls(
 
 
 def _node_display_name(node: ast.AST) -> str:
-    return _terminal_name(node) or node.__class__.__name__
+    return AstExpressionProjection.terminal_name(node) or node.__class__.__name__
 
 
 @lru_cache(maxsize=None)
@@ -3373,7 +3303,7 @@ class ClassObservationProjection:
                     node=node,
                     is_dataclass_family=any(
                         (
-                            _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
+                            _DATACLASS_DECORATOR_FAMILY.matches(decorator)
                             for decorator in node.decorator_list
                         )
                     ),
@@ -3386,7 +3316,7 @@ CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
 
 
 def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
-    return _name_family(
+    return AstNameFamily.from_names(
         {
             node.name
             for _node_index, node in module_syntax_index(
@@ -3408,7 +3338,7 @@ def _class_body_field_observation(
     if binding is None:
         return None
     if isinstance(stmt, ast.AnnAssign):
-        if _node_matches_family(stmt.annotation, _CLASSVAR_REFERENCE_FAMILY):
+        if _CLASSVAR_REFERENCE_FAMILY.matches(stmt.annotation):
             return None
         return FieldObservation(
             file_path=parsed_module.file_path,
@@ -3811,7 +3741,8 @@ def _projection_outer_inner_calls(
         .filter(lambda call: len(call.args) == 1)
         .filter(
             lambda call: (
-                _terminal_name(call.func) in BuiltinCallName.sequence_wrapper_names()
+                AstExpressionProjection.terminal_name(call.func)
+                in BuiltinCallName.sequence_wrapper_names()
             )
         )
         .unwrap_or_none()
@@ -3825,7 +3756,7 @@ def _projection_outer_inner_calls(
             ),
         )
         .combine(
-            lambda context: _terminal_name(context[0].func),
+            lambda context: AstExpressionProjection.terminal_name(context[0].func),
             lambda context, outer_call_name: (outer_call_name, context[1]),
         )
         .unwrap_or_none()
@@ -3879,7 +3810,7 @@ def _projection_generator_attribute(node: ast.AST) -> str | None:
 
 def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:
     return (
-        Maybe.of(_terminal_name(inner_call.func))
+        Maybe.of(AstExpressionProjection.terminal_name(inner_call.func))
         .combine(
             lambda _aggregator_name: _projection_generator_attribute(
                 inner_call.args[0]
@@ -3979,7 +3910,7 @@ def _scoped_shape_spec_call(node: ast.Assign) -> _ScopedShapeSpecCall | None:
     call = as_ast(node.value, ast.Call)
     if target is None or call is None:
         return None
-    if _terminal_name(call.func) != "ScopedShapeSpec":
+    if AstExpressionProjection.terminal_name(call.func) != "ScopedShapeSpec":
         return None
     return _ScopedShapeSpecCall(target.id, call)
 
@@ -3991,7 +3922,7 @@ def _scoped_shape_spec_keywords(call: ast.Call) -> _ScopedShapeSpecKeywords | No
         if keyword.arg == "node_types":
             node_types = TYPE_GUARD_PROJECTION.type_name_tuple(keyword.value)
         if keyword.arg == "build_shape":
-            function_name = _terminal_name(keyword.value)
+            function_name = AstExpressionProjection.terminal_name(keyword.value)
     if not node_types or function_name is None:
         return None
     return _ScopedShapeSpecKeywords(function_name, node_types)
@@ -4090,17 +4021,13 @@ def _config_dispatch_observations(
 def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
     attrs: set[str] = set()
     for node in _walk_nodes(test):
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _HASATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _HASATTR_CALL_FAMILY.matches(node.func):
             if _call_targets_name(node, "config") and len(node.args) >= 2:
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
                 ):
                     attrs.add(node.args[1].value)
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _GETATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _GETATTR_CALL_FAMILY.matches(node.func):
             if _call_targets_name(node, "config") and len(node.args) >= 2:
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
@@ -4136,9 +4063,7 @@ def _class_marker_observations(
     seen: set[tuple[int, str]] = set()
     observations: list[ClassMarkerObservation] = []
     for node in walk_function_body_nodes(function):
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _HASATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _HASATTR_CALL_FAMILY.matches(node.func):
             target = node.args[0] if node.args else None
             marker_name = None
             if _is_class_target(target):
@@ -4195,7 +4120,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
     return bool(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Call)
-        and (_terminal_name(node.func.func) == _TYPE_BUILTIN)
+        and (AstExpressionProjection.terminal_name(node.func.func) == _TYPE_BUILTIN)
     )
 
 
@@ -4243,7 +4168,7 @@ def _dynamic_method_injection_observations(
     for node in walk_function_body_nodes(function):
         if not isinstance(node, ast.Call):
             continue
-        if _terminal_name(node.func) != _SETATTR_BUILTIN:
+        if AstExpressionProjection.terminal_name(node.func) != _SETATTR_BUILTIN:
             continue
         if len(node.args) < 3:
             continue
@@ -4287,9 +4212,7 @@ class ConfigSubjectProjection:
         attr_name = _attribute_name_if_root(node, "config")
         if attr_name is not None:
             return attr_name
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _GETATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _GETATTR_CALL_FAMILY.matches(node.func):
             if _call_targets_name(node, "config") and len(node.args) >= 2:
                 return _constant_string(node.args[1])
         return None
@@ -4309,7 +4232,10 @@ def _is_class_target(node: ast.AST | None) -> bool:
         return False
     if isinstance(node, ast.Attribute) and node.attr == "__class__":
         return True
-    if isinstance(node, ast.Call) and _terminal_name(node.func) == "type":
+    if (
+        isinstance(node, ast.Call)
+        and AstExpressionProjection.terminal_name(node.func) == "type"
+    ):
         return True
     return False
 
@@ -4337,7 +4263,7 @@ def _builder_call_shape(
             return False
         if not call.func.attr.startswith(("for_", "from_", "with_")):
             return False
-        owner_name = _terminal_name(call.func.value)
+        owner_name = AstExpressionProjection.terminal_name(call.func.value)
         if owner_name is None:
             return False
         return owner_name in module_class_names
@@ -4353,7 +4279,7 @@ def _builder_call_shape(
             return ()
         pairs: list[tuple[str, ast.AST]] = []
         for argument in call.args:
-            field_name = _terminal_name(argument)
+            field_name = AstExpressionProjection.terminal_name(argument)
             if field_name is None:
                 return ()
             pairs.append((field_name, argument))
@@ -4374,7 +4300,7 @@ def _builder_call_shape(
         Maybe.of(as_ast(node, ast.Call))
         .filter(lambda _call: function_name is not None)
         .combine(
-            lambda call: _terminal_name(call.func),
+            lambda call: AstExpressionProjection.terminal_name(call.func),
             lambda call, callee_name: _BuilderCallContext(
                 call=call,
                 callee_name=callee_name,
@@ -4403,7 +4329,11 @@ def _builder_call_shape(
         source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
-        (name for name, value in context.field_pairs if _terminal_name(value) == name)
+        (
+            name
+            for name, value in context.field_pairs
+            if AstExpressionProjection.terminal_name(value) == name
+        )
     )
     return BuilderCallShape(
         file_path=parsed_module.file_path,
@@ -4465,7 +4395,7 @@ def _registration_key_fingerprint(node: ast.AST) -> str | None:
 def _class_name_from_expr(
     node: ast.AST, known_class_family: AstNameFamily
 ) -> str | None:
-    return _terminal_name_in_family(node, known_class_family)
+    return known_class_family.matching_name(node)
 
 
 from .observation_families import (

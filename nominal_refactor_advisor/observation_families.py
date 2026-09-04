@@ -36,6 +36,7 @@ from .observation_shapes import (
 )
 
 from .ast_tools import (
+    AstExpressionProjection,
     AstNameFamily,
     AssignObservationSpec,
     AutoRegisterMeta,
@@ -72,16 +73,12 @@ from .ast_tools import (
     _known_class_family,
     _literal_dispatch_observations_for_kind,
     _node_display_name,
-    _node_matches_family,
     _projection_helper_shape_from_function,
     _registration_key_fingerprint,
     _scoped_shape_wrapper_function_from_function,
     _scoped_shape_wrapper_spec_from_assign,
     _sentinel_type_observation,
     _sentinel_type_usage_observations,
-    _subscript_base_name,
-    _terminal_name,
-    _terminal_name_in_family,
 )
 
 GeneratedItemT = TypeVar("GeneratedItemT")
@@ -804,7 +801,7 @@ def _native_registration_shapes(
             if statement.value.id not in class_names:
                 continue
             for target in statement.targets:
-                registry_name = _subscript_base_name(target)
+                registry_name = AstExpressionProjection.terminal_name(target)
                 key_fingerprint = _registration_key_fingerprint(target)
                 if registry_name is None or key_fingerprint is None:
                     continue
@@ -831,7 +828,7 @@ def _native_registration_shapes(
             ):
                 return None
             class_name = _class_name_from_expr(node.args[0], known_class_family)
-            registry_name = _terminal_name(node.func.value)
+            registry_name = AstExpressionProjection.terminal_name(node.func.value)
             if class_name is None or registry_name is None:
                 continue
             key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
@@ -860,12 +857,14 @@ def _native_registration_shapes(
             for decorator in statement.decorator_list:
                 if not (
                     isinstance(decorator, ast.Call)
-                    and _terminal_name(decorator.func)
+                    and AstExpressionProjection.terminal_name(decorator.func)
                     in REGISTRATION_DECORATOR_FAMILY.names
                     and decorator.args
                 ):
                     continue
-                registry_name = _terminal_name(decorator.args[0])
+                registry_name = AstExpressionProjection.terminal_name(
+                    decorator.args[0]
+                )
                 if registry_name is None:
                     continue
                 key_expression = (
@@ -943,10 +942,10 @@ class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         ).indexed_nodes_of_type(ast.Assign):
             if not isinstance(node.value, ast.Name):
                 continue
-            if _terminal_name_in_family(node.value, known_class_family) is None:
+            if known_class_family.matching_name(node.value) is None:
                 continue
             for target in node.targets:
-                registry_name = _subscript_base_name(target)
+                registry_name = AstExpressionProjection.terminal_name(target)
                 if registry_name is None:
                     continue
                 key_fingerprint = _registration_key_fingerprint(target)
@@ -972,7 +971,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         ):
             node = observation.call
             assert isinstance(node.func, ast.Attribute)
-            registry_name = _terminal_name(node.func.value)
+            registry_name = AstExpressionProjection.terminal_name(node.func.value)
             if registry_name is None:
                 continue
             if not node.args:
@@ -998,7 +997,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
         ):
             if not decorator.args:
                 continue
-            registry_name = _terminal_name(decorator.args[0])
+            registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
             if registry_name is None:
                 continue
             key_expr = (

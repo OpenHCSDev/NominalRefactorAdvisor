@@ -12,7 +12,12 @@ from ..factorization import (
     factorization_axis_catalog_certificate,
 )
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from ..ast_tools import BuiltinCallName, SourceModule, walk_function_body_nodes
+from ..ast_tools import (
+    AstExpressionProjection,
+    BuiltinCallName,
+    SourceModule,
+    walk_function_body_nodes,
+)
 from ..native_syntax import NativePythonSyntaxIndex
 from ..models import AutoRegisterMetaRentSignal
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
@@ -69,7 +74,11 @@ class HelperSupportProjectionAuthority:
     def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
         return any(
             (
-                (metaclass_name := _ast_terminal_name(keyword.value)) is not None
+                (
+                    metaclass_name
+                    := AstExpressionProjection.terminal_name(keyword.value)
+                )
+                is not None
                 and (
                     metaclass_name == "AutoRegisterMeta"
                     or metaclass_name.endswith("AutoRegisterMeta")
@@ -112,7 +121,7 @@ class HelperSupportProjectionAuthority:
     def inherits_named_registration_authority(self, node: ast.ClassDef) -> bool:
         return any(
             (
-                (base_name := _ast_terminal_name(base)) is not None
+                (base_name := AstExpressionProjection.terminal_name(base)) is not None
                 and self.registration_authority_base_name(base_name)
                 for base in node.bases
             )
@@ -771,7 +780,7 @@ def _raised_exception_name(
         return None
     exc = statement.exc
     if isinstance(exc, ast.Call):
-        exc_name = _ast_terminal_name(exc.func)
+        exc_name = AstExpressionProjection.terminal_name(exc.func)
         referenced_names = sorted_tuple(
             {
                 current.id
@@ -781,7 +790,7 @@ def _raised_exception_name(
         )
         if exc_name is not None:
             return (exc_name, referenced_names)
-    exc_name = _ast_terminal_name(exc)
+    exc_name = AstExpressionProjection.terminal_name(exc)
     if exc_name is not None:
         return (exc_name, ())
     return None
@@ -969,7 +978,7 @@ def _structural_observation_property_candidates_for_class(
         if not isinstance(statement, ast.FunctionDef):
             continue
         if not any(
-            _ast_terminal_name(decorator) == "property"
+            AstExpressionProjection.terminal_name(decorator) == "property"
             for decorator in statement.decorator_list
         ):
             continue
@@ -979,7 +988,7 @@ def _structural_observation_property_candidates_for_class(
         returned = body[0].value
         if not isinstance(returned, ast.Call):
             continue
-        constructor_name = _call_name(returned.func)
+        constructor_name = AstExpressionProjection.terminal_name(returned.func)
         if constructor_name is None:
             continue
         keyword_names = sorted_tuple(
@@ -1128,7 +1137,7 @@ def _property_alias_hook_groups(
                 continue
             if not any(
                 (
-                    _ast_terminal_name(decorator) == "property"
+                    AstExpressionProjection.terminal_name(decorator) == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -1194,7 +1203,7 @@ def _constant_property_default_methods(
             continue
         if not any(
             (
-                _ast_terminal_name(decorator) == "property"
+                AstExpressionProjection.terminal_name(decorator) == "property"
                 for decorator in statement.decorator_list
             )
         ):
@@ -1254,7 +1263,7 @@ def _reflective_self_attribute_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = _ast_terminal_name(subnode.func)
+            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
             if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
                 continue
             receiver, attribute_name_node = subnode.args[0], subnode.args[1]
@@ -1294,7 +1303,7 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     operand = test.operand
     if (
         not isinstance(operand, ast.Call)
-        or _ast_terminal_name(operand.func) != "isinstance"
+        or AstExpressionProjection.terminal_name(operand.func) != "isinstance"
         or len(operand.args) != 2
     ):
         return None
@@ -1360,7 +1369,7 @@ def _guarded_wrapper_spec_pairs(
             continue
         if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
             continue
-        constructor_name = _call_name(value.func)
+        constructor_name = AstExpressionProjection.terminal_name(value.func)
         if constructor_name is None:
             continue
         referenced_functions = [
@@ -1413,7 +1422,7 @@ def _dynamic_self_field_selection_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = _ast_terminal_name(subnode.func)
+            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
             if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
                 continue
             if len(subnode.args) < 2:
@@ -1664,7 +1673,7 @@ def _reflective_lookup_shape(
     node: ast.AST,
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
-        builtin_name = _ast_terminal_name(node.func)
+        builtin_name = AstExpressionProjection.terminal_name(node.func)
         if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
             selector_node = node.args[1]
             if _constant_string(selector_node) is None:
@@ -1856,7 +1865,7 @@ def _concrete_config_field_probe_candidates(
             for subnode in _walk_nodes(method):
                 if not isinstance(subnode, ast.Call):
                     continue
-                builtin_name = _ast_terminal_name(subnode.func)
+                builtin_name = AstExpressionProjection.terminal_name(subnode.func)
                 if (
                     builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
                     or len(subnode.args) < 2
@@ -1979,7 +1988,9 @@ def _declared_base_name_sequence(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(
         (
             base_name
-            for base_name in (_ast_terminal_name(base) for base in node.bases)
+            for base_name in (
+                AstExpressionProjection.terminal_name(base) for base in node.bases
+            )
             if base_name is not None
         )
     )
@@ -2525,7 +2536,7 @@ def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
     for current in _walk_nodes(node):
         if not isinstance(current, ast.Call):
             continue
-        call_name = _ast_terminal_name(current.func)
+        call_name = AstExpressionProjection.terminal_name(current.func)
         if call_name == "isinstance" and len(current.args) == 2:
             type_names = set(
                 HELPER_SYNTAX_PROJECTION_AUTHORITY.type_name_set(current.args[1])
@@ -2556,7 +2567,10 @@ def _export_policy_root_type_names(node: ast.FunctionDef) -> tuple[str, ...]:
     for current in _walk_nodes(node):
         if not isinstance(current, ast.Call):
             continue
-        if _ast_terminal_name(current.func) != "issubclass" or len(current.args) != 2:
+        if (
+            AstExpressionProjection.terminal_name(current.func) != "issubclass"
+            or len(current.args) != 2
+        ):
             continue
         root_type_names.update(
             (
@@ -2593,7 +2607,10 @@ def _export_all_assignment_value(statement: ast.stmt) -> ast.AST | None:
 
 def _sorted_generator_arg(value: ast.AST) -> ast.GeneratorExp | None:
     call = as_ast(value, ast.Call)
-    if call is None or _ast_terminal_name(call.func) != "sorted":
+    if (
+        call is None
+        or AstExpressionProjection.terminal_name(call.func) != "sorted"
+    ):
         return None
     return single_ast(call.args, ast.GeneratorExp)
 
@@ -4164,7 +4181,7 @@ class TransportProjectionAuthority:
         if symbol is None:
             symbol = ast.unparse(inner.func)
         for call in reversed(chain[:-1]):
-            method_name = _call_name(call.func)
+            method_name = AstExpressionProjection.terminal_name(call.func)
             if method_name is None:
                 method_name = ast.unparse(call.func)
             symbol = f"{symbol}.{method_name}"
@@ -4293,7 +4310,11 @@ def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
 
 def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     source = _pipeline_stage_source(statement)
-    callee_name = _call_name(source.call.func) if source is not None else None
+    callee_name = (
+        AstExpressionProjection.terminal_name(source.call.func)
+        if source is not None
+        else None
+    )
     if source is None or callee_name is None:
         return None
     keyword_names = tuple(
@@ -4540,7 +4561,7 @@ def _first_named_call_assignment(
 
 def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
     return (
-        _call_name(call.func) == "cast"
+        AstExpressionProjection.terminal_name(call.func) == "cast"
         and len(call.args) == 2
         and (name_id(call.args[1]) == parameter_name)
     )
@@ -4600,7 +4621,11 @@ def _typed_candidate_cast_boilerplate_candidates(
 
 
 def _keyword_value_name(keyword: ast.keyword | None) -> str | None:
-    return _call_name(keyword.value) if keyword is not None else None
+    return (
+        AstExpressionProjection.terminal_name(keyword.value)
+        if keyword is not None
+        else None
+    )
 
 
 def _keyword_semantic_value(
@@ -4668,7 +4693,7 @@ def _recommended_finding_spec_constructor(
 def _finding_spec_default_field_candidate(
     module: ParsedModule, node: ast.Call
 ) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
-    constructor_name = _call_name(node.func)
+    constructor_name = AstExpressionProjection.terminal_name(node.func)
     factory = (
         finding_spec_factory_for_constructor_name(constructor_name)
         if constructor_name is not None
@@ -5012,7 +5037,8 @@ class HelperSyntaxProjectionAuthority:
             (
                 base_name
                 for base in node.bases
-                if (base_name := _call_name(base)) is not None
+                if (base_name := AstExpressionProjection.terminal_name(base))
+                is not None
             )
         )
 
@@ -5306,7 +5332,10 @@ def _iter_scoped_class_defs(
 def _inherits_node_visitor(node: ast.ClassDef) -> bool:
     return any(
         (
-            ((base_chain := _ast_attribute_chain(base)) is not None)
+            (
+                (base_chain := AstExpressionProjection.attribute_chain(base))
+                is not None
+            )
             and base_chain[-1] == _NODE_VISITOR_BASE_NAME
             for base in node.bases
         )
@@ -5554,7 +5583,7 @@ def _tuple_index_semantic_opacity_candidate_for_function(
             call_name
             for node in body_nodes
             if isinstance(node, ast.Call)
-            for call_name in (_call_name(node.func),)
+            for call_name in (AstExpressionProjection.terminal_name(node.func),)
             if call_name in _TUPLE_INDEX_OPACITY_CARRIER_CALLS
         }
     )
@@ -5826,7 +5855,9 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
         )
         .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
         .combine(
-            lambda context: _ast_attribute_chain(context[0].args[0]),
+            lambda context: AstExpressionProjection.attribute_chain(
+                context[0].args[0]
+            ),
             lambda context, field_chain: (context[1], field_chain),
         )
         .filter(lambda context: len(context[1]) >= 2)
@@ -5890,7 +5921,7 @@ def _schema_accessor_coercion_kinds(
             kinds.add("none_guard")
         if not isinstance(node, ast.Call):
             continue
-        call_name = _call_name(node.func)
+        call_name = AstExpressionProjection.terminal_name(node.func)
         if (
             call_name in _SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES
             and node.args
@@ -6075,7 +6106,7 @@ def _indexed_family_wrapper_candidates_for_function(
         return
     if not isinstance(generator.iter, ast.Call):
         return
-    collector_name = _call_name(generator.iter.func)
+    collector_name = AstExpressionProjection.terminal_name(generator.iter.func)
     if collector_name not in {
         "_collect_items_from_spec_root",
         "collect_family_items",
@@ -6084,13 +6115,13 @@ def _indexed_family_wrapper_candidates_for_function(
     if collector_name == "_collect_items_from_spec_root":
         if len(generator.iter.args) < 3:
             return
-        spec_root_name = _call_name(generator.iter.args[0])
-        item_type_name = _call_name(generator.iter.args[2])
+        spec_root_name = AstExpressionProjection.terminal_name(generator.iter.args[0])
+        item_type_name = AstExpressionProjection.terminal_name(generator.iter.args[2])
     else:
         if len(generator.iter.args) < 2:
             return
-        spec_root_name = _call_name(generator.iter.args[1])
-        item_type_name = _call_name(generator.iter.args[1])
+        spec_root_name = AstExpressionProjection.terminal_name(generator.iter.args[1])
+        item_type_name = AstExpressionProjection.terminal_name(generator.iter.args[1])
     if spec_root_name is None or item_type_name is None:
         return
     if not _is_instance_filter(generator.ifs, item_type_name):
@@ -6120,7 +6151,7 @@ def _is_instance_filter(filters: list[ast.expr], item_type_name: str) -> bool:
     for condition in filters:
         if not isinstance(condition, ast.Call):
             continue
-        if _call_name(condition.func) != "isinstance":
+        if AstExpressionProjection.terminal_name(condition.func) != "isinstance":
             continue
         if len(condition.args) != 2:
             continue
@@ -6129,7 +6160,7 @@ def _is_instance_filter(filters: list[ast.expr], item_type_name: str) -> bool:
             or condition.args[0].id != "item"
         ):
             continue
-        if _call_name(condition.args[1]) == item_type_name:
+        if AstExpressionProjection.terminal_name(condition.args[1]) == item_type_name:
             return True
     return False
 

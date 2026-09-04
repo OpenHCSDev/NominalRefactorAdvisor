@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from ..ast_tools import (
+    AstExpressionProjection,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -33,22 +34,7 @@ class _AstNodeProjection(ABC, Generic[ProjectionT]):
         raise NotImplementedError
 
 
-class _AstNameProjection(_AstNodeProjection[str | None]):
-    pass
-
-
-class _TerminalNameProjection(_AstNameProjection):
-    def __call__(self, node: ast.AST) -> str | None:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        if isinstance(node, ast.Subscript):
-            return self(node.value)
-        return None
-
-
-class _SelectorAttributeProjection(_AstNameProjection):
+class _SelectorAttributeProjection(_AstNodeProjection[str | None]):
     def __call__(self, node: ast.AST) -> str | None:
         if isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
@@ -62,29 +48,6 @@ class _SelectorAttributeProjection(_AstNameProjection):
                 and (node.value.args[0].id == "self")
             ):
                 return node.attr
-        return None
-
-
-class _CallNameProjection(_AstNameProjection):
-    def __call__(self, node: ast.AST) -> str | None:
-        if isinstance(node, ast.Subscript):
-            return self(node.value)
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        return None
-
-
-class _AstAttributeChainProjection(_AstNodeProjection[tuple[str, ...] | None]):
-    def __call__(self, node: ast.AST) -> tuple[str, ...] | None:
-        if isinstance(node, ast.Name):
-            return (node.id,)
-        if isinstance(node, ast.Attribute):
-            parent = self(node.value)
-            if parent is None:
-                return None
-            return (*parent, node.attr)
         return None
 
 
@@ -115,7 +78,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             return sorted_tuple({*self(node.left), *self(node.right)})
         if isinstance(node, ast.Subscript):
-            base_name = _ast_terminal_name(node.value)
+            base_name = AstExpressionProjection.terminal_name(node.value)
             if base_name in {
                 "Optional",
                 "Required",
@@ -131,10 +94,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
         return ()
 
 
-_ast_terminal_name = _TerminalNameProjection()
 _selector_attribute_name = _SelectorAttributeProjection()
-_call_name = _CallNameProjection()
-_ast_attribute_chain_projection = _AstAttributeChainProjection()
 _dataclass_decorator_projection = _DataclassDecoratorProjection()
 _annotation_type_names_projection = _AnnotationTypeNamesProjection()
 
@@ -154,10 +114,6 @@ def _constant_string(node: ast.AST | None) -> str | None:
     return None
 
 
-def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
-    return _ast_attribute_chain_projection(node)
-
-
 @dataclass(frozen=True)
 class ClassNodeAuthority:
     def is_dataclass_decorator(self, node: ast.AST) -> bool:
@@ -167,7 +123,9 @@ class ClassNodeAuthority:
         return sorted_tuple(
             {
                 base_name
-                for base_name in (_ast_terminal_name(base) for base in node.bases)
+                for base_name in (
+                    AstExpressionProjection.terminal_name(base) for base in node.bases
+                )
                 if base_name is not None
             }
         )
@@ -210,7 +168,7 @@ class ClassNodeAuthority:
             return True
         for statement in self.methods(node):
             for decorator in statement.decorator_list:
-                if _ast_terminal_name(decorator) == "abstractmethod":
+                if AstExpressionProjection.terminal_name(decorator) == "abstractmethod":
                     return True
         return False
 
@@ -221,7 +179,7 @@ CLASS_NODE_AUTHORITY = ClassNodeAuthority()
 def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
-            _ast_terminal_name(decorator) == "abstractmethod"
+            AstExpressionProjection.terminal_name(decorator) == "abstractmethod"
             for decorator in node.decorator_list
         )
     )
@@ -352,8 +310,6 @@ __all__ = (
     "_constant_string",
     "is_docstring_statement",
     "statements_without_docstring",
-    "_ast_terminal_name",
-    "_ast_attribute_chain",
     "CLASS_NODE_AUTHORITY",
     "_is_abstract_method",
     "_is_dataclass_class",
@@ -364,6 +320,5 @@ __all__ = (
     "_IGNORED_ANCESTOR_NAMES",
     "_module_class_defs_by_name",
     "CLASS_INDEX_PROJECTION",
-    "_call_name",
     "_is_private_symbol_name",
 )

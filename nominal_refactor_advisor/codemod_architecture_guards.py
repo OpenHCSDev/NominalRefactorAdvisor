@@ -25,6 +25,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_tools import AstExpressionProjection
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -131,7 +132,7 @@ class ForbiddenCallArchitectureGuardConstraint(
             )
             for node in ast.walk(module)
             if isinstance(node, ast.Call)
-            for call_name in (_call_name(node.func),)
+            for call_name in (AstExpressionProjection.qualified_name(node.func),)
             if call_name in self.names
         )
 
@@ -686,11 +687,3 @@ def evaluate_architecture_guards(
             ),
         ),
     )
-
-
-def _call_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return ast.unparse(node)
-    return None

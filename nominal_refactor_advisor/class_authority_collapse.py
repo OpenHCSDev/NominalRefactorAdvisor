@@ -7,9 +7,12 @@ import builtins
 import copy
 from dataclasses import dataclass
 
-from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, ParsedModule
+from .ast_tools import (
+    AstExpressionProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ParsedModule,
+)
 from .class_index import (
-    ATTRIBUTE_CHAIN_AUTHORITY,
     ClassMethodPromotionSafetyProfile,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
@@ -240,7 +243,7 @@ class ClassBaseBehaviorAuthority:
     ) -> tuple["ClassBaseBehaviorAuthority", ...]:
         authorities: list[ClassBaseBehaviorAuthority] = []
         for base in context.owner.node.bases:
-            parts = ATTRIBUTE_CHAIN_AUTHORITY.project(base)
+            parts = AstExpressionProjection.attribute_chain(base)
             if parts is None:
                 raise ValueError(
                     f"Class authority {context.owner.qualname!r} has parameterized or "

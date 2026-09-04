@@ -18,6 +18,7 @@ from typing import Generic, TypeVar
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
+    AstExpressionProjection,
     CompactModuleIdentity,
     PythonSourcePathPolicy,
     SourceModule,
@@ -83,7 +84,8 @@ def _compact_concrete_type_case_function_facts(
                 isinstance(subnode, ast.Call)
                 and len(subnode.args) == 2
                 and not subnode.keywords
-                and _ast_terminal_name(subnode.func) == "isinstance"
+                and AstExpressionProjection.terminal_name(subnode.func)
+                == "isinstance"
             ):
                 continue
             subject_expression = _attribute_family_subject_expression(
@@ -99,7 +101,7 @@ def _compact_concrete_type_case_function_facts(
                 {
                     type_name
                     for item in type_items
-                    if (type_name := _ast_terminal_name(item))
+                    if (type_name := AstExpressionProjection.terminal_name(item))
                     not in {None, "None", "NoneType"}
                 }
             )
@@ -766,7 +768,10 @@ class AstTypeIsinstanceNameProjection:
         return name if name is not None and name[:1].isupper() else None
 
     def from_isinstance_call(self, call: ast.Call) -> tuple[str, ...]:
-        if _call_name(call.func) != "isinstance" or len(call.args) < 2:
+        if (
+            AstExpressionProjection.terminal_name(call.func) != "isinstance"
+            or len(call.args) < 2
+        ):
             return ()
         type_expr = call.args[1]
         if isinstance(type_expr, ast.Tuple):
@@ -788,7 +793,8 @@ def _uses_ast_traversal(node: ast.AST) -> bool:
     return any(
         (
             isinstance(call, ast.Call)
-            and _call_name(call.func) in {"_walk_nodes", "ast.walk"}
+            and AstExpressionProjection.terminal_name(call.func)
+            in {"_walk_nodes", "ast.walk"}
             for call in _walk_nodes(node)
         )
     )
@@ -985,7 +991,7 @@ def _projection_property_family_candidates(
                 continue
             if not any(
                 (
-                    _ast_terminal_name(decorator) == "property"
+                    AstExpressionProjection.terminal_name(decorator) == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -1094,7 +1100,7 @@ def _is_property_method(
 ) -> bool:
     return any(
         (
-            _ast_terminal_name(decorator) == "property"
+            AstExpressionProjection.terminal_name(decorator) == "property"
             for decorator in method.decorator_list
         )
     )

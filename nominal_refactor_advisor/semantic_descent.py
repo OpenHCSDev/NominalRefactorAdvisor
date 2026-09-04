@@ -29,6 +29,7 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 from metaclass_registry import AutoRegisterMeta
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
+    AstExpressionProjection,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
@@ -1340,7 +1341,10 @@ class SemanticClassSupplement:
             {
                 terminal_name
                 for _, value in authority.assignment_pairs
-                if (terminal_name := authority.terminal_name(value)) is not None
+                if (
+                    terminal_name
+                    := AstExpressionProjection.terminal_name(value)
+                )
             }
             | {
                 type_name
@@ -5154,7 +5158,10 @@ class ConstructionAuthorityResolver:
                 for _, value in AutoRegisterClassAuthority(
                     indexed_class.node
                 ).assignment_pairs
-                if (terminal_name := AttributeChainAuthority.terminal_name(value))
+                if (
+                    terminal_name
+                    := AstExpressionProjection.terminal_name(value)
+                )
                 is not None
             }
             | {
@@ -6135,7 +6142,7 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
         del cls
         if not isinstance(node, ast.Attribute):
             raise TypeError(f"Expected ast.Attribute, got {type(node)!r}")
-        chain = AttributeChainAuthority.chain(node)
+        chain = AstExpressionProjection.attribute_chain(node) or ()
         if len(chain) >= 2:
             qualifier = chain[-2]
             return tuple(
@@ -6386,14 +6393,16 @@ class PresentationAuthorityConstructionCollector:
             PresentationAuthorityConstruction(
                 type_name=type_name,
                 field_tokens=field_tokens,
-                call_target_parts=AttributeChainAuthority.chain(node.func),
+                call_target_parts=(
+                    AstExpressionProjection.attribute_chain(node.func) or ()
+                ),
             )
             for type_name in type_names
         )
 
     @classmethod
     def construction_type_names(cls, node: ast.Call) -> tuple[str, ...]:
-        chain = AttributeChainAuthority.chain(node.func)
+        chain = AstExpressionProjection.attribute_chain(node.func)
         if not chain:
             return ()
         type_names = {chain[-1]}
@@ -6425,35 +6434,6 @@ class PresentationAuthorityConstructionCollector:
         ):
             return node.value
         return None
-
-
-class AttributeChainAuthority:
-    """Own AST attribute-chain parsing for semantic projection logic."""
-
-    @classmethod
-    def chain(cls, node: ast.AST) -> tuple[str, ...]:
-        if isinstance(node, ast.Name):
-            return (node.id,)
-        if isinstance(node, ast.Attribute):
-            parent = cls.chain(node.value)
-            if parent:
-                return (*parent, node.attr)
-        if isinstance(node, ast.Subscript):
-            return cls.chain(node.value)
-        return ()
-
-    @classmethod
-    def terminal_name(cls, node: ast.AST) -> str | None:
-        chain = cls.chain(node)
-        if chain:
-            return chain[-1]
-        return None
-
-    @classmethod
-    def decorator_terminal_name(cls, node: ast.AST) -> str | None:
-        if isinstance(node, ast.Call):
-            return cls.terminal_name(node.func)
-        return cls.terminal_name(node)
 
 
 def _assignment_label(node: ast.stmt, *, owner_symbol: str) -> str:

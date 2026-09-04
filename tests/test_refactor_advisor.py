@@ -55,6 +55,7 @@ from nominal_refactor_advisor.analysis import (
 from nominal_refactor_advisor.ast_tools import (
     AstExpressionProjection,
     AstKeywordSourceProjection,
+    AstNameFamily,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
@@ -9130,7 +9131,40 @@ def test_ast_expression_projection_owns_qualified_name_semantics(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
 
-    assert AstExpressionProjection(expression).qualified_name() == expected_name
+    assert AstExpressionProjection.qualified_name(expression) == expected_name
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_identifier", "expected_terminal", "expected_chain"),
+    (
+        ("factory", "factory", "factory", ("factory",)),
+        ("package.factory", None, "factory", ("package", "factory")),
+        ("typing.Sequence[str]", None, "Sequence", ("typing", "Sequence")),
+        ("factory()", None, None, None),
+    ),
+)
+def test_ast_expression_projection_owns_name_and_chain_semantics(
+    source: str,
+    expected_identifier: str | None,
+    expected_terminal: str | None,
+    expected_chain: tuple[str, ...] | None,
+) -> None:
+    expression = ast.parse(source, mode="eval").body
+
+    assert AstExpressionProjection.identifier(expression) == expected_identifier
+    assert AstExpressionProjection.terminal_name(expression) == expected_terminal
+    assert AstExpressionProjection.attribute_chain(expression) == expected_chain
+
+
+def test_ast_name_family_unwraps_call_and_subscript_at_its_declaration() -> None:
+    family = AstNameFamily(frozenset({"factory"}))
+
+    assert family.matching_name(ast.parse("factory[str]", mode="eval").body) == (
+        "factory"
+    )
+    assert family.matching_name(ast.parse("package.factory()", mode="eval").body) == (
+        "factory"
+    )
 
 
 @pytest.mark.parametrize(
