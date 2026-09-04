@@ -12,7 +12,14 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 from itertools import combinations
-from typing import Callable, ClassVar, TypeAlias, TypeVar
+from typing import (
+    Callable,
+    ClassVar,
+    Generic,
+    TypeAlias,
+    TypeVar,
+    cast,
+)
 
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_tools import (
@@ -67,6 +74,9 @@ DerivedQuerySpecsBySignature: TypeAlias = dict[
 ]
 
 _APPEND_METHOD_NAME = "append"
+
+
+MethodFamilyCandidateItemT = TypeVar("MethodFamilyCandidateItemT", covariant=True)
 
 
 _IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
@@ -3767,16 +3777,68 @@ class _MethodFamilyBaseEvidence(_MethodPlanEvidenceABC):
 
 
 @dataclass(frozen=True)
+class CompactMethodFamilyCandidates(Generic[MethodFamilyCandidateItemT]):
+    """One runtime candidate family carrying its nominal element type."""
+
+    candidate_type: type[MethodFamilyCandidateItemT]
+    candidates: tuple[MethodFamilyCandidateItemT, ...]
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(candidate, self.candidate_type) for candidate in self.candidates
+        ):
+            raise TypeError(
+                f"Candidate family violates its {self.candidate_type.__qualname__} "
+                "declaration"
+            )
+
+
+CompactMethodFamilyCandidate: TypeAlias = (
+    ExactMethodRoleComponent
+    | ExactLeafMethodAncestorPromotionComponent
+    | SemanticOverlapMethodCandidate
+    | SemanticOverlapMethodFamilyCandidate
+    | OverlappingInheritanceFamiliesCandidate
+    | SemanticOverlapResidueAxisCandidate
+)
+
+
+@dataclass(frozen=True)
 class CompactMethodFamilyContext:
-    exact_method_candidates: tuple[ExactMethodRoleComponent, ...]
-    exact_ancestor_promotion_candidates: tuple[
-        ExactLeafMethodAncestorPromotionComponent,
-        ...,
+    candidate_families: tuple[
+        CompactMethodFamilyCandidates[CompactMethodFamilyCandidate], ...
     ]
-    method_candidates: tuple[SemanticOverlapMethodCandidate, ...]
-    family_candidates: tuple[SemanticOverlapMethodFamilyCandidate, ...]
-    global_candidates: tuple[OverlappingInheritanceFamiliesCandidate, ...]
-    residue_axis_candidates: tuple[SemanticOverlapResidueAxisCandidate, ...]
+
+    def __post_init__(self) -> None:
+        candidate_types = tuple(
+            family.candidate_type for family in self.candidate_families
+        )
+        if len(candidate_types) != len(frozenset(candidate_types)):
+            raise TypeError(
+                f"{type(self).__name__} requires one family per candidate type"
+            )
+
+    def candidates_for(
+        self,
+        candidate_type: type[MethodFamilyCandidateItemT],
+    ) -> tuple[MethodFamilyCandidateItemT, ...]:
+        """Project the unique family carrying the requested nominal type."""
+
+        matching_families = tuple(
+            family
+            for family in self.candidate_families
+            if family.candidate_type is candidate_type
+        )
+        if len(matching_families) != 1:
+            raise TypeError(
+                f"{type(self).__name__} declares {len(matching_families)} candidate "
+                "families "
+                f"for {candidate_type.__module__}.{candidate_type.__qualname__}"
+            )
+        return cast(
+            tuple[MethodFamilyCandidateItemT, ...],
+            matching_families[0].candidates,
+        )
 
     @classmethod
     def from_projections(
@@ -3812,62 +3874,83 @@ class CompactMethodFamilyContext:
                 class_index=class_index,
             )
         )
+        exact_method_candidates = ExactMethodRoleComponentBuilder(
+            exact_promotion_builder
+        ).proven_components
+        method_candidates = sorted_tuple(
+            method_candidates_by_key.values(),
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.base_name,
+                candidate.method_name,
+            ),
+        )
+        family_candidates = sorted_tuple(
+            (
+                candidate
+                for family in families
+                if (candidate := family.family_candidate()) is not None
+            ),
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.base_name,
+                candidate.method_names,
+            ),
+        )
+        global_candidates = sorted_tuple(
+            (
+                candidate
+                for base_evidence in _MethodFamilyBaseEvidence.from_families(families)
+                if (candidate := base_evidence.candidate()) is not None
+            ),
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.base_name,
+            ),
+        )
+        residue_axis_candidates = sorted_tuple(
+            (
+                candidate
+                for family in families
+                if (candidate := family.residue_axis_candidate()) is not None
+            ),
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.base_name,
+                candidate.method_names,
+            ),
+        )
         return cls(
-            exact_method_candidates=ExactMethodRoleComponentBuilder(
-                exact_promotion_builder
-            ).proven_components,
-            exact_ancestor_promotion_candidates=(
-                exact_promotion_builder.proven_components
-            ),
-            method_candidates=sorted_tuple(
-                method_candidates_by_key.values(),
-                key=lambda candidate: (
-                    candidate.file_path,
-                    candidate.line,
-                    candidate.base_name,
-                    candidate.method_name,
+            candidate_families=(
+                CompactMethodFamilyCandidates(
+                    ExactMethodRoleComponent,
+                    exact_method_candidates,
                 ),
-            ),
-            family_candidates=sorted_tuple(
-                (
-                    candidate
-                    for family in families
-                    if (candidate := family.family_candidate()) is not None
+                CompactMethodFamilyCandidates(
+                    ExactLeafMethodAncestorPromotionComponent,
+                    exact_promotion_builder.proven_components,
                 ),
-                key=lambda candidate: (
-                    candidate.file_path,
-                    candidate.line,
-                    candidate.base_name,
-                    candidate.method_names,
+                CompactMethodFamilyCandidates(
+                    SemanticOverlapMethodCandidate,
+                    method_candidates,
                 ),
-            ),
-            global_candidates=sorted_tuple(
-                (
-                    candidate
-                    for base_evidence in _MethodFamilyBaseEvidence.from_families(
-                        families
-                    )
-                    if (candidate := base_evidence.candidate()) is not None
+                CompactMethodFamilyCandidates(
+                    SemanticOverlapMethodFamilyCandidate,
+                    family_candidates,
                 ),
-                key=lambda candidate: (
-                    candidate.file_path,
-                    candidate.line,
-                    candidate.base_name,
+                CompactMethodFamilyCandidates(
+                    OverlappingInheritanceFamiliesCandidate,
+                    global_candidates,
                 ),
-            ),
-            residue_axis_candidates=sorted_tuple(
-                (
-                    candidate
-                    for family in families
-                    if (candidate := family.residue_axis_candidate()) is not None
+                CompactMethodFamilyCandidates(
+                    SemanticOverlapResidueAxisCandidate,
+                    residue_axis_candidates,
                 ),
-                key=lambda candidate: (
-                    candidate.file_path,
-                    candidate.line,
-                    candidate.base_name,
-                    candidate.method_names,
-                ),
-            ),
+            )
         )
 
 

@@ -1456,6 +1456,7 @@ def _contextual_global_candidate_signature(
 
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
+    candidate_type: ClassVar[type[CandidateItemT]]
     finding_renderer: ClassVar[CandidateFindingRenderer[CandidateItemT] | None] = None
 
     def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
@@ -2141,7 +2142,7 @@ DetectorNamespaceValue: TypeAlias = (
     | CandidateFindingRenderer[CandidateItemT]
     | DetectorCollector[CandidateItemT]
     | SourceModuleCandidateCollector[CandidateItemT]
-    | type[IssueDetector]
+    | type[CandidateItemT]
 )
 
 
@@ -2183,26 +2184,11 @@ class DetectorDeclaration(Generic[CandidateItemT]):
 
     def namespace(
         self, module_name: str, firstlineno: int
-    ) -> dict[
-        str,
-        str
-        | int
-        | FindingSpec
-        | CandidateFindingRenderer[CandidateItemT]
-        | DetectorCollector[CandidateItemT]
-        | SourceModuleCandidateCollector[CandidateItemT],
-    ]:
-        namespace: dict[
-            str,
-            str
-            | int
-            | FindingSpec
-            | CandidateFindingRenderer[CandidateItemT]
-            | DetectorCollector[CandidateItemT]
-            | SourceModuleCandidateCollector[CandidateItemT],
-        ] = {
+    ) -> dict[str, DetectorNamespaceValue[CandidateItemT]]:
+        namespace: dict[str, DetectorNamespaceValue[CandidateItemT]] = {
             "__module__": module_name,
             "__firstlineno__": firstlineno,
+            "candidate_type": self.candidate_type,
             "finding_spec": self.finding_spec,
             "finding_renderer": self.finding_renderer,
         }

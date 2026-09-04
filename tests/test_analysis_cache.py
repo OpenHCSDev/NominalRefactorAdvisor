@@ -5768,48 +5768,84 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
     )
     detector_candidate_pairs = (
         (
+            structural_detectors.ExactTinyMethodRoleDetector,
+            structural_detectors.ExactMethodRoleComponent,
+        ),
+        (
+            structural_detectors.ExactLeafMethodAncestorPromotionDetector,
+            structural_detectors.ExactLeafMethodAncestorPromotionComponent,
+        ),
+        (
             structural_detectors.SemanticOverlapMethodDetector,
-            context.method_candidates,
+            base_detectors.SemanticOverlapMethodCandidate,
         ),
         (
             structural_detectors.SemanticOverlapMethodFamilyDetector,
-            context.family_candidates,
+            base_detectors.SemanticOverlapMethodFamilyCandidate,
         ),
         (
             structural_detectors.OverlappingInheritanceFamiliesDetector,
-            context.global_candidates,
+            base_detectors.OverlappingInheritanceFamiliesCandidate,
         ),
         (
             structural_detectors.SemanticOverlapResidueAxisDetector,
-            context.residue_axis_candidates,
+            base_detectors.SemanticOverlapResidueAxisCandidate,
         ),
     )
 
-    for detector_type, compact_candidates in detector_candidate_pairs:
+    for detector_type, candidate_type in detector_candidate_pairs:
         detector = detector_type()
+        compact_candidates = context.candidates_for(candidate_type)
+        assert detector_type.candidate_type is candidate_type
         assert detector._candidate_items(list(modules), config) == compact_candidates
         assert detector._findings_from_compact_context(
             projections, context, config
         ) == detector._findings_for_candidates(compact_candidates, config)
         assert "candidate_collector" not in detector_type.__dict__
-    assert tuple(candidate.method_name for candidate in context.method_candidates) == (
+    with pytest.raises(TypeError, match="declares 0 candidate families"):
+        context.candidates_for(object)
+    method_candidates = context.candidates_for(
+        base_detectors.SemanticOverlapMethodCandidate
+    )
+    family_candidates = context.candidates_for(
+        base_detectors.SemanticOverlapMethodFamilyCandidate
+    )
+    global_candidates = context.candidates_for(
+        base_detectors.OverlappingInheritanceFamiliesCandidate
+    )
+    residue_axis_candidates = context.candidates_for(
+        base_detectors.SemanticOverlapResidueAxisCandidate
+    )
+    with pytest.raises(TypeError, match="violates its SemanticOverlapMethodCandidate"):
+        helper_detectors.CompactMethodFamilyCandidates(
+            base_detectors.SemanticOverlapMethodCandidate,
+            family_candidates,
+        )
+    with pytest.raises(TypeError, match="requires one family per candidate type"):
+        helper_detectors.CompactMethodFamilyContext(
+            candidate_families=(
+                context.candidate_families[0],
+                context.candidate_families[0],
+            )
+        )
+    assert tuple(candidate.method_name for candidate in method_candidates) == (
         "emit",
         "validate",
         "audit",
         "cache",
     )
-    assert context.family_candidates[0].method_names == ("emit", "validate")
-    assert context.family_candidates[0].residue_declaration_count == 12
-    assert context.family_candidates[0].shared_to_residue_ratio == pytest.approx(
-        context.family_candidates[0].shared_statement_count / 12
+    assert family_candidates[0].method_names == ("emit", "validate")
+    assert family_candidates[0].residue_declaration_count == 12
+    assert family_candidates[0].shared_to_residue_ratio == pytest.approx(
+        family_candidates[0].shared_statement_count / 12
     )
-    assert context.global_candidates[0].method_names == (
+    assert global_candidates[0].method_names == (
         "audit",
         "cache",
         "emit",
         "validate",
     )
-    assert context.residue_axis_candidates[0].residue_kind_names == (
+    assert residue_axis_candidates[0].residue_kind_names == (
         "call",
         "constant",
     )
@@ -5851,6 +5887,13 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         structural_detectors._CompactMethodFamilyDetectorBase,
         "compact_candidate_attribute",
     )
+    for removed_name in (
+        "_CompactSemanticOverlapMethodDetectorBase",
+        "_CompactSemanticOverlapMethodFamilyDetectorBase",
+        "_CompactOverlappingInheritanceFamiliesDetectorBase",
+        "_CompactSemanticOverlapResidueAxisDetectorBase",
+    ):
+        assert not hasattr(structural_detectors, removed_name)
     assert not hasattr(class_index_module, "_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
     assert not hasattr(helper_detectors, "_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
     assert not hasattr(class_index_module.CompactClassMethod, "skeleton_blob")
@@ -5890,7 +5933,10 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
         projections
     )
 
-    assert tuple(candidate.method_name for candidate in context.method_candidates) == (
+    method_candidates = context.candidates_for(
+        base_detectors.SemanticOverlapMethodCandidate
+    )
+    assert tuple(candidate.method_name for candidate in method_candidates) == (
         "emit",
         "validate",
         "audit",

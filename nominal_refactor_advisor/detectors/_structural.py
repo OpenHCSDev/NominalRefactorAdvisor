@@ -247,79 +247,27 @@ class _CompactMethodFamilyDetectorBase(
             ),
         )
 
-
-class _CompactSemanticOverlapMethodDetectorBase(
-    _CompactMethodFamilyDetectorBase[SemanticOverlapMethodCandidate]
-):
     def _candidates_from_compact_context(
         self,
         context: CompactMethodFamilyContext,
         config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapMethodCandidate]:
+    ) -> Sequence[MethodFamilyCandidateT]:
         del config
-        return context.method_candidates
+        return context.candidates_for(type(self).candidate_type)
 
 
 class _CompactExactTinyMethodRoleDetectorBase(
     ExactMethodRoleFindingRecipeSynthesizer,
-    _CompactMethodFamilyDetectorBase[ExactMethodRoleComponent]
+    _CompactMethodFamilyDetectorBase[ExactMethodRoleComponent],
 ):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactMethodFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[ExactMethodRoleComponent]:
-        del config
-        return context.exact_method_candidates
+    """Compose compact exact-role detection with its executable refactor."""
 
 
 class _CompactExactLeafMethodAncestorPromotionDetectorBase(
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
     _CompactMethodFamilyDetectorBase[ExactLeafMethodAncestorPromotionComponent],
 ):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactMethodFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[ExactLeafMethodAncestorPromotionComponent]:
-        del config
-        return context.exact_ancestor_promotion_candidates
-
-
-class _CompactSemanticOverlapMethodFamilyDetectorBase(
-    _CompactMethodFamilyDetectorBase[SemanticOverlapMethodFamilyCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactMethodFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapMethodFamilyCandidate]:
-        del config
-        return context.family_candidates
-
-
-class _CompactOverlappingInheritanceFamiliesDetectorBase(
-    _CompactMethodFamilyDetectorBase[OverlappingInheritanceFamiliesCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactMethodFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[OverlappingInheritanceFamiliesCandidate]:
-        del config
-        return context.global_candidates
-
-
-class _CompactSemanticOverlapResidueAxisDetectorBase(
-    _CompactMethodFamilyDetectorBase[SemanticOverlapResidueAxisCandidate]
-):
-    def _candidates_from_compact_context(
-        self,
-        context: CompactMethodFamilyContext,
-        config: DetectorConfig,
-    ) -> Sequence[SemanticOverlapResidueAxisCandidate]:
-        del config
-        return context.residue_axis_candidates
+    """Compose closed-leaf detection with its executable promotion refactor."""
 
 
 declare_candidate_rule_detector(
@@ -443,7 +391,7 @@ declare_candidate_rule_detector(
         ),
     ),
     detector_name="SemanticOverlapMethodDetector",
-    detector_base=_CompactSemanticOverlapMethodDetectorBase,
+    detector_base=_CompactMethodFamilyDetectorBase,
 )
 
 
@@ -483,7 +431,7 @@ declare_candidate_rule_detector(
         method_symbols=candidate.method_symbols,
     ),
     detector_name="SemanticOverlapMethodFamilyDetector",
-    detector_base=_CompactSemanticOverlapMethodFamilyDetectorBase,
+    detector_base=_CompactMethodFamilyDetectorBase,
 )
 
 
@@ -523,7 +471,7 @@ declare_candidate_rule_detector(
         method_symbols=candidate.method_symbols,
     ),
     detector_name="OverlappingInheritanceFamiliesDetector",
-    detector_base=_CompactOverlappingInheritanceFamiliesDetectorBase,
+    detector_base=_CompactMethodFamilyDetectorBase,
 )
 
 
@@ -558,7 +506,7 @@ declare_candidate_rule_detector(
         field_names=candidate.residue_kind_names,
     ),
     detector_name="SemanticOverlapResidueAxisDetector",
-    detector_base=_CompactSemanticOverlapResidueAxisDetectorBase,
+    detector_base=_CompactMethodFamilyDetectorBase,
 )
 
 
