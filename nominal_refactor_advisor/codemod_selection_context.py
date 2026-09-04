@@ -46,7 +46,7 @@ from .source_index import (
 )
 
 if TYPE_CHECKING:
-    from .codemod import CodemodSourceSnapshot
+    from .codemod_runtime import CodemodSourceSnapshot
 
 
 @dataclass(frozen=True)

@@ -154,6 +154,19 @@ rewrites from that state.  Review the combined diff, then replace
 ``--codemod-simulate`` with ``--codemod-apply`` to write the sequence as one
 revision-checked batch.
 
+Hand-authored source for ``insert_before_target`` and ``insert_after_target``
+contains the declaration itself, without leading or trailing padding.  The
+operation derives module-level or nested spacing from the selected target.
+When multiple operations insert at the same anchor, each inserted declaration
+owns its typed leading boundary, so generated imports and moved declarations
+compose without a formatter cleanup stage.
+
+Use ``erase_dead_compatibility`` when deleting an obsolete declaration must
+also prove that named calls or attributes do not survive anywhere in the
+repository.  Its residual-use guard is part of the registered operation and is
+therefore available in JSON plans and ordered sequences; it is not a separate
+Python-only cleanup helper.
+
 Renaming a Top-Level Binding Authority
 --------------------------------------
 

@@ -124,6 +124,26 @@ from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.cli import main as cli_main
+from nominal_refactor_advisor.codemod_runtime import (
+    CodemodPlanDocument,
+    CodemodPlanSequence,
+    CodemodSimulationReport,
+    CodemodSimulationWriter,
+    CodemodSourceSnapshot,
+    CurrentSnapshotRecipeBatchEvaluation,
+    CurrentSnapshotRecipeBatchResult,
+    ExecutableRecipeEvaluation,
+    FindingRecipeAuthorityClaimGate,
+    FindingRecipeFrontierBudget,
+    FindingRecipePlanBuilder,
+    FindingRecipePlanCandidate,
+    FindingRecipeSynthesisRecord,
+    FindingRecipeTrajectoryObstacleKind,
+    MissingRecipeEvaluatorEvaluation,
+    RefactorRecipe,
+    codemod_plan_from_findings,
+    simulate_planned_rewrites,
+)
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonObject,
@@ -140,65 +160,49 @@ from nominal_refactor_advisor.exact_method_authority import (
     ParallelMirroredLeafFamilyComponentBuilder,
 )
 from nominal_refactor_advisor.codemod import (
+    AddClassBaseOperation,
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardTargetScope,
     AuthorityClaimResolutionPreflightDetail,
-    AutoRegisterStrategyFamilyConcept,
     AuthorityClaimSourceIndexResolver,
-    AddClassBaseOperation,
-    CodemodOperationPreflightError,
-    CodemodBackend,
-    CodemodPlanDocument,
-    CodemodPlanSequence,
-    CodemodPreflightStatus,
-    CancelableCompositionKind,
+    AutoRegisterStrategyFamilyConcept,
     CallSiteSelector,
     CallSiteTargetSelector,
+    CancelableCompositionKind,
     CarrierFieldProjection,
     ClassFamilyAuthorityConcept,
     ClassFamilyTargetSelector,
+    CodemodBackend,
+    CodemodOperationPreflightError,
+    CodemodPreflightStatus,
     CodemodSelectorContext,
-    CodemodSimulationReport,
-    CodemodSimulationWriter,
     CodemodSourceRevision,
     CodemodSourceRevisionError,
-    CodemodSourceSnapshot,
     ConvertManualRegistryToAutoregisterOperation,
-    DeriveAutoregisterInstanceViewOperation,
     CreateFileOperation,
-    FindingRecipeAuthorityClaimGate,
-    FindingRecipeActionKey,
-    FindingRecipeClassPlan,
-    FindingRecipeClassPlanReport,
-    FindingRecipeSynthesizer,
-    FindingRecipePlanBuilder,
-    FindingRecipePlanCandidate,
-    CurrentSnapshotRecipeBatchEvaluation,
-    CurrentSnapshotRecipeBatchResult,
-    FindingRecipePlanningHorizon,
-    FindingRecipeSynthesisRecord,
-    FindingRecipeSynthesisStatus,
-    FindingRecipeFrontierBudget,
-    FindingRecipeTrajectoryObstacleKind,
-    FindingEvidenceTargetSelector,
-    ExecutableRecipeEvaluation,
-    MissingRecipeEvaluatorEvaluation,
-    MappingSemanticMirrorRecipeStrategy,
-    SemanticDescentRecipeEvaluation,
     DeclareAuthorityOperation,
     DeleteClassAssignmentsOperation,
     DeleteModuleAssignmentsOperation,
     DeleteTargetOperation,
-    DispatchToPolymorphismOperation,
-    EnsureImportOperation,
+    DeriveAutoregisterInstanceViewOperation,
     DeriveCandidateCollectorOperation,
     DescendTypeKeyedBehaviorProjectionOperation,
+    DispatchToPolymorphismOperation,
+    EnsureImportOperation,
+    EraseDeadCompatibilityOperation,
     ExtractAuthorityOperation,
     ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation,
     FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
+    FindingEvidenceTargetSelector,
+    FindingRecipeActionKey,
+    FindingRecipeClassPlan,
+    FindingRecipeClassPlanReport,
+    FindingRecipePlanningHorizon,
+    FindingRecipeSynthesisStatus,
+    FindingRecipeSynthesizer,
     ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint,
     ForbiddenDispatchArchitectureGuardConstraint,
@@ -206,19 +210,22 @@ from nominal_refactor_advisor.codemod import (
     InsertAfterImportsOperation,
     InsertAfterTargetOperation,
     InsertBeforeTargetOperation,
-    MoveSymbolClosureToModuleOperation,
-    MoveSymbolsToModuleOperation,
-    RelocateSymbolsToModuleOperation,
-    RelocateSymbolsToNewModuleOperation,
+    MappingSemanticMirrorRecipeStrategy,
     ModuleImportScope,
     ModuleMoveDependencyReport,
     ModuleMoveObstacleKind,
+    MoveSymbolClosureToModuleOperation,
+    MoveSymbolsToModuleOperation,
+    PatchTargetOperation,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
+    PromoteExactLeafMethodsToAncestorOperation,
+    RecipeCallReplacement,
     RefactorConcept,
-    RefactorRecipe,
     RefactorRecipeOperation,
+    RelocateSymbolsToModuleOperation,
+    RelocateSymbolsToNewModuleOperation,
     RemoveClassBaseOperation,
     RemoveImportNamesOperation,
     ReplaceFieldsWithCarrierOperation,
@@ -226,28 +233,24 @@ from nominal_refactor_advisor.codemod import (
     ReplaceFunctionSignatureOperation,
     ReplaceModuleAssignmentOperation,
     ReplaceTargetOperation,
-    PatchTargetOperation,
     RewriteOperation,
-    PromoteExactLeafMethodsToAncestorOperation,
-    RecipeCallReplacement,
     SemanticCarrierConcept,
+    SemanticDescentRecipeEvaluation,
+    SourceCreationConflictPreflightDetail,
     SourceEditOrigin,
-    TupleDictReturnNominalizationConcept,
+    SourceIndexTargetSelector,
+    SourceRewriteContributor,
     SourceRewriteTarget,
     SourceRewriteTargetPreflightDetail,
-    SourceCreationConflictPreflightDetail,
-    SourceRewriteContributor,
+    SourceTextGeometry,
     SourceTextPatch,
     SourceTextReplacement,
     SourceTextSpanReplacement,
-    SourceTextGeometry,
-    SourceIndexTargetSelector,
     TargetSetExpressionSelector,
+    TupleDictReturnNominalizationConcept,
     codemod_class_plan_from_findings,
-    codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
-    simulate_planned_rewrites,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetector
@@ -3284,6 +3287,71 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     assert "return context.prepare(value)" in rewritten
     assert "class ParserAuthority:" in rewritten
     assert "class LegacyWorker(ParseContext):" in rewritten
+
+
+def test_adjacent_insertions_derive_top_level_and_nested_spacing(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class First:\n"
+        "    pass\n\n\n"
+        "class Owner:\n"
+        "    def first(self):\n"
+        "        pass\n\n"
+        "    def second(self):\n"
+        "        pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("insert-top-level").with_operation(
+                InsertAfterTargetOperation(
+                    target=SourceRewriteTarget(
+                        file_path=module_path.as_posix(),
+                        qualname="First",
+                    ),
+                    source="class Inserted:\n    pass",
+                )
+            ),
+        )
+    )
+    first_stage = document.simulate(snapshot)
+    first_source = first_stage.simulation.rewritten_sources[module_path.as_posix()]
+    nested_snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {module_path.as_posix(): first_source}
+    )
+    second_stage = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("insert-nested").with_operation(
+                InsertAfterTargetOperation(
+                    target=SourceRewriteTarget(
+                        file_path=module_path.as_posix(),
+                        qualname="Owner.first",
+                    ),
+                    source="    def inserted(self):\n        pass",
+                )
+            ),
+        )
+    ).simulate(nested_snapshot)
+    rewritten = second_stage.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        "class First:\n"
+        "    pass\n\n\n"
+        "class Inserted:\n"
+        "    pass\n\n\n"
+        "class Owner:" in rewritten
+    )
+    assert (
+        "    def first(self):\n"
+        "        pass\n\n"
+        "    def inserted(self):\n"
+        "        pass\n\n"
+        "    def second(self):" in rewritten
+    )
 
 
 def test_function_signature_replacement_preserves_async_nominal_identity(
@@ -8207,6 +8275,36 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_module_extraction_composes_import_and_assignment_at_one_anchor(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/support.py", "TOKEN = object()\n")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from .support import TOKEN\n\n"
+        "VALUE = TOKEN\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("VALUE",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("extract-assignment").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.simulation.rewritten_sources[destination_path.as_posix()] == (
+        "from .support import TOKEN\n\n"
+        "VALUE = TOKEN\n"
+    )
 
 
 def test_new_module_closure_extraction_derives_transitive_local_dependencies(
@@ -17405,7 +17503,7 @@ def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nominal_refactor_advisor.codemod as codemod_module
+    import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
 
     _write_module(
         tmp_path,
@@ -17426,8 +17524,8 @@ def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
             replacement_source="class Beta:\n    value = 2\n",
         )
     )
-    builder = codemod_module.FindingRecipePlanBuilder(())
-    monkeypatch.setattr(codemod_module, "id", lambda _value: 1, raising=False)
+    builder = codemod_runtime_module.FindingRecipePlanBuilder(())
+    monkeypatch.setattr(codemod_runtime_module, "id", lambda _value: 1, raising=False)
 
     alpha_edits = builder.physical_edits_for_recipe(alpha_recipe, snapshot)
     beta_edits = builder.physical_edits_for_recipe(beta_recipe, snapshot)
@@ -18644,7 +18742,7 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     assert "obsolete_function" not in rewritten
 
 
-def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers(
+def test_erase_dead_compatibility_operation_rejects_remaining_callers(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/legacy.py"
@@ -18665,9 +18763,17 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     source_by_path = {
         module.path.as_posix(): module.path.read_text() for module in modules
     }
-    document = CodemodPlanDocument.dead_compatibility_eraser(
-        source_path=module_path.as_posix(),
-        target_qualname="legacy_helper",
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("erase-dead-compatibility").with_operation(
+                EraseDeadCompatibilityOperation(
+                    target=SourceRewriteTarget(
+                        file_path=module_path.as_posix(),
+                        qualname="legacy_helper",
+                    )
+                )
+            ),
+        )
     )
 
     simulation = document.simulate(
@@ -18682,7 +18788,30 @@ def test_dead_compatibility_eraser_deletes_target_and_fails_on_remaining_callers
     assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
 
 
-def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
+def test_target_deletion_leaves_own_distinct_registered_operations() -> None:
+    assert (
+        RefactorRecipeOperation.__registry__["delete_target"]
+        is DeleteTargetOperation
+    )
+    assert (
+        RefactorRecipeOperation.__registry__["erase_dead_compatibility"]
+        is EraseDeadCompatibilityOperation
+    )
+    operation = EraseDeadCompatibilityOperation(
+        target=SourceRewriteTarget(
+            file_path="pkg/legacy.py",
+            qualname="legacy_helper",
+        ),
+        forbidden_call_names=("legacy_helper",),
+    )
+
+    restored = RefactorRecipeOperation.from_json_value(json_report_object(operation))
+
+    assert type(restored) is EraseDeadCompatibilityOperation
+    assert restored == operation
+
+
+def test_erase_dead_compatibility_operation_rejects_attribute_uses(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -18701,10 +18830,18 @@ def test_dead_compatibility_eraser_fails_on_remaining_attribute_callers(
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    document = CodemodPlanDocument.dead_compatibility_eraser(
-        source_path=module_path.as_posix(),
-        target_qualname="PreparedComplex.ligand_coords",
-        forbidden_attribute_names=("ligand_coords",),
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("erase-dead-compatibility").with_operation(
+                EraseDeadCompatibilityOperation(
+                    target=SourceRewriteTarget(
+                        file_path=module_path.as_posix(),
+                        qualname="PreparedComplex.ligand_coords",
+                    ),
+                    forbidden_attribute_names=("ligand_coords",),
+                )
+            ),
+        )
     )
 
     simulation = document.simulate(
@@ -19636,7 +19773,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nominal_refactor_advisor.codemod as codemod_module
+    import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
@@ -19742,7 +19879,11 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     }
     _FINDING_RECIPE_TEST_REGISTRY[weak_detector_id] = WeakGoalRunnerSynthesizer
     _FINDING_RECIPE_TEST_REGISTRY[strong_detector_id] = StrongGoalRunnerSynthesizer
-    monkeypatch.setattr(codemod_module, "apply_codemod_simulation", unexpected_apply)
+    monkeypatch.setattr(
+        codemod_runtime_module,
+        "apply_codemod_simulation",
+        unexpected_apply,
+    )
     try:
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
@@ -20233,7 +20374,7 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nominal_refactor_advisor.codemod as codemod_module
+    import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -20241,13 +20382,17 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
     original_source = _staged_class_family_source()
     _write_module(tmp_path, "pkg/mod.py", original_source)
     applied_reports: list[CodemodSimulationReport] = []
-    real_apply = codemod_module.apply_codemod_simulation
+    real_apply = codemod_runtime_module.apply_codemod_simulation
 
     def tracked_apply(report: CodemodSimulationReport) -> tuple[str, ...]:
         applied_reports.append(report)
         return real_apply(report)
 
-    monkeypatch.setattr(codemod_module, "apply_codemod_simulation", tracked_apply)
+    monkeypatch.setattr(
+        codemod_runtime_module,
+        "apply_codemod_simulation",
+        tracked_apply,
+    )
     terminal_guard_suite = ArchitectureGuardSuite(
         (
             ArchitectureGuardRule(
@@ -20284,7 +20429,7 @@ def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import nominal_refactor_advisor.codemod as codemod_module
+    import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
@@ -20296,7 +20441,7 @@ def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
         raise AssertionError("an incomplete migration must not write a partial stage")
 
     monkeypatch.setattr(
-        codemod_module,
+        codemod_runtime_module,
         "apply_codemod_simulation",
         unexpected_apply,
     )

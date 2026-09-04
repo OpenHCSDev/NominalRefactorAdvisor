@@ -40,6 +40,7 @@ from .codemod_payload import (
     codemod_payload_field,
 )
 from .codemod_semantics import RewriteOperation
+from .codemod_spacing import SourceInsertionBoundary
 from .collection_algebra import sorted_tuple
 from .json_reports import (
     DataclassJsonReport,
@@ -523,6 +524,7 @@ class SourceInsertion(PhysicalSourceEdit):
 
     insertion_line: int
     inserted_lines: tuple[str, ...] = ()
+    leading_boundary: SourceInsertionBoundary = SourceInsertionBoundary.PRESERVE
 
     @property
     def start_line(self) -> int:
@@ -572,14 +574,22 @@ class SourceInsertion(PhysicalSourceEdit):
         insertions: tuple["SourceInsertion", ...],
     ) -> "SourceInsertion":
         first = insertions[0]
-        unique_sources = tuple(
-            dict.fromkeys(insertion.inserted_lines for insertion in insertions)
-        )
+        unique_insertions: list[SourceInsertion] = []
+        seen_sources: set[tuple[str, ...]] = set()
+        for insertion in insertions:
+            if insertion.inserted_lines in seen_sources:
+                continue
+            seen_sources.add(insertion.inserted_lines)
+            unique_insertions.append(insertion)
+        coalesced_lines = unique_insertions[0].inserted_lines
+        for insertion in unique_insertions[1:]:
+            coalesced_lines = insertion.leading_boundary.coalesce_lines(
+                coalesced_lines,
+                insertion.inserted_lines,
+            )
         return replace(
             first,
-            inserted_lines=tuple(
-                line for source_lines in unique_sources for line in source_lines
-            ),
+            inserted_lines=coalesced_lines,
             rationale=_joined_rationales(
                 insertion.rationale for insertion in insertions
             ),

@@ -61,6 +61,7 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
 )
+from .codemod_spacing import SourceInsertionBoundary
 from .declaration_dependencies import (
     DeclarationDependencyProjection,
     ModuleLexicalDependencyProjection,
@@ -677,6 +678,13 @@ class SourceTopLevelDeclaration(
 
         return frozenset()
 
+    @property
+    @abstractmethod
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        """Return the canonical boundary before this moved declaration."""
+
+        raise NotImplementedError
+
     @cached_property
     def source_span(self) -> SourceNodeSpan:
         return SourceNodeSpan(
@@ -710,6 +718,11 @@ class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
 
     def name_span(self, source: str) -> SourceTextSpan:
         return NamedDeclarationSourceAuthority(self.node, source).name_span
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return SourceInsertionBoundary.TWO_BLANK_LINES
+
 
 @dataclass(frozen=True)
 class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
@@ -749,6 +762,10 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     @property
     def assigned_binding_names(self) -> frozenset[str]:
         return frozenset((self.name,))
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return SourceInsertionBoundary.ONE_BLANK_LINE
 
 
 @dataclass(frozen=True)

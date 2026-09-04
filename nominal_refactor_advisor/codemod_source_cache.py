@@ -22,8 +22,8 @@ from .class_index import (
     ClassFamilyIndex,
     build_class_family_index,
 )
-from .codemod import CodemodSourceSnapshot
 from .codemod_import_graph import SourceModuleImportGraph
+from .codemod_runtime import CodemodSourceSnapshot
 from .models import RefactorFinding
 from .source_index import (
     AstTargetNodeIndex,

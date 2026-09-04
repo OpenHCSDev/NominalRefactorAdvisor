@@ -39,7 +39,10 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanEdit,
     SourceSpanReplacement,
 )
-from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.codemod_spacing import (
+    DestinationInsertionSpacing,
+    SourceInsertionBoundary,
+)
 
 
 def _snapshot(tmp_path: Path, source: str) -> tuple[Path, CodemodSourceSnapshot]:
@@ -273,6 +276,36 @@ def test_insertion_owns_exact_deduplication_and_order(tmp_path: Path) -> None:
 
     assert len(coalesced) == 1
     assert coalesced[0].replacement_lines == ("ALPHA = 1\n", "BETA = 2\n")
+
+
+def test_insertion_boundary_normalizes_chained_same_anchor_edits(
+    tmp_path: Path,
+) -> None:
+    _, context = _snapshot(tmp_path, "")
+    file_path = next(iter(context.sources_by_file_path))
+    import_insertion = SourceInsertion(
+        file_path=file_path,
+        insertion_line=1,
+        inserted_lines=("from pkg.types import Alpha\n", "\n", "\n"),
+    )
+    assignment_insertion = SourceInsertion(
+        file_path=file_path,
+        insertion_line=1,
+        inserted_lines=("\n", "VALUE = Alpha\n"),
+        leading_boundary=SourceInsertionBoundary.ONE_BLANK_LINE,
+    )
+
+    coalesced = NominalSourceEdit.coalesced_by_declaration(
+        (import_insertion, assignment_insertion),
+        context,
+    )
+
+    assert len(coalesced) == 1
+    assert coalesced[0].replacement_lines == (
+        "from pkg.types import Alpha\n",
+        "\n",
+        "VALUE = Alpha\n",
+    )
 
 
 def test_import_mutation_owns_add_remove_union_without_parsing_insertions(

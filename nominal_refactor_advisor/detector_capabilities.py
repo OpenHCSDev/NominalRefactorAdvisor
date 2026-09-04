@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .codemod import FindingRecipeEvaluator, FindingRecipeSynthesizer
+from .codemod import FindingRecipeSynthesizer
+from .codemod_runtime import FindingRecipeEvaluator
 from .detectors import (
     IssueDetector,
     SemanticMirrorIssueDetector,
