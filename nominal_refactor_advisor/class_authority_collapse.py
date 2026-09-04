@@ -271,8 +271,204 @@ class ClassBaseBehaviorAuthority:
 
 
 @dataclass(frozen=True)
+class ClassAuthorityCollapseProofContext:
+    """Closed repository facts shared by class-authority collapse variants."""
+
+    modules_by_path: dict[str, ParsedModule]
+    class_index: ClassFamilyIndex
+    displaced: IndexedClass
+    replacement: IndexedClass
+    direct_children: tuple[IndexedClass, ...]
+
+    @classmethod
+    def require(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        class_index: ClassFamilyIndex,
+        *,
+        displaced_symbol: str,
+        replacement_symbol: str,
+    ) -> "ClassAuthorityCollapseProofContext":
+        displaced = cls.required_class(class_index, displaced_symbol)
+        replacement = cls.required_class(class_index, replacement_symbol)
+        if displaced_symbol == replacement_symbol:
+            raise ValueError("Class-authority collapse requires distinct classes")
+        if "." in displaced.qualname or "." in replacement.qualname:
+            raise ValueError("Class-authority collapse requires top-level classes")
+        modules_by_path = {module.file_path: module for module in parsed_modules}
+        if len(modules_by_path) != len(parsed_modules):
+            raise ValueError("Class-authority proof requires unique source modules")
+        direct_children = tuple(
+            cls.required_class(class_index, child_symbol)
+            for child_symbol in class_index.children_by_symbol.get(
+                displaced_symbol,
+                (),
+            )
+        )
+        if not direct_children:
+            raise ValueError("Displaced class authority has no direct children")
+        context = cls(
+            modules_by_path=modules_by_path,
+            class_index=class_index,
+            displaced=displaced,
+            replacement=replacement,
+            direct_children=direct_children,
+        )
+        context.require_closed_local_children()
+        context.require_reference_closure()
+        return context
+
+    @staticmethod
+    def required_class(
+        class_index: ClassFamilyIndex,
+        symbol: str,
+    ) -> IndexedClass:
+        indexed_class = class_index.class_for(symbol)
+        if indexed_class is None:
+            raise ValueError(f"Class authority {symbol!r} is unavailable")
+        return indexed_class
+
+    def required_module(self, indexed_class: IndexedClass) -> ParsedModule:
+        parsed_module = self.modules_by_path.get(indexed_class.file_path)
+        if parsed_module is None:
+            raise ValueError(
+                f"Source module {indexed_class.file_path!r} is unavailable"
+            )
+        return parsed_module
+
+    def require_closed_local_children(self) -> None:
+        for child in self.direct_children:
+            if child.file_path != self.displaced.file_path or "." in child.qualname:
+                raise ValueError(
+                    "Class-authority collapse requires a local top-level child cohort"
+                )
+            if child.node.keywords:
+                raise ValueError(
+                    f"Direct child {child.qualname!r} has class-creation semantics"
+                )
+
+    def require_reference_closure(self) -> None:
+        displaced = self.displaced
+        resolvers_by_path = {
+            file_path: ModuleClassReferenceResolver(module, self.class_index)
+            for file_path, module in self.modules_by_path.items()
+        }
+        allowed_reference_node_ids: set[int] = set()
+        for child in self.direct_children:
+            resolver = resolvers_by_path[child.file_path]
+            matching_bases = tuple(
+                base
+                for base in child.node.bases
+                if resolver.symbol_for_reference(base) == displaced.symbol
+            )
+            if len(matching_bases) != 1:
+                raise ValueError(
+                    f"Direct child {child.qualname!r} does not expose one exact "
+                    "displaced base reference"
+                )
+            allowed_reference_node_ids.update(
+                id(node)
+                for node in ast.walk(matching_bases[0])
+                if resolver.symbol_for_reference(node) == displaced.symbol
+            )
+
+        for parsed_module in self.modules_by_path.values():
+            resolver = resolvers_by_path[parsed_module.file_path]
+            if any(
+                resolver.symbol_for_reference(ast.Name(id=local_name, ctx=ast.Load()))
+                == displaced.symbol
+                for local_name in resolver.import_aliases
+            ):
+                raise ValueError(
+                    f"Class authority {displaced.qualname!r} has an imported "
+                    "repository reference"
+                )
+            if any(
+                origin.module_name == displaced.module_name
+                for origin in module_star_import_origins(parsed_module)
+            ):
+                raise ValueError(
+                    f"Class authority {displaced.qualname!r} has an open star-import "
+                    "boundary"
+                )
+            for node in ast.walk(parsed_module.module):
+                if (
+                    isinstance(node, (ast.Attribute, ast.Call, ast.Name, ast.Subscript))
+                    and resolver.symbol_for_reference(node) == displaced.symbol
+                    and id(node) not in allowed_reference_node_ids
+                ):
+                    raise ValueError(
+                        f"Class authority {displaced.qualname!r} has a non-base "
+                        "repository reference"
+                    )
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.value
+                    in {displaced.simple_name, displaced.qualname, displaced.symbol}
+                ):
+                    raise ValueError(
+                        f"Class authority {displaced.qualname!r} has a string "
+                        "repository reference"
+                    )
+
+    def obsolete_imports(self) -> tuple[ObsoleteClassAuthorityImport, ...]:
+        parsed_module = self.required_module(self.displaced)
+        displaced = self.displaced
+        displaced_nodes = tuple(ast.walk(displaced.node))
+        displaced_node_ids = {id(node) for node in displaced_nodes}
+        displaced_loaded_names = frozenset(
+            node.id
+            for node in displaced_nodes
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        remaining_loaded_names = frozenset(
+            node.id
+            for node in ast.walk(parsed_module.module)
+            if id(node) not in displaced_node_ids
+            and isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+        )
+        deleted_only_names = displaced_loaded_names - remaining_loaded_names
+        local_names_by_import: dict[tuple[str, str], list[str]] = {}
+        for statement in parsed_module.module.body:
+            if isinstance(statement, ast.Import):
+                bound_names = {
+                    alias.asname or alias.name.split(".", 1)[0]
+                    for alias in statement.names
+                }
+                if bound_names & deleted_only_names:
+                    raise ValueError(
+                        "Class-authority collapse cannot clean an obsolete module "
+                        "import"
+                    )
+                continue
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            module_name = f"{'.' * statement.level}{statement.module or ''}"
+            for alias in statement.names:
+                if alias.name == "*":
+                    continue
+                local_names_by_import.setdefault((module_name, alias.name), []).append(
+                    alias.asname or alias.name
+                )
+        obsolete: list[ObsoleteClassAuthorityImport] = []
+        for (module_name, imported_name), local_names in local_names_by_import.items():
+            removed_local_names = deleted_only_names.intersection(local_names)
+            if not removed_local_names:
+                continue
+            if len(removed_local_names) != len(local_names):
+                raise ValueError(
+                    "Class-authority collapse cannot partially clean a shared "
+                    "import binding"
+                )
+            obsolete.append(ObsoleteClassAuthorityImport(module_name, imported_name))
+        return tuple(obsolete)
+
+
+@dataclass(frozen=True)
 class RedundantClassAuthorityCollapseProof:
-    """Closed repository proof for one class-authority substitution."""
+    """Closed repository proof for merging unrelated equivalent authorities."""
 
     obsolete_imports: tuple[ObsoleteClassAuthorityImport, ...]
 
@@ -285,12 +481,14 @@ class RedundantClassAuthorityCollapseProof:
         displaced_symbol: str,
         replacement_symbol: str,
     ) -> "RedundantClassAuthorityCollapseProof":
-        displaced = cls._required_class(class_index, displaced_symbol)
-        replacement = cls._required_class(class_index, replacement_symbol)
-        if displaced_symbol == replacement_symbol:
-            raise ValueError("Class-authority collapse requires distinct classes")
-        if "." in displaced.qualname or "." in replacement.qualname:
-            raise ValueError("Class-authority collapse requires top-level classes")
+        context = ClassAuthorityCollapseProofContext.require(
+            parsed_modules,
+            class_index,
+            displaced_symbol=displaced_symbol,
+            replacement_symbol=replacement_symbol,
+        )
+        displaced = context.displaced
+        replacement = context.replacement
         related_symbols = frozenset(
             (
                 *class_index.ancestor_symbols(displaced_symbol),
@@ -301,14 +499,8 @@ class RedundantClassAuthorityCollapseProof:
             raise ValueError(
                 "Replacement and displaced class authorities are already related"
             )
-        modules_by_path = {module.file_path: module for module in parsed_modules}
-        if len(modules_by_path) != len(parsed_modules):
-            raise ValueError("Class-authority proof requires unique source modules")
-        displaced_module = cls._required_module(modules_by_path, displaced.file_path)
-        replacement_module = cls._required_module(
-            modules_by_path,
-            replacement.file_path,
-        )
+        displaced_module = context.required_module(displaced)
+        replacement_module = context.required_module(replacement)
         cls._require_standalone_authority(displaced)
         cls._require_standalone_authority(replacement)
         displaced_context = ClassBehaviorProofContext.from_declaration(
@@ -327,47 +519,7 @@ class RedundantClassAuthorityCollapseProof:
             displaced_context,
             replacement_context,
         )
-        direct_children = tuple(
-            cls._required_class(class_index, child_symbol)
-            for child_symbol in class_index.children_by_symbol.get(
-                displaced_symbol,
-                (),
-            )
-        )
-        if not direct_children:
-            raise ValueError("Displaced class authority has no direct children")
-        cls._require_closed_local_children(
-            displaced,
-            direct_children,
-        )
-        cls._require_reference_closure(
-            modules_by_path,
-            class_index,
-            displaced,
-            direct_children,
-        )
-        obsolete_imports = cls._obsolete_imports(displaced_module, displaced)
-        return cls(obsolete_imports=obsolete_imports)
-
-    @staticmethod
-    def _required_class(
-        class_index: ClassFamilyIndex,
-        symbol: str,
-    ) -> IndexedClass:
-        indexed_class = class_index.class_for(symbol)
-        if indexed_class is None:
-            raise ValueError(f"Class authority {symbol!r} is unavailable")
-        return indexed_class
-
-    @staticmethod
-    def _required_module(
-        modules_by_path: dict[str, ParsedModule],
-        file_path: str,
-    ) -> ParsedModule:
-        parsed_module = modules_by_path.get(file_path)
-        if parsed_module is None:
-            raise ValueError(f"Source module {file_path!r} is unavailable")
-        return parsed_module
+        return cls(obsolete_imports=context.obsolete_imports())
 
     @staticmethod
     def _require_standalone_authority(indexed_class: IndexedClass) -> None:
@@ -446,142 +598,81 @@ class RedundantClassAuthorityCollapseProof:
             )
         return methods_by_name
 
-    @staticmethod
-    def _require_closed_local_children(
-        displaced: IndexedClass,
-        direct_children: tuple[IndexedClass, ...],
-    ) -> None:
-        for child in direct_children:
-            if child.file_path != displaced.file_path or "." in child.qualname:
-                raise ValueError(
-                    "Class-authority collapse requires a local top-level child cohort"
-                )
-            if child.node.keywords:
-                raise ValueError(
-                    f"Direct child {child.qualname!r} has class-creation semantics"
-                )
 
-    @staticmethod
-    def _require_reference_closure(
-        modules_by_path: dict[str, ParsedModule],
+
+@dataclass(frozen=True)
+class IntermediateClassAuthorityCollapseProof:
+    """Closed proof for deleting a behavior-free direct intermediary."""
+
+    obsolete_imports: tuple[ObsoleteClassAuthorityImport, ...]
+
+    @classmethod
+    def require(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
         class_index: ClassFamilyIndex,
-        displaced: IndexedClass,
-        direct_children: tuple[IndexedClass, ...],
-    ) -> None:
-        resolvers_by_path = {
-            file_path: ModuleClassReferenceResolver(module, class_index)
-            for file_path, module in modules_by_path.items()
-        }
-        allowed_reference_node_ids: set[int] = set()
-        for child in direct_children:
-            resolver = resolvers_by_path[child.file_path]
-            matching_bases = tuple(
-                base
-                for base in child.node.bases
-                if resolver.symbol_for_reference(base) == displaced.symbol
-            )
-            if len(matching_bases) != 1:
-                raise ValueError(
-                    f"Direct child {child.qualname!r} does not expose one exact "
-                    "displaced base reference"
-                )
-            allowed_reference_node_ids.update(
-                id(node)
-                for node in ast.walk(matching_bases[0])
-                if resolver.symbol_for_reference(node) == displaced.symbol
-            )
-
-        for parsed_module in modules_by_path.values():
-            resolver = resolvers_by_path[parsed_module.file_path]
-            if any(
-                resolver.symbol_for_reference(ast.Name(id=local_name, ctx=ast.Load()))
-                == displaced.symbol
-                for local_name in resolver.import_aliases
-            ):
-                raise ValueError(
-                    f"Class authority {displaced.qualname!r} has an imported "
-                    "repository reference"
-                )
-            if any(
-                origin.module_name == displaced.module_name
-                for origin in module_star_import_origins(parsed_module)
-            ):
-                raise ValueError(
-                    f"Class authority {displaced.qualname!r} has an open star-import "
-                    "boundary"
-                )
-            for node in ast.walk(parsed_module.module):
-                if (
-                    isinstance(node, (ast.Attribute, ast.Call, ast.Name, ast.Subscript))
-                    and resolver.symbol_for_reference(node) == displaced.symbol
-                    and id(node) not in allowed_reference_node_ids
-                ):
-                    raise ValueError(
-                        f"Class authority {displaced.qualname!r} has a non-base "
-                        "repository reference"
-                    )
-                if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                    and node.value
-                    in {displaced.simple_name, displaced.qualname, displaced.symbol}
-                ):
-                    raise ValueError(
-                        f"Class authority {displaced.qualname!r} has a string "
-                        "repository reference"
-                    )
-
-    @staticmethod
-    def _obsolete_imports(
-        parsed_module: ParsedModule,
-        displaced: IndexedClass,
-    ) -> tuple[ObsoleteClassAuthorityImport, ...]:
-        displaced_nodes = tuple(ast.walk(displaced.node))
-        displaced_node_ids = {id(node) for node in displaced_nodes}
-        displaced_loaded_names = frozenset(
-            node.id
-            for node in displaced_nodes
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        *,
+        displaced_symbol: str,
+        replacement_symbol: str,
+    ) -> "IntermediateClassAuthorityCollapseProof":
+        context = ClassAuthorityCollapseProofContext.require(
+            parsed_modules,
+            class_index,
+            displaced_symbol=displaced_symbol,
+            replacement_symbol=replacement_symbol,
         )
-        remaining_loaded_names = frozenset(
-            node.id
-            for node in ast.walk(parsed_module.module)
-            if id(node) not in displaced_node_ids
-            and isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
+        displaced = context.displaced
+        replacement = context.replacement
+        if displaced.file_path != replacement.file_path:
+            raise ValueError(
+                "Intermediate class-authority collapse requires one source module"
+            )
+        if replacement_symbol not in displaced.resolved_base_symbols:
+            raise ValueError(
+                "Intermediate class-authority replacement must be a direct ancestor"
+            )
+        if tuple(displaced.resolved_base_symbols) != (replacement_symbol,):
+            raise ValueError(
+                "Intermediate class authority has additional nominal base mechanics"
+            )
+        if displaced.node.decorator_list or displaced.node.keywords:
+            raise ValueError(
+                f"Intermediate class authority {displaced.qualname!r} has "
+                "class-creation semantics"
+            )
+        executable_statements = tuple(
+            statement
+            for statement in displaced.node.body
+            if not isinstance(statement, ast.Pass)
+            and not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
         )
-        deleted_only_names = displaced_loaded_names - remaining_loaded_names
-        local_names_by_import: dict[tuple[str, str], list[str]] = {}
-        for statement in parsed_module.module.body:
-            if isinstance(statement, ast.Import):
-                bound_names = {
-                    alias.asname or alias.name.split(".", 1)[0]
-                    for alias in statement.names
-                }
-                if bound_names & deleted_only_names:
-                    raise ValueError(
-                        "Class-authority collapse cannot clean an obsolete module "
-                        "import"
-                    )
-                continue
-            if not isinstance(statement, ast.ImportFrom):
-                continue
-            module_name = f"{'.' * statement.level}{statement.module or ''}"
-            for alias in statement.names:
-                if alias.name == "*":
-                    continue
-                local_names_by_import.setdefault((module_name, alias.name), []).append(
-                    alias.asname or alias.name
-                )
-        obsolete: list[ObsoleteClassAuthorityImport] = []
-        for (module_name, imported_name), local_names in local_names_by_import.items():
-            removed_local_names = deleted_only_names.intersection(local_names)
-            if not removed_local_names:
-                continue
-            if len(removed_local_names) != len(local_names):
-                raise ValueError(
-                    "Class-authority collapse cannot partially clean a shared "
-                    "import binding"
-                )
-            obsolete.append(ObsoleteClassAuthorityImport(module_name, imported_name))
-        return tuple(obsolete)
+        if executable_statements:
+            raise ValueError(
+                f"Intermediate class authority {displaced.qualname!r} still owns "
+                "behavior or state"
+            )
+        displaced_context = ClassBehaviorProofContext.from_declaration(
+            context.required_module(displaced),
+            displaced,
+        )
+        base_authorities = ClassBaseBehaviorAuthority.from_declaration(
+            displaced_context
+        )
+        permitted_base_symbols = frozenset(
+            (replacement_symbol, "abc.ABC", "builtins.object")
+        )
+        unsupported_bases = tuple(
+            authority.qualified_name
+            for authority in base_authorities
+            if authority.qualified_name not in permitted_base_symbols
+        )
+        if unsupported_bases:
+            raise ValueError(
+                "Intermediate class authority has non-neutral external bases "
+                f"{unsupported_bases!r}"
+            )
+        return cls(obsolete_imports=context.obsolete_imports())

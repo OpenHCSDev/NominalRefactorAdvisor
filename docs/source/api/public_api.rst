@@ -91,6 +91,13 @@ Exact method and dataclass-field factoring operations re-prove their complete
 cohorts from one current-source witness and an explicit authority name.  Their
 generated claims and physical edits therefore do not serialize participant or
 member rosters.
+``PromoteClassMembersToAncestorOperation`` is the authored counterpart for a
+known ownership decision.  It accepts only the source class, its existing
+ancestor, and the selected member identities.  Current source supplies the
+member syntax, declaration order, insertion and deletion geometry, ancestry,
+and ownership-sensitive promotion checks.  The operation rejects cross-module
+moves, destination collisions, class-local field dependencies, name mangling,
+and hazardous method forms rather than asking the plan to carry derived source.
 Module-symbol moves likewise derive canonical source-module re-exports from the
 destination module and moved declarations.  They reject import cycles rather
 than accepting caller-authored import text that can disagree with the move.
@@ -183,6 +190,15 @@ inferred cleanup permissions.
 The operation is authored with both class targets because source equivalence
 cannot decide which semantic name is canonical; no detector guesses that
 direction.
+``CollapseIntermediateClassAuthorityOperation`` is the related but distinct
+leaf for an intermediary whose members have already moved to its direct
+ancestor in an earlier plan stage.  It requires the intermediary to be free of
+state, behavior, decorators, class keywords, non-neutral external bases, and
+non-base references.  It then derives the entire child cohort, replaces the
+base edge, removes obsolete imports, and deletes the empty declaration.  A
+``CodemodPlanSequence`` can therefore express member promotion followed by
+family collapse while each stage is re-proved against the previous stage's
+projected source.
 
 The ``closed_parameter_conveyor`` detector exposes a recipe only for a complete
 private call component that transports every field of one existing dataclass
@@ -317,10 +333,10 @@ them, and are not published as compatibility aliases.
    :members:
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites
+   :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CollapseIntermediateClassAuthorityOperation, PromoteClassMembersToAncestorOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites
 
 .. automodule:: nominal_refactor_advisor.class_authority_collapse
-   :members: ClassMethodBehaviorAuthority, RedundantClassAuthorityCollapseProof
+   :members: ClassMethodBehaviorAuthority, ClassAuthorityCollapseProofContext, RedundantClassAuthorityCollapseProof, IntermediateClassAuthorityCollapseProof
 
 Goal Trajectory Surface
 -----------------------

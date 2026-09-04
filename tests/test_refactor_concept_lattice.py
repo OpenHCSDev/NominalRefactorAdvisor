@@ -572,6 +572,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
     operation_types = (
         codemod.CollapseClosedParameterConveyorOperation,
         codemod.CollapseDeclaredCarrierExpansionOperation,
+        codemod.CollapseIntermediateClassAuthorityOperation,
         codemod.CollapseRedundantClassAuthorityOperation,
         codemod.ConvertManualRegistryToAutoregisterOperation,
         codemod.DeleteInheritedAutoRegisterConfigurationOperation,
@@ -587,6 +588,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.DispatchToPolymorphismOperation,
         codemod.FactorParallelMirroredLeafFamilyOperation,
         codemod.PromoteExactLeafMethodsToAncestorOperation,
+        codemod.PromoteClassMembersToAncestorOperation,
     )
 
     assert all(

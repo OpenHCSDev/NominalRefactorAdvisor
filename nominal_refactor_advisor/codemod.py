@@ -81,7 +81,10 @@ from .carrier_collapse import (
     ClosedCarrierCollapseComponent,
 )
 from .carrier_expansion import DeclaredCarrierExpansionBuilder
-from .class_authority_collapse import RedundantClassAuthorityCollapseProof
+from .class_authority_collapse import (
+    IntermediateClassAuthorityCollapseProof,
+    RedundantClassAuthorityCollapseProof,
+)
 from .class_index import (
     ClassFamilyIndex,
     ClassHeaderSourceSpan,
@@ -5578,16 +5581,29 @@ class ClassDeclarationPromotionClass:
 
 
 @dataclass(frozen=True)
-class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
+class ClassMemberPromotionStatement(ABC):
     """Class-body statement projected as a promotable member."""
 
-    __registry__: ClassVar[dict[str, type["ClassMemberPromotionStatement"]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-
-    registry_key_suffix: ClassVar[str] = "PromotionStatement"
     statement: ast.stmt
+
+    @classmethod
+    def for_statement(
+        cls,
+        statement: ast.stmt,
+    ) -> "ClassMemberPromotionStatement | None":
+        """Resolve one promotable member through its nominal statement family."""
+
+        matches = tuple(
+            projection
+            for projection_type in loaded_concrete_nominal_descendants(cls)
+            if (projection := projection_type(statement)).name is not None
+        )
+        if len(matches) > 1:
+            raise ValueError(
+                "Class member statement has competing promotable declaration "
+                f"projection; found {len(matches)}"
+            )
+        return matches[0] if matches else None
 
     @property
     @abstractmethod
@@ -5619,6 +5635,19 @@ class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
         """Return the complete source span removed with this member."""
 
         return self.end_line
+
+    def source_from(self, source: str) -> str:
+        """Return the complete member source selected by this declaration."""
+
+        return SourceLineSpan(self.start_line, self.end_line).source_from(source)
+
+    def require_safe_move(
+        self,
+        context: "ClassMemberMoveProofContext",
+    ) -> None:
+        """Reject ownership-sensitive syntax before moving this member."""
+
+        context.require_no_attached_leading_comment(self)
 
 
 @dataclass(frozen=True)
@@ -5655,6 +5684,31 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
                 return self.end_line + 1
         return self.end_line
 
+    def require_safe_move(
+        self,
+        context: "ClassMemberMoveProofContext",
+    ) -> None:
+        super().require_safe_move(context)
+        member_name = self.name
+        if member_name is None:
+            raise ValueError("Class declaration does not bind one direct member")
+        if member_name.startswith("__") and not member_name.endswith("__"):
+            raise ValueError(
+                f"Class member {member_name!r} has owner-dependent name mangling"
+            )
+        class_local_references = frozenset(
+            node.id
+            for node in ast.walk(self.statement)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in context.source_class_bound_names
+        )
+        if class_local_references:
+            raise ValueError(
+                f"Class member {member_name!r} has class-local references "
+                f"{tuple(sorted(class_local_references))!r}"
+            )
+
 
 @dataclass(frozen=True)
 class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
@@ -5686,6 +5740,228 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
             self.statement,
             SourceNodeDecoratorPolicy.INCLUDE,
         ).line_span.source_from(source)
+
+    def require_safe_move(
+        self,
+        context: "ClassMemberMoveProofContext",
+    ) -> None:
+        super().require_safe_move(context)
+        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError("Class method projection does not contain a method")
+        profile = ClassMethodPromotionSafetyProfile.from_method(
+            self.statement,
+            context.module_bound_names,
+            context.source_class_bound_names,
+            source_lines=context.source_lines,
+        )
+        if profile.hazards:
+            raise ValueError(
+                f"Class method {self.statement.name!r} has promotion hazards "
+                f"{tuple(hazard.value for hazard in profile.hazards)!r}"
+            )
+
+
+@dataclass(frozen=True)
+class ClassMemberMoveProofContext:
+    """Current-source facts shared by every selected class member."""
+
+    source_class: ResolvedClassTarget
+    destination_class: ResolvedClassTarget
+    source: str
+    module_bound_names: frozenset[str]
+    source_class_bound_names: frozenset[str]
+
+    @property
+    def source_lines(self) -> tuple[str, ...]:
+        return tuple(self.source.splitlines(keepends=True))
+
+    def require_no_attached_leading_comment(
+        self,
+        member: ClassMemberPromotionStatement,
+    ) -> None:
+        if member.start_line <= self.source_class.node.lineno + 1:
+            return
+        source_lines = self.source.splitlines()
+        member_line = source_lines[member.start_line - 1]
+        preceding_line = source_lines[member.start_line - 2]
+        indentation = member_line[: len(member_line) - len(member_line.lstrip())]
+        if preceding_line.startswith(indentation) and preceding_line.removeprefix(
+            indentation
+        ).startswith("#"):
+            raise ValueError(
+                f"Class member {member.name!r} has an attached leading comment"
+            )
+
+
+@dataclass(frozen=True)
+class ClassMemberMoveSelection:
+    """One source-proved member set moving upward to an existing authority."""
+
+    context: ClassMemberMoveProofContext
+    members: tuple[ClassMemberPromotionStatement, ...]
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        source_class: ResolvedClassTarget,
+        destination_class: ResolvedClassTarget,
+        member_names: tuple[str, ...],
+    ) -> "ClassMemberMoveSelection":
+        if source_class.file_path != destination_class.file_path:
+            raise ValueError(
+                "Class-member promotion currently requires one source module"
+            )
+        if source_class.target.target_id == destination_class.target.target_id:
+            raise ValueError("Class-member promotion requires distinct class owners")
+        source_symbol = source_class.required_symbol(snapshot)
+        destination_symbol = destination_class.required_symbol(snapshot)
+        if destination_symbol not in snapshot.required_class_family_index.ancestor_symbols(
+            source_symbol
+        ):
+            raise ValueError(
+                f"Destination class {destination_class.qualname!r} is not an ancestor "
+                f"of {source_class.qualname!r}"
+            )
+        source = snapshot.sources_by_file_path[source_class.file_path]
+        module = snapshot.module_nodes_by_file_path[source_class.file_path]
+        context = ClassMemberMoveProofContext(
+            source_class=source_class,
+            destination_class=destination_class,
+            source=source,
+            module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body),
+            source_class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                source_class.node.body
+            ),
+        )
+        requested_names = frozenset(member_names)
+        available_members: list[ClassMemberPromotionStatement] = []
+        for statement in source_class.node.body:
+            projection = ClassMemberPromotionStatement.for_statement(statement)
+            if projection is None or projection.name not in requested_names:
+                continue
+            available_members.append(projection)
+        resolved_names = tuple(member.name for member in available_members)
+        unresolved_names = requested_names - set(resolved_names)
+        if unresolved_names:
+            raise ValueError(
+                "Class-member promotion cannot resolve direct declarations "
+                f"{tuple(sorted(unresolved_names))!r}"
+            )
+        if len(resolved_names) != len(frozenset(resolved_names)):
+            raise ValueError("Class-member promotion found rebound member declarations")
+        members = tuple(available_members)
+        destination_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            destination_class.node.body
+        )
+        collisions = destination_names.intersection(member_names)
+        if collisions:
+            raise ValueError(
+                f"Destination class {destination_class.qualname!r} already binds "
+                f"{tuple(sorted(collisions))!r}"
+            )
+        for member in members:
+            member.require_safe_move(context)
+        return cls(context=context, members=members)
+
+    def source_edits(self, rationale: str) -> tuple[PhysicalSourceEdit, ...]:
+        source = self.context.source
+        destination = self.context.destination_class
+        body_authority = ClassBodySourceAuthority(destination.node, source)
+        insertion_line = SourceTextGeometry(source).line_number_for_offset(
+            body_authority.before_first_method_offset
+        )
+        selected_statement_ids = {id(member.statement) for member in self.members}
+        retained_statements = tuple(
+            statement
+            for statement in self.context.source_class.node.body
+            if id(statement) not in selected_statement_ids
+        )
+        class_would_be_empty = not retained_statements
+        return (
+            SourceInsertion(
+                file_path=destination.file_path,
+                insertion_line=insertion_line,
+                inserted_lines=SourceTargetEditor.source_lines(
+                    body_authority.member_source(
+                        tuple(member.source_from(source) for member in self.members)
+                    )
+                ),
+                rationale=rationale
+                or f"Promote class members into {destination.qualname!r}.",
+            ),
+            *(
+                SourceSpanEdit.from_replacement_lines(
+                    file_path=self.context.source_class.file_path,
+                    start_line=member.deletion_start_line(
+                        source,
+                        remove_leading_separator=False,
+                    ),
+                    end_line=member.deletion_end_line(source),
+                    replacement_lines=("    pass\n",)
+                    if class_would_be_empty and index == 0
+                    else (),
+                    rationale=rationale
+                    or (
+                        f"Remove promoted member {member.name!r} from "
+                        f"{self.context.source_class.qualname!r}."
+                    ),
+                )
+                for index, member in enumerate(self.members)
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteClassMembersToAncestorOperation(RepositorySourceReprovedOperation):
+    """Move selected direct members into one existing nominal ancestor."""
+
+    destination: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    member_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+
+    def __post_init__(self) -> None:
+        if not self.member_names:
+            raise ValueError("Class-member promotion requires member_names")
+        if len(frozenset(self.member_names)) != len(self.member_names):
+            raise ValueError("Class-member promotion requires unique member_names")
+        if any(
+            not name.isidentifier() or keyword_module.iskeyword(name)
+            for name in self.member_names
+        ):
+            raise ValueError("Class-member promotion requires Python identifiers")
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return (*super().referenced_source_targets(), self.destination)
+
+    def selection(self, snapshot: CodemodSourceSnapshot) -> ClassMemberMoveSelection:
+        return ClassMemberMoveSelection.require(
+            snapshot,
+            ResolvedClassTarget.from_rewrite_target(snapshot, self.target),
+            ResolvedClassTarget.from_rewrite_target(snapshot, self.destination),
+            self.member_names,
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.selection(snapshot).source_edits(self.rationale)
+
+    def current_source_authority_claims(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[AuthorityClaim, ...]:
+        selection = self.selection(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                selection.context.destination_class.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -7442,16 +7718,11 @@ class DirectClassBaseReplacementOperationABC(
             raise ValueError("Direct class-base replacement requires distinct classes")
         if "." in replacement.qualname:
             raise ValueError("Replacement class base must be a top-level declaration")
-        if replacement_symbol in frozenset(
-            (
-                *snapshot.required_class_family_index.ancestor_symbols(replaced_symbol),
-                *snapshot.required_class_family_index.descendant_symbols(
-                    replaced_symbol
-                ),
-            )
+        if replacement_symbol in snapshot.required_class_family_index.descendant_symbols(
+            replaced_symbol
         ):
             raise ValueError(
-                "Direct class-base replacement cannot use a related class authority"
+                "Direct class-base replacement cannot introduce an inheritance cycle"
             )
         child_symbols = snapshot.required_class_family_index.children_by_symbol.get(
             replaced_symbol,
@@ -7637,6 +7908,49 @@ class CollapseRedundantClassAuthorityOperation(DirectClassBaseReplacementOperati
                 target=self.target,
                 rationale=self.rationale_text(
                     "Delete the displaced redundant class authority."
+                ),
+            ).source_edits(snapshot),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseIntermediateClassAuthorityOperation(
+    DirectClassBaseReplacementOperationABC
+):
+    """Delete one behavior-free class between its children and direct ancestor."""
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        displaced = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
+        replacement = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            self.replacement_base,
+        )
+        proof = IntermediateClassAuthorityCollapseProof.require(
+            snapshot.parsed_modules,
+            snapshot.required_class_family_index,
+            displaced_symbol=displaced.required_symbol(snapshot),
+            replacement_symbol=replacement.required_symbol(snapshot),
+        )
+        return (
+            *self.direct_class_base_source_edits(snapshot),
+            *(
+                ModuleImportMutation.remove_names(
+                    file_path=displaced.file_path,
+                    module_name=obsolete_import.module_name,
+                    names=(obsolete_import.imported_name,),
+                    rationale=self.rationale_text(
+                        "Remove an import used only by the displaced intermediary."
+                    ),
+                )
+                for obsolete_import in proof.obsolete_imports
+            ),
+            *DeleteTargetOperation(
+                target=self.target,
+                rationale=self.rationale_text(
+                    "Delete the behavior-free intermediate class authority."
                 ),
             ).source_edits(snapshot),
         )

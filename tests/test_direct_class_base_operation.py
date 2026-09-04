@@ -178,7 +178,7 @@ def test_rejects_replacement_descending_from_displaced_authority(
 
     with pytest.raises(
         CodemodOperationPreflightError,
-        match="cannot use a related class authority",
+        match="cannot introduce an inheritance cycle",
     ):
         RefactorRecipe(recipe_id="related-authorities").with_operation(
             operation
