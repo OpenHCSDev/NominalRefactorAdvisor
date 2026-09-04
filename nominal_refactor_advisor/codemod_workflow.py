@@ -603,8 +603,23 @@ class CodemodFindingClassDelta:
     def count_status(self, status: CodemodFindingClassStatus) -> int:
         return sum(1 for change in self.changes if change.status is status)
 
+    @property
     def status_counts(self) -> JsonObject:
         return CodemodFindingClassStatus.counts(self.changes)
+
+    @property
+    def surviving_finding_ids(self) -> frozenset[str]:
+        return frozenset(
+            finding_id
+            for change in self.changes
+            for finding_id in change.after_ids
+        )
+
+    def fulfills_expected_removals(
+        self,
+        expected_removed_finding_ids: Iterable[str],
+    ) -> bool:
+        return self.surviving_finding_ids.isdisjoint(expected_removed_finding_ids)
 
     def changes_for_before_ids(
         self,
@@ -623,7 +638,7 @@ class CodemodFindingClassDelta:
             "moved_class_count": self.moved_class_count,
             "eliminated_class_count": self.eliminated_class_count,
             "finding_count_increase": self.finding_count_increase,
-            "status_counts": self.status_counts(),
+            "status_counts": self.status_counts,
             "changes": tuple(change.to_dict() for change in self.changes),
         }
 
@@ -1123,11 +1138,10 @@ class CodemodProjectedFindingReport:
 
 
 @dataclass(frozen=True)
-class CodemodClassPlanProjectedDelta:
+class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
     """Projected before/after finding-class result for one execution class plan."""
 
     class_plan: FindingRecipeClassPlan
-    changes: tuple[CodemodFindingClassChange, ...]
 
     @classmethod
     def from_class_plan(
@@ -1139,10 +1153,6 @@ class CodemodClassPlanProjectedDelta:
             class_plan=class_plan,
             changes=finding_class_delta.changes_for_before_ids(class_plan.finding_ids),
         )
-
-    @property
-    def status_counts(self) -> JsonObject:
-        return CodemodFindingClassStatus.counts(self.changes)
 
     @property
     def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
@@ -1159,14 +1169,8 @@ class CodemodClassPlanProjectedDelta:
 
     @property
     def fulfilled_expected_removals(self) -> bool:
-        surviving_ids = {
-            finding_id
-            for change in self.changes
-            for finding_id in change.after_ids
-        }
-        return not any(
-            finding_id in surviving_ids
-            for finding_id in self.class_plan.expected_removed_finding_ids
+        return self.fulfills_expected_removals(
+            self.class_plan.expected_removed_finding_ids
         )
 
     def to_dict(self) -> JsonObject:
@@ -1182,11 +1186,10 @@ class CodemodClassPlanProjectedDelta:
 
 
 @dataclass(frozen=True)
-class CodemodClassPlanSiteProjectedDelta:
+class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
     """Projected finding-class status for one planned site inside a class plan."""
 
     synthesis_record: FindingRecipeSynthesisRecord
-    changes: tuple[CodemodFindingClassChange, ...]
     expected_removed_finding_ids: tuple[str, ...] = ()
 
     @classmethod
@@ -1212,19 +1215,8 @@ class CodemodClassPlanSiteProjectedDelta:
         )
 
     @property
-    def status_counts(self) -> JsonObject:
-        return CodemodFindingClassStatus.counts(self.changes)
-
-    @property
     def fulfilled_expected_removal(self) -> bool:
-        surviving_ids = {
-            finding_id
-            for change in self.changes
-            for finding_id in change.after_ids
-        }
-        return not (
-            frozenset(self.expected_removed_finding_ids) & frozenset(surviving_ids)
-        )
+        return self.fulfills_expected_removals(self.expected_removed_finding_ids)
 
     def to_dict(self) -> JsonObject:
         return {

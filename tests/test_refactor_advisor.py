@@ -20467,6 +20467,18 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         CodemodClassPlanSiteProjectedDelta.__name__
         == "CodemodClassPlanSiteProjectedDelta"
     )
+    assert issubclass(CodemodClassPlanProjectedDelta, CodemodFindingClassDelta)
+    assert issubclass(
+        CodemodClassPlanSiteProjectedDelta,
+        CodemodFindingClassDelta,
+    )
+    assert all(
+        "status_counts" not in delta_type.__dict__
+        for delta_type in (
+            CodemodClassPlanProjectedDelta,
+            CodemodClassPlanSiteProjectedDelta,
+        )
+    )
     assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
     assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"
     assert FindingRecipeProofObstacle.__name__ == "FindingRecipeProofObstacle"

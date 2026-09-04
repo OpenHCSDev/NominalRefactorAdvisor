@@ -304,7 +304,9 @@ algebra over ``before_ids`` and ``after_ids``.  Finding-specific and
 target-specific names exist only in their JSON presentations.  Expected
 removals belong to ``CodemodFindingDelta``; a goal stage derives that delta from
 its progress and its class plan instead of retaining a second transition
-carrier.
+carrier.  Class-plan and site-plan projections likewise inherit
+``CodemodFindingClassDelta``; the shared delta owns change aggregation and each
+leaf derives its expected-removal scope from its nominal plan declaration.
 Target-free states that increase any complete-scan finding class relative to
 the starting state are recorded as unjustified-debt terminals rather than
 accepted as successful refactors.  The search may pass through intermediate
