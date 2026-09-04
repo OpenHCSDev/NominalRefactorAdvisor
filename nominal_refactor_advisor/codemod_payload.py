@@ -728,22 +728,37 @@ def _codemod_dataclass_field(
     *,
     default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
     default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    compare: bool = True,
+    repr: bool = True,
 ) -> PayloadValueT:
     if default is not _NO_PAYLOAD_FIELD_DEFAULT and (
         default_factory is not _NO_PAYLOAD_FIELD_DEFAULT
     ):
         raise TypeError("codemod dataclass fields cannot declare two defaults")
     if default is not _NO_PAYLOAD_FIELD_DEFAULT:
-        return cast(PayloadValueT, field(default=default, metadata=metadata))
+        return cast(
+            PayloadValueT,
+            field(
+                default=default,
+                metadata=metadata,
+                compare=compare,
+                repr=repr,
+            ),
+        )
     if default_factory is not _NO_PAYLOAD_FIELD_DEFAULT:
         return cast(
             PayloadValueT,
             field(
                 default_factory=cast(Callable[[], PayloadValueT], default_factory),
                 metadata=metadata,
+                compare=compare,
+                repr=repr,
             ),
         )
-    return cast(PayloadValueT, field(metadata=metadata))
+    return cast(
+        PayloadValueT,
+        field(metadata=metadata, compare=compare, repr=repr),
+    )
 
 
 def codemod_payload_field(
@@ -774,6 +789,8 @@ def json_report_field(
     flattened: bool = False,
     default: PayloadValueT | object = _NO_PAYLOAD_FIELD_DEFAULT,
     default_factory: Callable[[], PayloadValueT] | object = _NO_PAYLOAD_FIELD_DEFAULT,
+    compare: bool = True,
+    repr: bool = True,
 ) -> PayloadValueT:
     """Declare output-only JSON semantics on one dataclass field."""
 
@@ -787,6 +804,8 @@ def json_report_field(
         },
         default=default,
         default_factory=default_factory,
+        compare=compare,
+        repr=repr,
     )
 
 

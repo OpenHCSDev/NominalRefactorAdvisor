@@ -11718,13 +11718,6 @@ class FindingRecipeTrajectoryObstacle(DataclassJsonReport):
     finding_ids: tuple[str, ...]
     reason: str
 
-    def to_dict(self) -> JsonObject:
-        return {
-            **super().to_dict(),
-            "kind": self.kind.value,
-        }
-
-
 @dataclass(frozen=True)
 class FindingRecipeProofObstacle(CodemodJsonReport):
     """One nominal declaration's failed proof for a finding-backed recipe."""

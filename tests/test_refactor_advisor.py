@@ -18408,7 +18408,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
     )
     assert inspect.isabstract(CodemodRefactorGuardEvaluatedTerminal)
     assert inspect.isabstract(CodemodRefactorTrajectoryObstacle)
-    assert "to_dict" in CodemodRefactorGuardEvaluatedTerminal.__dict__
+    assert "to_dict" not in CodemodRefactorGuardEvaluatedTerminal.__dict__
     assert all(
         "to_dict" not in terminal_type.__dict__
         for terminal_type in (

@@ -47,6 +47,7 @@ from .codemod_payload import (
     CodemodJsonReport,
     DataclassJsonReport,
     JsonObject,
+    json_report_field,
     json_report_property,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
@@ -166,13 +167,6 @@ class CodemodRefactorTrajectoryBudget(DataclassJsonReport):
             raise ValueError("trajectory depth budget must be at least 1")
         if self.max_states < 1:
             raise ValueError("trajectory state budget must be at least 1")
-
-    def to_dict(self) -> JsonObject:
-        return {
-            **super().to_dict(),
-            "recipe_frontier": self.recipe_frontier.to_dict(),
-        }
-
 
 class CodemodProjectedScanMode(StrEnum):
     """Completeness contract for a projected post-codemod scan."""
@@ -536,7 +530,7 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
 
 @dataclass(frozen=True)
-class CodemodFindingClassDelta:
+class CodemodFindingClassDelta(DataclassJsonReport):
     """Class-level before/after projection for detecting moved smell classes."""
 
     changes: tuple[CodemodFindingClassChange, ...]
@@ -585,15 +579,15 @@ class CodemodFindingClassDelta:
             for obligation_class, class_findings in grouped_findings.items()
         }
 
-    @property
+    @json_report_property(field_name="class_change_count")
     def change_count(self) -> int:
         return len(self.changes)
 
-    @property
+    @json_report_property()
     def moved_class_count(self) -> int:
         return self.count_status(CodemodFindingClassStatus.MOVED)
 
-    @property
+    @json_report_property()
     def eliminated_class_count(self) -> int:
         return self.count_status(CodemodFindingClassStatus.ELIMINATED)
 
@@ -605,14 +599,14 @@ class CodemodFindingClassDelta:
             change for change in self.changes if change.finding_count_increase > 0
         )
 
-    @property
+    @json_report_property()
     def finding_count_increase(self) -> int:
         return sum(change.finding_count_increase for change in self.increased_changes)
 
     def count_status(self, status: CodemodFindingClassStatus) -> int:
         return sum(1 for change in self.changes if change.status is status)
 
-    @property
+    @json_report_property()
     def status_counts(self) -> JsonObject:
         return CodemodFindingClassStatus.counts(self.changes)
 
@@ -640,17 +634,6 @@ class CodemodFindingClassDelta:
             for change in self.changes
             if selected_ids.intersection(change.before_ids)
         )
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "class_change_count": self.change_count,
-            "moved_class_count": self.moved_class_count,
-            "eliminated_class_count": self.eliminated_class_count,
-            "finding_count_increase": self.finding_count_increase,
-            "status_counts": self.status_counts,
-            "changes": tuple(change.to_dict() for change in self.changes),
-        }
-
 
 @dataclass(frozen=True)
 class CodemodRefactorGoalProgress(CodemodFindingIdTransition):
@@ -803,10 +786,14 @@ class CodemodRefactorTrajectoryState:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGuardEvaluatedTerminal(CodemodJsonReport, ABC):
+class CodemodRefactorGuardEvaluatedTerminal(DataclassJsonReport, ABC):
     """Shared state projection for terminals evaluated by architecture guards."""
 
-    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    state: CodemodRefactorTrajectoryState = json_report_field(
+        included=False,
+        compare=False,
+        repr=False,
+    )
     guard_report: ArchitectureGuardReport
 
     @abstractmethod
@@ -814,7 +801,7 @@ class CodemodRefactorGuardEvaluatedTerminal(CodemodJsonReport, ABC):
         """Validate the leaf's nominal guard outcome."""
         raise NotImplementedError
 
-    @property
+    @json_report_property()
     def source_state_id(self) -> str:
         return self.state.source_state_id
 
@@ -822,16 +809,9 @@ class CodemodRefactorGuardEvaluatedTerminal(CodemodJsonReport, ABC):
     def stages(self) -> tuple[CodemodRefactorGoalStage, ...]:
         return self.state.stages
 
-    @property
+    @json_report_property()
     def stage_count(self) -> int:
         return self.state.depth
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_state_id": self.source_state_id,
-            "stage_count": self.stage_count,
-            "guard_report": self.guard_report.to_dict(),
-        }
 
 
 @dataclass(frozen=True)
@@ -853,45 +833,51 @@ class CodemodRefactorGuardRejectedTerminal(CodemodRefactorGuardEvaluatedTerminal
 
 
 @dataclass(frozen=True)
-class CodemodRefactorUnjustifiedDebtTerminal(CodemodJsonReport):
+class CodemodRefactorUnjustifiedDebtTerminal(DataclassJsonReport):
     """Target-free state that introduced an unproved finding obligation."""
 
-    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
+    state: CodemodRefactorTrajectoryState = json_report_field(
+        included=False,
+        compare=False,
+        repr=False,
+    )
     finding_class_changes: tuple[CodemodFindingClassChange, ...]
 
-    @property
+    @json_report_property()
+    def source_state_id(self) -> str:
+        return self.state.source_state_id
+
+    @json_report_property()
+    def stage_count(self) -> int:
+        return self.state.depth
+
+    @json_report_property()
     def finding_count_increase(self) -> int:
         return sum(
             change.finding_count_increase for change in self.finding_class_changes
         )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_state_id": self.state.source_state_id,
-            "stage_count": len(self.state.stages),
-            "finding_count_increase": self.finding_count_increase,
-            "finding_class_changes": tuple(
-                change.to_dict() for change in self.finding_class_changes
-            ),
-        }
-
-
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryDeadEnd(CodemodJsonReport):
+class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
     """One fully explored non-goal state with no executable transition."""
 
-    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
-    class_plan_report: FindingRecipeClassPlanReport = field(
+    state: CodemodRefactorTrajectoryState = json_report_field(
+        included=False,
+        compare=False,
+        repr=False,
+    )
+    class_plan_report: FindingRecipeClassPlanReport = json_report_field(
         compare=False,
         repr=False,
     )
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_state_id": self.state.source_state_id,
-            "depth": self.state.depth,
-            "class_plan_report": self.class_plan_report.to_dict(),
-        }
+    @json_report_property()
+    def source_state_id(self) -> str:
+        return self.state.source_state_id
+
+    @json_report_property()
+    def depth(self) -> int:
+        return self.state.depth
 
 
 @dataclass(frozen=True)
@@ -935,25 +921,25 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
         return next(iter(self.terminals))
 
 @dataclass(frozen=True)
-class CodemodRefactorGoalReport:
+class CodemodRefactorGoalReport(DataclassJsonReport):
     """Machine-readable result of a goal-directed staged codemod run."""
 
     stop_reason: CodemodWorkflowStopReason
     final_finding_count: int
     final_target_finding_ids: tuple[str, ...]
-    migration_type: type[RefactorConcept]
+    migration_type: type[RefactorConcept] = json_report_field(included=False)
     stages: tuple[CodemodRefactorGoalStage, ...]
     trajectory_proof: CodemodRefactorTrajectoryProof
 
-    @property
+    @json_report_property()
     def stage_count(self) -> int:
         return len(self.stages)
 
-    @property
+    @json_report_property()
     def total_rewrite_count(self) -> int:
         return sum(stage.rewrite_count for stage in self.stages)
 
-    @property
+    @json_report_property()
     def replay_sequence(self) -> CodemodPlanSequence:
         return CodemodPlanSequence(
             documents=tuple(
@@ -962,6 +948,10 @@ class CodemodRefactorGoalReport:
                 if stage.simulation.document.has_recipes
             )
         )
+
+    @json_report_property()
+    def migration(self) -> str:
+        return self.migration_type.concept_key()
 
     def to_markdown(self) -> str:
         lines = [
@@ -998,20 +988,6 @@ class CodemodRefactorGoalReport:
         for obstacle in self.trajectory_proof.obstacles:
             lines.extend(obstacle.markdown_lines())
         return "\n".join(lines)
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "migration": self.migration_type.concept_key(),
-            "stop_reason": self.stop_reason.value,
-            "stage_count": self.stage_count,
-            "total_rewrite_count": self.total_rewrite_count,
-            "final_finding_count": self.final_finding_count,
-            "final_target_finding_ids": self.final_target_finding_ids,
-            "replay_sequence": self.replay_sequence.to_dict(),
-            "trajectory_proof": self.trajectory_proof.to_dict(),
-            "stages": tuple(stage.to_dict() for stage in self.stages),
-        }
-
 
 @dataclass(frozen=True)
 class CodemodProjectedFindingReport:
