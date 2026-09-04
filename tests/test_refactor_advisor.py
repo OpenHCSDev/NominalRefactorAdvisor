@@ -13939,6 +13939,24 @@ def test_detects_typed_candidate_cast_boilerplate(tmp_path: Path) -> None:
     assert "Payload" in findings[0].summary
 
 
+def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "declarative_detector_class"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalDetector" in findings[0].summary
+    assert "LocalCandidate" in findings[0].summary
+    assert "candidate_collector" in findings[0].summary
+
+
 def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -13953,6 +13971,24 @@ def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None
     assert len(findings) == 1
     assert "LocalObservationDetector" in findings[0].summary
     assert "LocalObservationFamily" in findings[0].summary
+
+
+def test_detects_enum_metadata_table_parallel_to_enum_members(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalMode(Enum):\n    FIRST = "first"\n    SECOND = "second"\n\n    @property\n    def label(self):\n        return LOCAL_MODE_METADATA[self].label\n\n\nLOCAL_MODE_METADATA = {\n    LocalMode.FIRST: FirstMetadata(),\n    LocalMode.SECOND: SecondMetadata(),\n}\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "enum_metadata_table"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalMode" in findings[0].summary
+    assert "LOCAL_MODE_METADATA" in findings[0].summary
+    assert "label" in findings[0].summary
 
 
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
