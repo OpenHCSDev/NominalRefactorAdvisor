@@ -1003,6 +1003,23 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     assert graph_cache.load(foreign_identity).graph is None
 
 
+def test_analysis_cache_identity_preserves_typed_detector_config(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "module.py"
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    config = DetectorConfig(min_string_cases=5)
+
+    identity = AnalysisCacheIdentity.from_roots((tmp_path,), config)
+    changed_identity = AnalysisCacheIdentity.from_roots(
+        (tmp_path,),
+        replace(config, min_string_cases=6),
+    )
+
+    assert identity.config is config
+    assert identity.cache_token != changed_identity.cache_token
+
+
 def test_same_checkout_finding_rebase_reuses_validated_objects(
     tmp_path: Path,
 ) -> None:

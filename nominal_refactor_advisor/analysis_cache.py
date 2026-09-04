@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
 import hashlib
@@ -44,17 +44,11 @@ from .implementation_identity import declaration_implementation_module_names
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
 
-DetectorConfigSignatureValue: TypeAlias = int | tuple[int, ...]
-DetectorConfigSignature: TypeAlias = tuple[
-    tuple[str, DetectorConfigSignatureValue], ...
-]
-
-
 @dataclass(frozen=True)
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 16
+    version: int = 17
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -774,7 +768,7 @@ class DetectorRegistrySignature:
 class AnalysisCacheEntryContext:
     """Shared invalidation context for detector-output cache entries."""
 
-    config: DetectorConfigSignature
+    config: DetectorConfig
     detector_registry: DetectorRegistrySignature
     python_version: tuple[int, int]
     presentation_roots: tuple[str, ...] = field(
@@ -843,7 +837,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             for source_file in absolute_source_files
         )
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
@@ -865,7 +859,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         report_roots: tuple[Path, ...] = (),
     ) -> "AnalysisCacheIdentity":
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
@@ -938,7 +932,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         """Build the stable cache family from known source file paths."""
 
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
@@ -980,7 +974,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
 class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
     """Stable container identity for independently valid local detector bundles."""
 
-    config: DetectorConfigSignature
+    config: DetectorConfig
     python_version: tuple[int, int]
     source_file: ModuleSourceSignature
     presentation_roots: tuple[str, ...] = field(
@@ -1006,7 +1000,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
             else inferred_checkout_roots((module.path,))
         )
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             python_version=(sys.version_info.major, sys.version_info.minor),
             source_file=ModuleSourceSignature.from_module(module, effective_roots),
             presentation_roots=presentation_root_texts(effective_roots),
@@ -1029,7 +1023,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
             else inferred_checkout_roots((path,))
         )
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             python_version=(sys.version_info.major, sys.version_info.minor),
             source_file=ModuleSourceSignature(
                 path=checkout_relative_path(path, effective_roots),
@@ -1069,7 +1063,7 @@ class ContextualModuleAnalysisCacheIdentity(
             else inferred_checkout_roots((module.path,))
         )
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 (detector_type,)
             ),
@@ -1101,7 +1095,7 @@ class GlobalDetectorAnalysisCacheIdentity(
         presentation_roots: tuple[Path | str, ...] = (),
     ) -> "GlobalDetectorAnalysisCacheIdentity":
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 (detector_type,)
             ),
@@ -1132,7 +1126,7 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(
         presentation_roots: tuple[Path | str, ...] = (),
     ) -> "GlobalDetectorFamilyAnalysisCacheIdentity":
         return cls(
-            config=detector_config_signature(config),
+            config=config,
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 detector_types
             ),
@@ -2231,17 +2225,3 @@ class AnalysisFindingCache:
         if storage is None:
             return None
         return SourceFileSignatureCache(storage)
-
-
-def detector_config_signature(
-    config: DetectorConfig,
-) -> DetectorConfigSignature:
-    """Project detector config onto a typed persistent-cache signature."""
-
-    rows: list[tuple[str, DetectorConfigSignatureValue]] = []
-    for name, value in asdict(config).items():
-        if isinstance(value, tuple):
-            rows.append((name, tuple(int(item) for item in value)))
-        else:
-            rows.append((name, int(value)))
-    return tuple(sorted(rows))
