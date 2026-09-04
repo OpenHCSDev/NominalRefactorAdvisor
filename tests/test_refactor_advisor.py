@@ -3148,6 +3148,25 @@ def test_source_text_replacement_rejects_unexecutable_transformations(
         SourceTextReplacement(old_source=old_source, new_source=new_source)
 
 
+def test_source_text_replacement_rejects_overlapping_ambiguous_matches() -> None:
+    replacement = SourceTextReplacement(old_source="aa", new_source="value")
+
+    with pytest.raises(ValueError, match="Expected exactly one match.*found 2"):
+        replacement.apply_exactly_once("aaa", subject="overlapping-source")
+
+
+def test_source_text_patch_rejects_transformations_that_cancel_out() -> None:
+    patch = SourceTextPatch(
+        replacements=(
+            SourceTextReplacement(old_source="legacy", new_source="intermediate"),
+            SourceTextReplacement(old_source="intermediate", new_source="legacy"),
+        )
+    )
+
+    with pytest.raises(ValueError, match="leaves its source unchanged"):
+        patch.apply("legacy", subject="cancelled-patch")
+
+
 def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     tmp_path: Path,
 ) -> None:

@@ -749,13 +749,20 @@ class SourceTextReplacement(CodemodPayloadRecord):
     def exact_match_offset(self, source: str, *, subject: str) -> int:
         """Return the sole match offset or reject an unproved transformation."""
 
-        match_count = source.count(self.old_source)
+        match_count = 0
+        match_offset = -1
+        search_offset = 0
+        while (candidate_offset := source.find(self.old_source, search_offset)) >= 0:
+            if match_count == 0:
+                match_offset = candidate_offset
+            match_count += 1
+            search_offset = candidate_offset + 1
         if match_count != 1:
             raise ValueError(
                 f"Expected exactly one match for source text in {subject!r}; "
                 f"found {match_count}"
             )
-        return source.index(self.old_source)
+        return match_offset
 
 
 @dataclass(frozen=True, kw_only=True)
