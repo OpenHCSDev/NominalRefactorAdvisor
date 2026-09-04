@@ -227,6 +227,12 @@ declarations and derive their transitive movable source-local dependencies.
 The ``Move*`` operations target an indexed module; the ``Extract*`` operations
 create their destination atomically.  All four derive dependency imports,
 source re-exports, and insertion geometry from the current source snapshot.
+Closure moves retain their requested declaration objects alongside the full
+derived selection.  ``ModuleMoveDependencyReport`` projects requested, moved,
+and derived symbol names and counts from that one selection authority, making
+closure growth visible without persisting a second name roster.  Every closure
+operation declares a ``maximum_moved_symbol_count``; preflight rejects a
+source-derived closure beyond that explicit review bound.
 The extraction variants also derive the new-file revision contract.
 Annotated declarations require matching source and destination annotation
 evaluation modes.  A mismatch appears in the dependency report and fails

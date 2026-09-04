@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import builtins
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
@@ -55,7 +55,10 @@ from .codemod_source_edits import (
     SourceNodeSpan,
     SourceSpanDeletion,
 )
-from .declaration_dependencies import MovableDeclaration
+from .declaration_dependencies import (
+    DeclarationDependencyProjection,
+    MovableDeclaration,
+)
 from .semantic_match import single_item
 from .source_index import SourceFileDigest
 
@@ -822,6 +825,91 @@ class SourceTopLevelDeclarationIndex:
                 "Module symbol move requires unique top-level declaration names"
             )
         return declarations
+
+
+@dataclass(frozen=True)
+class SourceTopLevelSymbolMoveSelection:
+    """Exact movable declarations selected from one source module."""
+
+    source_path: str
+    requested_declarations: tuple[SourceTopLevelDeclaration, ...]
+    declarations: tuple[SourceTopLevelDeclaration, ...]
+
+    @property
+    def requested_symbol_qualnames(self) -> tuple[str, ...]:
+        return tuple(declaration.name for declaration in self.requested_declarations)
+
+    @property
+    def symbol_qualnames(self) -> tuple[str, ...]:
+        return tuple(declaration.name for declaration in self.declarations)
+
+    @classmethod
+    def exact(
+        cls,
+        source_path: str,
+        module: ast.Module,
+        symbol_qualnames: Iterable[str],
+    ) -> "SourceTopLevelSymbolMoveSelection":
+        declaration_index = SourceTopLevelDeclarationIndex(
+            source_path=source_path,
+            module=module,
+        )
+        declarations = declaration_index.required_declarations(symbol_qualnames)
+        return cls(
+            source_path=source_path,
+            requested_declarations=declarations,
+            declarations=declarations,
+        )
+
+    @classmethod
+    def dependency_closure(
+        cls,
+        source_path: str,
+        module: ast.Module,
+        root_symbol_qualnames: Iterable[str],
+    ) -> "SourceTopLevelSymbolMoveSelection":
+        """Derive movable transitive source dependencies from semantic roots."""
+
+        declaration_index = SourceTopLevelDeclarationIndex(
+            source_path=source_path,
+            module=module,
+        )
+        root_selection = cls.exact(
+            source_path,
+            module,
+            root_symbol_qualnames,
+        )
+        selected_by_name = {
+            declaration.name: declaration for declaration in root_selection.declarations
+        }
+        pending_declarations = deque(root_selection.declarations)
+        while pending_declarations:
+            declaration = pending_declarations.popleft()
+            source_dependencies = tuple(
+                name
+                for name in sorted(
+                    DeclarationDependencyProjection.from_declarations(
+                        (declaration.node,)
+                    ).names
+                )
+                if name not in selected_by_name
+            )
+            for name in source_dependencies:
+                dependency = declaration_index.declaration_if_unambiguous(name)
+                if dependency is None:
+                    continue
+                selected_by_name[dependency.name] = dependency
+                pending_declarations.append(dependency)
+        return cls(
+            source_path=source_path,
+            requested_declarations=root_selection.declarations,
+            declarations=tuple(
+                sorted(
+                    selected_by_name.values(),
+                    key=lambda declaration: declaration.node.lineno,
+                )
+            ),
+        )
 
 
 @dataclass(frozen=True)

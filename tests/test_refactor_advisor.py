@@ -7003,6 +7003,7 @@ def test_symbol_move_derives_explicit_import_from_proven_star_export(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Payload",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7057,6 +7058,7 @@ def test_symbol_move_does_not_invent_a_binding_from_an_export_policy(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7094,6 +7096,7 @@ def test_symbol_move_rejects_unproved_star_export_dependency(tmp_path: Path) -> 
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Payload",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7367,6 +7370,7 @@ def test_symbol_move_preserves_function_local_annotation_imports(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("normalize",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7706,6 +7710,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Root",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7714,6 +7719,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         snapshot,
         source_path.as_posix(),
     )
+    selection = operation.move_selection(snapshot, source_path.as_posix())
     simulation = RefactorRecipe("derive-symbol-closure").with_operation(
         operation
     ).simulate(snapshot)
@@ -7722,6 +7728,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     assert operation.to_dict()["root_symbol_qualnames"] == ("Root",)
     assert "destination_source" not in operation.to_dict()
     assert moved_symbol_qualnames == ("Base", "Helper", "Root")
+    assert selection.requested_symbol_qualnames == ("Root",)
     assert "class Unrelated" in simulation.simulation.rewritten_sources[
         source_path.as_posix()
     ]
@@ -7766,6 +7773,7 @@ def test_new_module_extraction_removes_terminal_declaration_spacing(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("_moved",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7796,6 +7804,7 @@ def test_new_module_extraction_rejects_explicit_annotation_policy_change(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
         destination_source="",
     )
@@ -7837,6 +7846,7 @@ def test_module_move_rejects_annotation_evaluation_mode_changes(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7884,6 +7894,7 @@ def test_module_move_allows_annotation_policy_difference_without_annotations(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -7920,9 +7931,12 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
+    dependency_report = operation.dependency_report(snapshot)
+    dependency_payload = dependency_report.to_dict()
     simulation = RefactorRecipe("move-symbol-closure").with_operation(
         operation
     ).simulate(snapshot)
@@ -7931,6 +7945,12 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
         snapshot,
         source_path.as_posix(),
     ) == ("Base", "Helper")
+    assert dependency_report.requested_symbol_names == ("Helper",)
+    assert dependency_report.derived_symbol_names == ("Base",)
+    assert dependency_payload["requested_symbol_count"] == 1
+    assert dependency_payload["moved_symbol_count"] == 2
+    assert dependency_payload["derived_symbol_count"] == 1
+    assert dependency_payload["maximum_moved_symbol_count"] == 32
     assert "class Base" in simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
@@ -7943,6 +7963,52 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_module_closure_move_rejects_derived_selection_beyond_declared_budget(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Base:\n"
+        "    pass\n\n\n"
+        "class Helper(Base):\n"
+        "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = MoveSymbolClosureToModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Helper",),
+        maximum_moved_symbol_count=1,
+        destination_path=destination_path.as_posix(),
+    )
+
+    report = operation.dependency_report(snapshot)
+
+    assert report.requested_symbol_names == ("Helper",)
+    assert report.moved_symbol_names == ("Base", "Helper")
+    assert report.closure_within_budget is False
+    assert report.is_clean is False
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="closure budget exceeded=2>1",
+    ):
+        RefactorRecipe("reject-expanded-closure").with_operation(operation).simulate(
+            snapshot
+        )
+
+    payload = operation.to_dict()
+    del payload["maximum_moved_symbol_count"]
+    with pytest.raises(
+        ValueError,
+        match="Expected non-negative integer field 'maximum_moved_symbol_count'",
+    ):
+        RefactorRecipeOperation.from_dict(payload)
 
 
 def test_symbol_move_removes_orphaned_end_of_file_separator(tmp_path: Path) -> None:
@@ -7995,6 +8061,7 @@ def test_existing_module_move_follows_destination_declaration_dependencies(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Derived",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -8114,6 +8181,7 @@ def test_new_module_closure_extraction_derives_assignment_dependencies(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("read_value",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -8192,6 +8260,7 @@ def test_module_move_closure_follows_a_source_binding_that_shadows_a_builtin(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -8234,6 +8303,7 @@ def test_module_move_rejects_a_destination_binding_that_shadows_a_builtin(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -8267,6 +8337,7 @@ def test_module_move_rejects_implicit_module_context_dependencies(
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("module_name",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
 
@@ -8318,6 +8389,7 @@ def test_new_module_closure_extraction_rejects_ambiguous_assignment_dependency(
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("read_value",),
+        maximum_moved_symbol_count=32,
         destination_path=destination_path.as_posix(),
     )
     document = CodemodPlanDocument(

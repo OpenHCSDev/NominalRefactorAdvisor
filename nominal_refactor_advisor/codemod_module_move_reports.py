@@ -12,6 +12,7 @@ from .codemod_import_bindings import (
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
+from .codemod_module_declarations import SourceTopLevelSymbolMoveSelection
 from .json_reports import (
     DataclassJsonReport,
     JsonObject,
@@ -136,9 +137,9 @@ class ModuleMoveObstacle:
 class ModuleMoveDependencyReport(DataclassJsonReport):
     """Dependency closure report for a multi-symbol module move."""
 
-    source_path: str
+    selection: SourceTopLevelSymbolMoveSelection = json_report_field(included=False)
     destination_path: str
-    moved_symbol_names: tuple[str, ...]
+    maximum_moved_symbol_count: int | None = json_report_field(omit_none=True)
     import_dependencies: tuple[ModuleMoveImportDependency, ...]
     destination_dependency_names: tuple[str, ...]
     destination_insertion_line: int
@@ -146,6 +147,44 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
     destination_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
     moved_annotation_count: int
     obstacles: tuple[ModuleMoveObstacle, ...] = json_report_field(included=False)
+
+    @json_report_property()
+    def source_path(self) -> str:
+        return self.selection.source_path
+
+    @json_report_property()
+    def requested_symbol_names(self) -> tuple[str, ...]:
+        return self.selection.requested_symbol_qualnames
+
+    @json_report_property()
+    def moved_symbol_names(self) -> tuple[str, ...]:
+        return self.selection.symbol_qualnames
+
+    @json_report_property()
+    def derived_symbol_names(self) -> tuple[str, ...]:
+        requested_names = frozenset(self.requested_symbol_names)
+        return tuple(
+            name for name in self.moved_symbol_names if name not in requested_names
+        )
+
+    @json_report_property()
+    def requested_symbol_count(self) -> int:
+        return len(self.requested_symbol_names)
+
+    @json_report_property()
+    def moved_symbol_count(self) -> int:
+        return len(self.moved_symbol_names)
+
+    @json_report_property()
+    def derived_symbol_count(self) -> int:
+        return len(self.derived_symbol_names)
+
+    @json_report_property()
+    def closure_within_budget(self) -> bool:
+        return (
+            self.maximum_moved_symbol_count is None
+            or self.moved_symbol_count <= self.maximum_moved_symbol_count
+        )
 
     @property
     def destination_import_dependencies(
@@ -185,7 +224,9 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
 
     @json_report_property()
     def is_clean(self) -> bool:
-        return not any(obstacle.is_present for obstacle in self.obstacles)
+        return self.closure_within_budget and not any(
+            obstacle.is_present for obstacle in self.obstacles
+        )
 
     def obstacle_details(
         self,
@@ -215,11 +256,17 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
             "Module symbol move dependency closure is incomplete",
             f"source={self.source_path!r}",
             f"destination={self.destination_path!r}",
+            f"requested={self.requested_symbol_names!r}",
             f"moved={self.moved_symbol_names!r}",
         ]
         parts.extend(
             obstacle.message for obstacle in self.obstacles if obstacle.is_present
         )
+        if not self.closure_within_budget:
+            parts.append(
+                "closure budget exceeded="
+                f"{self.moved_symbol_count}>{self.maximum_moved_symbol_count}"
+            )
         return "; ".join(parts)
 
     @json_report_property(flattened=True)

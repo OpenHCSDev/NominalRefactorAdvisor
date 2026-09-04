@@ -495,6 +495,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "rationale",
         "destination_path",
         "root_symbol_qualnames",
+        "maximum_moved_symbol_count",
     )
     assert tuple(
         binding.field_name
@@ -514,6 +515,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "rationale",
         "destination_path",
         "root_symbol_qualnames",
+        "maximum_moved_symbol_count",
         "destination_source",
     )
     assert (
@@ -530,6 +532,14 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
     )
     assert (
         "move_selection"
+        in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
+    )
+    assert (
+        "moved_symbol_count_limit"
+        in codemod.ExplicitModuleSymbolSelectionOperationABC.__dict__
+    )
+    assert (
+        "moved_symbol_count_limit"
         in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
     )
     assert "move_symbol_qualnames" in codemod.ModuleSymbolMoveOperation.__dict__

@@ -84,6 +84,7 @@ new module, provide only the semantic roots:
          "operation": "extract_symbol_closure_to_new_module",
          "file_path": "package/monolith.py",
          "root_symbol_qualnames": ["NominalSourceEdit"],
+         "maximum_moved_symbol_count": 12,
          "destination_path": "package/source_edits.py"
        }]
      }]
@@ -95,6 +96,13 @@ Review the simulated diff, then replace ``--codemod-simulate`` with
 source re-exports, repository-local consumer imports, and the new-file revision
 contract.  A non-movable or unresolved dependency fails preflight without
 writing either module.
+The dependency report preserves both ``requested_symbol_names`` and
+``moved_symbol_names`` and derives the added closure as
+``derived_symbol_names``.  Review that distinction before applying a move; a
+large derived closure is evidence that the selected declaration still depends
+on a broader authority boundary.  Closure moves require an explicit
+``maximum_moved_symbol_count`` and fail preflight if the derived selection
+exceeds that bound.
 
 Runtime imports remain runtime imports.  Imports declared under a recognised
 ``typing.TYPE_CHECKING`` guard retain that scope when the dependency is used

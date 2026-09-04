@@ -249,6 +249,9 @@ from .codemod_module_declarations import (
 from .codemod_module_declarations import (
     SourceTopLevelDeclarationIndex as SourceTopLevelDeclarationIndex,
 )
+from .codemod_module_declarations import (
+    SourceTopLevelSymbolMoveSelection as SourceTopLevelSymbolMoveSelection,
+)
 from .codemod_module_move_reports import (
     ModuleMoveDependencyReport as ModuleMoveDependencyReport,
 )
@@ -300,6 +303,7 @@ from .codemod_payload import (
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     PayloadValueCodec,
+    RequiredIntegerPayloadValueCodec,
     RequiredStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
@@ -7482,6 +7486,7 @@ class SourceTopLevelSymbolClosureMoveRequest:
 
     selection: SourceTopLevelSymbolMoveSelection
     destination_path: str
+    maximum_moved_symbol_count: int | None
     rationale: str = ""
 
     @property
@@ -7563,92 +7568,6 @@ class ClassAuthorityReferenceProof:
         )
 
 
-@dataclass(frozen=True)
-class SourceTopLevelSymbolMoveSelection:
-    """Exact movable declarations selected from one source module."""
-
-    source_path: str
-    declarations: tuple[SourceTopLevelDeclaration, ...]
-
-    @property
-    def symbol_qualnames(self) -> tuple[str, ...]:
-        return tuple(declaration.name for declaration in self.declarations)
-
-    @classmethod
-    def exact(
-        cls,
-        context: CodemodSelectorContext,
-        source_path: str,
-        symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
-        declaration_index = SourceTopLevelDeclarationIndex(
-            source_path=source_path,
-            module=context.module_nodes_by_file_path[source_path],
-        )
-        return cls(
-            source_path=source_path,
-            declarations=declaration_index.required_declarations(symbol_qualnames),
-        )
-
-    @classmethod
-    def dependency_closure(
-        cls,
-        context: CodemodSelectorContext,
-        source_path: str,
-        root_symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
-        """Derive movable transitive source dependencies from semantic roots."""
-
-        source_table = ModuleSymbolTable(
-            file_path=source_path,
-            source=context.sources_by_file_path[source_path],
-            module=context.module_nodes_by_file_path[source_path],
-        )
-        declaration_index = SourceTopLevelDeclarationIndex(
-            source_path=source_path,
-            module=context.module_nodes_by_file_path[source_path],
-        )
-        root_selection = cls.exact(
-            context,
-            source_path,
-            root_symbol_qualnames,
-        )
-        selected_by_name = {
-            declaration.name: declaration for declaration in root_selection.declarations
-        }
-        while True:
-            source_dependencies = frozenset(
-                name
-                for declaration in selected_by_name.values()
-                for name in (
-                    DeclarationDependencyProjection.from_declarations(
-                        (declaration.node,)
-                    ).names
-                )
-                if name in source_table.top_level_names and name not in selected_by_name
-            )
-            additions = tuple(
-                declaration
-                for name in sorted(source_dependencies)
-                if (declaration := declaration_index.declaration_if_unambiguous(name))
-                is not None
-            )
-            if not additions:
-                break
-            selected_by_name.update(
-                (declaration.name, declaration) for declaration in additions
-            )
-        return cls(
-            source_path=source_path,
-            declarations=tuple(
-                sorted(
-                    selected_by_name.values(),
-                    key=lambda declaration: declaration.node.lineno,
-                )
-            ),
-        )
-
-
 @dataclass(frozen=True, kw_only=True)
 class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier):
     """Dependency-checked move plan for a set of top-level symbols."""
@@ -7691,7 +7610,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             context.module_import_graph,
             source_table,
             destination_table,
-            declarations,
+            request,
         )
         source_binding_import_sources = cls._source_binding_import_sources(
             context,
@@ -7843,8 +7762,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph: SourceModuleImportGraph,
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
-        declarations: tuple[SourceTopLevelDeclaration, ...],
+        request: SourceTopLevelSymbolClosureMoveRequest,
     ) -> ModuleMoveDependencyReport:
+        selection = request.selection
+        declarations = selection.declarations
         moved_names = frozenset(declaration.name for declaration in declarations)
         moved_dependencies = DeclarationDependencyProjection.from_declarations(
             tuple(declaration.node for declaration in declarations)
@@ -7967,9 +7888,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
         )
         return ModuleMoveDependencyReport(
-            source_path=source_table.file_path,
+            selection=selection,
             destination_path=destination_table.file_path,
-            moved_symbol_names=tuple(declaration.name for declaration in declarations),
+            maximum_moved_symbol_count=request.maximum_moved_symbol_count,
             import_dependencies=import_dependencies,
             destination_dependency_names=destination_dependency_names,
             destination_insertion_line=destination_table.insertion_line_after_bindings(
@@ -8175,6 +8096,7 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
             SourceTopLevelSymbolClosureMoveRequest(
                 selection=self.move_selection(context, source_path),
                 destination_path=destination_path,
+                maximum_moved_symbol_count=self.moved_symbol_count_limit(),
                 rationale=self.rationale,
             ),
             context=context,
@@ -8199,6 +8121,12 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
 
         raise NotImplementedError
 
+    @abstractmethod
+    def moved_symbol_count_limit(self) -> int | None:
+        """Return the explicit closure bound, or no bound for an exact selection."""
+
+        raise NotImplementedError
+
     def move_source_edits(
         self,
         context: CodemodSourceSnapshot,
@@ -8214,14 +8142,17 @@ class ExplicitModuleSymbolSelectionOperationABC(ModuleSymbolMoveOperation, ABC):
         StringArrayPayloadValueCodec()
     )
 
+    def moved_symbol_count_limit(self) -> None:
+        return None
+
     def move_selection(
         self,
         context: CodemodSelectorContext,
         source_path: str,
     ) -> SourceTopLevelSymbolMoveSelection:
         return SourceTopLevelSymbolMoveSelection.exact(
-            context,
             source_path,
+            context.module_nodes_by_file_path[source_path],
             self.symbol_qualnames,
         )
 
@@ -8236,6 +8167,12 @@ class DependencyClosureModuleSymbolSelectionOperationABC(
     root_symbol_qualnames: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec()
     )
+    maximum_moved_symbol_count: int = codemod_payload_field(
+        RequiredIntegerPayloadValueCodec()
+    )
+
+    def moved_symbol_count_limit(self) -> int:
+        return self.maximum_moved_symbol_count
 
     def move_selection(
         self,
@@ -8243,8 +8180,8 @@ class DependencyClosureModuleSymbolSelectionOperationABC(
         source_path: str,
     ) -> SourceTopLevelSymbolMoveSelection:
         return SourceTopLevelSymbolMoveSelection.dependency_closure(
-            context,
             source_path,
+            context.module_nodes_by_file_path[source_path],
             self.root_symbol_qualnames,
         )
 
