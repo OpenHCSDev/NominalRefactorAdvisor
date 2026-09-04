@@ -885,15 +885,16 @@ class CodemodRefactorTrajectoryState:
 
 
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryTerminal:
-    """One exact goal state reached by a completely explored trajectory graph."""
+class CodemodRefactorGuardEvaluatedTerminal(CodemodJsonReport, ABC):
+    """Shared state projection for terminals evaluated by architecture guards."""
 
     state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
     guard_report: ArchitectureGuardReport
 
+    @abstractmethod
     def __post_init__(self) -> None:
-        if not self.guard_report.is_clean:
-            raise ValueError("proved trajectory terminal requires clean guard evidence")
+        """Validate the leaf's nominal guard outcome."""
+        raise NotImplementedError
 
     @property
     def source_state_id(self) -> str:
@@ -903,27 +904,34 @@ class CodemodRefactorTrajectoryTerminal:
     def stages(self) -> tuple[CodemodRefactorGoalStage, ...]:
         return self.state.stages
 
+    @property
+    def stage_count(self) -> int:
+        return self.state.depth
+
     def to_dict(self) -> JsonObject:
         return {
             "source_state_id": self.source_state_id,
-            "stage_count": len(self.stages),
+            "stage_count": self.stage_count,
             "guard_report": self.guard_report.to_dict(),
         }
 
 
 @dataclass(frozen=True)
-class CodemodRefactorGuardRejectedTerminal:
+class CodemodRefactorTrajectoryTerminal(CodemodRefactorGuardEvaluatedTerminal):
+    """One exact goal state reached by a completely explored trajectory graph."""
+
+    def __post_init__(self) -> None:
+        if not self.guard_report.is_clean:
+            raise ValueError("proved trajectory terminal requires clean guard evidence")
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGuardRejectedTerminal(CodemodRefactorGuardEvaluatedTerminal):
     """One target-free source state rejected by terminal architecture guards."""
 
-    state: CodemodRefactorTrajectoryState = field(compare=False, repr=False)
-    guard_report: ArchitectureGuardReport
-
-    def to_dict(self) -> JsonObject:
-        return {
-            "source_state_id": self.state.source_state_id,
-            "stage_count": len(self.state.stages),
-            "guard_report": self.guard_report.to_dict(),
-        }
+    def __post_init__(self) -> None:
+        if self.guard_report.is_clean:
+            raise ValueError("guard-rejected terminal requires guard violations")
 
 
 @dataclass(frozen=True)

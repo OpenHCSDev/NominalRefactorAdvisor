@@ -18201,6 +18201,8 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
 def test_trajectory_status_members_own_proof_classification() -> None:
     from nominal_refactor_advisor.codemod_workflow import (
         CodemodRefactorDepthBudgetObstacle,
+        CodemodRefactorGuardEvaluatedTerminal,
+        CodemodRefactorGuardRejectedTerminal,
         CodemodRefactorTrajectoryProof,
         CodemodRefactorTrajectoryState,
         CodemodRefactorTrajectoryTerminal,
@@ -18215,6 +18217,23 @@ def test_trajectory_status_members_own_proof_classification() -> None:
         state=state,
         guard_report=ArchitectureGuardSuite().clean_report(),
     )
+    assert inspect.isabstract(CodemodRefactorGuardEvaluatedTerminal)
+    assert "to_dict" in CodemodRefactorGuardEvaluatedTerminal.__dict__
+    assert all(
+        "to_dict" not in terminal_type.__dict__
+        for terminal_type in (
+            CodemodRefactorTrajectoryTerminal,
+            CodemodRefactorGuardRejectedTerminal,
+        )
+    )
+    with pytest.raises(
+        ValueError,
+        match="guard-rejected terminal requires guard violations",
+    ):
+        CodemodRefactorGuardRejectedTerminal(
+            state=state,
+            guard_report=ArchitectureGuardSuite().clean_report(),
+        )
     proof_fields = {
         "initial_source_state_id": "initial",
         "budget": CodemodRefactorTrajectoryBudget(),
