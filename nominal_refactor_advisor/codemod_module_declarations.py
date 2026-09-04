@@ -805,14 +805,14 @@ class SourceTopLevelDeclarationIndex:
     def required_declaration(self, name: str) -> SourceTopLevelDeclaration:
         if "." in name:
             raise ValueError(
-                "Module symbol moves only support module-level declarations; "
+                "Top-level declaration lookup requires a module-level name; "
                 f"got {name!r}"
             )
         declaration = self.declaration_if_unambiguous(name)
         if declaration is None:
             raise ValueError(
-                "Module symbol move requires one unambiguous movable top-level "
-                f"declaration for {name!r}"
+                "Top-level declaration lookup requires one unambiguous movable "
+                f"top-level declaration for {name!r}"
             )
         return declaration
 

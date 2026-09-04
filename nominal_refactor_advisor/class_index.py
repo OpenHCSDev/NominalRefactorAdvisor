@@ -2774,7 +2774,7 @@ class CompactNominalBindingKind(StrEnum):
     """Kinds of exact module bindings and their exported-alias behavior."""
 
     IMPORT = "import", True
-    LOCAL_CLASS = "local_class", False
+    LOCAL_DECLARATION = "local_declaration", False
 
     projects_as_import_alias: bool
 
@@ -2962,11 +2962,11 @@ class ModuleNominalBindingAuthority:
                 for alias in statement.names
                 if alias.name != "*"
             }
-        if isinstance(statement, ast.ClassDef):
+        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             return {
                 statement.name: CompactNominalBinding(
                     qualified_name=f"{self.parsed_module.module_name}.{statement.name}",
-                    kind=CompactNominalBindingKind.LOCAL_CLASS,
+                    kind=CompactNominalBindingKind.LOCAL_DECLARATION,
                 )
             }
         if not isinstance(statement, ast.Assign | ast.AnnAssign):

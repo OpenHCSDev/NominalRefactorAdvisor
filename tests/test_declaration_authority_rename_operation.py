@@ -10,10 +10,12 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
+    CodemodPlanDocument,
+    CodemodPlanSequence,
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RenameClassAuthorityOperation,
+    RenameTopLevelDeclarationAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -48,8 +50,8 @@ def _write_fixture(root: Path, *, trailing_source: str = "") -> Path:
     )
 
 
-def _operation(root: Path) -> RenameClassAuthorityOperation:
-    return RenameClassAuthorityOperation(
+def _operation(root: Path) -> RenameTopLevelDeclarationAuthorityOperation:
+    return RenameTopLevelDeclarationAuthorityOperation(
         target=SourceRewriteTarget(
             file_path=(root / "pkg/family.py").as_posix(),
             qualname="Legacy",
@@ -76,7 +78,7 @@ def test_renames_class_authority_without_touching_shadowed_names(
 
     assert result.is_clean is True
     assert payload == {
-        "operation": "rename_class_authority",
+        "operation": "rename_top_level_declaration_authority",
         "file_path": module_path.as_posix(),
         "target_qualname": "Legacy",
         "rationale": "",
@@ -111,6 +113,182 @@ def test_renames_class_authority_without_touching_shadowed_names(
         text=True,
     )
     assert json.loads(completed.stdout) == [3, True, 4, 6, True, 5]
+
+
+def test_renames_function_authority_across_repository_consumers(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    declaration_path = _write_module(
+        tmp_path,
+        "pkg/functions.py",
+        "__all__ = ('legacy',)\n\n"
+        "def decorate(function):\n"
+        "    return function\n\n\n"
+        "@decorate\n"
+        "def legacy(\n"
+        "    value: int,\n"
+        ") -> int:\n"
+        "    if value <= 0:\n"
+        "        return 0\n"
+        "    return legacy(value - 1) + 1\n\n\n"
+        "def shadowed(legacy):\n"
+        "    return legacy\n",
+    )
+    reexport_path = _write_module(
+        tmp_path,
+        "pkg/api.py",
+        "from pkg.functions import legacy as legacy\n\n__all__ = ('legacy',)\n",
+    )
+    consumer_path = _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from pkg.api import legacy\n"
+        "import pkg.api as api\n\n"
+        "RESULT = (legacy(3), api.legacy(2))\n",
+    )
+    operation = RenameTopLevelDeclarationAuthorityOperation(
+        target=SourceRewriteTarget(
+            file_path=declaration_path.as_posix(),
+            qualname="legacy",
+        ),
+        new_name="canonical",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    result = (
+        RefactorRecipe(recipe_id="rename-function-authority")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
+    rewritten = result.simulation.rewritten_sources
+
+    assert "def canonical(\n" in rewritten[declaration_path.as_posix()]
+    assert "return canonical(value - 1) + 1" in rewritten[declaration_path.as_posix()]
+    assert (
+        "def shadowed(legacy):\n    return legacy"
+        in rewritten[declaration_path.as_posix()]
+    )
+    assert (
+        "from pkg.functions import canonical as canonical"
+        in rewritten[reexport_path.as_posix()]
+    )
+    assert "from pkg.api import canonical" in rewritten[consumer_path.as_posix()]
+    assert (
+        "RESULT = (canonical(3), api.canonical(2))"
+        in rewritten[consumer_path.as_posix()]
+    )
+
+    for file_path, source in rewritten.items():
+        Path(file_path).write_text(source, encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", "from pkg.consumer import RESULT; print(RESULT)"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "(3, 2)"
+
+
+def test_renames_async_function_declaration(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/functions.py",
+        "async def legacy(value: int) -> int:\n"
+        "    return value\n\n\n"
+        "REFERENCE = legacy\n",
+    )
+    operation = RenameTopLevelDeclarationAuthorityOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="legacy",
+        ),
+        new_name="canonical",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    result = (
+        RefactorRecipe(recipe_id="rename-async-function")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
+    rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert "async def canonical(value: int) -> int:" in rewritten
+    assert "REFERENCE = canonical" in rewritten
+
+
+def test_chains_declaration_renames_against_each_prior_source_state(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/functions.py",
+        "def legacy(value: int) -> int:\n"
+        "    return value\n\n\n"
+        "REFERENCE = legacy\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    def rename_stage(old_name: str, new_name: str) -> CodemodPlanDocument:
+        return CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(recipe_id=f"rename-{old_name}").with_operation(
+                    RenameTopLevelDeclarationAuthorityOperation(
+                        target=SourceRewriteTarget(
+                            file_path=module_path.as_posix(),
+                            qualname=old_name,
+                        ),
+                        new_name=new_name,
+                    )
+                ),
+            )
+        )
+
+    sequence = CodemodPlanSequence(
+        documents=(
+            rename_stage("legacy", "intermediate"),
+            rename_stage("intermediate", "canonical"),
+        )
+    )
+    replayed = CodemodPlanSequence.from_json_value(json_report_object(sequence))
+
+    result = replayed.simulate(snapshot)
+    rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert result.is_clean is True
+    assert result.stage_count == 2
+    assert "def canonical(value: int) -> int:" in rewritten
+    assert "REFERENCE = canonical" in rewritten
+    assert "legacy" not in rewritten
+    assert "intermediate" not in rewritten
+
+
+def test_rejects_nested_declaration_target(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    module_path = _write_module(
+        tmp_path,
+        "pkg/functions.py",
+        "class Container:\n"
+        "    def legacy(self) -> int:\n"
+        "        return 1\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RenameTopLevelDeclarationAuthorityOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="Container.legacy",
+        ),
+        new_name="canonical",
+    )
+
+    with pytest.raises(CodemodOperationPreflightError, match="top-level target"):
+        RefactorRecipe(recipe_id="reject-nested-declaration").with_operation(
+            operation
+        ).simulate(snapshot)
 
 
 def test_renames_repository_imports_aliases_and_annotations(tmp_path: Path) -> None:
@@ -228,7 +406,7 @@ def test_rejects_star_import_that_would_gain_new_public_name(tmp_path: Path) -> 
     )
     _write_module(tmp_path, "pkg/consumer.py", "from pkg.family import *\n")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    operation = RenameClassAuthorityOperation(
+    operation = RenameTopLevelDeclarationAuthorityOperation(
         target=SourceRewriteTarget(
             file_path=family_path.as_posix(),
             qualname="_Legacy",

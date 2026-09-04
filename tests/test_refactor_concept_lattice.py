@@ -589,7 +589,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.FactorParallelMirroredLeafFamilyOperation,
         codemod.PromoteExactLeafMethodsToAncestorOperation,
         codemod.PromoteClassMembersToAncestorOperation,
-        codemod.RenameClassAuthorityOperation,
+        codemod.RenameTopLevelDeclarationAuthorityOperation,
     )
 
     assert all(
@@ -768,6 +768,11 @@ def test_class_body_source_authority_owns_insertion_geometry() -> None:
         codemod.ClassHeaderSpanSourceAuthority,
         codemod.ClassSourceAuthority,
     )
+    assert issubclass(
+        codemod.ClassSourceAuthority,
+        codemod.NamedDeclarationSourceAuthority,
+    )
+    assert "name_span" not in codemod.ClassHeaderSpanSourceAuthority.__dict__
     assert issubclass(codemod.ClassBodySourceAuthority, codemod.ClassSourceAuthority)
     assert "before_first_method_offset" in codemod.ClassBodySourceAuthority.__dict__
     assert "member_source" in codemod.ClassBodySourceAuthority.__dict__

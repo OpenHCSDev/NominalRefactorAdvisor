@@ -152,10 +152,10 @@ class StringizedAnnotationSurface:
     def resolves_module_name(
         self,
         name: str,
-        target_class: ast.ClassDef,
+        self_binding_owner: ast.ClassDef | None,
     ) -> bool:
         return all(
-            owner is target_class
+            owner is self_binding_owner
             or name
             not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
             for owner in self.owner_classes

@@ -114,11 +114,52 @@ class PythonExpressionSourceFormatter:
 
 
 @dataclass(frozen=True)
-class ClassSourceAuthority:
+class NamedDeclarationSourceAuthority:
+    """Exact source geometry shared by named class and function declarations."""
+
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    source: str
+
+    @cached_property
+    def name_span(self) -> SourceTextSpan:
+        """Return the exact identifier token that declares this source name."""
+
+        geometry = SourceTextGeometry(self.source)
+        declaration_tokens = iter(
+            token
+            for token in geometry.tokens
+            if token.start[0] >= self.node.lineno
+            and token.start[0] <= (self.node.end_lineno or self.node.lineno)
+        )
+        declaration_keyword = next(
+            (
+                token
+                for token in declaration_tokens
+                if token.type == tokenize.NAME and token.string in {"class", "def"}
+            ),
+            None,
+        )
+        name_token = next(declaration_tokens, None)
+        if (
+            declaration_keyword is None
+            or name_token is None
+            or name_token.type != tokenize.NAME
+            or name_token.string != self.node.name
+        ):
+            raise ValueError(
+                f"Cannot resolve declaration name token for {self.node.name!r}"
+            )
+        return SourceTextSpan(
+            start_offset=geometry.token_position_offset(name_token.start),
+            end_offset=geometry.token_position_offset(name_token.end),
+        )
+
+
+@dataclass(frozen=True)
+class ClassSourceAuthority(NamedDeclarationSourceAuthority):
     """Class declaration and source text shared by rewrite projections."""
 
     node: ast.ClassDef
-    source: str
 
 
 @dataclass(frozen=True)
@@ -167,41 +208,6 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
             self.source_span.is_reconstructible
             and 1 <= self.start_line <= self.end_line <= len(self.source_lines)
             and self.rendered_header_is_parseable
-        )
-
-    @cached_property
-    def name_span(self) -> SourceTextSpan:
-        """Return the exact identifier token that declares this class name."""
-
-        geometry = SourceTextGeometry(self.source)
-        header_tokens = tuple(
-            token
-            for token in geometry.tokens
-            if self.start_line <= token.start[0] <= self.end_line
-        )
-        class_token_index = next(
-            (
-                index
-                for index, token in enumerate(header_tokens)
-                if token.type == tokenize.NAME and token.string == "class"
-            ),
-            None,
-        )
-        if class_token_index is None:
-            raise ValueError(f"Cannot resolve class token for {self.node.name!r}")
-        name_token = next(
-            (
-                token
-                for token in header_tokens[class_token_index + 1 :]
-                if token.type == tokenize.NAME
-            ),
-            None,
-        )
-        if name_token is None or name_token.string != self.node.name:
-            raise ValueError(f"Cannot resolve class name token for {self.node.name!r}")
-        return SourceTextSpan(
-            start_offset=geometry.token_position_offset(name_token.start),
-            end_offset=geometry.token_position_offset(name_token.end),
         )
 
     @property

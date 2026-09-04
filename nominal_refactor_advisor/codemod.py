@@ -85,7 +85,7 @@ from .class_authority_collapse import (
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
-from .class_authority_rename import ClassAuthorityRenameProof
+from .declaration_authority_rename import DeclarationAuthorityRenameProof
 from .class_index import (
     ClassFamilyIndex,
     ClassHeaderSourceSpan,
@@ -166,6 +166,9 @@ from .codemod_declaration_source import (
 )
 from .codemod_declaration_source import (
     ClassSourceAuthority as ClassSourceAuthority,
+)
+from .codemod_declaration_source import (
+    NamedDeclarationSourceAuthority as NamedDeclarationSourceAuthority,
 )
 from .codemod_declaration_source import (
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
@@ -1835,24 +1838,24 @@ class ReplaceTargetOperation(SourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RenameClassAuthorityOperation(RepositorySourceReprovedOperation):
-    """Rename one top-level class across its proved repository consumers."""
+class RenameTopLevelDeclarationAuthorityOperation(RepositorySourceReprovedOperation):
+    """Rename one top-level declaration across its proved repository consumers."""
 
     new_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def __post_init__(self) -> None:
         if not self.new_name.isidentifier() or keyword_module.iskeyword(self.new_name):
-            raise ValueError("Class-authority rename requires a Python identifier")
+            raise ValueError("Declaration rename requires a Python identifier")
 
     def proof(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> ClassAuthorityRenameProof:
-        target = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
-        return ClassAuthorityRenameProof.require(
+    ) -> DeclarationAuthorityRenameProof:
+        _target_id, target, node = self.target_node_from_context(snapshot)
+        return DeclarationAuthorityRenameProof.require(
             snapshot.parsed_modules,
-            snapshot.required_class_family_index,
-            target_symbol=target.required_symbol(snapshot),
+            target,
+            node,
             new_name=self.new_name,
         )
 
@@ -1862,7 +1865,7 @@ class RenameClassAuthorityOperation(RepositorySourceReprovedOperation):
     ) -> tuple[PhysicalSourceEdit, ...]:
         proof = self.proof(snapshot)
         rationale = self.rationale or (
-            f"Rename class authority {proof.target.simple_name!r} to "
+            f"Rename declaration authority {proof.target.name!r} to "
             f"{self.new_name!r}."
         )
         return tuple(
@@ -1872,7 +1875,7 @@ class RenameClassAuthorityOperation(RepositorySourceReprovedOperation):
             for edit in SourceTextGeometry(module.module.source).physical_edits(
                 file_path=module.module.file_path,
                 replacements=module.source_replacements(
-                    old_name=proof.target.simple_name,
+                    old_name=proof.target.name,
                     new_name=self.new_name,
                 ),
                 rationale=rationale,
