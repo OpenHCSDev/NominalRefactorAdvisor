@@ -10,19 +10,19 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable, Sequence, TypeAlias, cast
+from typing import Iterable, Sequence
 
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .class_index import DataclassRuntimeDeclaration
+from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
     RefactorFinding,
-    SemanticRecord,
     SourceLineReference,
     stable_source_location_id,
 )
@@ -36,14 +36,8 @@ from .source_index import (
     build_source_index,
 )
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = (
-    JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
-)
-
-
 @dataclass(frozen=True)
-class SemanticInspectionRecord(SemanticRecord, ABC):
+class SemanticInspectionRecord(DataclassJsonReport, ABC):
     """Base class for serializable semantic inspection records."""
 
 
@@ -249,16 +243,9 @@ class SemanticInspectionReport(SemanticInspectionRecord):
     evidence: tuple[EvidenceSummary, ...]
     source_index: SourceIndex
 
-    def to_dict(self) -> dict[str, JsonValue]:
-        payload = cast(dict[str, JsonValue], asdict(self))
-        payload["ast_targets"] = tuple(
-            cast(dict[str, JsonValue], item.to_dict())
-            for item in self.source_index.ast_targets
-        )
-        payload["source_index"] = cast(
-            dict[str, JsonValue], self.source_index.to_dict()
-        )
-        return payload
+    @json_report_property()
+    def ast_targets(self) -> tuple[AstTargetDigest, ...]:
+        return self.source_index.ast_targets
 
 
 @dataclass(frozen=True)

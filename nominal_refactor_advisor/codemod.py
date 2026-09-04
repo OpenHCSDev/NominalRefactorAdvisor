@@ -197,11 +197,13 @@ from .source_index import (
     AstTargetGeometryKey as AstTargetGeometryKey,
     AstTargetNodeIndex,
     AstTargetNodeKind,
+    EvidenceDigest,
     SourceFileDigest,
     SourceIndex,
     SourceTargetIdentity as SourceTargetIdentity,
     SourceTargetIdentityValueT as SourceTargetIdentityValueT,
     SourceTargetSpan as SourceTargetSpan,
+    TupleIndex,
     build_source_index_artifacts,
 )
 from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
@@ -1753,51 +1755,42 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
 
 @dataclass(frozen=True)
-class CodemodSourceIndexReport:
+class CodemodSourceIndexReport(DataclassJsonReport):
     """JSON-ready target discovery report for codemod DSL authors."""
 
-    source_index: SourceIndex
+    source_index: SourceIndex = json_report_field(included=False)
 
-    @property
+    @json_report_property()
     def target_count(self) -> int:
         return len(self.source_index.ast_targets)
 
-    @property
+    @json_report_property()
     def file_count(self) -> int:
         return len(self.source_index.files)
 
-    @property
+    @json_report_property()
     def evidence_count(self) -> int:
         return len(self.source_index.evidence)
 
-    def to_dict(self) -> JsonObject:
-        return JsonObject(
-            {
-                "file_count": self.file_count,
-                "target_count": self.target_count,
-                "evidence_count": self.evidence_count,
-                "files": tuple(
-                    source_file.to_dict() for source_file in self.source_index.files
-                ),
-                "targets": tuple(
-                    self.target_payload(target)
-                    for target in self.source_index.ast_targets
-                ),
-                "evidence": tuple(
-                    evidence.to_dict() for evidence in self.source_index.evidence
-                ),
-                "target_ids_by_finding_id": (
-                    self.source_index.target_ids_by_finding_id.to_dict()
-                ),
-                "finding_ids_by_target_id": (
-                    self.source_index.finding_ids_by_target_id.to_dict()
-                ),
-            }
-        )
+    @json_report_property()
+    def files(self) -> tuple[SourceFileDigest, ...]:
+        return self.source_index.files
 
-    @staticmethod
-    def target_payload(target: AstTargetDigest) -> JsonObject:
-        return JsonObject(target.to_dict())
+    @json_report_property(field_name="targets")
+    def ast_targets(self) -> tuple[AstTargetDigest, ...]:
+        return self.source_index.ast_targets
+
+    @json_report_property()
+    def evidence(self) -> tuple[EvidenceDigest, ...]:
+        return self.source_index.evidence
+
+    @json_report_property()
+    def target_ids_by_finding_id(self) -> TupleIndex[str, str]:
+        return self.source_index.target_ids_by_finding_id
+
+    @json_report_property()
+    def finding_ids_by_target_id(self) -> TupleIndex[str, str]:
+        return self.source_index.finding_ids_by_target_id
 
 
 @dataclass(frozen=True)

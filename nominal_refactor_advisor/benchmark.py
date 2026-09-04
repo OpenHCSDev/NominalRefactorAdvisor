@@ -9,14 +9,16 @@ import signal
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
+from .codemod_payload import DataclassJsonReport
+
 
 @dataclass(frozen=True)
-class FocusedScanBenchmarkRun:
+class FocusedScanBenchmarkRun(DataclassJsonReport):
     """Observed process and payload metrics for one benchmark pass."""
 
     label: str
@@ -34,17 +36,13 @@ class FocusedScanBenchmarkRun:
 
 
 @dataclass(frozen=True)
-class FocusedScanBenchmarkReport:
+class FocusedScanBenchmarkReport(DataclassJsonReport):
     """Cold/warm measurements produced from one isolated cache directory."""
 
     targets: tuple[str, ...]
     cache_root: str
     cold: FocusedScanBenchmarkRun
     warm: FocusedScanBenchmarkRun
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 
 class LinuxProcessTreeRssSampler:
     """Sample aggregate resident memory for one Linux process tree."""

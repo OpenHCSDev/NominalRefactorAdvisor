@@ -11,6 +11,7 @@ from typing import Iterable
 from .analysis import analyze_modules
 from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
+from .codemod_payload import DataclassJsonReport, json_report_property
 from .detectors import DetectorConfig
 from .collection_algebra import sorted_tuple
 from .models import RefactorFinding, SemanticRecord
@@ -18,7 +19,7 @@ from .source_index import build_source_index
 
 
 @dataclass(frozen=True)
-class ScanTiming(SemanticRecord):
+class ScanTiming(DataclassJsonReport):
     """Wall-clock timings for the public scan stages."""
 
     parse_seconds: float = 0.0
@@ -27,7 +28,7 @@ class ScanTiming(SemanticRecord):
     source_index_seconds: float = 0.0
     analysis_cache_status: AnalysisCacheStatus | None = None
 
-    @property
+    @json_report_property()
     def total_seconds(self) -> float:
         return round(
             self.parse_seconds
@@ -36,18 +37,6 @@ class ScanTiming(SemanticRecord):
             + self.source_index_seconds,
             3,
         )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "analysis_cache_status": (
-                None
-                if self.analysis_cache_status is None
-                else self.analysis_cache_status.value
-            ),
-            "total_seconds": self.total_seconds,
-        }
-
 
 @dataclass(frozen=True)
 class ScanBranchPrediction(SemanticRecord):

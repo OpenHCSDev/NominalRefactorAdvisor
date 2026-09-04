@@ -19,6 +19,11 @@ from typing import Generic, TypeVar, cast
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
+from .codemod_payload import (
+    DataclassJsonReport,
+    json_report_field,
+    json_report_property,
+)
 from .detectors import DetectorConfig
 from .economics import ScanEconomicsProof
 from .finding_counts import FindingSummary
@@ -248,18 +253,21 @@ class CalibrationManifest(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class CalibrationTargetResult(SemanticRecord):
+class CalibrationTargetResult(DataclassJsonReport):
     """Observed scan result for one calibration target."""
 
     target: CalibrationTarget
     scan: ScanEconomicsProof
-    finding_summary: FindingSummary = field(default_factory=FindingSummary.empty)
+    finding_summary: FindingSummary = json_report_field(
+        included=False,
+        default_factory=FindingSummary.empty,
+    )
     unavailable_reason: str | None = None
 
     def detector_count(self, detector_id: str) -> int:
         return self.finding_summary.detector_count(detector_id)
 
-    @property
+    @json_report_property()
     def regression_reasons(self) -> tuple[str, ...]:
         reasons: list[str] = []
         if self.unavailable_reason is not None:
@@ -332,33 +340,27 @@ class CalibrationTargetResult(SemanticRecord):
             )
         return tuple(reasons)
 
-    @property
+    @json_report_property()
     def passes(self) -> bool:
         return not self.regression_reasons
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "target": self.target.to_dict(),
-            "scan": self.scan.to_dict(),
-            "detector_counts": self.finding_summary.detector_counts_payload(),
-            "unavailable_reason": self.unavailable_reason,
-            "passes": self.passes,
-            "regression_reasons": self.regression_reasons,
-        }
+    @json_report_property()
+    def detector_counts(self) -> list[dict[str, object]]:
+        return self.finding_summary.detector_counts_payload()
 
 
 @dataclass(frozen=True)
-class CalibrationReport(SemanticRecord):
+class CalibrationReport(DataclassJsonReport):
     """Full detector calibration result."""
 
     manifest_path: str
     target_results: tuple[CalibrationTargetResult, ...]
 
-    @property
+    @json_report_property()
     def passes(self) -> bool:
         return all((target_result.passes for target_result in self.target_results))
 
-    @property
+    @json_report_property()
     def regression_reasons(self) -> tuple[str, ...]:
         return tuple(
             (
@@ -367,17 +369,6 @@ class CalibrationReport(SemanticRecord):
                 for reason in target_result.regression_reasons
             )
         )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            **self.dataclass_field_values(),
-            "passes": self.passes,
-            "regression_reasons": self.regression_reasons,
-            "target_results": [
-                target_result.to_dict() for target_result in self.target_results
-            ],
-        }
-
 
 @dataclass(frozen=True)
 class EmptyCalibrationScanAuthority:

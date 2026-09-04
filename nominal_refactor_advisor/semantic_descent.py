@@ -65,10 +65,12 @@ from .class_index import (
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .codemod_payload import (
     CodemodPayloadRecord,
+    DataclassJsonReport,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
+    json_report_property,
 )
 from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
@@ -702,7 +704,7 @@ class SemanticDescentGraphCacheFamilyIdentity:
 
 
 @dataclass(frozen=True)
-class SemanticAuthorityReference:
+class SemanticAuthorityReference(DataclassJsonReport):
     """Reference to one nominal semantic authority."""
 
     authority_id: str
@@ -716,7 +718,7 @@ class SemanticFactReference(SemanticAuthorityReference):
 
 
 @dataclass(frozen=True)
-class SemanticProjectionReference:
+class SemanticProjectionReference(DataclassJsonReport):
     """Reference to one presentation projection."""
 
     projection_id: str
@@ -1002,7 +1004,7 @@ class AuthorityDiscoveryRequired(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class AuthorityClaimResolution(SemanticRecord):
+class AuthorityClaimResolution(DataclassJsonReport):
     """Resolved, ambiguous, declared, or unresolved authority claim."""
 
     claim: AuthorityClaim
@@ -1096,12 +1098,6 @@ class AuthorityClaimResolution(SemanticRecord):
                 reason=reason,
             ),
         )
-
-    def to_dict(self) -> dict[str, object]:
-        payload = super().to_dict()
-        payload["status"] = self.status.value
-        return payload
-
 
 @dataclass(frozen=True)
 class AuthorityClaimResolver:
@@ -1551,7 +1547,7 @@ class SemanticAuthorityAffinityPolicy:
 
 
 @dataclass(frozen=True)
-class SemanticAuthorityMatch:
+class SemanticAuthorityMatch(DataclassJsonReport):
     """Fact/token overlap carried by one authority-projection relation."""
 
     fact_refs: tuple[SemanticFactReference, ...]
@@ -2399,16 +2395,15 @@ class ProjectionClassSymbolFactMatcher:
 
 
 @dataclass(frozen=True)
-class SemanticDescentCertificate(SemanticRecord, ABC):
+class SemanticDescentCertificate(DataclassJsonReport, ABC):
     """Nominal certificate emitted by one authority-projection relation leaf."""
 
     edge: SemanticAuthorityProjectionRelation
     status: ClassVar[DescentStatus]
 
-    def to_dict(self) -> dict[str, object]:
-        payload = super().to_dict()
-        payload["status"] = self.status.value
-        return payload
+    @json_report_property(field_name="status")
+    def report_status(self) -> DescentStatus:
+        return self.status
 
 
 @dataclass(frozen=True)

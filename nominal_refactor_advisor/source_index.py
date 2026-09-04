@@ -17,9 +17,13 @@ from .ast_tools import (
     PythonModulePathIdentity,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
+from .codemod_payload import (
+    DataclassJsonReport,
+    json_report_field,
+    json_report_property,
+)
 from .models import (
     RefactorFinding,
-    SemanticRecord,
     SourceLocation,
     stable_source_location_id,
 )
@@ -124,11 +128,11 @@ class AstTargetNodeKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class SourceFileDigest(SemanticRecord):
+class SourceFileDigest(DataclassJsonReport):
     """Stable source id for one parsed file."""
 
     file_id: str
-    module_path_identity: PythonModulePathIdentity
+    module_path_identity: PythonModulePathIdentity = json_report_field(included=False)
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> "SourceFileDigest":
@@ -137,35 +141,27 @@ class SourceFileDigest(SemanticRecord):
             module_path_identity=module.module_path_identity,
         )
 
-    @property
+    @json_report_property()
     def file_path(self) -> str:
         return self.module_path_identity.file_path
 
-    @property
+    @json_report_property()
     def module_name(self) -> str:
         return self.module_path_identity.import_name
 
-    @property
+    @json_report_property()
     def is_package_init(self) -> bool:
         return self.module_path_identity.is_package_init
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "file_id": self.file_id,
-            "file_path": self.file_path,
-            "module_name": self.module_name,
-            "is_package_init": self.is_package_init,
-        }
-
 
 @dataclass(frozen=True)
-class AstTargetDigest(SemanticRecord):
+class AstTargetDigest(DataclassJsonReport):
     """Stable AST target address for one module, class, function, or method."""
 
     target_id: str
     file_id: str
     file_path: str
-    node_kind: AstTargetNodeKind
+    node_kind: AstTargetNodeKind = json_report_field(field_name="node_type")
     name: str
     qualname: str
     line: int
@@ -204,13 +200,6 @@ class AstTargetDigest(SemanticRecord):
         if self.node_kind is not required_kind:
             raise ValueError(message)
 
-    def to_dict(self) -> dict[str, object]:
-        """Project the typed kind through the stable external ``node_type`` key."""
-
-        payload = super().to_dict()
-        payload["node_type"] = payload.pop("node_kind")
-        return payload
-
     def contains_line(self, line: int) -> bool:
         return self.line <= line <= self.end_line
 
@@ -228,7 +217,7 @@ class AstTargetDigest(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class EvidenceDigest(SemanticRecord):
+class EvidenceDigest(DataclassJsonReport):
     """Stable source-address row for one finding evidence coordinate."""
 
     evidence_id: str
@@ -249,7 +238,10 @@ class SourceTargetKey:
 
 
 @dataclass(frozen=True)
-class TupleIndex(Generic[IndexKeyT, IndexValueT]):
+class TupleIndex(
+    Mapping[IndexKeyT, tuple[IndexValueT, ...]],
+    Generic[IndexKeyT, IndexValueT],
+):
     """Deterministic tuple-valued lookup used by source-index authorities."""
 
     items_by_key: TupleIndexItems
@@ -276,10 +268,6 @@ class TupleIndex(Generic[IndexKeyT, IndexValueT]):
         if key not in self.items_by_key:
             return ()
         return self.items_by_key[key]
-
-    def to_dict(self) -> TupleIndexItems:
-        return dict(self.items_by_key)
-
 
 @dataclass(frozen=True)
 class EvidenceTargetRelation:
@@ -354,10 +342,6 @@ class TargetsByFileIndex:
                 target.qualname,
             ),
         )
-
-    def to_dict(self) -> dict[str, tuple[AstTargetDigest, ...]]:
-        return self.targets_by_file_path.to_dict()
-
 
 @dataclass
 class EvidenceDigestBuilder:
@@ -451,7 +435,7 @@ class TupleSetIndexBuilder(Generic[IndexKeyT, IndexValueT]):
 
 
 @dataclass(frozen=True)
-class SourceIndex(SemanticRecord):
+class SourceIndex(DataclassJsonReport):
     """Bidirectional source-address index derived from parsed code and findings."""
 
     files: tuple[SourceFileDigest, ...] = ()
@@ -584,14 +568,6 @@ class SourceIndex(SemanticRecord):
         return tuple(
             keys_by_target_id[target_id] for target_id in sorted(keys_by_target_id)
         )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "files": tuple(item.to_dict() for item in self.files),
-            "ast_targets": tuple(item.to_dict() for item in self.ast_targets),
-            "evidence": tuple(item.to_dict() for item in self.evidence),
-        }
-
 
 @dataclass(frozen=True)
 class AstTargetNodeIndex:

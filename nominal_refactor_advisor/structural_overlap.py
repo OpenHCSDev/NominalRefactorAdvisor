@@ -9,18 +9,11 @@ from functools import cached_property
 from typing import TypeAlias
 
 from .collection_algebra import UniqueIdentityIndexAuthority
+from .codemod_payload import DataclassJsonReport, json_report_property
 from .models import FindingMetrics, RefactorFinding, SemanticRecord
 from .source_index import SourceIndex
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = (
-    JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
-)
 MetricCoordinateProjection: TypeAlias = Callable[[FindingMetrics], tuple[str, ...]]
-
-
-class JsonObject(dict[str, JsonValue]):
-    """Nominal JSON object payload for structural-overlap exports."""
 
 
 class MetricStructuralOverlapAxis(StrEnum):
@@ -112,7 +105,7 @@ class StructuralOverlapKey(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class StructuralOverlapGroup(SemanticRecord):
+class StructuralOverlapGroup(DataclassJsonReport):
     """Non-actionable evidence that findings share a structural coordinate."""
 
     key: StructuralOverlapKey
@@ -125,28 +118,21 @@ class StructuralOverlapGroup(SemanticRecord):
     symbols: tuple[str, ...]
     evidence_count: int
 
-    @property
+    @json_report_property()
     def finding_count(self) -> int:
         return len(self.covered_finding_ids)
 
-    @property
+    @json_report_property()
     def detector_count(self) -> int:
         return len(self.detector_ids)
 
-    @property
+    @json_report_property()
     def file_count(self) -> int:
         return len(self.file_paths)
 
-    def to_dict(self) -> JsonObject:
-        payload = JsonObject(super().to_dict())
-        payload["finding_count"] = self.finding_count
-        payload["detector_count"] = self.detector_count
-        payload["file_count"] = self.file_count
-        return payload
-
 
 @dataclass(frozen=True)
-class StructuralOverlapReport(SemanticRecord):
+class StructuralOverlapReport(DataclassJsonReport):
     """Stable, non-actionable structural-overlap evidence for one scan."""
 
     groups: tuple[StructuralOverlapGroup, ...]
@@ -158,15 +144,9 @@ class StructuralOverlapReport(SemanticRecord):
         StructuralOverlapActionability.EVIDENCE_ONLY
     )
 
-    @property
+    @json_report_property()
     def group_count(self) -> int:
         return len(self.groups)
-
-    def to_dict(self) -> JsonObject:
-        payload = JsonObject(super().to_dict())
-        payload["group_count"] = self.group_count
-        payload["groups"] = tuple(group.to_dict() for group in self.groups)
-        return payload
 
 
 @dataclass(frozen=True)
