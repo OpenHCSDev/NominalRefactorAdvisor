@@ -226,7 +226,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceFunctionSignatureOperation,
     ReplaceModuleAssignmentOperation,
     ReplaceTargetOperation,
-    ReplaceTextOperation,
+    PatchTargetOperation,
     RewriteOperation,
     PromoteExactLeafMethodsToAncestorOperation,
     RecipeCallReplacement,
@@ -237,6 +237,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTargetPreflightDetail,
     SourceCreationConflictPreflightDetail,
     SourceRewriteContributor,
+    SourceTextReplacement,
     SourceTextSpanReplacement,
     SourceTextGeometry,
     SourceIndexTargetSelector,
@@ -906,13 +907,16 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
     simulation = (
         RefactorRecipe("rewrite-alpha")
         .with_operation(
-            ReplaceTextOperation(
+            PatchTargetOperation(
                 target=SourceRewriteTarget(
                     qualname="Alpha",
                     file_path=module_path.as_posix(),
                 ),
-                old_source="value = 1",
-                new_source="value = 2",
+                replacements=(
+                    SourceTextReplacement(
+                        old_source="value = 1", new_source="value = 2"
+                    ),
+                ),
             )
         )
         .simulate(snapshot)
@@ -965,23 +969,29 @@ def test_codemod_multifile_commit_failure_rolls_back_prior_files(
     simulation = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-alpha").with_operation(
-                ReplaceTextOperation(
+                PatchTargetOperation(
                     target=SourceRewriteTarget(
                         qualname="Alpha",
                         file_path=alpha_path.as_posix(),
                     ),
-                    old_source="value = 1",
-                    new_source="value = 10",
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source="value = 1", new_source="value = 10"
+                        ),
+                    ),
                 )
             ),
             RefactorRecipe("rewrite-beta").with_operation(
-                ReplaceTextOperation(
+                PatchTargetOperation(
                     target=SourceRewriteTarget(
                         qualname="Beta",
                         file_path=beta_path.as_posix(),
                     ),
-                    old_source="value = 2",
-                    new_source="value = 20",
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source="value = 2", new_source="value = 20"
+                        ),
+                    ),
                 )
             ),
         )
@@ -1571,10 +1581,13 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("weak-competing-recipe").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source="value = 1",
-                        new_source="value = 2",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1", new_source="value = 2"
+                            ),
+                        ),
                     )
                 )
             )
@@ -1599,10 +1612,13 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("strong-competing-recipe").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source="value = 1",
-                        new_source="value = 3",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1", new_source="value = 3"
+                            ),
+                        ),
                     )
                 )
             )
@@ -1719,10 +1735,11 @@ def _direct_recipe_candidate(
         compression_certificate=certificate,
     )
     recipe = RefactorRecipe(f"{detector_id}-recipe").with_operation(
-        ReplaceTextOperation(
+        PatchTargetOperation(
             target=SourceRewriteTarget(file_path=file_path),
-            old_source=old_source,
-            new_source=new_source,
+            replacements=(
+                SourceTextReplacement(old_source=old_source, new_source=new_source),
+            ),
         )
     )
     return FindingRecipePlanCandidate(
@@ -2041,8 +2058,8 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
         "disjoint_b-recipe",
     )
     assert tuple(type(recipe.operations[0]) for recipe in recipes) == (
-        ReplaceTextOperation,
-        ReplaceTextOperation,
+        PatchTargetOperation,
+        PatchTargetOperation,
     )
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         "a = 2\nb = 2\n"
@@ -2916,7 +2933,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
     assert report.after_findings == ()
 
 
-def test_replace_text_operation_allows_empty_json_replacement(
+def test_patch_target_operation_allows_empty_json_replacement(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -2937,11 +2954,15 @@ def test_replace_text_operation_allows_empty_json_replacement(
                         "recipe_id": "delete-obsolete-text",
                         "operations": [
                             {
-                                "operation": "replace_text",
+                                "operation": "patch_target",
                                 "file_path": module_path.as_posix(),
                                 "target_qualname": "Parser",
-                                "old_source": "    obsolete_flag = True\n",
-                                "new_source": "",
+                                "replacements": [
+                                    {
+                                        "old_source": "    obsolete_flag = True\n",
+                                        "new_source": "",
+                                    }
+                                ],
                             }
                         ],
                     }
@@ -2965,7 +2986,7 @@ def test_replace_text_operation_allows_empty_json_replacement(
     assert "obsolete_flag" not in module_path.read_text()
 
 
-def test_replace_text_operation_can_target_module_source(
+def test_patch_target_operation_can_target_module_source(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -2990,11 +3011,15 @@ def test_replace_text_operation_can_target_module_source(
                         "recipe_id": "replace-module-import",
                         "operations": [
                             {
-                                "operation": "replace_text",
+                                "operation": "patch_target",
                                 "file_path": module_path.as_posix(),
                                 "target_qualname": module_target.qualname,
-                                "old_source": "import json\n",
-                                "new_source": "import json\nimport sys\n",
+                                "replacements": [
+                                    {
+                                        "old_source": "import json\n",
+                                        "new_source": "import json\nimport sys\n",
+                                    }
+                                ],
                             }
                         ],
                     }
@@ -3014,6 +3039,110 @@ def test_replace_text_operation_can_target_module_source(
     assert simulation.simulation.applied_rewrite_count == 1
     simulation.apply()
     assert "import sys" in module_path.read_text()
+
+
+def test_patch_target_operation_chains_dependent_exact_transformations(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Formatter:\n"
+        "    def render(self, value):\n"
+        "        return legacy(value)\n",
+    )
+    operation = PatchTargetOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="Formatter.render",
+        ),
+        replacements=(
+            SourceTextReplacement(
+                old_source="legacy(value)",
+                new_source="normalized(value)",
+            ),
+            SourceTextReplacement(
+                old_source="normalized(value)",
+                new_source="Formatter.normalize(value)",
+            ),
+        ),
+    )
+    payload = json_report_object(operation)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = RefactorRecipe("patch-render").with_operation(operation).simulate(
+        snapshot
+    )
+
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
+        "class Formatter:\n"
+        "    def render(self, value):\n"
+        "        return Formatter.normalize(value)\n"
+    )
+    assert RefactorRecipeOperation.from_json_value(payload) == operation
+    assert payload["replacements"] == (
+        {
+            "old_source": "legacy(value)",
+            "new_source": "normalized(value)",
+        },
+        {
+            "old_source": "normalized(value)",
+            "new_source": "Formatter.normalize(value)",
+        },
+    )
+    assert "old_source" not in payload
+    assert "new_source" not in payload
+
+
+def test_patch_target_operation_rejects_unproved_intermediate_transformation(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = "def render(value):\n    return legacy(value)\n"
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    operation = PatchTargetOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(),
+            qualname="render",
+        ),
+        replacements=(
+            SourceTextReplacement(
+                old_source="legacy(value)",
+                new_source="normalized(value)",
+            ),
+            SourceTextReplacement(
+                old_source="missing(value)",
+                new_source="canonical(value)",
+            ),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="Expected exactly one match.*found 0",
+    ):
+        operation.source_edits(snapshot)
+
+    assert module_path.read_text() == original_source
+
+
+@pytest.mark.parametrize(
+    ("old_source", "new_source", "expected_error"),
+    (
+        ("", "value", "non-empty old_source"),
+        ("value", "value", "must change its source"),
+    ),
+)
+def test_source_text_replacement_rejects_unexecutable_transformations(
+    old_source: str,
+    new_source: str,
+    expected_error: str,
+) -> None:
+    with pytest.raises(ValueError, match=expected_error):
+        SourceTextReplacement(old_source=old_source, new_source=new_source)
 
 
 def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
@@ -3789,10 +3918,13 @@ def test_executable_synthesis_requires_action_keys_before_planning(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("unidentified-executable-recipe").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source="pass",
-                        new_source="value = 1",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="pass", new_source="value = 1"
+                            ),
+                        ),
                     )
                 )
             )
@@ -5079,13 +5211,16 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
             )
         )
         .with_operation(
-            ReplaceTextOperation(
+            PatchTargetOperation(
                 target=SourceRewriteTarget(
                     qualname="Parser.parse",
                     file_path=module_path.as_posix(),
                 ),
-                old_source="obsolete_helper(source)",
-                new_source="source",
+                replacements=(
+                    SourceTextReplacement(
+                        old_source="obsolete_helper(source)", new_source="source"
+                    ),
+                ),
             )
         )
         .with_operation(
@@ -6409,10 +6544,14 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
     dispatch_operation = DispatchToPolymorphismOperation(
         target=SourceRewriteTarget(target_id=render_target.target_id),
     )
-    docstring_operation = ReplaceTextOperation(
+    docstring_operation = PatchTargetOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-        old_source="Render one declared numeric mode.",
-        new_source="Render one numeric mode.",
+        replacements=(
+            SourceTextReplacement(
+                old_source="Render one declared numeric mode.",
+                new_source="Render one numeric mode.",
+            ),
+        ),
     )
 
     dispatch_recipe = RefactorRecipe("dispatch").with_operation(dispatch_operation)
@@ -6475,19 +6614,23 @@ def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
     regression_stage = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("regression").with_operation(
-                ReplaceTextOperation(
+                PatchTargetOperation(
                     target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                    old_source=(
-                        "_dispatch_case_type = "
-                        "RenderDispatchCase.__registry__.get(kind)\n"
-                        "    if _dispatch_case_type is None:\n"
-                        "        raise ValueError(kind)\n"
-                        "    return _dispatch_case_type().apply(kind)"
-                    ),
-                    new_source=(
-                        "if kind == 'csv':\n"
-                        "        return 1\n"
-                        "    return 2"
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source=(
+                                "_dispatch_case_type = "
+                                "RenderDispatchCase.__registry__.get(kind)\n"
+                                "    if _dispatch_case_type is None:\n"
+                                "        raise ValueError(kind)\n"
+                                "    return _dispatch_case_type().apply(kind)"
+                            ),
+                            new_source=(
+                                "if kind == 'csv':\n"
+                                "        return 1\n"
+                                "    return 2"
+                            ),
+                        ),
                     ),
                 )
             ),
@@ -9219,10 +9362,14 @@ def test_exact_recipe_fast_snapshot_preserves_declared_relative_path_identity(
             recipes=(
                 RefactorRecipe(recipe_id="relative-path-authority")
                 .with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path="pkg/source.py"),
-                        old_source="pass",
-                        new_source="pass",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="pass",
+                                new_source="value = 1",
+                            ),
+                        ),
                     )
                 )
                 .with_operation(
@@ -11201,12 +11348,16 @@ def _sequential_value_rewrite_plan(module_path: Path) -> CodemodPlanSequence:
             CodemodPlanDocument(
                 recipes=(
                     RefactorRecipe(f"rewrite-value-{before}-to-{after}").with_operation(
-                        ReplaceTextOperation(
+                        PatchTargetOperation(
                             target=SourceRewriteTarget(
                                 file_path=module_path.as_posix()
                             ),
-                            old_source=f"VALUE = {before}",
-                            new_source=f"VALUE = {after}",
+                            replacements=(
+                                SourceTextReplacement(
+                                    old_source=f"VALUE = {before}",
+                                    new_source=f"VALUE = {after}",
+                                ),
+                            ),
                         )
                     ),
                 )
@@ -15907,12 +16058,15 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
         CodemodPlanDocument(
             recipes=(
                 RefactorRecipe("replace-value").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(
                             file_path=module_path.as_posix(),
                         ),
-                        old_source="VALUE = 1",
-                        new_source="VALUE = 2",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="VALUE = 1", new_source="VALUE = 2"
+                            ),
+                        ),
                     )
                 ),
             )
@@ -15969,10 +16123,13 @@ def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-legacy").with_operation(
-                ReplaceTextOperation(
+                PatchTargetOperation(
                     target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                    old_source="return 1",
-                    new_source="return 2",
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source="return 1", new_source="return 2"
+                        ),
+                    ),
                 )
             ),
         ),
@@ -16321,11 +16478,15 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
                                 "recipe_id": "rewrite-generated",
                                 "operations": [
                                     {
-                                        "operation": "replace_text",
+                                        "operation": "patch_target",
                                         "file_path": generated_path.as_posix(),
                                         "target_qualname": "Generated.run",
-                                        "old_source": "return 1",
-                                        "new_source": "return 2",
+                                        "replacements": [
+                                            {
+                                                "old_source": "return 1",
+                                                "new_source": "return 2",
+                                            }
+                                        ],
                                     }
                                 ],
                             }
@@ -16516,11 +16677,15 @@ def test_module_cli_simulates_codemod_plan_from_stdin(
                 "recipe_id": "stdin-simulate-alpha",
                 "operations": [
                     {
-                        "operation": "replace_text",
+                        "operation": "patch_target",
                         "file_path": module_path.as_posix(),
                         "target_qualname": "Alpha.run",
-                        "old_source": "return value",
-                        "new_source": "return value + 1",
+                        "replacements": [
+                            {
+                                "old_source": "return value",
+                                "new_source": "return value + 1",
+                            }
+                        ],
                     }
                 ],
             }
@@ -16573,11 +16738,15 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
                 ],
                 "operations": [
                     {
-                        "operation": "replace_text",
+                        "operation": "patch_target",
                         "file_path": module_path.as_posix(),
                         "target_qualname": "Alpha.run",
-                        "old_source": "return value",
-                        "new_source": "return value + 1",
+                        "replacements": [
+                            {
+                                "old_source": "return value",
+                                "new_source": "return value + 1",
+                            }
+                        ],
                     }
                 ],
             }
@@ -16636,13 +16805,16 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
             CodemodPlanDocument(
                 recipes=(
                     RefactorRecipe("rewrite-generated").with_operation(
-                        ReplaceTextOperation(
+                        PatchTargetOperation(
                             target=SourceRewriteTarget(
                                 qualname="Generated.run",
                                 file_path=generated_path.as_posix(),
                             ),
-                            old_source="return 1",
-                            new_source="return 2",
+                            replacements=(
+                                SourceTextReplacement(
+                                    old_source="return 1", new_source="return 2"
+                                ),
+                            ),
                         )
                     ),
                 )
@@ -16702,23 +16874,25 @@ def test_codemod_sequential_report_projection_preserves_same_file_changes(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     alpha_recipe = RefactorRecipe("rewrite-alpha").with_operation(
-        ReplaceTextOperation(
+        PatchTargetOperation(
             target=SourceRewriteTarget(
                 qualname="Alpha",
                 file_path=module_path.as_posix(),
             ),
-            old_source="value = 1",
-            new_source="value = 10",
+            replacements=(
+                SourceTextReplacement(old_source="value = 1", new_source="value = 10"),
+            ),
         )
     )
     beta_recipe = RefactorRecipe("rewrite-beta").with_operation(
-        ReplaceTextOperation(
+        PatchTargetOperation(
             target=SourceRewriteTarget(
                 qualname="Beta",
                 file_path=module_path.as_posix(),
             ),
-            old_source="value = 2",
-            new_source="value = 20",
+            replacements=(
+                SourceTextReplacement(old_source="value = 2", new_source="value = 20"),
+            ),
         )
     )
     alpha_report = alpha_recipe.simulate(snapshot).simulation
@@ -16754,13 +16928,16 @@ def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-alpha").with_operation(
-                ReplaceTextOperation(
+                PatchTargetOperation(
                     target=SourceRewriteTarget(
                         qualname="Alpha.run",
                         file_path=module_path.as_posix(),
                     ),
-                    old_source="return 1",
-                    new_source="return 2",
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source="return 1", new_source="return 2"
+                        ),
+                    ),
                 )
             ),
         )
@@ -17090,11 +17267,15 @@ def test_module_cli_simulates_staged_codemod_plan(
                                 "recipe_id": "rewrite-generated",
                                 "operations": [
                                     {
-                                        "operation": "replace_text",
+                                        "operation": "patch_target",
                                         "file_path": generated_path.as_posix(),
                                         "target_qualname": "Generated.run",
-                                        "old_source": "return 1",
-                                        "new_source": "return 2",
+                                        "replacements": [
+                                            {
+                                                "old_source": "return 1",
+                                                "new_source": "return 2",
+                                            }
+                                        ],
                                     }
                                 ],
                             }
@@ -17157,11 +17338,15 @@ def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
                 "recipe_id": "stdin-relative-path",
                 "operations": [
                     {
-                        "operation": "replace_text",
+                        "operation": "patch_target",
                         "file_path": "pkg/mod.py",
                         "target_qualname": "Alpha.run",
-                        "old_source": "return value",
-                        "new_source": "return value + 1",
+                        "replacements": [
+                            {
+                                "old_source": "return value",
+                                "new_source": "return value + 1",
+                            }
+                        ],
                     },
                     {
                         "operation": "ensure_import",
@@ -18028,11 +18213,15 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 ),
                             },
                             {
-                                "operation": "replace_text",
+                                "operation": "patch_target",
                                 "target_qualname": "Alpha.run",
                                 "file_path": "pkg/mod.py",
-                                "old_source": "old_alpha(value)",
-                                "new_source": "AlphaAuthority.run(value)",
+                                "replacements": [
+                                    {
+                                        "old_source": "old_alpha(value)",
+                                        "new_source": "AlphaAuthority.run(value)",
+                                    }
+                                ],
                             },
                             {
                                 "operation": "delete_target",
@@ -18093,7 +18282,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
         "finding_spec",
     )
     assert operation_payloads[3]["operation"] == "ensure_import"
-    assert operation_payloads[4]["operation"] == "replace_text"
+    assert operation_payloads[4]["operation"] == "patch_target"
     assert operation_payloads[5]["operation"] == "delete_target"
     assert operation_payloads[6]["operation"] == "delete_selected_targets"
     assert operation_payloads[6]["selector"]["selector"] == (
@@ -18566,11 +18755,15 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
                         "recipe_id": "simulate-alpha",
                         "operations": [
                             {
-                                "operation": "replace_text",
+                                "operation": "patch_target",
                                 "file_path": module_path.as_posix(),
                                 "target_qualname": "Alpha.run",
-                                "old_source": "return value",
-                                "new_source": "return value + 1",
+                                "replacements": [
+                                    {
+                                        "old_source": "return value",
+                                        "new_source": "return value + 1",
+                                    }
+                                ],
                             }
                         ],
                     }
@@ -18918,13 +19111,16 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("extract-alpha-semantic-fact").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(
                             qualname="Alpha.run",
                             file_path=module_path.as_posix(),
                         ),
-                        old_source="return 'old'",
-                        new_source="return 'new'",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="return 'old'", new_source="return 'new'"
+                            ),
+                        ),
                     )
                 )
             )
@@ -19018,9 +19214,12 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     assert len(stage.class_plan_report.classes) == 1
     assert len(stage.class_plan_report.classes[0].synthesis_records) == 1
-    assert json_report_object(
-        report.replay_sequence.documents[0].recipes[0].operations[0]
-    )["operation"] == "replace_text"
+    assert (
+        json_report_object(
+            report.replay_sequence.documents[0].recipes[0].operations[0]
+        )["operation"]
+        == "patch_target"
+    )
     stage_payload = json_report_object(report)["stages"][0]
     assert "synthesis_report" not in stage_payload
     assert (
@@ -19098,13 +19297,16 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("applied-rescan-test").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(
                             qualname="Alpha.run",
                             file_path=module_path.as_posix(),
                         ),
-                        old_source="return 'old'",
-                        new_source="return 'new'",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="return 'old'", new_source="return 'new'"
+                            ),
+                        ),
                     )
                 )
             )
@@ -19214,10 +19416,13 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("weak-goal-runner-recipe").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source="value = 1",
-                        new_source="value = 2",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1", new_source="value = 2"
+                            ),
+                        ),
                     )
                 )
             )
@@ -19243,10 +19448,13 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("strong-goal-runner-recipe").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source="value = 1",
-                        new_source="value = 3",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1", new_source="value = 3"
+                            ),
+                        ),
                     )
                 )
             )
@@ -19350,12 +19558,13 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("equivalent-trajectory-recipe").with_operation(
-                    ReplaceTextOperation(
-                        target=SourceRewriteTarget(
-                            file_path=module_path.as_posix()
+                    PatchTargetOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1", new_source="value = 2"
+                            ),
                         ),
-                        old_source="value = 1",
-                        new_source="value = 2",
                     )
                 )
             )
@@ -19516,10 +19725,14 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe(type(self).__name__).with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=module_path.as_posix()),
-                        old_source=f"value = {self.old_expression}",
-                        new_source=f"value = {self.new_expression}",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source=f"value = {self.old_expression}",
+                                new_source=f"value = {self.new_expression}",
+                            ),
+                        ),
                     )
                 )
             )
@@ -19994,13 +20207,16 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             del finding, context
             return self.executable_evaluation(
                 RefactorRecipe("extract-report-semantic-fact").with_operation(
-                    ReplaceTextOperation(
+                    PatchTargetOperation(
                         target=SourceRewriteTarget(
                             qualname="Report.run",
                             file_path=report_path.as_posix(),
                         ),
-                        old_source="return 'old'",
-                        new_source="return 'new'",
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="return 'old'", new_source="return 'new'"
+                            ),
+                        ),
                     )
                 )
             )

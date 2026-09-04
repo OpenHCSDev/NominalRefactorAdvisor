@@ -33,6 +33,7 @@ from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuth
 from .codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
+    EmptyDefaultStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -720,11 +721,40 @@ class SourceTextSpan:
 
 
 @dataclass(frozen=True)
-class SourceTextReplacement:
-    """Old/new source text pair for exact expression replacements."""
+class SourceTextReplacement(CodemodPayloadRecord):
+    """One exact old/new source transformation."""
 
-    old_source: str
-    new_source: str
+    old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    new_source: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(),
+        default="",
+    )
+
+    def __post_init__(self) -> None:
+        if not self.old_source:
+            raise ValueError("Exact source replacement requires non-empty old_source")
+        if self.old_source == self.new_source:
+            raise ValueError("Exact source replacement must change its source")
+
+    def apply_exactly_once(self, source: str, *, subject: str) -> str:
+        """Apply this declared transformation only to one exact source surface."""
+
+        match_offset = self.exact_match_offset(source, subject=subject)
+        return (
+            f"{source[:match_offset]}{self.new_source}"
+            f"{source[match_offset + len(self.old_source):]}"
+        )
+
+    def exact_match_offset(self, source: str, *, subject: str) -> int:
+        """Return the sole match offset or reject an unproved transformation."""
+
+        match_count = source.count(self.old_source)
+        if match_count != 1:
+            raise ValueError(
+                f"Expected exactly one match for source text in {subject!r}; "
+                f"found {match_count}"
+            )
+        return source.index(self.old_source)
 
 
 @dataclass(frozen=True)
@@ -1114,15 +1144,15 @@ class SourceTargetEditor:
         *,
         rationale: str = "",
     ) -> SourceSpanEdit:
+        replacement = SourceTextReplacement(
+            old_source=old_source,
+            new_source=new_source,
+        )
         target_source = "".join(self.target_lines)
-        match_count = target_source.count(old_source)
-        if match_count != 1:
-            raise ValueError(
-                f"Expected exactly one match for source text in "
-                f"{self.target.qualname!r}; found {match_count}"
-            )
-        start_offset = target_source.index(old_source)
-        end_offset = start_offset + len(old_source)
+        start_offset = replacement.exact_match_offset(
+            target_source, subject=self.target.qualname
+        )
+        end_offset = start_offset + len(replacement.old_source)
         target_line_offsets = SourceTextGeometry(target_source).line_offsets
         start_index = self._line_index_for_offset(start_offset, target_line_offsets)
         end_index = self._line_index_for_offset(
@@ -1134,7 +1164,8 @@ class SourceTargetEditor:
         relative_start = start_offset - target_line_offsets[start_index]
         relative_end = end_offset - target_line_offsets[start_index]
         replacement_source = (
-            f"{span_source[:relative_start]}{new_source}{span_source[relative_end:]}"
+            f"{span_source[:relative_start]}{replacement.new_source}"
+            f"{span_source[relative_end:]}"
         )
         return SourceSpanEdit.from_replacement_lines(
             file_path=self.target.file_path,
@@ -1143,6 +1174,64 @@ class SourceTargetEditor:
             replacement_lines=SourceTargetEditor.source_lines(replacement_source),
             rationale=rationale
             or f"Replace source text inside {self.target.qualname!r}.",
+        )
+
+    def exact_text_replacements(
+        self,
+        replacements: Iterable[SourceTextReplacement],
+        *,
+        rationale: str = "",
+    ) -> PhysicalSourceEdit:
+        """Apply ordered exact transformations as one target-level rewrite."""
+
+        replacement_tuple = tuple(replacements)
+        if not replacement_tuple:
+            raise ValueError("Target patch requires at least one source replacement")
+        target_source = "".join(self.target_lines)
+        replacement_source = target_source
+        for replacement in replacement_tuple:
+            replacement_source = replacement.apply_exactly_once(
+                replacement_source,
+                subject=self.target.qualname,
+            )
+        return self.minimal_replacement_edit(
+            replacement_source,
+            rationale=rationale
+            or f"Patch exact source text inside {self.target.qualname!r}.",
+        )
+
+    def minimal_replacement_edit(
+        self,
+        replacement_source: str,
+        *,
+        rationale: str = "",
+    ) -> PhysicalSourceEdit:
+        """Compile changed target source to its smallest enclosing line edit."""
+
+        current_lines = tuple(self.target_lines)
+        if replacement_source == "".join(current_lines):
+            raise ValueError("Target replacement leaves its source unchanged")
+        replacement_lines = self.source_lines(replacement_source)
+        prefix_count = 0
+        for current_line, replacement_line in zip(current_lines, replacement_lines):
+            if current_line != replacement_line:
+                break
+            prefix_count += 1
+        suffix_count = 0
+        unmatched_count = min(len(current_lines), len(replacement_lines)) - prefix_count
+        while (
+            suffix_count < unmatched_count
+            and current_lines[-suffix_count - 1] == replacement_lines[-suffix_count - 1]
+        ):
+            suffix_count += 1
+        replacement_end = len(replacement_lines) - suffix_count
+        return SourceLineSpan(
+            start_line=self.target.line + prefix_count,
+            end_line=self.target.line + len(current_lines) - suffix_count - 1,
+        ).line_replacement(
+            file_path=self.target.file_path,
+            replacement_lines=replacement_lines[prefix_count:replacement_end],
+            rationale=rationale,
         )
 
     def _ordered_replacements(

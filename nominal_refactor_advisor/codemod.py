@@ -1976,26 +1976,30 @@ class ClassBaseMutationOperationABC(SourceReprovedOperation, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceTextOperation(RefactorRecipeOperation):
-    """Replace one exact text fragment inside a source-index target."""
+class PatchTargetOperation(SourceReprovedOperation):
+    """Compile ordered exact transformations into one current-target rewrite."""
 
-    old_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    new_source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec())
+    replacements: tuple[SourceTextReplacement, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceTextReplacement)
+    )
 
-    def source_edits(
+    def __post_init__(self) -> None:
+        if not self.replacements:
+            raise ValueError("Target patch requires at least one source replacement")
+
+    def source_edits_from_snapshot(
         self,
-        context: CodemodSelectorContext,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        _, target_digest = self.target_digest(context)
+        _, target_digest = self.target_digest(snapshot)
         return (
             SourceTargetEditor(
-                context.sources_by_file_path,
+                snapshot.sources_by_file_path,
                 target_digest,
-            ).exact_text_replacement(
-                self.old_source,
-                self.new_source,
+            ).exact_text_replacements(
+                self.replacements,
                 rationale=self.rationale
-                or f"Replace source text inside {target_digest.qualname!r}.",
+                or f"Patch exact source text inside {target_digest.qualname!r}.",
             ),
         )
 
@@ -14579,10 +14583,14 @@ class AutoRegisterMroOrderingDerivation:
                 ),
             ).source_edits(self.context)
         )
-        ordering_edits = ReplaceTextOperation(
+        ordering_edits = PatchTargetOperation(
             target=SourceRewriteTarget(target_id=self.ordering_method.target.target_id),
-            old_source=sorted_call_source,
-            new_source=self.registered_types_call_source,
+            replacements=(
+                SourceTextReplacement(
+                    old_source=sorted_call_source,
+                    new_source=self.registered_types_call_source,
+                ),
+            ),
             rationale="Read family precedence from the declared MRO projection.",
         ).source_edits(self.context)
         insertion_edits = InsertAfterTargetOperation(
@@ -17579,12 +17587,15 @@ class SourceDerivedDataclassProjectionOperation(
             )
         )
         replacement = derivation.source_replacement
-        replacement_edits = ReplaceTextOperation(
+        replacement_edits = PatchTargetOperation(
             target=SourceRewriteTarget(
                 target_id=derivation.projection.target.target_id,
             ),
-            old_source=replacement.old_source,
-            new_source=replacement.new_source,
+            replacements=(
+                SourceTextReplacement(
+                    old_source=replacement.old_source, new_source=replacement.new_source
+                ),
+            ),
             rationale=("Replace mirrored fields with an authority-owned projection."),
         ).source_edits(snapshot)
         return (*edits, *replacement_edits)

@@ -70,6 +70,46 @@ Some findings intentionally have no recipe.  Repeated source proves that one
 maintenance object exists, but it does not necessarily prove where that object
 belongs.  NRA keeps such findings as evidence instead of inventing an authority.
 
+Applying an Ordered Hand Patch
+------------------------------
+
+When you already know the exact source transformations, use ``patch_target``
+to apply them to one indexed target in order:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/python/package \
+     --codemod-plan - --codemod-simulate <<'JSON'
+   {
+     "recipes": [{
+       "recipe_id": "replace-legacy-rendering",
+       "operations": [{
+         "operation": "patch_target",
+         "file_path": "package/rendering.py",
+         "target_qualname": "Renderer.render",
+         "replacements": [
+           {
+             "old_source": "legacy(value)",
+             "new_source": "prepared(value)"
+           },
+           {
+             "old_source": "prepared(value)",
+             "new_source": "Renderer.prepare(value)"
+           }
+         ]
+       }]
+     }]
+   }
+   JSON
+
+Each replacement sees the result of the preceding replacement.  NRA requires
+each old source fragment to occur exactly once, compiles the chain into one
+physical rewrite, validates the resulting Python, and writes nothing when any
+step fails.  Review the simulated diff, then use ``--codemod-apply``.
+
+Extracting a Declaration Closure
+--------------------------------
+
 To extract a declaration and its movable source-local dependency closure into a
 new module, provide only the semantic roots:
 
