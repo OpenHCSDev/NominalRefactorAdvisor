@@ -9,6 +9,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeSynthesizer,
 )
 from nominal_refactor_advisor.detector_capabilities import (
+    DetectorContributionRole,
     DetectorRefactorCapabilityReport,
 )
 from nominal_refactor_advisor.detectors import (
@@ -186,6 +187,25 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
         for capability in report.capabilities
     )
     assert all(
+        capability.contribution_roles
+        == tuple(
+            role
+            for role in DetectorContributionRole
+            if role.applies_to(capability.detector_type)
+        )
+        for capability in report.capabilities
+    )
+    assert all(
+        DetectorContributionRole.REQUIRED_RELATION_OBSERVATION
+        in capability.contribution_roles
+        for capability in report.capabilities
+    )
+    assert all(
+        report.contribution_count(role)
+        == sum(role.applies_to(detector_type) for detector_type in detector_types)
+        for role in DetectorContributionRole
+    )
+    assert all(
         capability.direct_recipe_evaluator is not None
         for capability in report.capabilities
         if capability.direct_executable_refactor is not None
@@ -203,6 +223,7 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
             "required_relation",
             "required_relation_pattern",
             "required_relation_source",
+            "contribution_roles",
         }
         <= capability.keys()
         for capability in payload["capabilities"]

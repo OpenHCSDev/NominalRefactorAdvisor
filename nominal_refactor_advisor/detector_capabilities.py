@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .codemod import FindingRecipeEvaluator, FindingRecipeSynthesizer
 from .detectors import (
@@ -18,6 +19,39 @@ from .json_reports import (
 from .models import NominalDeclarationIdentity, RequiredRelationIdentity, SourceLocation
 from .patterns import PatternId
 from .refactor_concepts import RefactorConcept
+
+
+class DetectorContributionRole(StrEnum):
+    """Closed detector contributions derived from nominal execution contracts."""
+
+    REQUIRED_RELATION_OBSERVATION = ("required_relation_observation", IssueDetector)
+    AUTHORITY_BOUNDARY_EVIDENCE = (
+        "authority_boundary_evidence",
+        SsotAuthorityBoundaryDetector,
+    )
+    SEMANTIC_MIRROR_EVIDENCE = (
+        "semantic_mirror_evidence",
+        SemanticMirrorIssueDetector,
+    )
+    RECIPE_EVALUATION = ("recipe_evaluation", FindingRecipeEvaluator)
+    EXECUTABLE_REFACTOR = ("executable_refactor", FindingRecipeSynthesizer)
+
+    def __new__(
+        cls,
+        value: str,
+        contract_type: type[object],
+    ) -> "DetectorContributionRole":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._contract_type = contract_type
+        return member
+
+    @property
+    def contract_type(self) -> type[object]:
+        return self._contract_type
+
+    def applies_to(self, detector_type: type[IssueDetector]) -> bool:
+        return issubclass(detector_type, self.contract_type)
 
 
 def _inherited_declaration_identity(
@@ -65,6 +99,12 @@ class DetectorRefactorCapability(DataclassJsonReport):
     @json_report_property()
     def required_relation_pattern(self) -> PatternId:
         return self.detector_type.required_relation_pattern_id()
+
+    @json_report_property()
+    def contribution_roles(self) -> tuple[DetectorContributionRole, ...]:
+        return tuple(
+            role for role in DetectorContributionRole if role.applies_to(self.detector_type)
+        )
 
     @json_report_property(omit_none=True)
     def ssot_authority_boundary(self) -> NominalDeclarationIdentity | None:
@@ -125,30 +165,25 @@ class DetectorRefactorCapabilityReport(DataclassJsonReport):
     def required_relation_count(self) -> int:
         return len(self.capabilities)
 
+    def contribution_count(self, role: DetectorContributionRole) -> int:
+        return sum(role in capability.contribution_roles for capability in self.capabilities)
+
     @json_report_property()
     def authority_boundary_count(self) -> int:
-        return sum(
-            capability.ssot_authority_boundary is not None
-            for capability in self.capabilities
+        return self.contribution_count(
+            DetectorContributionRole.AUTHORITY_BOUNDARY_EVIDENCE
         )
 
     @json_report_property()
     def semantic_mirror_count(self) -> int:
-        return sum(
-            capability.semantic_mirror_contract is not None
-            for capability in self.capabilities
+        return self.contribution_count(
+            DetectorContributionRole.SEMANTIC_MIRROR_EVIDENCE
         )
 
     @json_report_property()
     def direct_recipe_evaluator_count(self) -> int:
-        return sum(
-            capability.direct_recipe_evaluator is not None
-            for capability in self.capabilities
-        )
+        return self.contribution_count(DetectorContributionRole.RECIPE_EVALUATION)
 
     @json_report_property()
     def direct_executable_refactor_count(self) -> int:
-        return sum(
-            capability.direct_executable_refactor is not None
-            for capability in self.capabilities
-        )
+        return self.contribution_count(DetectorContributionRole.EXECUTABLE_REFACTOR)
