@@ -486,6 +486,27 @@ class PythonModulePathIdentity(SourceFileIdentity):
         import_root = Path(path.anchor) if path.is_absolute() else Path.cwd()
         return cls.from_import_root(path, import_root)
 
+    def resolve_import_from_module(
+        self,
+        *,
+        imported_module: str | None,
+        level: int,
+    ) -> str | None:
+        """Resolve one ``from`` import against this module's package identity."""
+
+        if level == 0:
+            return imported_module
+        package_parts = self.import_name.split(".")
+        if not self.is_package_init:
+            package_parts = package_parts[:-1]
+        if level > 1:
+            if level - 1 > len(package_parts):
+                return None
+            package_parts = package_parts[: len(package_parts) - (level - 1)]
+        if imported_module:
+            return ".".join((*package_parts, *imported_module.split(".")))
+        return ".".join(package_parts)
+
     @staticmethod
     def analysis_root_for_scan_root(root: Path) -> Path:
         return root.parent if root.is_file() else root

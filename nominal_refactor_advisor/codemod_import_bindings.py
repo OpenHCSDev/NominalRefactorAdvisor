@@ -50,10 +50,11 @@ class ModuleImportBinding:
         importing_file = import_graph.source_file_for_path(importing_file_path)
         if importing_file is None:
             return None
-        module_name = import_graph.resolve_import_from_module(
-            importing_file,
-            imported_module=statement.module,
-            level=statement.level,
+        module_name = (
+            importing_file.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module,
+                level=statement.level,
+            )
         )
         if module_name is None:
             return None

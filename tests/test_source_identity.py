@@ -109,6 +109,40 @@ def test_projected_module_identity_uses_closest_declared_import_root(
     assert projected.declared_import_root == nested_root
 
 
+@pytest.mark.parametrize(
+    ("import_name", "is_package_init", "imported_module", "level", "expected"),
+    (
+        ("pkg.consumer", False, "external.module", 0, "external.module"),
+        ("pkg.consumer", False, "family", 1, "pkg.family"),
+        ("pkg", True, "family", 1, "pkg.family"),
+        ("pkg.sub.consumer", False, "family", 2, "pkg.family"),
+        ("pkg.sub.consumer", False, None, 1, "pkg.sub"),
+        ("pkg.consumer", False, "family", 3, None),
+    ),
+)
+def test_module_identity_resolves_from_imports(
+    tmp_path: Path,
+    import_name: str,
+    is_package_init: bool,
+    imported_module: str | None,
+    level: int,
+    expected: str | None,
+) -> None:
+    identity = PythonModulePathIdentity(
+        path=tmp_path / ("__init__.py" if is_package_init else "consumer.py"),
+        import_name=import_name,
+        is_package_init=is_package_init,
+    )
+
+    assert (
+        identity.resolve_import_from_module(
+            imported_module=imported_module,
+            level=level,
+        )
+        == expected
+    )
+
+
 def test_module_identity_rejects_path_name_mismatch(tmp_path: Path) -> None:
     identity = PythonModulePathIdentity(
         path=tmp_path / "actual.py",

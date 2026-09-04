@@ -13,9 +13,10 @@ from .ast_tools import ParsedModule
 from .class_index import (
     ClassFamilyIndex,
     IndexedClass,
-    ModuleClassReferenceResolver,
+    ModuleNominalBindingAuthority,
     module_public_export_contract,
     module_star_import_origins,
+    nominal_reference_root,
 )
 from .codemod_declaration_source import ClassHeaderSpanSourceAuthority
 from .codemod_module_declarations import SourceTopLevelDeclarationIndex
@@ -71,22 +72,38 @@ class LocalClassAuthorityRenameProof:
             target.simple_name
         ).introduces_uncertainty:
             raise ValueError("Class-authority export policy is unresolved")
-        resolver = ModuleClassReferenceResolver(source_module, class_index)
         lexical_dependencies = ModuleLexicalDependencyProjection.from_module(
             source_module.module
         )
+        binding_authority = ModuleNominalBindingAuthority(source_module)
         direct_references = tuple(
             reference
             for reference in lexical_dependencies.external_references_named(
                 target.simple_name
             )
-            if resolver.symbol_for_reference(reference) == target.symbol
+            if binding_authority.qualified_name_at(
+                reference,
+                line=reference.lineno,
+            )
+            == target.symbol
+        )
+        external_reference_ids = frozenset(
+            id(reference)
+            for reference in lexical_dependencies.external_name_references
         )
         qualified_references = tuple(
             node
             for node in ast.walk(source_module.module)
             if isinstance(node, ast.Attribute)
-            and resolver.symbol_for_reference(node) == target.symbol
+            if (
+                root_reference := nominal_reference_root(node)
+            ) is not None
+            and id(root_reference) in external_reference_ids
+            and binding_authority.qualified_name_at(
+                node,
+                line=node.lineno,
+            )
+            == target.symbol
         )
         annotation_references = tuple(
             surface
@@ -101,7 +118,6 @@ class LocalClassAuthorityRenameProof:
         )
         cls._require_no_external_consumers(
             parsed_modules,
-            class_index,
             target,
         )
         return cls(
@@ -219,33 +235,43 @@ class LocalClassAuthorityRenameProof:
     @staticmethod
     def _require_no_external_consumers(
         parsed_modules: tuple[ParsedModule, ...],
-        class_index: ClassFamilyIndex,
         target: IndexedClass,
     ) -> None:
+        known_module_names = frozenset(
+            parsed_module.module_name for parsed_module in parsed_modules
+        )
         for parsed_module in parsed_modules:
             if parsed_module.file_path == target.file_path:
                 continue
-            resolver = ModuleClassReferenceResolver(parsed_module, class_index)
             if any(
-                resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load()))
-                == target.symbol
-                for name in resolver.import_aliases
+                alias.name == target.simple_name
+                and parsed_module.module_path_identity.resolve_import_from_module(
+                    imported_module=node.module,
+                    level=node.level,
+                )
+                in known_module_names
+                for node in ast.walk(parsed_module.module)
+                if isinstance(node, ast.ImportFrom)
+                for alias in node.names
             ):
                 raise ValueError(
                     f"Class authority {target.qualname!r} has an imported repository "
                     "consumer"
                 )
-            if any(
-                origin.module_name == target.module_name
-                for origin in module_star_import_origins(parsed_module)
+            if module_star_import_origins(
+                parsed_module
+            ) and ModuleLexicalDependencyProjection.from_module(
+                parsed_module.module
+            ).external_references_named(
+                target.simple_name
             ):
                 raise ValueError(
                     f"Class authority {target.qualname!r} has a star-import consumer"
                 )
             if any(
-                resolver.symbol_for_reference(node) == target.symbol
+                isinstance(node, ast.Attribute)
+                and node.attr == target.simple_name
                 for node in ast.walk(parsed_module.module)
-                if isinstance(node, ast.Attribute)
             ):
                 raise ValueError(
                     f"Class authority {target.qualname!r} has a qualified repository "

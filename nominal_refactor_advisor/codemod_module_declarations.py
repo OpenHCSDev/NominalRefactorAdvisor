@@ -303,10 +303,11 @@ class _ModuleStarImportProjection:
         module_name = (
             None
             if source_file is None
-            else import_graph.resolve_import_from_module(
-                source_file,
-                imported_module=self.statement.module,
-                level=self.statement.level,
+            else (
+                source_file.module_path_identity.resolve_import_from_module(
+                    imported_module=self.statement.module,
+                    level=self.statement.level,
+                )
             )
         )
         imported_file = (

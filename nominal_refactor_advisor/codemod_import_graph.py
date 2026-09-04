@@ -111,10 +111,11 @@ class SourceModuleImportGraph:
                 for edge in self.known_import_targets(alias.name)
             )
         if isinstance(statement, ast.ImportFrom):
-            resolved_module = self.resolve_import_from_module(
-                source_file,
-                imported_module=statement.module,
-                level=statement.level,
+            resolved_module = (
+                source_file.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
             )
             if resolved_module is None:
                 return frozenset()
@@ -336,23 +337,3 @@ class SourceModuleImportGraph:
                     return True
                 stack.append(imported_module)
         return False
-
-    @staticmethod
-    def resolve_import_from_module(
-        source_file: SourceFileDigest,
-        *,
-        imported_module: str | None,
-        level: int,
-    ) -> str | None:
-        if level == 0:
-            return imported_module
-        package_parts = source_file.module_name.split(".")
-        if not source_file.is_package_init:
-            package_parts = package_parts[:-1]
-        if level > 1:
-            if level - 1 > len(package_parts):
-                return None
-            package_parts = package_parts[: len(package_parts) - (level - 1)]
-        if imported_module:
-            return ".".join((*package_parts, *imported_module.split(".")))
-        return ".".join(package_parts)

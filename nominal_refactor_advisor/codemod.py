@@ -6902,10 +6902,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 for statement in scope.import_statements(module):
                     if not isinstance(statement, ast.ImportFrom):
                         continue
-                    imported_module = import_graph.resolve_import_from_module(
-                        source_file,
-                        imported_module=statement.module,
-                        level=statement.level,
+                    imported_module = (
+                        source_file.module_path_identity.resolve_import_from_module(
+                            imported_module=statement.module,
+                            level=statement.level,
+                        )
                     )
                     if imported_module != source_module_name:
                         continue

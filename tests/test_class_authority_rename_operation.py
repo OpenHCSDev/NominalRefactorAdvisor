@@ -118,7 +118,9 @@ def test_rejects_imported_repository_consumer(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/consumer.py",
-        "from pkg.family import Legacy\n\nVALUE = Legacy(1)\n",
+        "from pkg.family import Legacy\n\n"
+        "VALUE = Legacy(1)\n"
+        "Legacy = object\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
@@ -131,11 +133,32 @@ def test_rejects_imported_repository_consumer(tmp_path: Path) -> None:
         ).simulate(snapshot)
 
 
+def test_rejects_used_star_import_consumer(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from pkg.family import *\n\nVALUE = Legacy(1)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="star-import consumer",
+    ):
+        RefactorRecipe(recipe_id="star-consumer").with_operation(
+            _operation(tmp_path)
+        ).simulate(snapshot)
+
+
 def test_renames_qualified_self_module_reference(tmp_path: Path) -> None:
     module_path = _write_fixture(
         tmp_path,
         trailing_source=(
-            "\nimport pkg.family as family\n\nQUALIFIED = family.Legacy\n"
+            "\nimport pkg.family as family\n\n"
+            "QUALIFIED = family.Legacy\n\n"
+            "def shadowed_qualified(family):\n"
+            "    return family.Legacy\n"
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -146,6 +169,7 @@ def test_renames_qualified_self_module_reference(tmp_path: Path) -> None:
     rewritten = result.simulation.rewritten_sources[module_path.as_posix()]
 
     assert "QUALIFIED = family.Canonical" in rewritten
+    assert "return family.Legacy" in rewritten
 
 
 def test_rejects_string_name_surface(tmp_path: Path) -> None:

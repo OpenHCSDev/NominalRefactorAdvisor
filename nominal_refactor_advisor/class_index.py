@@ -2630,26 +2630,6 @@ def _unique_known_symbol_by_suffix(
     return _UniqueKnownSymbolSuffixIndex(known_symbols)
 
 
-def _resolve_relative_module(
-    parsed_module: ParsedModule,
-    *,
-    imported_module: str | None,
-    level: int,
-) -> str | None:
-    if level == 0:
-        return imported_module
-    package_parts = parsed_module.module_name.split(".")
-    if not parsed_module.is_package_init:
-        package_parts = package_parts[:-1]
-    if level > 1:
-        if level - 1 > len(package_parts):
-            return None
-        package_parts = package_parts[: len(package_parts) - (level - 1)]
-    if imported_module:
-        return ".".join((*package_parts, *imported_module.split(".")))
-    return ".".join(package_parts)
-
-
 class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):
     """Collect one module binding's syntax without entering child namespaces."""
 
@@ -2928,10 +2908,11 @@ class ModuleNominalBindingAuthority:
                 for alias in statement.names
             }
         if isinstance(statement, ast.ImportFrom):
-            resolved_module = _resolve_relative_module(
-                self.parsed_module,
-                imported_module=statement.module,
-                level=statement.level,
+            resolved_module = (
+                self.parsed_module.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
             )
             if resolved_module is None:
                 return {}
@@ -3007,12 +2988,19 @@ class FunctionNominalParameterBindingAuthority:
         return self.stable_type_names_by_parameter.get(parameter_name)
 
 
-def nominal_reference_root_name(reference: ast.AST) -> str | None:
-    """Return the lexical root whose binding owns a nominal reference."""
+def nominal_reference_root(reference: ast.AST) -> ast.Name | None:
+    """Return the lexical root node whose binding owns a nominal reference."""
 
     while isinstance(reference, ast.Attribute):
         reference = reference.value
-    return reference.id if isinstance(reference, ast.Name) else None
+    return reference if isinstance(reference, ast.Name) else None
+
+
+def nominal_reference_root_name(reference: ast.AST) -> str | None:
+    """Return the lexical root name whose binding owns a nominal reference."""
+
+    root = nominal_reference_root(reference)
+    return None if root is None else root.id
 
 
 class ModuleNominalBindingView(ABC):
@@ -3339,10 +3327,11 @@ def module_star_import_origins(
             if any(alias.name == "*" for alias in node.names):
                 origins.append(
                     CompactModuleStarImportOrigin(
-                        _resolve_relative_module(
-                            parsed_module,
-                            imported_module=node.module,
-                            level=node.level,
+                        (
+                            parsed_module.module_path_identity.resolve_import_from_module(
+                                imported_module=node.module,
+                                level=node.level,
+                            )
                         )
                     )
                 )
