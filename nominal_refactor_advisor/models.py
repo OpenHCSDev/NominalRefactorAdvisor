@@ -37,6 +37,14 @@ from metaclass_registry import AutoRegisterMeta
 class SemanticRecord(ABC):
     """Base ABC for frozen records that can be serialized to dictionaries."""
 
+    def dataclass_field_values(self) -> dict[str, object]:
+        """Project the runtime record through its nominal dataclass fields."""
+
+        return {
+            record_field.name: getattr(self, record_field.name)
+            for record_field in fields(self)
+        }
+
     def to_dict(self) -> dict[str, object]:
         record: Any = self
         return asdict(record)

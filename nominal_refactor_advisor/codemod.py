@@ -11095,7 +11095,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
 
 
 @dataclass(frozen=True)
-class CodemodParseValidationReport:
+class CodemodParseValidationReport(DataclassJsonReport):
     """Parse validation metadata for a simulated rewrite batch."""
 
     backend: CodemodBackend
@@ -11104,9 +11104,8 @@ class CodemodParseValidationReport:
 
     def to_dict(self) -> JsonObject:
         return {
+            **super().to_dict(),
             "backend": self.backend.value,
-            "validated_file_paths": self.validated_file_paths,
-            "parse_valid": self.parse_valid,
         }
 
 
@@ -11647,7 +11646,7 @@ class FindingRecipeSetDisposition(StrEnum):
 
 
 @dataclass(frozen=True)
-class FindingRecipeSetAssessment(CodemodJsonReport):
+class FindingRecipeSetAssessment(DataclassJsonReport):
     """Architecture-guarded simulation evidence for one recipe set."""
 
     candidate_indices: tuple[int, ...]
@@ -11692,11 +11691,8 @@ class FindingRecipeSetAssessment(CodemodJsonReport):
 
     def to_dict(self) -> JsonObject:
         return {
-            "candidate_indices": self.candidate_indices,
+            **super().to_dict(),
             "disposition": self.disposition.value,
-            "reason": self.reason,
-            "rewritten_file_paths": self.rewritten_file_paths,
-            "rewritten_source_digest": self.rewritten_source_digest,
         }
 
 
@@ -11746,7 +11742,7 @@ class FindingRecipeTrajectoryObstacleKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class FindingRecipeTrajectoryObstacle(CodemodJsonReport):
+class FindingRecipeTrajectoryObstacle(DataclassJsonReport):
     """One proof obligation preventing an exact trajectory frontier."""
 
     kind: FindingRecipeTrajectoryObstacleKind
@@ -11755,9 +11751,8 @@ class FindingRecipeTrajectoryObstacle(CodemodJsonReport):
 
     def to_dict(self) -> JsonObject:
         return {
+            **super().to_dict(),
             "kind": self.kind.value,
-            "finding_ids": self.finding_ids,
-            "reason": self.reason,
         }
 
 

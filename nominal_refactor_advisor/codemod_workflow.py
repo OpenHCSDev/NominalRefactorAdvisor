@@ -27,7 +27,6 @@ from .ast_tools import (
     parse_python_module_roots,
 )
 from .codemod import (
-    CodemodJsonReport,
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
@@ -38,13 +37,13 @@ from .codemod import (
     FindingRecipeFrontierBudget,
     FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
-    JsonObject,
     RefactorConcept,
 )
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
 )
+from .codemod_payload import CodemodJsonReport, DataclassJsonReport, JsonObject
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
 from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
@@ -148,7 +147,7 @@ class CodemodRefactorTrajectoryObstacleKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryBudget(CodemodJsonReport):
+class CodemodRefactorTrajectoryBudget(DataclassJsonReport):
     """Single proof-search budget shared by frontier and graph exploration."""
 
     max_depth: int = 8
@@ -165,8 +164,7 @@ class CodemodRefactorTrajectoryBudget(CodemodJsonReport):
 
     def to_dict(self) -> JsonObject:
         return {
-            "max_depth": self.max_depth,
-            "max_states": self.max_states,
+            **super().to_dict(),
             "recipe_frontier": self.recipe_frontier.to_dict(),
         }
 

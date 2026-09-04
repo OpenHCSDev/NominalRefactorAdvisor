@@ -11,6 +11,8 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
+from .models import SemanticRecord
+
 JsonScalar: TypeAlias = str | int | float | bool | None
 
 
@@ -34,17 +36,14 @@ class CodemodJsonReport(ABC):
         raise NotImplementedError
 
 
-class DataclassJsonReport(CodemodJsonReport, ABC):
+class DataclassJsonReport(CodemodJsonReport, SemanticRecord, ABC):
     """Shallow JSON projection derived from nominal dataclass fields."""
 
     def to_dict(self) -> JsonObject:
         return JsonObject(
             {
-                record_field.name: cast(
-                    JsonValue,
-                    getattr(self, record_field.name),
-                )
-                for record_field in dataclass_fields(self)
+                field_name: cast(JsonValue, value)
+                for field_name, value in self.dataclass_field_values().items()
             }
         )
 

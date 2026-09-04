@@ -44,8 +44,12 @@ field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
 Codemod operations, selectors, and payload records declare wire semantics with
 ``codemod_payload_field`` on their dataclass fields.
+``DataclassJsonReport`` derives a shallow JSON object from a concrete
+dataclass's declared fields.  It is the output-only boundary for records whose
+field values are already JSON values.
 ``DataclassPayloadProjection`` derives each binding catalogue and JSON
-projection from those declarations.  ``FlattenedPayloadRecordValueCodec`` lets
+projection from explicit field codecs when decoding or value conversion is
+required.  ``FlattenedPayloadRecordValueCodec`` lets
 a nested nominal record, such as a source-rewrite target, own a flattened wire
 projection without an envelope exception.  ``CodemodPayloadRecord`` inherits
 object decoding and unknown-field rejection from the same nominal declaration;
@@ -116,7 +120,7 @@ locations as source dependencies; unlocated claims and repository-wide guards
 select the complete scan-backed snapshot instead.
 
 .. automodule:: nominal_refactor_advisor.codemod_payload
-   :members: DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
+   :members: DataclassJsonReport, DataclassPayloadProjection, CodemodPayloadRecord, DiscriminatedPayloadRecord, codemod_payload_field, FlattenedPayloadRecordValueCodec, PayloadRecordValueCodec, PayloadRecordArrayValueCodec, PayloadValueCodec, PayloadBindingSet
 
 Rejected ``FindingRecipeSynthesisRecord`` values expose ``proof_obstacles``.
 Each obstacle identifies the nominal executable declaration that failed to

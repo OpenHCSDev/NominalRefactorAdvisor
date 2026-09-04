@@ -39,10 +39,7 @@ class ScanTiming(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "parse_seconds": self.parse_seconds,
-            "analysis_seconds": self.analysis_seconds,
-            "planning_seconds": self.planning_seconds,
-            "source_index_seconds": self.source_index_seconds,
+            **self.dataclass_field_values(),
             "analysis_cache_status": (
                 None
                 if self.analysis_cache_status is None

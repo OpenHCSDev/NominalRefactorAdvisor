@@ -370,7 +370,7 @@ class CalibrationReport(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "manifest_path": self.manifest_path,
+            **self.dataclass_field_values(),
             "passes": self.passes,
             "regression_reasons": self.regression_reasons,
             "target_results": [

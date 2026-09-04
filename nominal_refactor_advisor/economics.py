@@ -298,17 +298,8 @@ class ScanEconomicsProof(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "label": self.label,
-            "path": self.path,
-            "elapsed_seconds": self.elapsed_seconds,
-            "scan_budget_seconds": self.scan_budget_seconds,
+            **self.dataclass_field_values(),
             "scan_budget_passes": self.scan_budget_passes,
-            "finding_count": self.finding_count,
-            "production_finding_count": self.production_finding_count,
-            "test_only_finding_count": self.test_only_finding_count,
-            "plan_count": self.plan_count,
-            "detector_ids": self.detector_ids,
-            "production_detector_ids": self.production_detector_ids,
             "production_scan_clean": self.production_scan_clean,
             "evidence_guard_passes": self.economics.evidence_guard_passes,
             "proof_passes": self.proof_passes,
@@ -345,6 +336,7 @@ class EconomicsProofReport(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
+            **self.dataclass_field_values(),
             "proof_passes": self.proof_passes,
             "regression_reasons": self.regression_reasons,
             "package_scan": self.package_scan.to_dict(),
@@ -366,8 +358,7 @@ class LineChangeBudget(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "added": self.added,
-            "deleted": self.deleted,
+            **self.dataclass_field_values(),
             "net_added": self.net_added,
         }
 
@@ -475,14 +466,13 @@ class RepositoryChangeBudget(SemanticRecord):
 
     def to_dict(self) -> dict[str, object]:
         return {
+            **self.dataclass_field_values(),
             "advisor_backend": self.advisor_backend.to_dict(),
             "detectors": self.detectors.to_dict(),
             "tests": self.tests.to_dict(),
             "docs": self.docs.to_dict(),
             "generated": self.generated.to_dict(),
             "other": self.other.to_dict(),
-            "compare_ref": self.compare_ref,
-            "unavailable_reason": self.unavailable_reason,
         }
 
 
