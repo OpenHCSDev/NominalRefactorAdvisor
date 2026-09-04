@@ -68,18 +68,25 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
             raise ValueError(f"{cls.__name__} payload must be an object")
         return cast(Mapping[str, JsonValue], value)
 
+    @classmethod
+    def accepted_payload_field_names(cls) -> tuple[str, ...]:
+        """Return the complete input schema derived from this declaration."""
+
+        return cls.payload_bindings().payload_field_names
+
+    @classmethod
     def require_supported_payload_fields(
-        self,
+        cls,
         payload: Mapping[str, JsonValue],
     ) -> None:
-        """Reject fields absent from this record's declaration-derived projection."""
+        """Reject fields absent from this record's declaration-owned schema."""
 
-        supported_fields = set(type(self).payload_bindings().payload_field_names)
-        supported_fields.update(json_report_object(self))
-        unsupported_fields = tuple(sorted(set(payload) - supported_fields))
+        unsupported_fields = tuple(
+            sorted(set(payload) - set(cls.accepted_payload_field_names()))
+        )
         if unsupported_fields:
             raise ValueError(
-                f"Unsupported {type(self).__name__} payload field(s): "
+                f"Unsupported {cls.__name__} payload field(s): "
                 f"{', '.join(repr(field) for field in unsupported_fields)}"
             )
 
@@ -88,9 +95,8 @@ class CodemodPayloadRecord(DataclassPayloadProjection, ABC):
         """Decode one record through its declaration-owned field bindings."""
 
         payload = cls.payload_fields(value)
-        record = cls.from_payload_fields(payload)
-        record.require_supported_payload_fields(payload)
-        return record
+        cls.require_supported_payload_fields(payload)
+        return cls.from_payload_fields(payload)
 
 
 class PayloadValueCodec(Generic[PayloadValueT], ABC):
@@ -255,6 +261,13 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
         raise NotImplementedError
 
     @classmethod
+    def accepted_payload_field_names(cls) -> tuple[str, ...]:
+        return (
+            cls.discriminator_field_name,
+            *super().accepted_payload_field_names(),
+        )
+
+    @classmethod
     def from_json_value(cls, value: JsonValue) -> Self:
         payload = cls.payload_fields(value)
         discriminator = RequiredStringPayloadValueCodec().read(
@@ -262,9 +275,8 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
             cls.discriminator_field_name,
         )
         record_type = cls.record_type_for_discriminator(discriminator)
-        record = record_type.from_payload_fields(payload)
-        record.require_supported_payload_fields(payload)
-        return record
+        record_type.require_supported_payload_fields(payload)
+        return record_type.from_payload_fields(payload)
 
     @classmethod
     def project_json_object(cls, record: Self) -> JsonObject:

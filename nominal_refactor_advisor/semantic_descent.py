@@ -78,7 +78,6 @@ from .implementation_identity import ImplementationSource, implementation_module
 from .json_reports import (
     DataclassJsonReport,
     SemanticRecord,
-    json_report_object,
     json_report_property,
 )
 from .models import (
@@ -936,13 +935,6 @@ class AuthorityClaim(CodemodPayloadRecord):
         return (not self.file_path or file_path == self.file_path) and (
             not self.qualname or qualname == self.qualname
         )
-
-    def scaffold_source(self) -> str:
-        arguments = ", ".join(
-            f"{field_name}={value!r}" for field_name, value in json_report_object(self).items()
-        )
-        return f"AuthorityClaim({arguments})"
-
 
 @dataclass(frozen=True, kw_only=True)
 class AuthorityClaimCarrier(SemanticRecord):

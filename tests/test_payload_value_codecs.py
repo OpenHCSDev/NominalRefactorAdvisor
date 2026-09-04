@@ -257,10 +257,6 @@ def test_payload_codec_leaves_round_trip_exact_runtime_values() -> None:
         serialized = codec.serialize(value)
         assert codec.read({"value": serialized}, "value") == value
 
-    assert "authority_kind='class_family'" in authority_claim.scaffold_source()
-    assert "SemanticAuthorityKind" not in authority_claim.scaffold_source()
-
-
 def test_flattened_record_codec_owns_nested_projection() -> None:
     target = SourceRewriteTarget(
         file_path="pkg/example.py",

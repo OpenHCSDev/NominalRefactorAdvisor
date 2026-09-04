@@ -427,11 +427,6 @@ class AuthorityDiscoveryRequiredFindingProjection:
             ),
         )
 
-    @staticmethod
-    def scaffold_for_claim(claim: AuthorityClaim) -> str:
-        return claim.scaffold_source()
-
-
 @dataclass(frozen=True)
 class SemanticRefactorGateReport(SemanticRecord):
     """Authority-boundary proof report for semantic refactor scans."""
