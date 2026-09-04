@@ -12,8 +12,6 @@ import builtins
 import copy
 import difflib
 import hashlib
-import importlib
-import importlib.util
 import keyword as keyword_module
 import os
 import re
@@ -26,6 +24,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
+from importlib.util import find_spec
 from itertools import combinations
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
@@ -331,6 +330,7 @@ from .codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
     ClassSourceAuthority as ClassSourceAuthority,
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
+    PythonExpressionSourceFormatter as PythonExpressionSourceFormatter,
 )
 
 
@@ -2583,7 +2583,7 @@ class ClassMemberInsertion(NominalSourceEdit):
                 f"{tuple(sorted(collisions))!r}"
             )
         source = context.sources_by_file_path[target.file_path]
-        insertion_point = ClassBodyInsertionPoint(source, node)
+        insertion_point = ClassBodySourceAuthority(node=node, source=source)
         return (
             SourceInsertion(
                 file_path=target.file_path,
@@ -2600,142 +2600,6 @@ class ClassMemberInsertion(NominalSourceEdit):
                 origins=self.origins,
             ),
         )
-
-
-@dataclass(frozen=True)
-class PythonExpressionSourceFormatter:
-    """Format expression replacements relative to their source insertion column."""
-
-    line_length: int = 88
-
-    def replacement_source(
-        self,
-        node: ast.expr,
-        *,
-        line_prefix: str = "",
-    ) -> str:
-        expression_source = ast.unparse(node)
-        formatted_source = self.black_expression_source(
-            expression_source,
-            line_prefix=line_prefix,
-        )
-        return self.prefixed_continuation_source(
-            formatted_source or expression_source,
-            line_prefix=line_prefix,
-        )
-
-    def black_expression_source(
-        self,
-        expression_source: str,
-        *,
-        line_prefix: str = "",
-    ) -> str | None:
-        if importlib.util.find_spec("black") is None:
-            return None
-        black = importlib.import_module("black")
-        mode = black.Mode(
-            line_length=max(40, self.line_length - len(line_prefix)),
-            target_versions={black.TargetVersion.PY311},
-        )
-        try:
-            formatted = black.format_str(
-                f"def _nra_expression():\n    return {expression_source}\n",
-                mode=mode,
-            )
-        except Exception:
-            return None
-        return self.return_expression_source(formatted)
-
-    @staticmethod
-    def return_expression_source(formatted_wrapper_source: str) -> str | None:
-        return_prefix = "    return "
-        body_prefix = "    "
-        lines = formatted_wrapper_source.splitlines()
-        for index, line in enumerate(lines):
-            if not line.startswith(return_prefix):
-                continue
-            expression_lines = [line.removeprefix(return_prefix)]
-            expression_lines.extend(
-                continuation_line.removeprefix(body_prefix)
-                for continuation_line in lines[index + 1 :]
-                if continuation_line.startswith(body_prefix)
-            )
-            return "\n".join(expression_lines)
-        return None
-
-    @staticmethod
-    def prefixed_continuation_source(
-        source: str,
-        *,
-        line_prefix: str,
-    ) -> str:
-        lines = source.splitlines()
-        if len(lines) <= 1 or not line_prefix:
-            return source
-        return "\n".join(
-            line if index == 0 else f"{line_prefix}{line}"
-            for index, line in enumerate(lines)
-        )
-
-
-@dataclass(frozen=True)
-class ClassBodyInsertionPoint:
-    """Exact source offset for adding methods without stealing attached comments."""
-
-    source: str
-    node: ast.ClassDef
-
-    @property
-    def before_first_method_offset(self) -> int:
-        geometry = SourceTextGeometry(self.source)
-        first_method = next(
-            (
-                statement
-                for statement in self.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            ),
-            None,
-        )
-        if first_method is None:
-            return (
-                geometry.line_offsets[self.node.end_lineno]
-                if self.node.end_lineno is not None
-                and self.node.end_lineno < len(geometry.line_offsets)
-                else geometry.end_offset
-            )
-        insertion_line = ClassHeaderSourceSpan.statement_start_line(first_method)
-        source_lines = geometry.lines
-        method_indent = " " * first_method.col_offset
-        while insertion_line > self.node.lineno + 1:
-            preceding_line = source_lines[insertion_line - 2]
-            if not (
-                preceding_line.startswith(method_indent)
-                and preceding_line.removeprefix(method_indent).startswith("#")
-            ):
-                break
-            insertion_line -= 1
-        return geometry.line_offsets[insertion_line - 1]
-
-    def member_source(self, members: tuple[str, ...]) -> str:
-        """Render class members at this point with stable class-body spacing."""
-
-        insertion_offset = self.before_first_method_offset
-        prefix = self.source[:insertion_offset]
-        suffix = self.source[insertion_offset:]
-        if prefix.endswith("\n\n"):
-            leading_separator = ""
-        elif prefix.endswith("\n"):
-            leading_separator = "\n"
-        else:
-            leading_separator = "\n\n"
-        if suffix.startswith("\n\n"):
-            trailing_separator = ""
-        elif suffix.startswith("\n"):
-            trailing_separator = "\n"
-        else:
-            trailing_separator = "\n\n"
-        body = "\n\n".join(member.rstrip("\r\n") for member in members)
-        return f"{leading_separator}{body}{trailing_separator}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4658,7 +4522,10 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
             source_text=source,
             source_class=source_class,
         ).member_sources
-        insertion_point = ClassBodyInsertionPoint(source, authority.node)
+        insertion_point = ClassBodySourceAuthority(
+            node=authority.node,
+            source=source,
+        )
         replacement_source = SourceTextGeometry(source).target_source_with_replacements(
             authority.target,
             (
@@ -6023,7 +5890,10 @@ class _TypeKeyedBehaviorSourceDerivation:
                     f"projection leaf {projection_class.simple_name!r} lost behavior methods"
                 )
             target_source = self.snapshot.sources_by_file_path[target_class.file_path]
-            insertion_point = ClassBodyInsertionPoint(target_source, target_class.node)
+            insertion_point = ClassBodySourceAuthority(
+                node=target_class.node,
+                source=target_source,
+            )
             insertion_offset = insertion_point.before_first_method_offset
             replacements_by_path[target_class.file_path].append(
                 SourceTextSpanReplacement.from_offsets(
@@ -14750,7 +14620,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
             constructor_name=constructor_name,
             method=method,
         )
-        insertion_point = ClassBodyInsertionPoint(source, node)
+        insertion_point = ClassBodySourceAuthority(node=node, source=source)
         return SourceTextGeometry(source).target_source_with_replacements(
             target,
             (
@@ -21579,7 +21449,7 @@ class DiffPathPrefixAuthority:
 def libcst_available() -> bool:
     """Return whether LibCST is importable in the current environment."""
 
-    return importlib.util.find_spec("libcst") is not None
+    return find_spec("libcst") is not None
 
 
 def select_codemod_backend(*, prefer_libcst: bool = False) -> CodemodBackend:

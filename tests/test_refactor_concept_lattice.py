@@ -562,6 +562,12 @@ def test_function_mutations_share_typed_current_source_proof() -> None:
         assert "source_edits_for_function" in operation_type.__dict__
 
 
+def test_class_body_source_authority_owns_insertion_geometry() -> None:
+    assert not hasattr(codemod, "ClassBodyInsertionPoint")
+    assert "before_first_method_offset" in codemod.ClassBodySourceAuthority.__dict__
+    assert "member_source" in codemod.ClassBodySourceAuthority.__dict__
+
+
 def test_source_payload_operations_share_the_source_declaration() -> None:
     operation_types = (
         codemod.CreateFileOperation,

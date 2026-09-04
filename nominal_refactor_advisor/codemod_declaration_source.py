@@ -5,9 +5,88 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from functools import cached_property
+from importlib import import_module as import_module_by_name
+from importlib.util import find_spec
 from typing import ClassVar
 
 from .class_index import ClassHeaderSourceSpan
+from .codemod_source_edits import SourceTextGeometry
+
+
+@dataclass(frozen=True)
+class PythonExpressionSourceFormatter:
+    """Format expression replacements relative to their source insertion column."""
+
+    line_length: int = 88
+
+    def replacement_source(
+        self,
+        node: ast.expr,
+        *,
+        line_prefix: str = "",
+    ) -> str:
+        expression_source = ast.unparse(node)
+        formatted_source = self.black_expression_source(
+            expression_source,
+            line_prefix=line_prefix,
+        )
+        return self.prefixed_continuation_source(
+            formatted_source or expression_source,
+            line_prefix=line_prefix,
+        )
+
+    def black_expression_source(
+        self,
+        expression_source: str,
+        *,
+        line_prefix: str = "",
+    ) -> str | None:
+        if find_spec("black") is None:
+            return None
+        black = import_module_by_name("black")
+        mode = black.Mode(
+            line_length=max(40, self.line_length - len(line_prefix)),
+            target_versions={black.TargetVersion.PY311},
+        )
+        try:
+            formatted = black.format_str(
+                f"def _nra_expression():\n    return {expression_source}\n",
+                mode=mode,
+            )
+        except Exception:
+            return None
+        return self.return_expression_source(formatted)
+
+    @staticmethod
+    def return_expression_source(formatted_wrapper_source: str) -> str | None:
+        return_prefix = "    return "
+        body_prefix = "    "
+        lines = formatted_wrapper_source.splitlines()
+        for index, line in enumerate(lines):
+            if not line.startswith(return_prefix):
+                continue
+            expression_lines = [line.removeprefix(return_prefix)]
+            expression_lines.extend(
+                continuation_line.removeprefix(body_prefix)
+                for continuation_line in lines[index + 1 :]
+                if continuation_line.startswith(body_prefix)
+            )
+            return "\n".join(expression_lines)
+        return None
+
+    @staticmethod
+    def prefixed_continuation_source(
+        source: str,
+        *,
+        line_prefix: str,
+    ) -> str:
+        lines = source.splitlines()
+        if len(lines) <= 1 or not line_prefix:
+            return source
+        return "\n".join(
+            line if index == 0 else f"{line_prefix}{line}"
+            for index, line in enumerate(lines)
+        )
 
 
 @dataclass(frozen=True)
@@ -190,6 +269,60 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         ):
             return self.node.body[0].end_lineno or self.node.body[0].lineno
         return self.node.lineno
+
+    @property
+    def before_first_method_offset(self) -> int:
+        """Return the insertion offset without stealing attached comments."""
+
+        geometry = SourceTextGeometry(self.source)
+        first_method = next(
+            (
+                statement
+                for statement in self.node.body
+                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            ),
+            None,
+        )
+        if first_method is None:
+            return (
+                geometry.line_offsets[self.node.end_lineno]
+                if self.node.end_lineno is not None
+                and self.node.end_lineno < len(geometry.line_offsets)
+                else geometry.end_offset
+            )
+        insertion_line = ClassHeaderSourceSpan.statement_start_line(first_method)
+        source_lines = geometry.lines
+        method_indent = " " * first_method.col_offset
+        while insertion_line > self.node.lineno + 1:
+            preceding_line = source_lines[insertion_line - 2]
+            if not (
+                preceding_line.startswith(method_indent)
+                and preceding_line.removeprefix(method_indent).startswith("#")
+            ):
+                break
+            insertion_line -= 1
+        return geometry.line_offsets[insertion_line - 1]
+
+    def member_source(self, members: tuple[str, ...]) -> str:
+        """Render class members at this point with stable class-body spacing."""
+
+        insertion_offset = self.before_first_method_offset
+        prefix = self.source[:insertion_offset]
+        suffix = self.source[insertion_offset:]
+        if prefix.endswith("\n\n"):
+            leading_separator = ""
+        elif prefix.endswith("\n"):
+            leading_separator = "\n"
+        else:
+            leading_separator = "\n\n"
+        if suffix.startswith("\n\n"):
+            trailing_separator = ""
+        elif suffix.startswith("\n"):
+            trailing_separator = "\n"
+        else:
+            trailing_separator = "\n\n"
+        body = "\n\n".join(member.rstrip("\r\n") for member in members)
+        return f"{leading_separator}{body}{trailing_separator}"
 
 
 @dataclass(frozen=True)
