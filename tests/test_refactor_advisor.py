@@ -7502,7 +7502,6 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Root",),
         destination_path=destination_path.as_posix(),
-        destination_source="from __future__ import annotations\n",
     )
 
     restored_operation = RefactorRecipeOperation.from_dict(operation.to_dict())
@@ -7516,13 +7515,16 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
 
     assert restored_operation == operation
     assert operation.to_dict()["root_symbol_qualnames"] == ("Root",)
+    assert "destination_source" not in operation.to_dict()
     assert moved_symbol_qualnames == ("Base", "Helper", "Root")
     assert "class Unrelated" in simulation.simulation.rewritten_sources[
         source_path.as_posix()
     ]
-    assert "class Root" in simulation.simulation.rewritten_sources[
+    rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
+    assert rewritten_destination.startswith("from __future__ import annotations\n")
+    assert "class Root" in rewritten_destination
     assert simulation.simulation.rewritten_sources[
         consumer_path.as_posix()
     ].startswith(
@@ -7542,6 +7544,35 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_new_module_extraction_rejects_explicit_annotation_policy_change(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from __future__ import annotations\n\n\n"
+        "class Helper:\n"
+        "    value: MissingUntilRuntime\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("Helper",),
+        destination_path=destination_path.as_posix(),
+        destination_source="",
+    )
+
+    assert RefactorRecipeOperation.from_dict(operation.to_dict()) == operation
+    assert operation.to_dict()["destination_source"] == ""
+    with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
+        RefactorRecipe("reject-explicit-annotation-mode-change").with_operation(
+            operation
+        ).simulate(snapshot)
 
 
 @pytest.mark.parametrize(

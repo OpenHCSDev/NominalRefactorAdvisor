@@ -1336,9 +1336,25 @@ LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()
 class ModuleAnnotationEvaluationMode(StrEnum):
     """Runtime representation policy for annotations declared by one module."""
 
-    EAGER = "eager"
-    LAZY = "lazy"
-    STRINGIZED = "stringized"
+    EAGER = ("eager", "")
+    LAZY = ("lazy", "")
+    STRINGIZED = ("stringized", "from __future__ import annotations\n")
+
+    def __new__(
+        cls,
+        value: str,
+        new_module_prelude: str,
+    ) -> "ModuleAnnotationEvaluationMode":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._new_module_prelude = new_module_prelude
+        return member
+
+    @property
+    def new_module_prelude(self) -> str:
+        """Return source that preserves this policy in a new module."""
+
+        return self._new_module_prelude
 
     @classmethod
     def runtime_default(cls) -> "ModuleAnnotationEvaluationMode":

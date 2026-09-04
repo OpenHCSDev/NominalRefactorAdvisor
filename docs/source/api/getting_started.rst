@@ -111,10 +111,12 @@ preflight.
 Import aliases are presentation derived from the required bound name; redundant
 same-name aliases do not create a second import authority.
 
-Source and destination modules must use the same annotation evaluation policy
-when moved declarations contain annotations.  Align their
-``from __future__ import annotations`` usage before applying the move; NRA
-fails preflight instead of changing annotation semantics.
+Source and existing destination modules must use the same annotation evaluation
+policy when moved declarations contain annotations.  New-module extraction
+derives the source module's policy when ``destination_source`` is omitted,
+including ``from __future__ import annotations`` when required.  An explicitly
+supplied destination source remains authoritative; NRA fails preflight if it
+would change annotation semantics.
 
 To prove a goal across reachable source states, run:
 

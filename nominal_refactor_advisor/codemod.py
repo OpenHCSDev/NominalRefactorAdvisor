@@ -2821,17 +2821,17 @@ class RefactorRecipeOperation(
 
     def source_file_creations(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
-        del source_index
+        del context
         return ()
 
     def created_source_paths(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[str, ...]:
         return tuple(
-            creation.file_path for creation in self.source_file_creations(source_index)
+            creation.file_path for creation in self.source_file_creations(context)
         )
 
     def declared_authority_claims(
@@ -3774,7 +3774,7 @@ class CreateFileOperation(SourcePayloadOperation):
 
     def source_file_creations(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
         if self.target.file_path is None:
             raise ValueError("create_file requires file_path")
@@ -3782,7 +3782,7 @@ class CreateFileOperation(SourcePayloadOperation):
             SourceFileCreation.from_operation(
                 self,
                 requested_path=self.target.file_path,
-                source_index=source_index,
+                source_index=context.source_index,
                 source=self.source,
             ),
         )
@@ -3791,7 +3791,7 @@ class CreateFileOperation(SourcePayloadOperation):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
-        return self.source_file_creations(context.source_index)
+        return self.source_file_creations(context)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -8628,30 +8628,41 @@ class ExistingModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
 class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     """Module move whose destination source is created atomically."""
 
-    destination_source: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(),
-        default="",
+    destination_source: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
     )
 
     def source_file_creations(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
         return (
             SourceFileCreation.from_operation(
                 self,
                 requested_path=self.destination_path,
-                source_index=source_index,
-                source=self.destination_source,
+                source_index=context.source_index,
+                source=self.initial_destination_source(context),
             ),
         )
+
+    def initial_destination_source(self, context: CodemodSelectorContext) -> str:
+        """Resolve caller source or derive the source module's annotation policy."""
+
+        if self.destination_source is not None:
+            return self.destination_source
+        source_path = self.required_source_path(context, self.operation_key())
+        annotation_mode = ModuleAnnotationEvaluationMode.from_module(
+            context.module_nodes_by_file_path[source_path]
+        )
+        return annotation_mode.new_module_prelude
 
     def source_edits_from_snapshot(
         self,
         context: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         return (
-            *self.source_file_creations(context.source_index),
+            *self.source_file_creations(context),
             *self.move_source_edits(context),
         )
 
@@ -10955,7 +10966,7 @@ class RefactorRecipe(CodemodPayloadRecord):
     ) -> bool:
         if selector_context is None:
             return bool(self.operations)
-        if self.created_source_paths(selector_context.source_index):
+        if self.created_source_paths(selector_context):
             return True
         return bool(self.source_rewrite_batch(selector_context.execution_snapshot()))
 
@@ -11001,20 +11012,20 @@ class RefactorRecipe(CodemodPayloadRecord):
 
     def created_source_paths(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[str, ...]:
         return tuple(
-            creation.file_path for creation in self.source_file_creations(source_index)
+            creation.file_path for creation in self.source_file_creations(context)
         )
 
     def source_file_creations(
         self,
-        source_index: SourceIndex,
+        context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
         return tuple(
             creation
             for operation in self.operations
-            for creation in operation.source_file_creations(source_index)
+            for creation in operation.source_file_creations(context)
         )
 
     def preflight_reports(
@@ -11348,7 +11359,7 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
         return snapshot.with_source_file_creations(
             creation
             for recipe in self.recipes
-            for creation in recipe.source_file_creations(snapshot.source_index)
+            for creation in recipe.source_file_creations(snapshot)
         )
 
     def simulate(
