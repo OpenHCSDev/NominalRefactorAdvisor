@@ -600,16 +600,16 @@ class MovedTopLevelDeclarationSource:
         deletion_start_line = self.source_start_line
         deletion_end_line = self.source_end_line
         while (
-            deletion_end_line < len(source_lines)
+            deletion_start_line > 1
+            and not source_lines[deletion_start_line - 2].strip()
+        ):
+            deletion_start_line -= 1
+        while (
+            deletion_start_line == 1
+            and deletion_end_line < len(source_lines)
             and not source_lines[deletion_end_line].strip()
         ):
             deletion_end_line += 1
-        if deletion_end_line == len(source_lines):
-            while (
-                deletion_start_line > 1
-                and not source_lines[deletion_start_line - 2].strip()
-            ):
-                deletion_start_line -= 1
         return SourceSpanDeletion(
             file_path=self.declaration.source_path,
             start_line=deletion_start_line,

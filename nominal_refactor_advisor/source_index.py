@@ -24,6 +24,39 @@ from .models import (
     stable_source_location_id,
 )
 
+
+SourceTargetIdentityValueT = TypeVar(
+    "SourceTargetIdentityValueT",
+    str,
+    str | None,
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceTargetIdentity(Generic[SourceTargetIdentityValueT]):
+    """Source-index target identity fields shared by selectors and resolved spans."""
+
+    target_id: SourceTargetIdentityValueT
+    file_path: SourceTargetIdentityValueT
+
+
+@dataclass(frozen=True, kw_only=True)
+class AstTargetGeometryKey:
+    """Stable key joining source-index target geometry to parsed AST nodes."""
+
+    qualname: str
+    line: int
+    end_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceTargetSpan(SourceTargetIdentity[str], AstTargetGeometryKey):
+    """Resolved source-index target span shared by codemod analyses."""
+
+    target_id: str
+    file_path: str
+
+
 IndexKeyT = TypeVar("IndexKeyT")
 IndexValueT = TypeVar("IndexValueT")
 AstTargetNode: TypeAlias = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef

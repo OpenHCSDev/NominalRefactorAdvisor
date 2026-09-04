@@ -15,7 +15,6 @@ from .cli import (
     plan_paths,
 )
 from .codemod import (
-    CancelableCompositionSignal,
     CarrierFieldProjection,
     CodemodPlanDocument,
     CodemodPlanRoot,
@@ -51,7 +50,6 @@ from .codemod import (
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_class_plan_from_findings,
-    detect_cancelable_composition_signals,
     format_codemod_unified_diff,
     simulate_planned_rewrites,
 )
@@ -169,6 +167,11 @@ from .taxonomy import (
     ConfidenceLevel,
     ObservationTag,
 )
+from .cancelable_composition import (
+    CancelableCompositionSignal,
+    detect_cancelable_composition_signals,
+)
+
 
 __all__ = _export_tools.derive_public_exports(
     globals(),

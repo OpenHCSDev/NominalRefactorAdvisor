@@ -3,13 +3,6 @@
 The advisor does not apply edits here. It represents target-level rewrite plans,
 simulates their effect over source text, and validates the resulting source with
 the best parser available in the local environment.
-
-The carrier-factorization signal is intentionally algebraic rather than tied to
-carrier names: it detects cancelable compositions where a function maps product
-fields through pack/forward/unpack steps without changing those fields or owning
-an invariant. In categorical terms, these are identity-like morphisms between
-product carriers whose common factors can be cancelled before a codemod runner
-materializes a rewrite.
 """
 
 from __future__ import annotations
@@ -45,7 +38,9 @@ from .assignment_projection import (
 )
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
+    AstExpressionProjection as AstExpressionProjection,
     EagerNameLoadCollector,
+    FunctionDefinitionNode,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
     AstParentIndex,
@@ -196,10 +191,14 @@ from .semantic_match import (
 )
 from .source_index import (
     AstTargetDigest,
+    AstTargetGeometryKey as AstTargetGeometryKey,
     AstTargetNodeIndex,
     AstTargetNodeKind,
     SourceFileDigest,
     SourceIndex,
+    SourceTargetIdentity as SourceTargetIdentity,
+    SourceTargetIdentityValueT as SourceTargetIdentityValueT,
+    SourceTargetSpan as SourceTargetSpan,
     build_source_index_artifacts,
 )
 from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
@@ -318,13 +317,16 @@ from .codemod_architecture_guards import (
     _call_name as _call_name,
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
-
-
-SourceTargetIdentityValueT = TypeVar(
-    "SourceTargetIdentityValueT",
-    str,
-    str | None,
+from .cancelable_composition import (
+    CancelableCompositionSignal as CancelableCompositionSignal,
+    CancelableCompositionSignalTargetAuthority as CancelableCompositionSignalTargetAuthority,
+    ProductForwardCallAuthority as ProductForwardCallAuthority,
+    ProductForwardFieldProjection as ProductForwardFieldProjection,
+    ProductForwardIdentity as ProductForwardIdentity,
+    detect_cancelable_composition_signals as detect_cancelable_composition_signals,
 )
+
+
 SourceReproofValueT = TypeVar("SourceReproofValueT")
 
 
@@ -759,31 +761,6 @@ class AuthorityClaimSourceIndexResolver:
                 qualname=target.qualname,
             )
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceTargetIdentity(Generic[SourceTargetIdentityValueT]):
-    """Source-index target identity fields shared by selectors and resolved spans."""
-
-    target_id: SourceTargetIdentityValueT
-    file_path: SourceTargetIdentityValueT
-
-
-@dataclass(frozen=True, kw_only=True)
-class AstTargetGeometryKey:
-    """Stable key joining source-index target geometry to parsed AST nodes."""
-
-    qualname: str
-    line: int
-    end_line: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourceTargetSpan(SourceTargetIdentity[str], AstTargetGeometryKey):
-    """Resolved source-index target span shared by codemod analyses."""
-
-    target_id: str
-    file_path: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -10464,7 +10441,7 @@ class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
         self,
         snapshot: CodemodSourceSnapshot,
         target: AstTargetDigest,
-        node: _FunctionNode,
+        node: FunctionDefinitionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
         """Return the leaf operation's edits for one proved function target."""
 
@@ -10481,7 +10458,7 @@ class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
         self,
         snapshot: CodemodSourceSnapshot,
         target: AstTargetDigest,
-        node: _FunctionNode,
+        node: FunctionDefinitionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
         editor = SourceTargetEditor(snapshot.sources_by_file_path, target)
         original_line = editor.file_lines[node.lineno - 1]
@@ -10510,7 +10487,7 @@ class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
         self,
         snapshot: CodemodSourceSnapshot,
         target: AstTargetDigest,
-        node: _FunctionNode,
+        node: FunctionDefinitionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
         if not node.body:
             raise ValueError(f"Target {target.qualname!r} has no body")
@@ -21823,36 +21800,6 @@ def codemod_plan_from_findings(
     ).plan(selector_context=selector_context)
 
 
-@dataclass(frozen=True)
-class AstExpressionProjection:
-    """Nominal projections from an AST expression into source-level names."""
-
-    node: ast.expr
-
-    def base_name(self) -> str | None:
-        if isinstance(self.node, ast.Name):
-            return self.node.id
-        if isinstance(self.node, ast.Attribute):
-            return self.node.attr
-        if isinstance(self.node, ast.Subscript):
-            return AstExpressionProjection(self.node.value).base_name()
-        return None
-
-    def attribute_projection(self) -> tuple[str, str] | None:
-        if not isinstance(self.node, ast.Attribute):
-            return None
-        return ast.unparse(self.node.value), self.node.attr
-
-    def field_from_carrier_attribute(self, carrier_variable_name: str) -> str | None:
-        projected = self.attribute_projection()
-        if projected is None:
-            return None
-        source_name, field_name = projected
-        if source_name != carrier_variable_name:
-            return None
-        return field_name
-
-
 def format_codemod_unified_diff(
     simulation: CodemodSimulationReport,
     source_by_path: Mapping[str, str],
@@ -22012,76 +21959,6 @@ class DiffPathPrefixAuthority:
         if not self.prefix:
             return file_path
         return f"{self.prefix}{file_path.removeprefix('/')}"
-
-
-@dataclass(frozen=True, kw_only=True)
-class ProductForwardIdentity:
-    """Product carrier/source/field identity shared by forward projections."""
-
-    carrier_name: str
-    source_name: str
-    field_names: tuple[str, ...]
-
-
-@dataclass(frozen=True, kw_only=True)
-class CancelableCompositionSignal(SourceTargetSpan, ProductForwardIdentity):
-    """Generic factorable morphism over product carrier fields."""
-
-    composition_kind: CancelableCompositionKind
-    covered_finding_ids: tuple[str, ...] = ()
-
-    @property
-    def field_count(self) -> int:
-        return len(self.field_names)
-
-    @property
-    def covered_finding_count(self) -> int:
-        return len(self.covered_finding_ids)
-
-    @property
-    def load_bearing_score(self) -> int:
-        return (
-            self.field_count * 50
-            + self.covered_finding_count * 100
-            + self.composition_kind.load_bearing_bonus
-        )
-
-    @property
-    def target_ids(self) -> tuple[str, ...]:
-        return (self.target_id,)
-
-
-def detect_cancelable_composition_signals(
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-) -> tuple[CancelableCompositionSignal, ...]:
-    """Detect generic pack/unpack/forward compositions worth factoring away."""
-
-    nodes_by_target_id = AstTargetNodeIndex.from_source_mapping(
-        source_index,
-        source_by_path,
-    ).function_nodes_by_target_id
-    signals = []
-    for target in source_index.ast_targets:
-        if not target.is_function_like:
-            continue
-        node = nodes_by_target_id.get(target.target_id)
-        if node is None:
-            continue
-        signal = CancelableCompositionSignalTargetAuthority(
-            source_index, target, node
-        ).signal()
-        if signal is not None:
-            signals.append(signal)
-    return sorted_tuple(
-        signals,
-        key=lambda item: (
-            -item.load_bearing_score,
-            item.file_path,
-            item.line,
-            item.qualname,
-        ),
-    )
 
 
 def libcst_available() -> bool:
@@ -22379,239 +22256,4 @@ class ContainingClassTargetBoundaryPolicy:
         return target.qualname.rsplit(".", 1)[0]
 
 
-_FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-
-
-@dataclass(frozen=True, kw_only=True)
-class _ProductForward(ProductForwardIdentity):
-    """AST-local product-forward projection fact."""
-
-
-@dataclass(frozen=True)
-class CancelableCompositionSignalTargetAuthority:
-    """Build cancelable-composition signals for one function target."""
-
-    source_index: SourceIndex
-    target: AstTargetDigest
-    node: _FunctionNode
-
-    def signal(self) -> CancelableCompositionSignal | None:
-        pack_forward = self.product_pack_forward()
-        if pack_forward is not None:
-            return self.cancelable_signal(
-                CancelableCompositionKind.PRODUCT_PACK_FORWARD,
-                pack_forward,
-            )
-
-        pack_unpack_forward = self.pack_unpack_forward()
-        if pack_unpack_forward is not None:
-            return self.cancelable_signal(
-                CancelableCompositionKind.PACK_UNPACK_FORWARD,
-                pack_unpack_forward,
-            )
-        return None
-
-    def product_pack_forward(self) -> _ProductForward | None:
-        return _return_pack_forward(self.node)
-
-    def pack_unpack_forward(self) -> _ProductForward | None:
-        return _pack_then_unpack_forward(self.node)
-
-    def cancelable_signal(
-        self,
-        composition_kind: CancelableCompositionKind,
-        product_forward: _ProductForward,
-    ) -> CancelableCompositionSignal:
-        return CancelableCompositionSignal(
-            target_id=self.target.target_id,
-            file_path=self.target.file_path,
-            qualname=self.target.qualname,
-            line=self.target.line,
-            end_line=self.target.end_line,
-            composition_kind=composition_kind,
-            carrier_name=product_forward.carrier_name,
-            source_name=product_forward.source_name,
-            field_names=product_forward.field_names,
-            covered_finding_ids=self.source_index.finding_ids_for_target_id(
-                self.target.target_id
-            ),
-        )
-
-
-def _return_pack_forward(node: _FunctionNode) -> _ProductForward | None:
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-        return None
-    value = node.body[0].value
-    if not isinstance(value, ast.Call):
-        return None
-    return ProductForwardCallAuthority(value).product_forward()
-
-
-def _pack_then_unpack_forward(node: _FunctionNode) -> _ProductForward | None:
-    if len(node.body) != 2:
-        return None
-    assignment, returned = node.body
-    if not isinstance(assignment, ast.Assign) or len(assignment.targets) != 1:
-        return None
-    assigned_name = assignment.targets[0]
-    if not isinstance(assigned_name, ast.Name):
-        return None
-    if not isinstance(assignment.value, ast.Call):
-        return None
-    if not isinstance(returned, ast.Return) or returned.value is None:
-        return None
-
-    pack = ProductForwardCallAuthority(assignment.value).product_forward()
-    if pack is None:
-        return None
-    unpacked_fields = _unpacked_fields_from_return(returned.value, assigned_name.id)
-    if len(unpacked_fields) < 2:
-        return None
-    common_fields = sorted_tuple(set(pack.field_names) & set(unpacked_fields))
-    if len(common_fields) < 2:
-        return None
-    return _ProductForward(
-        carrier_name=pack.carrier_name,
-        source_name=pack.source_name,
-        field_names=common_fields,
-    )
-
-
-@dataclass(frozen=True)
-class ProductForwardFieldProjection:
-    """Fields projected from one product carrier construction call."""
-
-    source_name: str | None = None
-    field_names: tuple[str, ...] = ()
-
-    @classmethod
-    def empty(cls) -> "ProductForwardFieldProjection":
-        return cls()
-
-    @property
-    def product_fields(self) -> tuple[str, ...]:
-        return sorted_tuple(set(self.field_names))
-
-    def with_positional_argument(
-        self,
-        argument: ast.expr,
-    ) -> "ProductForwardFieldProjection | None":
-        projected = AstExpressionProjection(argument).attribute_projection()
-        if projected is None:
-            return None
-        return self.with_projected_field(*projected)
-
-    def with_keyword(
-        self,
-        keyword: ast.keyword,
-    ) -> "ProductForwardFieldProjection | None":
-        if keyword.arg is None:
-            return None
-        projected = AstExpressionProjection(keyword.value).attribute_projection()
-        if projected is None:
-            return None
-        candidate_source_name, field_name = projected
-        if keyword.arg != field_name:
-            return None
-        return self.with_projected_field(candidate_source_name, field_name)
-
-    def with_projected_field(
-        self,
-        candidate_source_name: str,
-        field_name: str,
-    ) -> "ProductForwardFieldProjection | None":
-        source_name = _consistent_source_name(self.source_name, candidate_source_name)
-        if source_name is None:
-            return None
-        return ProductForwardFieldProjection(
-            source_name=source_name,
-            field_names=(*self.field_names, field_name),
-        )
-
-    def product_forward(self, carrier_name: str) -> _ProductForward | None:
-        if self.source_name is None:
-            return None
-        unique_fields = self.product_fields
-        if len(unique_fields) < 2:
-            return None
-        return _ProductForward(
-            carrier_name=carrier_name,
-            source_name=self.source_name,
-            field_names=unique_fields,
-        )
-
-
-@dataclass(frozen=True)
-class ProductForwardCallAuthority:
-    """Project product-carrier construction calls into cancelable forward facts."""
-
-    call: ast.Call
-
-    def product_forward(self) -> _ProductForward | None:
-        return (
-            Maybe.of(_call_name(self.call.func))
-            .combine(
-                lambda carrier_name: self.field_projection(),
-                lambda carrier_name, projection: projection.product_forward(
-                    carrier_name
-                ),
-            )
-            .unwrap_or_none()
-        )
-
-    def field_projection(self) -> ProductForwardFieldProjection | None:
-        projection = ProductForwardFieldProjection.empty()
-        for argument in self.call.args:
-            projection = projection.with_positional_argument(argument)
-            if projection is None:
-                return None
-        for keyword in self.call.keywords:
-            projection = projection.with_keyword(keyword)
-            if projection is None:
-                return None
-        return projection
-
-
-def _unpacked_fields_from_return(
-    value: ast.expr, carrier_variable_name: str
-) -> tuple[str, ...]:
-    if isinstance(value, ast.Call):
-        fields: list[str] = []
-        for argument in value.args:
-            field_name = AstExpressionProjection(argument).field_from_carrier_attribute(
-                carrier_variable_name
-            )
-            if field_name is None:
-                return ()
-            fields.append(field_name)
-        for keyword in value.keywords:
-            if keyword.arg is None:
-                return ()
-            field_name = AstExpressionProjection(
-                keyword.value
-            ).field_from_carrier_attribute(carrier_variable_name)
-            if field_name is None or keyword.arg != field_name:
-                return ()
-            fields.append(field_name)
-        return sorted_tuple(set(fields))
-
-    if isinstance(value, (ast.Tuple, ast.List)):
-        fields = []
-        for element in value.elts:
-            field_name = AstExpressionProjection(element).field_from_carrier_attribute(
-                carrier_variable_name
-            )
-            if field_name is None:
-                return ()
-            fields.append(field_name)
-        return sorted_tuple(set(fields))
-    return ()
-
-
-def _consistent_source_name(current: str | None, candidate: str) -> str | None:
-    if current is None:
-        return candidate
-    if current == candidate:
-        return current
-    return None

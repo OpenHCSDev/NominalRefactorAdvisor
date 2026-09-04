@@ -51,6 +51,7 @@ from nominal_refactor_advisor.analysis import (
     default_detector_types_for_analysis,
 )
 from nominal_refactor_advisor.ast_tools import (
+    AstExpressionProjection,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
@@ -7548,6 +7549,34 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_new_module_extraction_removes_terminal_declaration_spacing(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/extracted.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "_KEEP = 1\n\n\ndef _moved():\n    return 2\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ExtractSymbolClosureToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        root_symbol_qualnames=("_moved",),
+        destination_path=destination_path.as_posix(),
+    )
+
+    simulation = RefactorRecipe("extract-terminal-declaration").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[source_path.as_posix()] == (
+        "_KEEP = 1\n"
+    )
+
+
 def test_new_module_extraction_rejects_explicit_annotation_policy_change(
     tmp_path: Path,
 ) -> None:
@@ -8974,6 +9003,23 @@ def test_detects_generic_cancelable_product_composition_signal(
     assert signal.load_bearing_score > signal.field_count
     assert CancelableCompositionKind.PRODUCT_PACK_FORWARD.load_bearing_bonus == 25
     assert CancelableCompositionKind.PACK_UNPACK_FORWARD.load_bearing_bonus == 75
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_name"),
+    (
+        ("factory", "factory"),
+        ("package.factory", "package.factory"),
+        ("factory()", None),
+    ),
+)
+def test_ast_expression_projection_owns_qualified_name_semantics(
+    source: str,
+    expected_name: str | None,
+) -> None:
+    expression = ast.parse(source, mode="eval").body
+
+    assert AstExpressionProjection(expression).qualified_name() == expected_name
 
 
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"

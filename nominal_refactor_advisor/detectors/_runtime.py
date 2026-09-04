@@ -29,6 +29,10 @@ from ..ast_tools import (
     collect_family_items,
     walk_function_body_nodes,
 )
+from ..cancelable_composition import (
+    CancelableCompositionSignal,
+    CancelableCompositionSignalTargetAuthority,
+)
 from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
     CompactClassFamilyIndex,
@@ -55,8 +59,6 @@ from ..enum_keyed_query import (
 )
 from ..codemod import (
     AutoRegisterMetaUnderRentedFindingRecipeSynthesizer,
-    CancelableCompositionSignal,
-    CancelableCompositionSignalTargetAuthority,
     EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
