@@ -76,13 +76,16 @@ class AstTargetNodeKind(StrEnum):
         return self is AstTargetNodeKind.CLASS
 
     @property
+    def is_function(self) -> bool:
+        return self is AstTargetNodeKind.FUNCTION
+
+    @property
+    def is_method(self) -> bool:
+        return self is AstTargetNodeKind.METHOD
+
+    @property
     def is_function_like(self) -> bool:
-        return self in _FUNCTION_LIKE_NODE_KINDS
-
-
-_FUNCTION_LIKE_NODE_KINDS = frozenset(
-    (AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD)
-)
+        return self.is_function or self.is_method
 
 
 @dataclass(frozen=True)
@@ -127,7 +130,7 @@ class AstTargetDigest(SemanticRecord):
     target_id: str
     file_id: str
     file_path: str
-    node_type: str
+    node_kind: AstTargetNodeKind
     name: str
     qualname: str
     line: int
@@ -137,23 +140,41 @@ class AstTargetDigest(SemanticRecord):
     base_names: tuple[str, ...] = ()
 
     @property
-    def node_kind(self) -> AstTargetNodeKind:
-        return AstTargetNodeKind(self.node_type)
-
-    @property
     def is_module(self) -> bool:
-        return self.node_type == AstTargetNodeKind.MODULE.value
+        return self.node_kind.is_module
 
     @property
     def is_class(self) -> bool:
-        return self.node_type == AstTargetNodeKind.CLASS.value
+        return self.node_kind.is_class
+
+    @property
+    def is_function(self) -> bool:
+        return self.node_kind.is_function
+
+    @property
+    def is_method(self) -> bool:
+        return self.node_kind.is_method
 
     @property
     def is_function_like(self) -> bool:
-        return (
-            self.node_type == AstTargetNodeKind.FUNCTION.value
-            or self.node_type == AstTargetNodeKind.METHOD.value
-        )
+        return self.node_kind.is_function_like
+
+    def require_kind(
+        self,
+        required_kind: AstTargetNodeKind,
+        message: str,
+    ) -> None:
+        """Prove one operation-specific target-kind precondition."""
+
+        if self.node_kind is not required_kind:
+            raise ValueError(message)
+
+    def to_dict(self) -> dict[str, object]:
+        """Project the typed kind through the stable external ``node_type`` key."""
+
+        payload = super().to_dict()
+        payload["node_type"] = payload.pop("node_kind")
+        return payload
 
     def contains_line(self, line: int) -> bool:
         return self.line <= line <= self.end_line
@@ -638,7 +659,7 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
             target_id=target_id,
             file_id=self.file_id,
             file_path=self.file_path,
-            node_type=node_kind.value,
+            node_kind=node_kind,
             name=node.name,
             qualname=qualname,
             line=line,
@@ -733,7 +754,7 @@ class AstTargetDigestsAuthority:
             ),
             file_id=file_digest.file_id,
             file_path=file_digest.file_path,
-            node_type=node_kind.value,
+            node_kind=node_kind,
             name=module.module_name,
             qualname=module.module_name,
             line=1,

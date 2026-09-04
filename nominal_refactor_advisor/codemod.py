@@ -4729,8 +4729,10 @@ class ExactDataclassFieldEvidence:
         snapshot: CodemodSourceSnapshot,
         target: AstTargetDigest,
     ) -> ExactDataclassFieldAuthorityComponent:
-        if target.node_kind is not AstTargetNodeKind.CLASS:
-            raise ValueError("Exact dataclass field factoring requires a class target")
+        target.require_kind(
+            AstTargetNodeKind.CLASS,
+            "Exact dataclass field factoring requires a class target",
+        )
         return snapshot.exact_dataclass_field_authority_component_builder.required_component_for_field(
             file_path=target.file_path,
             class_qualname=target.qualname,
@@ -5107,8 +5109,10 @@ class FactorExactMethodRoleOperation(FactorNamedClassMemberAuthorityOperationABC
         snapshot: CodemodSourceSnapshot,
     ) -> ExactMethodRoleComponent:
         _target_id, target, _node = self.target_node_from_context(snapshot)
-        if target.node_kind is not AstTargetNodeKind.METHOD:
-            raise ValueError("Exact-method role factoring requires a method target")
+        target.require_kind(
+            AstTargetNodeKind.METHOD,
+            "Exact-method role factoring requires a method target",
+        )
         return (
             snapshot.exact_method_role_component_builder.required_component_for_method(
                 file_path=target.file_path,
@@ -6778,10 +6782,10 @@ class DescendEnumKeyedDerivedMapFacadeOperation(RepositorySourceReprovedOperatio
         snapshot: CodemodSourceSnapshot,
     ) -> _EnumKeyedDerivedMapFacadeSourceDerivation:
         _target_identifier, target, _node = self.target_node_from_context(snapshot)
-        if target.node_kind is not AstTargetNodeKind.METHOD:
-            raise ValueError(
-                "enum-keyed facade target must be its reverse-query method"
-            )
+        target.require_kind(
+            AstTargetNodeKind.METHOD,
+            "enum-keyed facade target must be its reverse-query method",
+        )
         return _EnumKeyedDerivedMapFacadeSourceDerivation.required(
             snapshot,
             snapshot.source_index.symbol_for_target(target),
@@ -9110,8 +9114,10 @@ class DeriveCandidateCollectorOperation(RepositorySourceReprovedOperation):
         _target_identifier, method_target, _method_node = self.target_node_from_context(
             snapshot
         )
-        if method_target.node_kind is not AstTargetNodeKind.METHOD:
-            raise ValueError("Candidate collector derivation requires a method target")
+        method_target.require_kind(
+            AstTargetNodeKind.METHOD,
+            "Candidate collector derivation requires a method target",
+        )
         matching_modules = tuple(
             module
             for module in snapshot.parsed_modules
@@ -9151,7 +9157,7 @@ class DeriveCandidateCollectorOperation(RepositorySourceReprovedOperation):
         replacement_base_targets = tuple(
             target
             for target in snapshot.source_index.ast_targets
-            if target.node_kind is AstTargetNodeKind.CLASS
+            if target.is_class
             and target.name == candidate.recommended_base_name
             and target.qualname == target.name
         )
@@ -10340,8 +10346,10 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
     ) -> DispatchPolymorphismSource:
         if not isinstance(node, ast.FunctionDef):
             raise ValueError("dispatch_to_polymorphism requires a function target")
-        if target_digest.node_kind is not AstTargetNodeKind.FUNCTION:
-            raise ValueError("dispatch_to_polymorphism does not rewrite methods")
+        target_digest.require_kind(
+            AstTargetNodeKind.FUNCTION,
+            "dispatch_to_polymorphism does not rewrite methods",
+        )
         source = DispatchPolymorphismSource.from_function(node)
         if source is None:
             raise ValueError(
@@ -13767,7 +13775,7 @@ class RepeatedBuilderCallSite:
     def owner_class_symbol(self, context: CodemodSelectorContext) -> str | None:
         """Return the nominal class that owns this participant method."""
 
-        if self.participant.target.node_kind is not AstTargetNodeKind.METHOD:
+        if not self.participant.target.is_method:
             return None
         if self.participant.owner_qualname is None:
             return None
@@ -15969,7 +15977,7 @@ class AutoRegisterMroOrderingDerivation:
         for target in context.source_index.ast_targets:
             if (
                 target.file_path != source_path
-                or target.node_kind is not AstTargetNodeKind.CLASS
+                or not target.is_class
                 or "." in target.qualname
             ):
                 continue
@@ -21041,7 +21049,7 @@ class LiteralDispatchFindingRecipeSynthesizer(
                 f"no function or method target matched dispatch action "
                 f"{action_key.subject_name!r}"
             )
-        if target.node_kind is AstTargetNodeKind.METHOD:
+        if target.is_method:
             return (
                 "dispatch_to_polymorphism currently rewrites module functions; "
                 f"method target {target.qualname!r} requires extracting or owning "

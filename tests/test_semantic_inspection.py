@@ -5,11 +5,16 @@ from pathlib import Path
 
 import nominal_refactor_advisor.semantic_inspection as semantic_inspection_module
 
-from nominal_refactor_advisor import SemanticInspectionReport, inspect_paths
+from nominal_refactor_advisor import (
+    FunctionSummaryKind,
+    SemanticInspectionReport,
+    inspect_paths,
+)
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.models import FindingSpec, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_inspection import inspect_modules
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 def test_semantic_inspection_exports_derive_from_record_authority() -> None:
@@ -90,9 +95,16 @@ def test_semantic_inspection_summarizes_ast_and_source_index_targets(
     assert payload_class.is_dataclass
     assert payload_dataclass.field_names == ("name", "count")
     assert payload_dataclass.method_ids == (build_method.target_id,)
-    assert build_method.kind == "method"
+    assert build_method.kind is FunctionSummaryKind.METHOD
     assert build_method.parameters == ("self", "suffix")
-    assert helper_function.kind == "function"
+    assert helper_function.kind is FunctionSummaryKind.FUNCTION
+    assert report.source_index.target_by_id[build_method.target_id].node_kind is (
+        AstTargetNodeKind.METHOD
+    )
+    assert report.modules[0].function_ids == (
+        build_method.target_id,
+        helper_function.target_id,
+    )
 
     import_names = {name for item in report.imports for name in item.alias_names}
     assert {"dataclass", "operating", "dd"} <= import_names

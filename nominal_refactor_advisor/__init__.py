@@ -152,6 +152,7 @@ from .semantic_inspection import (
     EvidenceSummary,
     FindingSummary,
     FunctionSummary,
+    FunctionSummaryKind,
     ImportSummary,
     ModuleSummary,
     SemanticAstInspector,

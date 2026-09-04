@@ -12,6 +12,7 @@ import ast
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence, TypeAlias, cast
 
@@ -27,6 +28,7 @@ from .models import (
 )
 from .source_index import (
     AstTargetDigest,
+    AstTargetNodeKind,
     SourceFileDigest,
     SourceIndex,
     build_source_index,
@@ -84,6 +86,47 @@ class CallSummary(SemanticInspectionRecord, ScopedAstEventReference):
     keyword_names: tuple[str, ...]
 
 
+class FunctionSummaryKind(StrEnum):
+    """Function declaration forms carried by semantic inspection records."""
+
+    FUNCTION = ("function", AstTargetNodeKind.FUNCTION, False)
+    ASYNC_FUNCTION = ("async_function", AstTargetNodeKind.FUNCTION, True)
+    METHOD = ("method", AstTargetNodeKind.METHOD, False)
+    ASYNC_METHOD = ("async_method", AstTargetNodeKind.METHOD, True)
+
+    def __new__(
+        cls,
+        value: str,
+        target_kind: AstTargetNodeKind,
+        is_async: bool,
+    ) -> "FunctionSummaryKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._target_kind = target_kind
+        member._is_async = is_async
+        return member
+
+    @classmethod
+    def from_target(
+        cls,
+        target_kind: AstTargetNodeKind,
+        *,
+        is_async: bool,
+    ) -> "FunctionSummaryKind":
+        """Resolve one declaration form from member-owned semantic coordinates."""
+
+        matching_members = tuple(
+            member
+            for member in cls
+            if member._target_kind is target_kind and member._is_async is is_async
+        )
+        if len(matching_members) != 1:
+            raise ValueError(
+                f"{target_kind.value} is not a function summary target kind"
+            )
+        return matching_members[0]
+
+
 @dataclass(frozen=True)
 class FunctionSummary(SemanticInspectionRecord):
     target_id: str
@@ -91,7 +134,7 @@ class FunctionSummary(SemanticInspectionRecord):
     module_name: str
     name: str
     qualname: str
-    kind: str
+    kind: FunctionSummaryKind
     line: int
     end_line: int
     parameters: tuple[str, ...]
@@ -193,7 +236,7 @@ class SemanticInspectionReport(SemanticInspectionRecord):
 @dataclass(frozen=True)
 class _TargetKey:
     file_path: str
-    node_type: str
+    node_kind: AstTargetNodeKind
     qualname: str
     line: int
 
@@ -263,7 +306,7 @@ class _SemanticInspectionProjection:
         self.targets_by_key = {
             _TargetKey(
                 file_path=target.file_path,
-                node_type=target.node_type,
+                node_kind=target.node_kind,
                 qualname=target.qualname,
                 line=target.line,
             ): target
@@ -338,10 +381,10 @@ class _SemanticInspectionProjection:
         else:
             targets = ()
         class_ids = tuple(
-            target.target_id for target in targets if target.node_type == "class"
+            target.target_id for target in targets if target.is_class
         )
         function_ids = tuple(
-            target.target_id for target in targets if target.node_type != "class"
+            target.target_id for target in targets if target.is_function_like
         )
         return ModuleSummary(
             file_id=file_digest.file_id,
@@ -495,7 +538,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = self._qualname_for(node.name)
-        target = self._target_for("class", qualname, node.lineno)
+        target = self._target_for(AstTargetNodeKind.CLASS, qualname, node.lineno)
         decorators = _decorator_names(node.decorator_list)
         is_dataclass = _is_dataclass_decorator(decorators)
         self.classes.append(
@@ -608,11 +651,11 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
     ) -> None:
         qualname = self._qualname_for(node.name)
         if self.class_stack:
-            node_type = "method"
+            node_kind = AstTargetNodeKind.METHOD
         else:
-            node_type = "function"
-        target = self._target_for(node_type, qualname, node.lineno)
-        kind = _function_kind(node_type, is_async=is_async)
+            node_kind = AstTargetNodeKind.FUNCTION
+        target = self._target_for(node_kind, qualname, node.lineno)
+        kind = FunctionSummaryKind.from_target(node_kind, is_async=is_async)
         self.functions.append(
             FunctionSummary(
                 target_id=target.target_id,
@@ -632,7 +675,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 ),
             )
         )
-        if self.scope_stack and self.scope_stack[-1].node_type == "class":
+        if self.scope_stack and self.scope_stack[-1].is_class:
             class_target_id = self.scope_stack[-1].target_id
             self._append_target_value(
                 self.method_ids_by_class_target_id,
@@ -695,10 +738,15 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 assignment.assignment_id,
             )
 
-    def _target_for(self, node_type: str, qualname: str, line: int) -> AstTargetDigest:
+    def _target_for(
+        self,
+        node_kind: AstTargetNodeKind,
+        qualname: str,
+        line: int,
+    ) -> AstTargetDigest:
         key = _TargetKey(
             file_path=self.file_path,
-            node_type=node_type,
+            node_kind=node_kind,
             qualname=qualname,
             line=line,
         )
@@ -793,16 +841,6 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
             target_values[target_id].append(value)
         else:
             target_values[target_id] = [value]
-
-
-def _function_kind(node_type: str, *, is_async: bool) -> str:
-    if node_type == "method":
-        if is_async:
-            return "async_method"
-        return "method"
-    if is_async:
-        return "async_function"
-    return "function"
 
 
 def _node_line(node: ast.AST) -> int:
@@ -911,6 +949,7 @@ _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
         {
             "SourceIndexSemanticAstInspector",
             "SemanticAstInspector",
+            "FunctionSummaryKind",
             "inspect_modules",
             "inspect_path",
             "inspect_paths",

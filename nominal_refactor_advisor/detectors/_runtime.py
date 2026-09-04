@@ -3975,7 +3975,7 @@ def _native_composition_signal(
         ),
         file_id=STABLE_ID_AUTHORITY.file_id(file_path),
         file_path=file_path,
-        node_type=node_kind.value,
+        node_kind=node_kind,
         name=syntax_index.declared_name(function_node),
         qualname=qualname,
         line=line,
