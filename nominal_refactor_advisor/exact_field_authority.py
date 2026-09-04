@@ -58,7 +58,10 @@ class ExactDataclassDecorator:
         qualified_name = (
             None if binding is None else ".".join((binding.qualified_name, *parts[1:]))
         )
-        if qualified_name != DataclassRuntimeDeclaration.DATACLASS.qualified_name:
+        runtime_declaration = DataclassRuntimeDeclaration.dataclass_decorator_for_name(
+            qualified_name
+        )
+        if runtime_declaration is None:
             raise ValueError("Dataclass decorator is not the standard declaration")
 
         frozen = False
@@ -367,8 +370,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             or node.bases
             or node.keywords
             or declaration is None
-            or declaration.runtime_declaration
-            is not DataclassRuntimeDeclaration.DATACLASS
+            or not declaration.is_standard_dataclass
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
         ):

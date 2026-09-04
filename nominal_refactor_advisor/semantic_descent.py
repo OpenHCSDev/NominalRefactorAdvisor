@@ -54,7 +54,6 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassProjectionFamily,
     CompactModuleClassProjection,
-    DataclassRuntimeDeclaration,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
@@ -3786,8 +3785,7 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         dataclass_declaration = indexed_class.dataclass_declaration
         if (
             dataclass_declaration is not None
-            and dataclass_declaration.runtime_declaration
-            is DataclassRuntimeDeclaration.DATACLASS
+            and dataclass_declaration.is_standard_dataclass
         ):
             facts = tuple(
                 SemanticFact.dataclass_field(indexed_class, field.name, field.line)

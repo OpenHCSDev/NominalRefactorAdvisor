@@ -18,6 +18,7 @@ from typing import Iterable, Sequence, TypeAlias, cast
 
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
+from .class_index import DataclassRuntimeDeclaration
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
@@ -864,8 +865,10 @@ def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:
 
 
 def _is_dataclass_decorator(decorators: tuple[str, ...]) -> bool:
-    dataclass_decorator_names = frozenset(("dataclass", "dataclasses.dataclass"))
-    return any(name in dataclass_decorator_names for name in decorators)
+    return any(
+        DataclassRuntimeDeclaration.dataclass_decorator_for_name(name) is not None
+        for name in decorators
+    )
 
 
 def _class_field_names(body: Iterable[ast.stmt]) -> tuple[str, ...]:

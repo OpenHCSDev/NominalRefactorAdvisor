@@ -394,15 +394,66 @@ class CompactDataclassFieldRole(StrEnum):
 class DataclassRuntimeDeclaration(StrEnum):
     """Standard-library dataclass declarations with nominal qualified identity."""
 
-    DATACLASS = "dataclass"
-    FIELD = "field"
+    DATACLASS = ("dataclass", True, False)
+    FIELD = ("field", False, True)
+
+    def __new__(
+        cls,
+        value: str,
+        is_dataclass_decorator: bool,
+        is_field_factory: bool,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._is_dataclass_decorator = is_dataclass_decorator
+        member._is_field_factory = is_field_factory
+        return member
 
     @property
     def qualified_name(self) -> str:
         return f"dataclasses.{self.value}"
 
+    @property
+    def is_dataclass_decorator(self) -> bool:
+        return self._is_dataclass_decorator
+
+    @property
+    def is_field_factory(self) -> bool:
+        return self._is_field_factory
+
     def matches(self, qualified_name: str | None) -> bool:
         return qualified_name == self.qualified_name
+
+    def matches_reference_name(self, reference_name: str | None) -> bool:
+        return reference_name in (self.value, self.qualified_name)
+
+    @classmethod
+    def for_qualified_name(cls, qualified_name: str | None) -> Self | None:
+        return next(
+            (member for member in cls if member.matches(qualified_name)),
+            None,
+        )
+
+    @classmethod
+    def for_reference_name(cls, reference_name: str | None) -> Self | None:
+        return next(
+            (member for member in cls if member.matches_reference_name(reference_name)),
+            None,
+        )
+
+    @classmethod
+    def dataclass_decorator_for_name(cls, reference_name: str | None) -> Self | None:
+        """Resolve a standard dataclass decorator from either source spelling."""
+
+        return next(
+            (
+                member
+                for member in cls
+                if member.is_dataclass_decorator
+                and member.matches_reference_name(reference_name)
+            ),
+            None,
+        )
 
 
 class CompactDataclassFieldDeclaration(NamedTuple):
@@ -426,6 +477,13 @@ class CompactDataclassDeclaration(NamedTuple):
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...] = ()
+
+    @property
+    def is_standard_dataclass(self) -> bool:
+        return (
+            self.runtime_declaration is not None
+            and self.runtime_declaration.is_dataclass_decorator
+        )
 
 
 @dataclass(frozen=True)
@@ -5487,7 +5545,13 @@ def _dataclass_field_role(
         statement.value.func,
         preceding_class_bound_names,
     )
-    if not DataclassRuntimeDeclaration.FIELD.matches(qualified_default_factory):
+    default_factory_declaration = DataclassRuntimeDeclaration.for_qualified_name(
+        qualified_default_factory
+    )
+    if (
+        default_factory_declaration is None
+        or not default_factory_declaration.is_field_factory
+    ):
         return CompactDataclassFieldRole.UNRESOLVED
     if statement.value.args or any(
         keyword.arg is None for keyword in statement.value.keywords
@@ -5721,18 +5785,24 @@ def _dataclass_declaration(
         )
         for decorator in node.decorator_list
     )
+    decorator_runtime_declarations = tuple(
+        DataclassRuntimeDeclaration.dataclass_decorator_for_name(qualified_name)
+        for qualified_name in decorator_qualified_names
+    )
     dataclass_decorator_indexes = tuple(
         index
-        for index, qualified_name in enumerate(decorator_qualified_names)
-        if DataclassRuntimeDeclaration.DATACLASS.matches(qualified_name)
+        for index, runtime_declaration in enumerate(decorator_runtime_declarations)
+        if runtime_declaration is not None
     )
     dataclass_like_indexes = tuple(
         index
         for index, decorator in enumerate(node.decorator_list)
-        if _terminal_reference_name(
-            decorator.func if isinstance(decorator, ast.Call) else decorator
+        if DataclassRuntimeDeclaration.dataclass_decorator_for_name(
+            _terminal_reference_name(
+                decorator.func if isinstance(decorator, ast.Call) else decorator
+            )
         )
-        == DataclassRuntimeDeclaration.DATACLASS.value
+        is not None
     )
     dataclass_candidate_indexes = frozenset(
         (*dataclass_decorator_indexes, *dataclass_like_indexes)
@@ -5812,10 +5882,13 @@ def _dataclass_declaration(
         for line in _dynamic_dataclass_schema_lines(node)
     )
     return CompactDataclassDeclaration(
-        runtime_declaration=(
-            DataclassRuntimeDeclaration.DATACLASS
-            if dataclass_decorator_indexes
-            else None
+        runtime_declaration=next(
+            (
+                runtime_declaration
+                for runtime_declaration in decorator_runtime_declarations
+                if runtime_declaration is not None
+            ),
+            None,
         ),
         fields=fields,
         failures=tuple(dict.fromkeys(failures)),

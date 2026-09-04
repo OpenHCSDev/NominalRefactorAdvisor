@@ -5,6 +5,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
+    DataclassRuntimeDeclaration,
     FunctionNominalParameterBindingAuthority,
     ModuleNominalBindingAuthority,
 )
@@ -51,6 +52,30 @@ def _source(
         "    file_path: str\n"
         "    gamma_value: bytes\n"
     )
+
+
+def test_dataclass_runtime_declaration_owns_reference_resolution() -> None:
+    assert (
+        DataclassRuntimeDeclaration.for_qualified_name("dataclasses.dataclass")
+        is DataclassRuntimeDeclaration.DATACLASS
+    )
+    assert (
+        DataclassRuntimeDeclaration.for_reference_name("dataclass")
+        is DataclassRuntimeDeclaration.DATACLASS
+    )
+    assert (
+        DataclassRuntimeDeclaration.dataclass_decorator_for_name(
+            "dataclasses.dataclass"
+        )
+        is DataclassRuntimeDeclaration.DATACLASS
+    )
+    assert (
+        DataclassRuntimeDeclaration.for_qualified_name("dataclasses.field")
+        is DataclassRuntimeDeclaration.FIELD
+    )
+    assert DataclassRuntimeDeclaration.DATACLASS.is_dataclass_decorator
+    assert DataclassRuntimeDeclaration.FIELD.is_field_factory
+    assert DataclassRuntimeDeclaration.for_reference_name("attrs.define") is None
 
 
 def test_builder_derives_repeated_leading_fields_as_one_component() -> None:
