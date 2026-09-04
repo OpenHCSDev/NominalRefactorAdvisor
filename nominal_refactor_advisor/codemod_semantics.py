@@ -53,18 +53,10 @@ def _validate_ast_span_source(source: str, file_path: str) -> None:
     ast.parse(source, filename=file_path)
 
 
-def _validate_libcst_source(source: str, file_path: str) -> None:
-    del file_path
-    import libcst as cst
-
-    cst.parse_module(source)
-
-
 class CodemodBackend(StrEnum):
     """Parser backend carrying its simulated-source validation behavior."""
 
     AST_SPAN = ("ast_span", _validate_ast_span_source)
-    LIBCST = ("libcst", _validate_libcst_source)
 
     def __new__(
         cls,

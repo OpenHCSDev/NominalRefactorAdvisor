@@ -1,8 +1,8 @@
 """Codemod planning primitives anchored to source-index AST geometry.
 
 The advisor does not apply edits here. It represents target-level rewrite plans,
-simulates their effect over source text, and validates the resulting source with
-the best parser available in the local environment.
+simulates their effect over source text, and validates the result through the
+declared AST-span parser boundary.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
-from importlib.util import find_spec
 from itertools import combinations
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
@@ -216,8 +215,6 @@ from .codemod_semantics import (
     FindingRecipeSynthesisDisposition as FindingRecipeSynthesisDisposition,
     FindingRecipeSynthesisStatus as FindingRecipeSynthesisStatus,
     RewriteOperation as RewriteOperation,
-    _validate_ast_span_source as _validate_ast_span_source,
-    _validate_libcst_source as _validate_libcst_source,
 )
 from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
 from .codemod_import_bindings import (
@@ -11126,12 +11123,11 @@ class CodemodSimulationReport:
 
         report_tuple = tuple(reports)
         if not report_tuple:
-            backend = select_codemod_backend()
             return cls(
                 rewrites=(),
                 rewritten_sources={},
                 parse_validation=CodemodParseValidationReport(
-                    backend=backend,
+                    backend=CodemodBackend.AST_SPAN,
                     validated_file_paths=(),
                     parse_valid=True,
                 ),
@@ -21442,20 +21438,6 @@ class DiffPathPrefixAuthority:
         return f"{self.prefix}{file_path.removeprefix('/')}"
 
 
-def libcst_available() -> bool:
-    """Return whether LibCST is importable in the current environment."""
-
-    return find_spec("libcst") is not None
-
-
-def select_codemod_backend(*, prefer_libcst: bool = False) -> CodemodBackend:
-    """Select the validation backend without requiring optional dependencies."""
-
-    if prefer_libcst and libcst_available():
-        return CodemodBackend.LIBCST
-    return CodemodBackend.AST_SPAN
-
-
 @dataclass(frozen=True)
 class ResolvedSourceRewrite:
     """Planned rewrite paired with its source-index target geometry."""
@@ -21575,7 +21557,7 @@ def simulate_planned_rewrites(
     return SourceRewriteSimulationAuthority(
         source_index=source_index,
         sources_by_file_path=source_by_path,
-        backend=backend or select_codemod_backend(),
+        backend=backend or CodemodBackend.AST_SPAN,
     ).simulate(rewrites)
 
 
