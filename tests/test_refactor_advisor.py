@@ -3577,7 +3577,7 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
         for target_id in edge_targets.target_ids
     } == {"Base", "Alpha", "Beta"}
     assert tuple(site.symbol for site in call_sites) == ("helper",)
-    assert call_sites[0].to_source_location().file_path == module_path.as_posix()
+    assert call_sites[0].source_location.file_path == module_path.as_posix()
     assert tuple(
         source_index.target_by_id[target_id].qualname
         for target_id in call_site_targets.target_ids

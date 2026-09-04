@@ -412,6 +412,25 @@ def test_metric_dispatch_uses_nominal_mro_priority() -> None:
     assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")
 
 
+def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> None:
+    selector_model_types = (
+        codemod.CodemodTargetSelection,
+        codemod.SelectionCountExpectation,
+        codemod.NodeKindArrayPayloadValueCodec,
+        codemod.SelectionCountPayloadValueCodec,
+        codemod.RegexPatternSet,
+        codemod.CallSiteDigest,
+    )
+
+    assert all(
+        model_type.__module__
+        == "nominal_refactor_advisor.codemod_selector_models"
+        for model_type in selector_model_types
+    )
+    assert not hasattr(codemod.SelectionCountExpectation, "from_mapping")
+    assert not hasattr(codemod.CallSiteDigest, "to_source_location")
+
+
 def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     synthesizer_type = (
         codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer
