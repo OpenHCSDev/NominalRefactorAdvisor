@@ -32,7 +32,7 @@ from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
 
 if TYPE_CHECKING:
-    from .codemod import CodemodSelectorContext
+    from .codemod_selection_context import CodemodSelectorContext
 
 
 @dataclass(frozen=True)

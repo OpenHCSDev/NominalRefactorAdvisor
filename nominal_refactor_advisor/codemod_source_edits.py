@@ -55,7 +55,8 @@ from .source_index import (
 )
 
 if TYPE_CHECKING:
-    from .codemod import CodemodSelectorContext, RefactorRecipeOperation
+    from .codemod import RefactorRecipeOperation
+    from .codemod_selection_context import CodemodSelectorContext
 
 
 class SourceNodeDecoratorPolicy(StrEnum):

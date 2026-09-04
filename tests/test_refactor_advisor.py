@@ -3544,9 +3544,9 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
     )
     findings = (finding,)
     source_index = build_source_index(modules, findings)
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
         class_family_index=build_class_family_index(modules),
     )
     evidence_targets = FindingEvidenceTargetSelector.from_findings((finding,)).select(
@@ -3632,9 +3632,9 @@ def test_finding_evidence_selector_resolves_qualified_owner_subject(
         ),
     )
     source_index = build_source_index(modules, (finding,))
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
         class_family_index=build_class_family_index(modules),
     )
 
@@ -3879,9 +3879,9 @@ def test_source_index_target_selector_supports_regex_patterns(
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
     )
 
     selected = SourceIndexTargetSelector(
@@ -3904,9 +3904,9 @@ def test_source_index_target_selector_rejects_invalid_regex_patterns(
     _write_module(tmp_path, "pkg/mod.py", "\ndef target():\n    return 1\n")
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
     )
 
     with pytest.raises(ValueError, match="Invalid selector regex pattern"):
@@ -3934,9 +3934,9 @@ def test_target_set_expression_selector_composes_union_intersection_and_exclusio
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
     )
 
     selected = TargetSetExpressionSelector(
@@ -5007,9 +5007,9 @@ def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
     source_index = build_source_index(modules, findings)
-    context = CodemodSelectorContext(
+    context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        source_by_path={module_path.as_posix(): module_path.read_text()},
         class_family_index=build_class_family_index(modules),
     )
 
@@ -6290,9 +6290,9 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
             target=SourceRewriteTarget(target_id=render_target.target_id),
         )
     )
-    selector_context = CodemodSelectorContext(
+    selector_context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path=source_by_path,
+        source_by_path=source_by_path,
     )
     declared_claims = recipe.declared_authority_claims(selector_context)
     authority_report = recipe.authority_claim_preflight_report(selector_context)
@@ -21174,9 +21174,9 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     )
     source_index = build_source_index(modules, findings)
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    selector_context = CodemodSelectorContext(
+    selector_context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path=source_by_path,
+        source_by_path=source_by_path,
         class_family_index=build_class_family_index(modules),
     )
 
@@ -21278,9 +21278,9 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     )
     source_index = build_source_index(modules, findings)
     source_by_path = {module_path.as_posix(): module_path.read_text()}
-    selector_context = CodemodSelectorContext(
+    selector_context = CodemodSourceSnapshot.from_indexed_sources(
         source_index=source_index,
-        sources_by_file_path=source_by_path,
+        source_by_path=source_by_path,
         class_family_index=build_class_family_index(modules),
     )
 

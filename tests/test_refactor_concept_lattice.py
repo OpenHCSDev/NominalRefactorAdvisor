@@ -448,6 +448,36 @@ def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> N
     assert not hasattr(codemod, "PositionalCallNameIndex")
 
 
+def test_codemod_selection_context_is_an_external_abstract_boundary() -> None:
+    assert (
+        codemod.CodemodSelectorContext.__module__
+        == "nominal_refactor_advisor.codemod_selection_context"
+    )
+    assert (
+        codemod.ResolvedClassTarget.__module__
+        == "nominal_refactor_advisor.codemod_selection_context"
+    )
+    assert (
+        codemod.ClassDirectDeclarationIndex.__module__
+        == "nominal_refactor_advisor.codemod_selection_context"
+    )
+    assert codemod.CodemodSelectorContext.__abstractmethods__ == frozenset(
+        {"execution_snapshot"}
+    )
+    assert issubclass(
+        codemod.ClassMemberPromotionTargets,
+        codemod.CodemodSourceSnapshot,
+    )
+    assert issubclass(
+        codemod.MappingSemanticMirrorRecipeBuilder,
+        codemod.CodemodSourceSnapshot,
+    )
+    assert issubclass(
+        codemod.ContextualSemanticMirrorRecipeBuilder,
+        codemod.CodemodSourceSnapshot,
+    )
+
+
 def test_codemod_authority_claim_boundary_is_owned_outside_execution() -> None:
     authority_claim_types = (
         codemod.AuthorityClaimPayload,
