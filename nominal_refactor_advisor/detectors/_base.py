@@ -2403,40 +2403,6 @@ class TypedObservationPatternDetector(
         )
 
 
-def declare_typed_observation_detector(
-    detector_name: str,
-    finding_spec: FindingSpec,
-    observation_family: type[CollectedFamily],
-    observation_type: type[LineSymbolObservationMixin],
-    summary_template: str,
-    *,
-    minimum_evidence_count: int = 1,
-    evidence_limit: int | None = None,
-) -> type[IssueDetector]:
-    frame = inspect.currentframe()
-    caller = None if frame is None else frame.f_back
-    if caller is None:
-        raise RuntimeError(
-            "declare_typed_observation_detector() requires a caller frame"
-        )
-    namespace: dict[str, object] = {
-        "__module__": caller.f_globals["__name__"],
-        "__firstlineno__": caller.f_lineno,
-        "finding_spec": finding_spec,
-        "observation_family": observation_family,
-        "observation_type": observation_type,
-        "summary_template": summary_template,
-        "minimum_evidence_count": minimum_evidence_count,
-        "evidence_limit": evidence_limit,
-    }
-    detector_type = cast(
-        type[IssueDetector],
-        type(detector_name, (TypedObservationPatternDetector,), namespace),
-    )
-    caller.f_globals[detector_name] = detector_type
-    return detector_type
-
-
 ShapeT = TypeVar("ShapeT")
 GroupKeyT = TypeVar("GroupKeyT", bound=Hashable)
 

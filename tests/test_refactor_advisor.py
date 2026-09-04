@@ -14199,6 +14199,14 @@ def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None
     assert "LocalObservationFamily" in findings[0].summary
 
 
+def test_typed_observation_detector_types_have_source_declarations() -> None:
+    detector_types = base_detectors.TypedObservationPatternDetector.__subclasses__()
+
+    assert detector_types
+    for detector_type in detector_types:
+        assert f"class {detector_type.__name__}" in inspect.getsource(detector_type)
+
+
 def test_detects_enum_metadata_table_parallel_to_enum_members(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

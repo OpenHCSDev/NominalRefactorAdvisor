@@ -3306,9 +3306,10 @@ class PredicateFactoryChainDetector(
         )
 
 
-declare_typed_observation_detector(
-    "ConfigAttributeDispatchDetector",
-    finding_spec_template(
+class ConfigAttributeDispatchDetector(
+    TypedObservationPatternDetector[ConfigDispatchObservation]
+):
+    finding_spec = finding_spec_template(
         PatternId.CONFIG_CONTRACTS,
         "Config dispatch is encoded through fragile attribute probing",
         "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name probing or ad hoc attribute comparisons.",
@@ -3323,12 +3324,11 @@ declare_typed_observation_detector(
             ObservationTag.ATTRIBUTE_PROBE,
             ObservationTag.CONFIG_DISPATCH,
         ),
-    ),
-    ConfigDispatchObservationFamily,
-    ConfigDispatchObservation,
-    "{module_path} contains {evidence_count} config-specific attribute probes or comparisons.",
-    minimum_evidence_count=2,
-)
+    )
+    observation_family = ConfigDispatchObservationFamily
+    observation_type = ConfigDispatchObservation
+    summary_template = "{module_path} contains {evidence_count} config-specific attribute probes or comparisons."
+    minimum_evidence_count = 2
 
 
 class ConcreteConfigFieldProbeDetector(
@@ -3367,9 +3367,10 @@ class ConcreteConfigFieldProbeDetector(
         )
 
 
-declare_typed_observation_detector(
-    "ManualVirtualMembershipDetector",
-    finding_spec_template(
+class ManualVirtualMembershipDetector(
+    TypedObservationPatternDetector[ClassMarkerObservation]
+):
+    finding_spec = finding_spec_template(
         PatternId.VIRTUAL_MEMBERSHIP,
         "Manual class-marker membership should become custom isinstance semantics",
         "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks suggest a custom isinstance/subclass boundary rather than scattered manual probing.",
@@ -3383,12 +3384,11 @@ declare_typed_observation_detector(
             ObservationTag.CLASS_MARKER_PROBE,
             ObservationTag.RUNTIME_MEMBERSHIP,
         ),
-    ),
-    ClassMarkerObservationFamily,
-    ClassMarkerObservation,
-    "{module_path} performs {evidence_count} class-level marker checks on instances.",
-    minimum_evidence_count=2,
-)
+    )
+    observation_family = ClassMarkerObservationFamily
+    observation_type = ClassMarkerObservation
+    summary_template = "{module_path} performs {evidence_count} class-level marker checks on instances."
+    minimum_evidence_count = 2
 
 
 @dataclass(frozen=True)
