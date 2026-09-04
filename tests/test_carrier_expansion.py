@@ -337,7 +337,7 @@ def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> 
         target=SourceRewriteTarget(target_id=authority_target.target_id)
     )
     operation_payload = json_report_object(operation)
-    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    assert RefactorRecipeOperation.from_json_value(operation_payload) == operation
     assert "field_mapping" not in operation_payload
 
     recipe = RefactorRecipe(recipe_id="collapse-declared-carrier").with_operation(

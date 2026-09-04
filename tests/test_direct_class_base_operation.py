@@ -70,7 +70,7 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
     simulation = (
         RefactorRecipe(recipe_id="replace-direct-class-base")

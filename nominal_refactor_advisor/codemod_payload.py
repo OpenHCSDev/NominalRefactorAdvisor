@@ -256,10 +256,7 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> Self:
-        return cls.from_dict(cls.payload_fields(value))
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, JsonValue]) -> Self:
+        payload = cls.payload_fields(value)
         discriminator = RequiredStringPayloadValueCodec().read(
             payload,
             cls.discriminator_field_name,

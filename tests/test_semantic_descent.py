@@ -1581,7 +1581,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
     assert authority_report.detail.resolutions[0].status.value == "declared"
-    assert type(RefactorRecipeOperation.from_dict(operations[0])).__name__ == (
+    assert type(RefactorRecipeOperation.from_json_value(operations[0])).__name__ == (
         "DeriveAutoRegisterMroOrderingOperation"
     )
     assert "priority" not in rewritten
@@ -2049,7 +2049,7 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     assert operation["operation"] == "derive_autoregister_instance_view"
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert operation["target_id"] == claim.authority_id
-    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     assert "__registry__ = {}" in rewritten
     assert "registry_key = StepId.LOAD" in rewritten
     assert "registry_key = StepId.SAVE" in rewritten
@@ -2485,12 +2485,12 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         "projection_target",
         "rationale",
     }
-    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    assert RefactorRecipeOperation.from_json_value(operation_payload) == operation
     with pytest.raises(
         ValueError,
         match="Unsupported DeriveDataclassPayloadProjectionOperation payload field",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **operation_payload,
                 "field_names": ["kind", "description", "confidence"],
@@ -2559,7 +2559,7 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
         "RefactorAction",
         "payload",
     )
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "action",
         "record",
@@ -2741,7 +2741,7 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "('run_id', 'seconds')",
         "['run_id', 'seconds']",
@@ -2929,7 +2929,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     changed_source = (
         snapshot.sources_by_file_path[module_path.as_posix()]
         .replace(
@@ -3468,7 +3468,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
         "projection_target",
         "rationale",
     }
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     assert replayed == operation
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "def line_replacement(",
@@ -3738,12 +3738,12 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         "projection_target",
         "rationale",
     }
-    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     with pytest.raises(
         ValueError,
         match="Unsupported DeriveEnumSubsetOperation payload field",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **operation,
                 "mapping_name": "_ACTIONABLE_CONFIDENCE_LEVELS",
@@ -3812,7 +3812,7 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
     projection_path.write_text(projection_source, encoding="utf-8")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     changed_projection_source = projection_source.replace("medium", "low")
     changed_snapshot = CodemodSourceSnapshot.from_indexed_sources(
         snapshot.source_index,
@@ -4117,12 +4117,12 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     }
     assert "source" not in operation
     assert "assignment_name" not in operation
-    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     with pytest.raises(
         ValueError,
         match="Unsupported DeriveClassFamilyCollectionOperation payload field",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **operation,
                 "assignment_name": "MODE_ENUMS",
@@ -4249,7 +4249,7 @@ def test_class_family_collection_operation_rederives_current_source(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
     payload = json_report_object(operation)
-    replayed = RefactorRecipeOperation.from_dict(payload)
+    replayed = RefactorRecipeOperation.from_json_value(payload)
     changed_projection_source = projection_source.replace(
         "(Alpha, Beta)",
         "(Beta, Alpha)",

@@ -804,15 +804,15 @@ def test_replace_target_payload_schema_round_trips_contributors() -> None:
 
     payload = json_report_object(operation)
 
-    assert ReplaceTargetOperation.from_dict(payload) == operation
-    assert RefactorRecipeOperation.from_dict(payload) == operation
+    assert ReplaceTargetOperation.from_json_value(payload) == operation
+    assert RefactorRecipeOperation.from_json_value(payload) == operation
     assert payload["contributors"] == (json_report_object(contributor),)
     assert "from_dict" not in ReplaceTargetOperation.__dict__
     assert "from_operation_payload" not in ReplaceTargetOperation.__dict__
     assert "operation_payload" not in ReplaceTargetOperation.__dict__
 
     with pytest.raises(ValueError, match="Unsupported recipe operation"):
-        ReplaceTargetOperation.from_dict(
+        ReplaceTargetOperation.from_json_value(
             json_report_object(
                 DeleteTargetOperation(
                     target=SourceRewriteTarget(
@@ -3108,7 +3108,7 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
         ValueError,
         match=r"Unsupported ReplaceFunctionSignatureOperation payload field\(s\)",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **signature_payload,
                 "signature_source": "def parse(self, value, *, context):",
@@ -3422,7 +3422,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
             "carrier_attribute": "marker_kinds",
         },
     )
-    assert RefactorRecipeOperation.from_dict(payload) == operation
+    assert RefactorRecipeOperation.from_json_value(payload) == operation
     with pytest.raises(
         ValueError,
         match=(
@@ -3430,7 +3430,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
             r"'constructor_names'"
         ),
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {**payload, "constructor_names": ("EmbeddedStaticPayloadCandidate",)}
         )
 
@@ -4137,14 +4137,14 @@ def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
     assert payload["base_name"] == "NormalizedRenderMixin"
     assert "class_names" not in payload
     assert "method_names" not in payload
-    assert type(RefactorRecipeOperation.from_dict(payload)) is (
+    assert type(RefactorRecipeOperation.from_json_value(payload)) is (
         FactorExactMethodRoleOperation
     )
     with pytest.raises(
         ValueError,
         match="Unsupported recipe operation: promote_class_methods",
     ):
-        RefactorRecipeOperation.from_dict({"operation": "promote_class_methods"})
+        RefactorRecipeOperation.from_json_value({"operation": "promote_class_methods"})
     assert len(declared_claims) == 1
     assert declared_claims[0].claimed_symbol == "NormalizedRenderMixin"
     assert declared_claims[0].authority_kind is SemanticAuthorityKind.CLASS_FAMILY
@@ -4238,7 +4238,7 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     assert plan.trajectory_frontier.complete is True
     assert plan.trajectory_frontier.branches
     assert operation["operation"] == "promote_exact_leaf_methods_to_ancestor"
-    assert type(RefactorRecipeOperation.from_dict(operation)) is (
+    assert type(RefactorRecipeOperation.from_json_value(operation)) is (
         PromoteExactLeafMethodsToAncestorOperation
     )
     assert operation["target_id"] is not None
@@ -5296,7 +5296,7 @@ def test_derive_candidate_collector_operation_round_trips_without_mirrors() -> N
     )
 
     payload = json_report_object(operation)
-    decoded = DeriveCandidateCollectorOperation.from_dict(payload)
+    decoded = DeriveCandidateCollectorOperation.from_json_value(payload)
 
     assert tuple(payload) == (
         "operation",
@@ -5766,7 +5766,7 @@ def test_refactor_recipe_replaces_module_assignment(
         ValueError,
         match=r"Unsupported ReplaceModuleAssignmentOperation payload field\(s\)",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {**payload, "assignment_name": "ACTIVE_MODES"}
         )
 
@@ -5808,10 +5808,10 @@ def test_replace_module_assignment_rejects_unproved_source_declarations(
 
     if not source:
         with pytest.raises(ValueError, match=expected_error):
-            RefactorRecipeOperation.from_dict(payload)
+            RefactorRecipeOperation.from_json_value(payload)
         return
 
-    operation = RefactorRecipeOperation.from_dict(payload)
+    operation = RefactorRecipeOperation.from_json_value(payload)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=expected_error):
         operation.source_edits(snapshot)
@@ -6146,12 +6146,12 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
     payload = json_report_object(operation)
 
     assert set(payload) == {"operation", "target_id", "rationale"}
-    assert RefactorRecipeOperation.from_dict(payload) == operation
+    assert RefactorRecipeOperation.from_json_value(payload) == operation
     with pytest.raises(
         ValueError,
         match="Unsupported DeriveAutoregisterInstanceViewOperation payload field",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **payload,
                 "assignment_name": "STEP_TABLE",
@@ -6319,7 +6319,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     )
     assert "+    return _dispatch_case_type().apply(kind, value)" in diff
     operation_payload = json_report_object(recipe.operations[0])
-    assert RefactorRecipeOperation.from_dict(operation_payload) == recipe.operations[0]
+    assert RefactorRecipeOperation.from_json_value(operation_payload) == recipe.operations[0]
     assert operation_payload["target_id"] == render_target.target_id
     assert "dispatch_axis_expression" not in operation_payload
     assert "literal_cases" not in operation_payload
@@ -6771,14 +6771,14 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
         ValueError,
         match="Unsupported recipe operation: move_symbol_to_module",
     ):
-        RefactorRecipeOperation.from_dict({"operation": "move_symbol_to_module"})
+        RefactorRecipeOperation.from_json_value({"operation": "move_symbol_to_module"})
     assert operation["destination_path"] == destination_path.as_posix()
     assert "replacement_import" not in operation
     with pytest.raises(
         ValueError,
         match=r"Unsupported MoveSymbolsToModuleOperation payload field\(s\)",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **operation,
                 "replacement_import": "from pkg.destination import Helper\n",
@@ -7667,7 +7667,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
             "from __future__ import annotations\n"
         ),
     )
-    restored_operation = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    restored_operation = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("extract-helper-module").with_operation(operation),
@@ -7747,7 +7747,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         destination_path=destination_path.as_posix(),
     )
 
-    restored_operation = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    restored_operation = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     moved_symbol_qualnames = operation.move_symbol_qualnames(
         snapshot,
         source_path.as_posix(),
@@ -7842,7 +7842,7 @@ def test_new_module_extraction_rejects_explicit_annotation_policy_change(
         destination_source="",
     )
 
-    assert RefactorRecipeOperation.from_dict(json_report_object(operation)) == operation
+    assert RefactorRecipeOperation.from_json_value(json_report_object(operation)) == operation
     assert json_report_object(operation)["destination_source"] == ""
     with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
         RefactorRecipe("reject-explicit-annotation-mode-change").with_operation(
@@ -8041,7 +8041,7 @@ def test_module_closure_move_rejects_derived_selection_beyond_declared_budget(
         ValueError,
         match="Expected non-negative integer field 'maximum_moved_symbol_count'",
     ):
-        RefactorRecipeOperation.from_dict(payload)
+        RefactorRecipeOperation.from_json_value(payload)
 
 
 def test_symbol_move_removes_orphaned_end_of_file_separator(tmp_path: Path) -> None:
@@ -8690,14 +8690,14 @@ def test_refactor_recipe_extracts_authority(
     assert "claimed_symbol" not in payload
     assert "qualname" not in payload
     with pytest.raises(ValueError, match="Expected string enum field"):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {key: value for key, value in payload.items() if key != "authority_kind"}
         )
     with pytest.raises(
         ValueError,
         match=r"Unsupported ExtractAuthorityOperation payload field\(s\)",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **payload,
                 "authority_claim": {
@@ -14779,7 +14779,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         "field_names",
         "method_name",
     }.intersection(operation_payload)
-    assert type(RefactorRecipeOperation.from_dict(operation_payload)).__name__ == (
+    assert type(RefactorRecipeOperation.from_json_value(operation_payload)).__name__ == (
         "DeriveRepeatedBuilderAuthorityOperation"
     )
     preflight = plan.document.preflight_snapshot(snapshot)
@@ -21166,7 +21166,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         for target in source_index.ast_targets
         if target.qualname in {"AlphaHandler", "BetaHandler"}
     }
-    assert RefactorRecipeOperation.from_dict(operation) == operation_declaration
+    assert RefactorRecipeOperation.from_json_value(operation) == operation_declaration
     assert recipe.authority_claims == ()
     declared_claims = operation_declaration.declared_authority_claims(
         selector_context
@@ -21186,7 +21186,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         ValueError,
         match="Unsupported ConvertManualRegistryToAutoregisterOperation payload field",
     ):
-        RefactorRecipeOperation.from_dict(
+        RefactorRecipeOperation.from_json_value(
             {
                 **operation,
                 "registry_name": "REGISTRY",
@@ -21264,7 +21264,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     operation = json_report_object(recipe.operations[0])
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
     assert set(operation) == {"operation", "target_id", "rationale"}
-    assert RefactorRecipeOperation.from_dict(operation) == recipe.operations[0]
+    assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     assert recipe.authority_claims == ()
     declared_claims = recipe.declared_authority_claims(selector_context)
     assert len(declared_claims) == 1
@@ -22273,7 +22273,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert isinstance(operation, FactorParallelMirroredLeafFamilyOperation)
     assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(json_report_object(operation)),
+        RefactorRecipeOperation.from_json_value(json_report_object(operation)),
         FactorParallelMirroredLeafFamilyOperation,
     )
     declared_claims = recipe.declared_authority_claims(snapshot)
@@ -26243,7 +26243,7 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
     assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(json_report_object(operation)),
+        RefactorRecipeOperation.from_json_value(json_report_object(operation)),
         DescendTypeKeyedBehaviorProjectionOperation,
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

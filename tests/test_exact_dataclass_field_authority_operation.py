@@ -191,7 +191,7 @@ def test_operation_reproves_field_component_without_serializing_rosters(
     assert payload["base_name"] == "ProjectionIdentity"
     assert "class_names" not in payload
     assert "field_names" not in payload
-    assert type(RefactorRecipeOperation.from_dict(payload)) is (
+    assert type(RefactorRecipeOperation.from_json_value(payload)) is (
         FactorExactDataclassFieldAuthorityOperation
     )
     assert len(claims) == 1

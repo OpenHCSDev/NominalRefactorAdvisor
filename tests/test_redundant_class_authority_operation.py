@@ -100,7 +100,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
     expected_runtime_output = _runtime_output(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
-    replayed = RefactorRecipeOperation.from_dict(json_report_object(operation))
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
     result = (
         RefactorRecipe(recipe_id="collapse-semantic-record-authority")

@@ -183,7 +183,7 @@ def test_enum_keyed_facade_recipe_moves_queries_and_preserves_behavior(
     assert isinstance(operation, DescendEnumKeyedDerivedMapFacadeOperation)
     assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
     assert isinstance(
-        RefactorRecipeOperation.from_dict(json_report_object(operation)),
+        RefactorRecipeOperation.from_json_value(json_report_object(operation)),
         DescendEnumKeyedDerivedMapFacadeOperation,
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

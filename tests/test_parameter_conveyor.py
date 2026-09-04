@@ -273,7 +273,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     assert operation.target.target_id == authority_target.target_id
     assert isinstance(operation, CollapseClosedParameterConveyorOperation)
     operation_payload = json_report_object(operation)
-    assert RefactorRecipeOperation.from_dict(operation_payload) == operation
+    assert RefactorRecipeOperation.from_json_value(operation_payload) == operation
     assert "source_edits_by_state_id" not in operation_payload
 
     simulation = snapshot.simulate_rewrites(

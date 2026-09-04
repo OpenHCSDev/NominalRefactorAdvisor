@@ -134,7 +134,7 @@ def test_operation_reuses_and_relocates_existing_field_authority(
     assert "base_name" not in payload
     assert "class_names" not in payload
     assert "field_names" not in payload
-    assert type(RefactorRecipeOperation.from_dict(payload)) is type(operation)
+    assert type(RefactorRecipeOperation.from_json_value(payload)) is type(operation)
     assert simulation.is_clean is True
     assert rewritten.count("class ProjectionIdentity:") == 1
     assert rewritten.index("class ProjectionIdentity:") < rewritten.index(
