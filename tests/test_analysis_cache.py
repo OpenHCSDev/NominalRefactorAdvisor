@@ -5958,9 +5958,10 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         "class Request:\n"
         "    title: str\n"
         "    status: str\n\n"
-        "    def to_dict(self):\n"
-        "        return {'title': self.title, 'status': self.status}\n\n"
-        "REQUEST_FIELDS = ('title', 'status')\n"
+            "    def to_dict(self):\n"
+            "        return {'title': self.title, 'status': self.status}\n\n"
+            "REQUEST = Request(title='example', status='ready')\n\n"
+            "REQUEST_FIELDS = ('title', 'status')\n"
         "REQUEST_COLUMNS = ('title', 'status')\n",
         encoding="utf-8",
     )

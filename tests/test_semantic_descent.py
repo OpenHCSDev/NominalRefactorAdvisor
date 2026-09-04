@@ -607,11 +607,7 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
         "    backend: str\n"
         "    parse_valid: bool\n"
         "\n"
-        "    def to_dict(self):\n"
-        "        return {\n"
-        "            'backend': self.backend,\n"
-        "            'parse_valid': self.parse_valid,\n"
-        "        }\n"
+        "REPORT = Report(backend='cpython', parse_valid=True)\n"
     )
     module_path = _write_module(tmp_path, source)
     base_graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
@@ -5382,10 +5378,10 @@ def test_semantic_descent_treats_instance_field_tuple_as_schema_descent(
     )
 
 
-def test_semantic_descent_treats_dataclass_owned_payload_as_schema_descent(
+def test_semantic_mirror_owned_dataclass_payload_synthesizes_derivation_recipe(
     tmp_path: Path,
 ) -> None:
-    _write_module(
+    module_path = _write_module(
         tmp_path,
         "from dataclasses import dataclass\n"
         "\n"
@@ -5395,37 +5391,46 @@ def test_semantic_descent_treats_dataclass_owned_payload_as_schema_descent(
         "    parse_valid: bool\n"
         "\n"
         "    def to_dict(self):\n"
-        "        payload = {\n"
+        "        return {\n"
         "            'backend': self.backend,\n"
         "            'parse_valid': self.parse_valid,\n"
-        "        }\n"
-        "        return payload\n",
+        "        }\n",
     )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.metrics.plan_source_name == "Report"
+        and item.metrics.plan_mapping_name == "Report.to_dict:return"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
-    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate(snapshot)
+    operation = plan.document.recipes[0].operations[0]
+    rewritten_source = simulation.simulation.rewritten_sources[
+        module_path.as_posix()
+    ]
 
-    report_authority = next(
-        authority for authority in graph.authorities if authority.name == "Report"
-    )
-    assert report_authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
-    assert not any(
-        certificate.edge.authority_id == report_authority.authority_id
-        for certificate in graph.missing_descent_certificates
-    )
-    report_derivation = next(
-        certificate
-        for certificate in graph.certificates
-        if certificate.status
-        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
-        and certificate.edge.authority_id == report_authority.authority_id
-    )
-    assert isinstance(report_derivation, SemanticDerivationCertificate)
-    assert report_derivation.proof_edges[0].edge_kind is (
-        AuthorityProofEdgeKind.OWNS_FIELD_SET
-    )
+    assert plan.records[0].status.value == "executable_candidate"
+    assert isinstance(operation, DeriveDataclassPayloadProjectionOperation)
+    assert simulation.is_clean is True
+    assert "for field in dataclasses.fields(" in rewritten_source
+    assert "                    Report\n" in rewritten_source
+    assert "'backend': self.backend" not in rewritten_source
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    report = namespace["Report"]("cpython", True)
+    assert report.to_dict() == {
+        "backend": "cpython",
+        "parse_valid": True,
+    }
 
 
-def test_semantic_descent_treats_dataclass_subclass_payload_as_schema_descent(
+def test_semantic_descent_reports_dataclass_subclass_payload_mirror(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -5445,27 +5450,15 @@ def test_semantic_descent_treats_dataclass_subclass_payload_as_schema_descent(
         "        }\n"
         "        return payload\n",
     )
-
     graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
 
     report_authority = next(
         authority for authority in graph.authorities if authority.name == "Report"
     )
     assert report_authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
-    assert not any(
+    assert any(
         certificate.edge.authority_id == report_authority.authority_id
         for certificate in graph.missing_descent_certificates
-    )
-    report_derivation = next(
-        certificate
-        for certificate in graph.certificates
-        if certificate.status
-        is semantic_descent_module.DescentStatus.DESCENDS_TO_AUTHORITY
-        and certificate.edge.authority_id == report_authority.authority_id
-    )
-    assert isinstance(report_derivation, SemanticDerivationCertificate)
-    assert report_derivation.proof_edges[0].edge_kind is (
-        AuthorityProofEdgeKind.INHERITS_FROM
     )
 
 
@@ -6081,11 +6074,7 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
         "    backend: str\n"
         "    parse_valid: bool\n"
         "\n"
-        "    def to_dict(self):\n"
-        "        return {\n"
-        "            'backend': self.backend,\n"
-        "            'parse_valid': self.parse_valid,\n"
-        "        }\n",
+        "REPORT = Report(backend='cpython', parse_valid=True)\n",
     )
     graph_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
     first_graph = build_semantic_descent_graph(
@@ -6130,11 +6119,7 @@ def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
         "    backend: str\n"
         "    parse_valid: bool\n"
         "\n"
-        "    def to_dict(self):\n"
-        "        return {\n"
-        "            'backend': self.backend,\n"
-        "            'parse_valid': self.parse_valid,\n"
-        "        }\n"
+        "REPORT = Report(backend='cpython', parse_valid=True)\n"
     )
     source_root = tmp_path / "checkout-a"
     target_root = tmp_path / "checkout-b"

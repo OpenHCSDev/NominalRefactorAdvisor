@@ -2088,9 +2088,6 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             candidate.projection,
             candidate.authority,
             candidate.matched_facts,
-        ) or context.dataclass_descent.projection_shares_dataclass_base_with_authority(
-            candidate.projection,
-            candidate.authority,
         ):
             return SemanticAuthorityProjectionResolution.suppressed()
         return SemanticAuthorityProjectionResolution.mirrored(candidate)
@@ -5480,9 +5477,6 @@ class DataclassProjectionDescentAuthority:
         authority: SemanticAuthority,
         matched_facts: tuple[SemanticFact, ...],
     ) -> tuple[AuthorityProofEdge, ...]:
-        class_proof = self._class_derivation_proof(projection, authority)
-        if class_proof:
-            return class_proof
         direct_construction_proof = self._construction_derivation_proof(
             projection,
             authority,
@@ -5502,51 +5496,6 @@ class DataclassProjectionDescentAuthority:
             self.construction_resolver.construction_type_materializes_authority,
             AuthorityProofEdgeKind.PROVIDES_QUERY_METHOD,
             "projection uses a declared materializer for the authority-owned field set",
-        )
-
-    def _class_derivation_proof(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> tuple[AuthorityProofEdge, ...]:
-        projection_class_symbol = (
-            self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
-        )
-        if projection_class_symbol is None:
-            return ()
-        class_authority_ids = {
-            projection_class_symbol,
-            *self.projection_class_symbol_lineage.ancestor_symbols_for_class(
-                projection_class_symbol
-            ),
-        }
-        if authority.authority_id not in class_authority_ids:
-            return ()
-        indexed_class = self.projection_class_symbol_lineage.class_index.class_for(
-            projection_class_symbol
-        )
-        if indexed_class is None:
-            return ()
-        owns_authority = projection_class_symbol == authority.authority_id
-        return (
-            AuthorityProofEdge.from_location(
-                authority,
-                SourceLocation(
-                    indexed_class.file_path,
-                    indexed_class.line,
-                    indexed_class.symbol,
-                ),
-                (
-                    AuthorityProofEdgeKind.OWNS_FIELD_SET
-                    if owns_authority
-                    else AuthorityProofEdgeKind.INHERITS_FROM
-                ),
-                detail=(
-                    "projection is owned by the dataclass authority"
-                    if owns_authority
-                    else "projection owner inherits the dataclass authority"
-                ),
-            ),
         )
 
     def _construction_derivation_proof(
