@@ -116,6 +116,21 @@ class AstExpressionProjection:
                 return None
 
 
+@dataclass(frozen=True)
+class AstKeywordSourceProjection:
+    """Render one call or declaration keyword from its AST declaration."""
+
+    keyword: ast.keyword
+
+    def source(self) -> str:
+        value_source = ast.unparse(self.keyword.value)
+        match self.keyword.arg:
+            case str() as name:
+                return f"{name}={value_source}"
+            case None:
+                return f"**{value_source}"
+
+
 _TYPE_BUILTIN = "type"
 _SETATTR_BUILTIN = "setattr"
 _IGNORED_PYTHON_TREE_DIRS = frozenset(

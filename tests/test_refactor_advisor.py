@@ -54,6 +54,7 @@ from nominal_refactor_advisor.analysis import (
 )
 from nominal_refactor_advisor.ast_tools import (
     AstExpressionProjection,
+    AstKeywordSourceProjection,
     BuiltinCallName,
     ClassMarkerObservationFamily,
     ConfigDispatchObservationFamily,
@@ -9129,6 +9130,25 @@ def test_ast_expression_projection_owns_qualified_name_semantics(
     expression = ast.parse(source, mode="eval").body
 
     assert AstExpressionProjection(expression).qualified_name() == expected_name
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    (
+        ("factory(alpha=value)", "alpha=value"),
+        ("factory(**options)", "**options"),
+    ),
+)
+def test_ast_keyword_source_projection_owns_keyword_rendering(
+    source: str,
+    expected_source: str,
+) -> None:
+    expression = ast.parse(source, mode="eval").body
+    assert isinstance(expression, ast.Call)
+
+    assert AstKeywordSourceProjection(expression.keywords[0]).source() == (
+        expected_source
+    )
 
 
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"

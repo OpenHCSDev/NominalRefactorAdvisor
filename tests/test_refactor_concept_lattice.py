@@ -564,6 +564,7 @@ def test_function_mutations_share_typed_current_source_proof() -> None:
 
 def test_class_body_source_authority_owns_insertion_geometry() -> None:
     assert not hasattr(codemod, "ClassBodyInsertionPoint")
+    assert not hasattr(codemod, "ClassBaseRewriteTarget")
     assert issubclass(
         codemod.ClassHeaderSpanSourceAuthority,
         codemod.ClassSourceAuthority,

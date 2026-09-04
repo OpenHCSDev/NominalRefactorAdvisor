@@ -275,7 +275,7 @@ them, and are not published as compatibility aliases.
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
 .. automodule:: nominal_refactor_advisor.codemod_declaration_source
-   :members: PythonExpressionSourceFormatter, ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, ClassBaseRewriteTarget, FunctionSignatureSourceAuthority
+   :members: PythonExpressionSourceFormatter, ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, FunctionSignatureSourceAuthority
 
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority

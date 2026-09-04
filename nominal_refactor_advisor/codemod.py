@@ -38,6 +38,7 @@ from .assignment_projection import (
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     AstExpressionProjection as AstExpressionProjection,
+    AstKeywordSourceProjection,
     EagerNameLoadCollector,
     FunctionDefinitionNode,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -325,7 +326,6 @@ from .cancelable_composition import (
     detect_cancelable_composition_signals as detect_cancelable_composition_signals,
 )
 from .codemod_declaration_source import (
-    ClassBaseRewriteTarget as ClassBaseRewriteTarget,
     ClassBodySourceAuthority as ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
     ClassSourceAuthority as ClassSourceAuthority,
@@ -1350,11 +1350,7 @@ class ResolvedClassTarget:
             return (
                 *(ast.unparse(argument) for argument in decorator.args),
                 *(
-                    (
-                        f"{keyword.arg}={ast.unparse(keyword.value)}"
-                        if keyword.arg is not None
-                        else f"**{ast.unparse(keyword.value)}"
-                    )
+                    AstKeywordSourceProjection(keyword).source()
                     for keyword in decorator.keywords
                 ),
             )
@@ -4007,10 +4003,10 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
 
     def supports_base_rewrites(self) -> bool:
         return all(
-            ClassBaseRewriteTarget(
+            ClassHeaderSpanSourceAuthority(
                 node=class_target.node,
                 source=self.source_for(class_target.file_path),
-            ).supports_base_rewrite
+            ).can_rewrite
             for class_target in self.targets
         )
 

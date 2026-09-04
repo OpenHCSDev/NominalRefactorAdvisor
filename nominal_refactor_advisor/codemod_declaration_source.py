@@ -9,6 +9,7 @@ from importlib import import_module as import_module_by_name
 from importlib.util import find_spec
 from typing import ClassVar
 
+from .ast_tools import AstKeywordSourceProjection, is_docstring_statement
 from .class_index import ClassHeaderSourceSpan
 from .codemod_source_edits import SourceTextGeometry
 
@@ -129,11 +130,7 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     @property
     def keyword_items(self) -> tuple[str, ...]:
         return tuple(
-            (
-                f"{keyword.arg}={ast.unparse(keyword.value)}"
-                if keyword.arg is not None
-                else f"**{ast.unparse(keyword.value)}"
-            )
+            AstKeywordSourceProjection(keyword).source()
             for keyword in self.node.keywords
         )
 
@@ -259,12 +256,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
 
     @property
     def declaration_insert_line(self) -> int:
-        if (
-            self.node.body
-            and isinstance(self.node.body[0], ast.Expr)
-            and isinstance(self.node.body[0].value, ast.Constant)
-            and isinstance(self.node.body[0].value.value, str)
-        ):
+        if self.node.body and is_docstring_statement(self.node.body[0]):
             return self.node.body[0].end_lineno or self.node.body[0].lineno
         return self.node.lineno
 
@@ -321,18 +313,6 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
             trailing_separator = "\n\n"
         body = "\n\n".join(member.rstrip("\r\n") for member in members)
         return f"{leading_separator}{body}{trailing_separator}"
-
-
-@dataclass(frozen=True)
-class ClassBaseRewriteTarget(ClassSourceAuthority):
-    """Class declaration target supported by the class-header rewrite engine."""
-
-    @property
-    def supports_base_rewrite(self) -> bool:
-        return ClassHeaderSpanSourceAuthority(
-            node=self.node,
-            source=self.source,
-        ).can_rewrite
 
 
 @dataclass(frozen=True)
