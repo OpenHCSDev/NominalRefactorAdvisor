@@ -7,6 +7,8 @@ import nominal_refactor_advisor.semantic_inspection as semantic_inspection_modul
 
 from nominal_refactor_advisor import (
     FunctionSummaryKind,
+    ImportSummaryKind,
+    SemanticInspectionIdentityKind,
     SemanticInspectionReport,
     inspect_paths,
 )
@@ -45,6 +47,15 @@ def _finding_spec() -> FindingSpec:
         capability_gap="certified grammar compression",
         relation_context="same orbit under renaming",
     )
+
+
+def test_semantic_inspection_identity_namespaces_preserve_stable_ids() -> None:
+    assert SemanticInspectionIdentityKind.FROM_IMPORT.stable_id(
+        "pkg/mod.py",
+        3,
+        "collections",
+        ("defaultdict",),
+    ) == "09f5a3eec1"
 
 
 def test_semantic_inspection_summarizes_ast_and_source_index_targets(
@@ -108,6 +119,10 @@ def test_semantic_inspection_summarizes_ast_and_source_index_targets(
 
     import_names = {name for item in report.imports for name in item.alias_names}
     assert {"dataclass", "operating", "dd"} <= import_names
+    assert {item.import_kind for item in report.imports} == {
+        ImportSummaryKind.IMPORT,
+        ImportSummaryKind.FROM_IMPORT,
+    }
 
     assignment_names = {
         name for item in report.assignments for name in item.target_names
@@ -126,7 +141,12 @@ def test_semantic_inspection_summarizes_ast_and_source_index_targets(
         "Payload.build"
     )
 
-    json.dumps(report.to_dict())
+    payload = report.to_dict()
+    assert {item["import_kind"] for item in payload["imports"]} == {
+        "import",
+        "from_import",
+    }
+    json.dumps(payload)
 
 
 def test_inspect_paths_loads_and_analyzes_roots(tmp_path: Path) -> None:

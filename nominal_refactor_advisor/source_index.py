@@ -61,6 +61,7 @@ IndexKeyT = TypeVar("IndexKeyT")
 IndexValueT = TypeVar("IndexValueT")
 AstTargetNode: TypeAlias = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 AstTargetNodeMap: TypeAlias = dict[str, AstTargetNode]
+StableIdPart: TypeAlias = str | int | bool | None | tuple[str, ...]
 TupleIndexItems: TypeAlias = dict[IndexKeyT, tuple[IndexValueT, ...]]
 
 
@@ -68,7 +69,7 @@ TupleIndexItems: TypeAlias = dict[IndexKeyT, tuple[IndexValueT, ...]]
 class StableIdAuthority:
     """Stable short identifiers for source-index rows."""
 
-    def build(self, namespace: str, parts: Iterable[str | int]) -> str:
+    def build(self, namespace: str, parts: Iterable[StableIdPart]) -> str:
         payload = "|".join((namespace, *(str(part) for part in parts)))
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 

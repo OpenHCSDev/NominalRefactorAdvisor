@@ -47,6 +47,7 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
         "_ast_attribute_chain",
         "_ast_terminal_name",
         "_call_name",
+        "_semantic_id",
         "_subscript_base_name",
         "_terminal_name",
     }

@@ -9,7 +9,6 @@ nodes or building a parallel dump format.
 from __future__ import annotations
 
 import ast
-import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -28,28 +27,56 @@ from .models import (
     stable_source_location_id,
 )
 from .source_index import (
+    STABLE_ID_AUTHORITY,
     AstTargetDigest,
     AstTargetNodeKind,
     SourceFileDigest,
     SourceIndex,
+    StableIdPart,
     build_source_index,
 )
 
-HashPart: TypeAlias = str | int | bool | None | tuple[str, ...]
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = (
     JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
 )
 
 
-def _semantic_id(namespace: str, *parts: HashPart) -> str:
-    payload = "|".join((namespace, *(str(part) for part in parts)))
-    return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
-
-
 @dataclass(frozen=True)
 class SemanticInspectionRecord(SemanticRecord, ABC):
     """Base class for serializable semantic inspection records."""
+
+
+class SemanticInspectionIdentityKind(StrEnum):
+    """Stable identity namespaces for semantic inspection records."""
+
+    IMPORT = "import"
+    FROM_IMPORT = "import-from"
+    CALL = "call"
+    ASSIGNMENT = "assignment"
+
+    def stable_id(self, *parts: StableIdPart) -> str:
+        return STABLE_ID_AUTHORITY.build(self, parts)
+
+
+class ImportSummaryKind(StrEnum):
+    """Import declaration forms and their stable identity namespaces."""
+
+    IMPORT = ("import", SemanticInspectionIdentityKind.IMPORT)
+    FROM_IMPORT = ("from_import", SemanticInspectionIdentityKind.FROM_IMPORT)
+
+    def __new__(
+        cls,
+        value: str,
+        identity_kind: SemanticInspectionIdentityKind,
+    ) -> "ImportSummaryKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._identity_kind = identity_kind
+        return member
+
+    def stable_id(self, *parts: StableIdPart) -> str:
+        return self._identity_kind.stable_id(*parts)
 
 
 @dataclass(frozen=True)
@@ -58,7 +85,7 @@ class ImportSummary(SemanticInspectionRecord):
     file_path: str
     module_name: str
     line: int
-    import_kind: str
+    import_kind: ImportSummaryKind
     imported_module: str | None
     imported_names: tuple[str, ...]
     alias_names: tuple[str, ...]
@@ -502,13 +529,15 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         imported_names = tuple(alias.name for alias in node.names)
         self.imports.append(
             ImportSummary(
-                import_id=_semantic_id(
-                    "import", self.file_path, node.lineno, imported_names
+                import_id=ImportSummaryKind.IMPORT.stable_id(
+                    self.file_path,
+                    node.lineno,
+                    imported_names,
                 ),
                 file_path=self.file_path,
                 module_name=self.module.module_name,
                 line=node.lineno,
-                import_kind="import",
+                import_kind=ImportSummaryKind.IMPORT,
                 imported_module=None,
                 imported_names=imported_names,
                 alias_names=_alias_names(node.names),
@@ -519,8 +548,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         imported_names = tuple(alias.name for alias in node.names)
         self.imports.append(
             ImportSummary(
-                import_id=_semantic_id(
-                    "import-from",
+                import_id=ImportSummaryKind.FROM_IMPORT.stable_id(
                     self.file_path,
                     node.lineno,
                     node.module,
@@ -529,7 +557,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 file_path=self.file_path,
                 module_name=self.module.module_name,
                 line=node.lineno,
-                import_kind="from_import",
+                import_kind=ImportSummaryKind.FROM_IMPORT,
                 imported_module=node.module,
                 imported_names=imported_names,
                 alias_names=_alias_names(node.names),
@@ -598,8 +626,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
             target_id = scope.target_id
             scope_qualname = scope.qualname
         call = CallSummary(
-            call_id=_semantic_id(
-                "call",
+            call_id=SemanticInspectionIdentityKind.CALL.stable_id(
                 self.file_path,
                 node.lineno,
                 scope_qualname,
@@ -716,8 +743,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
             target_id = scope.target_id
             scope_qualname = scope.qualname
         assignment = AssignmentSummary(
-            assignment_id=_semantic_id(
-                "assignment",
+            assignment_id=SemanticInspectionIdentityKind.ASSIGNMENT.stable_id(
                 self.file_path,
                 line,
                 scope_qualname,
@@ -953,6 +979,8 @@ _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
             "SourceIndexSemanticAstInspector",
             "SemanticAstInspector",
             "FunctionSummaryKind",
+            "ImportSummaryKind",
+            "SemanticInspectionIdentityKind",
             "inspect_modules",
             "inspect_path",
             "inspect_paths",
