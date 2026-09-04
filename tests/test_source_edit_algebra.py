@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceFieldsWithCarrierOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_imports import (
     ImportFromModuleName,
     ImportNameRemoval,
@@ -369,6 +370,87 @@ def test_import_mutation_renders_bare_imports_as_independent_statements(
     assert "".join(physical[0].inserted_lines).startswith(
         "import ast\nimport io\nimport tokenize\n"
     )
+
+
+def test_import_mutation_derives_canonical_python_source_groups(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(tmp_path, "VALUE = 1\n")
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source=(
+            "from .types import LocalType\n"
+            "from metaclass_registry import AutoRegisterMeta\n"
+            "from typing import Iterable\n"
+            "from __future__ import annotations\n"
+            "from dataclasses import dataclass\n"
+        ),
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert "".join(physical[0].inserted_lines).startswith(
+        "from __future__ import annotations\n\n"
+        "from dataclasses import dataclass\n"
+        "from typing import Iterable\n\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        "from .types import LocalType\n"
+    )
+
+
+def test_import_mutation_splits_direct_imports_at_source_group_boundaries(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(tmp_path, "VALUE = 1\n")
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="import metaclass_registry, ast\n",
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert "".join(physical[0].inserted_lines).startswith(
+        "import ast\n\nimport metaclass_registry\n"
+    )
+
+
+def test_import_mutation_rejects_existing_statement_with_mixed_source_groups(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "import ast, metaclass_registry\n\nVALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from collections import defaultdict\n",
+    )
+
+    with pytest.raises(ValueError, match="spans multiple canonical source groups"):
+        mutation.resolved_edits(context)
+
+
+def test_import_mutation_orders_addition_within_type_checking_guard(
+    tmp_path: Path,
+) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from .zeta import Zeta\n\n\n"
+        "VALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from .alpha import Alpha\n",
+        scope=ModuleImportScope.TYPE_CHECKING,
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert len(physical) == 1
+    assert physical[0].insertion_line == 4
+    assert physical[0].replacement_lines == ("    from .alpha import Alpha\n",)
 
 
 def test_import_mutation_inserts_absolute_dependency_before_relative_group(

@@ -85,6 +85,10 @@ from .class_authority_collapse import (
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
+from .codemod_operations import (
+    RefactorRecipeOperation as RefactorRecipeOperation,
+    SourcePayloadOperation as SourcePayloadOperation,
+)
 from .codemod_target_selectors import (
     CallSiteSelector as CallSiteSelector,
     CallSiteTargetSelector as CallSiteTargetSelector,
@@ -215,6 +219,8 @@ from .codemod_import_scopes import (
 )
 from .codemod_imports import (
     ImportAliasRequirement as ImportAliasRequirement,
+    ImportBlockInsertionPointABC as ImportBlockInsertionPointABC,
+    ImportSourceGroup as ImportSourceGroup,
 )
 from .codemod_imports import (
     ImportBoundNameRemoval as ImportBoundNameRemoval,
@@ -317,7 +323,6 @@ from .codemod_paths import (
 )
 from .codemod_payload import (
     CodemodPayloadRecord,
-    DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
@@ -520,7 +525,6 @@ from .registry_identity import (
     SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
     mro_registry_value,
-    suffix_trimmed_class_name_registry_key,
 )
 from .semantic_algebra import (
     ConfusabilityGraph,
@@ -969,139 +973,6 @@ class RecipeCallReplacement(SourceRewriteTargetReference, SourceTextReplacement)
 
 
 @dataclass(frozen=True, kw_only=True)
-class RefactorRecipeOperation(
-    SourceRewritePlanItem,
-    DiscriminatedPayloadRecord,
-    ABC,
-    metaclass=AutoRegisterMeta,
-):
-    """Agent-authored codemod operation compiled through source-index geometry."""
-
-    __registry_key__ = "operation_key_value"
-    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
-    registry_key_suffix: ClassVar[str] = "Operation"
-    operation_key_value: ClassVar[str]
-    discriminator_field_name: ClassVar[str] = "operation"
-    omit_none_payload_values: ClassVar[bool] = True
-    source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
-        CodemodSourceDependencyScope.EXPLICIT_TARGETS
-    )
-
-    @classmethod
-    def operation_key(cls) -> str:
-        return cls.operation_key_value
-
-    @classmethod
-    def record_type_for_discriminator(cls, discriminator: str) -> type[Self]:
-        operation_type = cls.__registry__.get(discriminator)
-        if operation_type is None or not issubclass(operation_type, cls):
-            raise ValueError(f"Unsupported recipe operation: {discriminator}")
-        return cast(type[Self], operation_type)
-
-    @classmethod
-    def discriminator_key(cls) -> str:
-        return cls.operation_key()
-
-    @abstractmethod
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[NominalSourceEdit, ...]:
-        raise NotImplementedError
-
-    def originated_edits(
-        self,
-        context: CodemodSelectorContext,
-        *,
-        recipe_id: str,
-        plan_item_index: int,
-    ) -> tuple[NominalSourceEdit, ...]:
-        origin = SourceEditOrigin(
-            recipe_id=recipe_id,
-            plan_item_declaration=type(self).__name__,
-            plan_item_index=plan_item_index,
-        )
-        return tuple(edit.with_origin(origin) for edit in self.source_edits(context))
-
-    def preflight_reports(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        del context
-        return ()
-
-    def source_file_creations(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[SourceFileCreation, ...]:
-        del context
-        return ()
-
-    def created_source_paths(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[str, ...]:
-        return tuple(
-            creation.file_path for creation in self.source_file_creations(context)
-        )
-
-    def declared_authority_claims(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[AuthorityClaim, ...]:
-        """Derive authority claims established by this operation."""
-
-        del context
-        return ()
-
-    def declared_architecture_guard_rules(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[ArchitectureGuardRule, ...]:
-        """Derive post-refactor invariants established by this operation."""
-
-        del context
-        return ()
-
-    def required_source_path(
-        self,
-        context: CodemodSelectorContext,
-        operation_name: str,
-    ) -> str:
-        if self.target.file_path is None:
-            raise ValueError(f"{operation_name} requires file_path")
-        return self.target.required_file_path(context.source_index)
-
-    def required_import_mutations(
-        self,
-        context: CodemodSelectorContext,
-        source_path: str,
-        *,
-        import_source: str,
-        default_rationale: str,
-    ) -> tuple["ModuleImportMutation", ...]:
-        return EnsureImportOperation(
-            target=SourceRewriteTarget(file_path=source_path),
-            import_source=import_source,
-            rationale=self.rationale_text(default_rationale),
-        ).source_edits(context)
-
-    def target_digest(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[str, AstTargetDigest]:
-        target_identifier = self.target.required_target_id(context.source_index)
-        return target_identifier, context.source_index.target_by_id[target_identifier]
-
-    def target_node_from_context(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[str, AstTargetDigest, AstTargetNode]:
-        return context.target_node_for_rewrite_target(self.target)
-
-
-@dataclass(frozen=True, kw_only=True)
 class SourceReprovedOperation(RefactorRecipeOperation, ABC):
     """Operation whose physical edits must be re-derived from current source."""
 
@@ -1369,13 +1240,6 @@ class RenameTopLevelBindingAuthorityOperation(
             binding_name=self.binding_name,
             new_name=self.new_name,
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SourcePayloadOperation(RefactorRecipeOperation, ABC):
-    """Recipe operation whose declaration owns required Python source text."""
-
-    source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7377,7 +7241,6 @@ class DirectClassBaseReplacementOperationABC(
             ()
             if import_source is None
             else self.required_import_mutations(
-                snapshot,
                 child_target.file_path,
                 import_source=import_source,
                 default_rationale="Import the replacement class authority.",
@@ -8084,7 +7947,6 @@ class ConvertManualRegistryToAutoregisterOperation(
         targets = self.required_targets(snapshot)
         return (
             *self.required_import_mutations(
-                snapshot,
                 targets.file_path,
                 import_source=(
                     f"from metaclass_registry import {AUTOREGISTER_META_NAME}\n"
@@ -15129,7 +14991,6 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    snapshot,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the enum subset authority.",
@@ -17063,7 +16924,6 @@ class SourceDerivedDataclassProjectionOperation(
             edit
             for import_source in derivation.import_sources
             for edit in self.required_import_mutations(
-                snapshot,
                 derivation.projection.source_path,
                 import_source=import_source,
                 default_rationale=(
@@ -18512,7 +18372,6 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         if derivation.import_source is not None:
             edits.extend(
                 self.required_import_mutations(
-                    snapshot,
                     derivation.projection_path,
                     import_source=derivation.import_source,
                     default_rationale="Import the class-family authority.",

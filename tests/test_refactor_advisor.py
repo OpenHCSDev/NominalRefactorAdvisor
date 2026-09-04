@@ -6491,8 +6491,8 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
         "    ABC,\n"
         "    abstractmethod,\n"
         ")\n"
-        "from metaclass_registry import AutoRegisterMeta\n"
-        "from typing import ClassVar\n\n\n"
+        "from typing import ClassVar\n\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n\n"
         "def traced(function):"
     ) in rewritten
     assert "class JsonRenderDispatchCase(RenderDispatchCase):" in rewritten

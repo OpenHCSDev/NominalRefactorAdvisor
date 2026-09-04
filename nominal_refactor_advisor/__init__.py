@@ -33,7 +33,6 @@ from .codemod import (
     FindingRecipeSynthesisReport,
     PromoteExactDataclassFieldsToExistingAuthorityOperation,
     RefactorRecipe,
-    RefactorRecipeOperation,
     RefactorRecipeOperationCompiler,
     RefactorRecipeSimulation,
     ReplaceFieldsWithCarrierOperation,
@@ -57,6 +56,7 @@ from .codemod_architecture_guards import (
     ForbiddenDispatchArchitectureGuardConstraint,
     evaluate_architecture_guards,
 )
+from .codemod_operations import RefactorRecipeOperation
 from .codemod_semantics import (
     CodemodBackend,
     FindingRecipePlanningHorizon,

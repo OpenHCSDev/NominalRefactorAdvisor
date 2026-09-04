@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import ast
+import sys
+from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import (
     dataclass,
     replace,
 )
+from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 from .ast_tools import ImportBoundNameProjection
@@ -35,8 +38,127 @@ if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
 
 
+class ImportBlockInsertionPointABC(ABC):
+    """Shared insertion geometry for one contiguous Python import block."""
+
+    @property
+    @abstractmethod
+    def scope(self) -> ModuleImportScope:
+        """Return the execution scope governing this import block."""
+
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def initial_line_number(self) -> int:
+        """Return the source line preceding the first possible insertion."""
+
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def leading_import_statements(self) -> tuple[ImportStatement, ...]:
+        """Return the contiguous imports governed by this insertion point."""
+
+        raise NotImplementedError
+
+    @property
+    def line_number(self) -> int:
+        """Return the source anchor following the final governed import."""
+
+        imports = self.leading_import_statements
+        if imports:
+            final_import = imports[-1]
+            return (final_import.end_lineno or final_import.lineno) + 1
+        return self.initial_line_number
+
+    def insertion_index_for(self, addition: "RequestedImportStatement") -> int:
+        """Locate the addition among existing canonical import families."""
+
+        return next(
+            (
+                index
+                for index, statement in enumerate(self.leading_import_statements)
+                if RequestedImportStatement(
+                    statement,
+                    scope=self.scope,
+                ).canonical_family_key
+                > addition.canonical_family_key
+            ),
+            len(self.leading_import_statements),
+        )
+
+    def line_number_for_insertion_index(self, insertion_index: int) -> int:
+        """Return the source anchor following the preceding import family."""
+
+        if insertion_index == 0:
+            return self.initial_line_number
+        previous = self.leading_import_statements[insertion_index - 1]
+        return (previous.end_lineno or previous.lineno) + 1
+
+    @property
+    def previous_import_statement(self) -> ImportStatement | None:
+        """Return the final governed import, when one exists."""
+
+        imports = self.leading_import_statements
+        return imports[-1] if imports else None
+
+    def source_for_insertion(
+        self,
+        *,
+        source: str,
+        insertion_index: int,
+        additions: tuple["RequestedImportStatement", ...],
+    ) -> str:
+        """Render additions with any required following group boundary."""
+
+        existing_imports = self.leading_import_statements
+        previous_statement = (
+            existing_imports[insertion_index - 1] if insertion_index else None
+        )
+        inserted_source = RequestedImportBlock(additions).source_after(
+            previous_statement
+        )
+        if (
+            insertion_index < len(existing_imports)
+            and additions[-1].source_group
+            is not RequestedImportStatement(
+                existing_imports[insertion_index]
+            ).source_group
+        ):
+            spacing = DestinationInsertionSpacing.from_source(
+                source,
+                self.line_number_for_insertion_index(insertion_index),
+                inserted_source_is_import_block=True,
+            )
+            inserted_source += "\n" * max(
+                0,
+                1 - spacing.following_blank_line_count,
+            )
+        return inserted_source
+
+    def grouped_additions(
+        self,
+        additions: tuple["RequestedImportStatement", ...],
+    ) -> tuple[tuple[int, tuple["RequestedImportStatement", ...]], ...]:
+        """Group additions by their derived insertion index."""
+
+        additions_by_insertion_index: dict[
+            int,
+            list[RequestedImportStatement],
+        ] = defaultdict(list)
+        for addition in additions:
+            additions_by_insertion_index[self.insertion_index_for(addition)].append(
+                addition
+            )
+        return tuple(
+            (insertion_index, tuple(additions_by_insertion_index[insertion_index]))
+            for insertion_index in sorted(additions_by_insertion_index)
+        )
+
+
 @dataclass(frozen=True)
-class ModuleImportInsertionPoint:
+class ModuleImportInsertionPoint(ImportBlockInsertionPointABC):
     """Insertion line after a module docstring and leading import block."""
 
     source: str
@@ -44,12 +166,10 @@ class ModuleImportInsertionPoint:
     module_node: ast.Module | None = None
 
     @property
-    def line_number(self) -> int:
-        imports = self.leading_import_statements
-        if imports:
-            final_import = imports[-1]
-            return (final_import.end_lineno or final_import.lineno) + 1
-        return self.initial_line_number
+    def scope(self) -> ModuleImportScope:
+        """Return the runtime scope governed by a module import block."""
+
+        return ModuleImportScope.RUNTIME
 
     @property
     def initial_line_number(self) -> int:
@@ -62,27 +182,6 @@ class ModuleImportInsertionPoint:
             docstring = body[0]
             return (docstring.end_lineno or docstring.lineno) + 1
         return 1
-
-    def insertion_index_for(self, addition: "RequestedImportStatement") -> int:
-        """Locate the addition among existing canonical import families."""
-
-        return next(
-            (
-                index
-                for index, statement in enumerate(self.leading_import_statements)
-                if RequestedImportStatement(statement).canonical_family_key
-                > addition.canonical_family_key
-            ),
-            len(self.leading_import_statements),
-        )
-
-    def line_number_for_insertion_index(self, insertion_index: int) -> int:
-        """Return the source anchor following the preceding import group."""
-
-        if insertion_index == 0:
-            return self.initial_line_number
-        previous = self.leading_import_statements[insertion_index - 1]
-        return (previous.end_lineno or previous.lineno) + 1
 
     @property
     def module(self) -> ast.Module:
@@ -107,11 +206,6 @@ class ModuleImportInsertionPoint:
             index += 1
         return tuple(imports)
 
-    @property
-    def previous_import_statement(self) -> ast.Import | ast.ImportFrom | None:
-        imports = self.leading_import_statements
-        return imports[-1] if imports else None
-
     @staticmethod
     def _first_statement_index_after_docstring(body: list[ast.stmt]) -> int:
         first = body[0]
@@ -125,11 +219,17 @@ class ModuleImportInsertionPoint:
 
 
 @dataclass(frozen=True)
-class TypeCheckingGuardImportInsertionPoint:
+class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
     """Insertion geometry derived from one existing type-checking guard."""
 
     source: str
     guard: ast.If
+
+    @property
+    def scope(self) -> ModuleImportScope:
+        """Return the guarded scope governed by this import block."""
+
+        return ModuleImportScope.TYPE_CHECKING
 
     @property
     def leading_import_statements(self) -> tuple[ImportStatement, ...]:
@@ -141,35 +241,14 @@ class TypeCheckingGuardImportInsertionPoint:
         return tuple(imports)
 
     @property
-    def previous_import_statement(self) -> ImportStatement | None:
-        imports = self.leading_import_statements
-        return imports[-1] if imports else None
+    def initial_line_number(self) -> int:
+        """Return the first statement line inside the type-checking guard."""
 
-    @property
-    def line_number(self) -> int:
-        previous = self.previous_import_statement
-        if previous is not None:
-            return (previous.end_lineno or previous.lineno) + 1
         return self.guard.body[0].lineno
 
     @property
     def indentation(self) -> str:
         return _line_indentation(self.source, self.guard.body[0].lineno)
-
-    def indented_source(
-        self,
-        additions: tuple[RequestedImportStatement, ...],
-    ) -> str:
-        source = _indent_source(
-            RequestedImportBlock(additions).source_after(
-                self.previous_import_statement
-            ),
-            self.indentation,
-        )
-        if len(self.leading_import_statements) < len(self.guard.body):
-            return f"{source}\n"
-        return source
-
 
 def _line_indentation(source: str, line_number: int) -> str:
     line = source.splitlines(keepends=True)[line_number - 1]
@@ -376,11 +455,23 @@ class ModuleImportMutation(NominalSourceEdit):
         additions: Iterable[RequestedImportStatement],
     ) -> tuple[RequestedImportStatement, ...]:
         aliases_by_family: dict[
-            tuple[ModuleImportScope, type[ImportStatement], int, str | None],
+            tuple[
+                ModuleImportScope,
+                ImportSourceGroup,
+                type[ImportStatement],
+                int,
+                str | None,
+            ],
             list[ImportAliasRequirement],
         ] = {}
         statement_by_family: dict[
-            tuple[ModuleImportScope, type[ImportStatement], int, str | None],
+            tuple[
+                ModuleImportScope,
+                ImportSourceGroup,
+                type[ImportStatement],
+                int,
+                str | None,
+            ],
             RequestedImportStatement,
         ] = {}
         for addition in additions:
@@ -724,8 +815,8 @@ class ModuleImportMutation(NominalSourceEdit):
                 self._runtime_import_insertions(source, module, runtime_additions)
             )
         if guarded_additions:
-            insertions.append(
-                self._existing_guard_insertion(
+            insertions.extend(
+                self._existing_guard_insertions(
                     source,
                     guard_projection.guards[0],
                     guarded_additions,
@@ -744,23 +835,18 @@ class ModuleImportMutation(NominalSourceEdit):
             self.file_path,
             module_node=module,
         )
-        additions_by_insertion_index: dict[int, list[RequestedImportStatement]] = (
-            defaultdict(list)
-        )
-        for addition in additions:
-            additions_by_insertion_index[
-                insertion_point.insertion_index_for(addition)
-            ].append(addition)
         existing_imports = insertion_point.leading_import_statements
         return tuple(
             self._runtime_import_group_insertion(
                 source=source,
                 insertion_point=insertion_point,
                 insertion_index=insertion_index,
-                additions=tuple(additions_by_insertion_index[insertion_index]),
+                additions=indexed_additions,
                 existing_imports=existing_imports,
             )
-            for insertion_index in sorted(additions_by_insertion_index)
+            for insertion_index, indexed_additions in insertion_point.grouped_additions(
+                additions
+            )
         )
 
     def _runtime_import_group_insertion(
@@ -775,11 +861,10 @@ class ModuleImportMutation(NominalSourceEdit):
         insertion_line = insertion_point.line_number_for_insertion_index(
             insertion_index
         )
-        previous_statement = (
-            existing_imports[insertion_index - 1] if insertion_index else None
-        )
-        inserted_source = RequestedImportBlock(additions).source_after(
-            previous_statement
+        inserted_source = insertion_point.source_for_insertion(
+            source=source,
+            insertion_index=insertion_index,
+            additions=additions,
         )
         spacing = DestinationInsertionSpacing.from_source(
             source,
@@ -788,13 +873,6 @@ class ModuleImportMutation(NominalSourceEdit):
         )
         if insertion_index == len(existing_imports):
             inserted_source += spacing.trailing_separator
-        elif (
-            additions[-1].source_group_identity
-            != RequestedImportStatement(
-                existing_imports[insertion_index]
-            ).source_group_identity
-        ):
-            inserted_source += "\n" * max(0, 1 - spacing.following_blank_line_count)
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
@@ -804,18 +882,52 @@ class ModuleImportMutation(NominalSourceEdit):
             origins=self.origins,
         )
 
-    def _existing_guard_insertion(
+    def _existing_guard_insertions(
         self,
         source: str,
         guard: ast.If,
         additions: tuple[RequestedImportStatement, ...],
-    ) -> SourceInsertion:
+    ) -> tuple[SourceInsertion, ...]:
         insertion_point = TypeCheckingGuardImportInsertionPoint(source, guard)
+        existing_imports = insertion_point.leading_import_statements
+        return tuple(
+            self._guarded_import_group_insertion(
+                source=source,
+                insertion_point=insertion_point,
+                insertion_index=insertion_index,
+                additions=indexed_additions,
+                existing_imports=existing_imports,
+            )
+            for insertion_index, indexed_additions in insertion_point.grouped_additions(
+                additions
+            )
+        )
+
+    def _guarded_import_group_insertion(
+        self,
+        *,
+        source: str,
+        insertion_point: TypeCheckingGuardImportInsertionPoint,
+        insertion_index: int,
+        additions: tuple[RequestedImportStatement, ...],
+        existing_imports: tuple[ImportStatement, ...],
+    ) -> SourceInsertion:
+        insertion_line = insertion_point.line_number_for_insertion_index(
+            insertion_index
+        )
+        inserted_source = insertion_point.source_for_insertion(
+            source=source,
+            insertion_index=insertion_index,
+            additions=additions,
+        )
+        if insertion_index == len(existing_imports):
+            if len(existing_imports) < len(insertion_point.guard.body):
+                inserted_source += "\n"
         return SourceInsertion(
             file_path=self.file_path,
-            insertion_line=insertion_point.line_number,
+            insertion_line=insertion_line,
             inserted_lines=SourceTargetEditor.source_lines(
-                insertion_point.indented_source(additions)
+                _indent_source(inserted_source, insertion_point.indentation)
             ),
             rationale=self.rationale
             or f"Ensure type-checking imports exist in {self.file_path!r}.",
@@ -908,6 +1020,87 @@ class ImportAliasRequirement:
         return self.name, self.asname or ""
 
 
+def _future_import_source_group(root_module_name: str, level: int) -> bool:
+    return level == 0 and root_module_name == "__future__"
+
+
+def _standard_library_import_source_group(
+    root_module_name: str,
+    level: int,
+) -> bool:
+    return (
+        level == 0
+        and root_module_name != "__future__"
+        and root_module_name in sys.stdlib_module_names
+    )
+
+
+def _third_party_import_source_group(root_module_name: str, level: int) -> bool:
+    return (
+        level == 0
+        and root_module_name != "__future__"
+        and root_module_name not in sys.stdlib_module_names
+    )
+
+
+def _relative_import_source_group(root_module_name: str, level: int) -> bool:
+    del root_module_name
+    return level > 0
+
+
+class ImportSourceGroup(StrEnum):
+    """Canonical Python import group derived from a module reference."""
+
+    FUTURE = ("future", 0, _future_import_source_group)
+    STANDARD_LIBRARY = (
+        "standard_library",
+        1,
+        _standard_library_import_source_group,
+    )
+    THIRD_PARTY = ("third_party", 2, _third_party_import_source_group)
+    RELATIVE = ("relative", 3, _relative_import_source_group)
+
+    def __new__(
+        cls,
+        value: str,
+        canonical_rank: int,
+        reference_matcher: Callable[[str, int], bool],
+    ) -> "ImportSourceGroup":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._canonical_rank = canonical_rank
+        member._reference_matcher = reference_matcher
+        return member
+
+    @property
+    def canonical_rank(self) -> int:
+        """Return the Python import-block order owned by this group."""
+
+        return self._canonical_rank
+
+    @classmethod
+    def from_module_reference(
+        cls,
+        module_name: str,
+        *,
+        level: int = 0,
+    ) -> "ImportSourceGroup":
+        """Classify one import reference from its native module declaration."""
+
+        root_module_name = module_name.partition(".")[0]
+        matches = tuple(
+            source_group
+            for source_group in cls
+            if source_group._reference_matcher(root_module_name, level)
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                "Import reference does not have one canonical source group: "
+                f"{'.' * level}{module_name}"
+            )
+        return matches[0]
+
+
 @dataclass(frozen=True)
 class RequestedImportStatement:
     """AST-normalized import requirement for idempotent import insertion."""
@@ -923,14 +1116,32 @@ class RequestedImportStatement:
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
     ) -> tuple["RequestedImportStatement", ...]:
         module = ast.parse(source, filename="<requested-import>")
-        statements = tuple(
-            cls(statement, scope=scope)
+        if not all(
+            isinstance(statement, (ast.Import, ast.ImportFrom))
             for statement in module.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
-        )
-        if len(statements) != len(module.body):
+        ):
             return ()
-        return statements
+        return tuple(
+            requirement
+            for statement in module.body
+            for requirement in cls.from_statement(statement, scope=scope)
+        )
+
+    @classmethod
+    def from_statement(
+        cls,
+        statement: ImportStatement,
+        *,
+        scope: ModuleImportScope = ModuleImportScope.RUNTIME,
+    ) -> tuple["RequestedImportStatement", ...]:
+        """Normalize a direct import to one source group per requirement."""
+
+        if isinstance(statement, ast.ImportFrom):
+            return (cls(statement, scope=scope),)
+        return tuple(
+            cls(ast.Import(names=[alias]), scope=scope)
+            for alias in statement.names
+        )
 
     @property
     def aliases(self) -> tuple[ImportAliasRequirement, ...]:
@@ -947,28 +1158,38 @@ class RequestedImportStatement:
     @property
     def family_identity(
         self,
-    ) -> tuple[ModuleImportScope, type[ImportStatement], int, str | None]:
+    ) -> tuple[
+        ModuleImportScope,
+        ImportSourceGroup,
+        type[ImportStatement],
+        int,
+        str | None,
+    ]:
         if isinstance(self.statement, ast.Import):
-            return self.scope, ast.Import, 0, None
-        return self.scope, ast.ImportFrom, self.statement.level, self.statement.module
+            return self.scope, self.source_group, ast.Import, 0, None
+        return (
+            self.scope,
+            self.source_group,
+            ast.ImportFrom,
+            self.statement.level,
+            self.statement.module,
+        )
 
     @property
-    def canonical_family_key(self) -> tuple[int, bool, bool, str, int, str]:
+    def canonical_family_key(self) -> tuple[int, int, str, int, str]:
         """Return deterministic source order without encoding semantic priority."""
 
         if isinstance(self.statement, ast.Import):
             return (
                 self.scope.canonical_rank,
-                True,
-                False,
+                self.source_group.canonical_rank,
                 type(self.statement).__name__,
                 0,
                 "",
             )
         return (
             self.scope.canonical_rank,
-            not self.is_future_import,
-            self.is_relative_import,
+            self.source_group.canonical_rank,
             type(self.statement).__name__,
             self.statement.level,
             self.statement.module or "",
@@ -978,23 +1199,42 @@ class RequestedImportStatement:
     def is_future_import(self) -> bool:
         """Return whether this statement belongs to Python's future-import group."""
 
-        return (
-            isinstance(self.statement, ast.ImportFrom)
-            and self.statement.level == 0
-            and self.statement.module == "__future__"
-        )
+        return self.source_group is ImportSourceGroup.FUTURE
 
     @property
     def is_relative_import(self) -> bool:
         """Return whether this statement belongs to the relative-import group."""
 
-        return isinstance(self.statement, ast.ImportFrom) and self.statement.level > 0
+        return self.source_group is ImportSourceGroup.RELATIVE
 
     @property
-    def source_group_identity(self) -> tuple[bool, bool]:
-        """Return the syntax-derived import-block group identity."""
+    def source_groups(self) -> tuple[ImportSourceGroup, ...]:
+        """Return source groups represented by this import statement."""
 
-        return self.is_future_import, self.is_relative_import
+        if isinstance(self.statement, ast.ImportFrom):
+            return (
+                ImportSourceGroup.from_module_reference(
+                    self.statement.module or "",
+                    level=self.statement.level,
+                ),
+            )
+        return tuple(
+            dict.fromkeys(
+                ImportSourceGroup.from_module_reference(alias.name)
+                for alias in self.statement.names
+            )
+        )
+
+    @property
+    def source_group(self) -> ImportSourceGroup:
+        """Return the one canonical group represented by this statement."""
+
+        if len(self.source_groups) != 1:
+            raise ValueError(
+                "One import statement spans multiple canonical source groups: "
+                f"{ast.unparse(self.statement)!r}"
+            )
+        return self.source_groups[0]
 
     @property
     def bound_names(self) -> tuple[str, ...]:
@@ -1065,7 +1305,7 @@ class RequestedImportBlock:
         for statement in self.statements:
             if (
                 previous is not None
-                and previous.source_group_identity != statement.source_group_identity
+                and previous.source_group is not statement.source_group
             ):
                 source_parts.append("\n")
             source_parts.append(statement.source)

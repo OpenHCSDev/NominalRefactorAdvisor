@@ -57,7 +57,7 @@ from .source_index import (
 )
 
 if TYPE_CHECKING:
-    from .codemod import RefactorRecipeOperation
+    from .codemod_operations import RefactorRecipeOperation
     from .codemod_selection_context import CodemodSelectorContext
 
 
