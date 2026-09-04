@@ -79,7 +79,6 @@ from .codemod import (
     FindingRecipePlan,
     FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
-    RefactorConcept,
     codemod_class_plan_from_findings,
 )
 from .codemod_architecture_guards import (
@@ -153,6 +152,8 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
+from .refactor_concepts import RefactorConcept
+
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {

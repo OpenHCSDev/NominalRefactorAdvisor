@@ -31,12 +31,10 @@ from .codemod import (
     FindingRecipeProofObstacle,
     FindingRecipeSynthesisRecord,
     FindingRecipeSynthesisReport,
-    NominalBoundaryConcept,
     PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite,
     PromoteExactDataclassFieldsToExistingAuthorityOperation,
-    RefactorConcept,
     RefactorRecipe,
     RefactorRecipeOperation,
     RefactorRecipeOperationCompiler,
@@ -172,6 +170,10 @@ from .cancelable_composition import (
     CancelableCompositionKind,
     CancelableCompositionSignal,
     detect_cancelable_composition_signals,
+)
+from .refactor_concepts import (
+    NominalBoundaryConcept,
+    RefactorConcept,
 )
 
 

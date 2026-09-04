@@ -35,6 +35,10 @@ Closed execution axes are declared in ``codemod_semantics``.  Their enum
 members own validation, composition, ranking, and presentation behavior, while
 ``codemod`` explicitly re-exports the same objects as its public facade.  The
 facade is an import surface, not a second semantic authority.
+The refactor concept lattice is declared independently in
+``refactor_concepts``.  Recipe synthesis projects findings onto that lattice
+through executable declaration MROs, so concept declarations do not depend
+back on the planner that inherits them.
 Canonical import parsing and rendering records are declared in
 ``codemod_imports``.  Module import mutations consume those records through the
 same ``codemod`` facade, so import syntax has one declaration owner while
@@ -296,6 +300,9 @@ them, and are not published as compatibility aliases.
 
 .. automodule:: nominal_refactor_advisor.cancelable_composition
    :members: CancelableCompositionKind, CancelableCompositionSignal, detect_cancelable_composition_signals
+
+.. automodule:: nominal_refactor_advisor.refactor_concepts
+   :members:
 
 .. automodule:: nominal_refactor_advisor.codemod
    :members: CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, PlannedSourceRewrite, RefactorRecipeOperation, CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, CodemodSimulationReport, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites

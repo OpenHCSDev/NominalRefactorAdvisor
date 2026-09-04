@@ -56,6 +56,12 @@ def class_name_registry_key(name: str, cls: type[object]) -> str:
     return "_".join(token.lower() for token in tokens)
 
 
+def suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
+    """Derive a class-family key after removing its declared role suffix."""
+
+    return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
+
+
 @dataclass(frozen=True)
 class AutoRegisterClassAuthority:
     """Nominal source facts for AutoRegisterMeta-shaped class declarations."""

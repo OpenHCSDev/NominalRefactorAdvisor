@@ -110,6 +110,9 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
     assert frozenset(codemod.RefactorConcept.declaration_types()) == (
         EXPECTED_CONCEPT_DECLARATIONS
     )
+    assert codemod.RefactorConcept.__module__ == (
+        "nominal_refactor_advisor.refactor_concepts"
+    )
     assert "__registry__" not in codemod.RefactorConcept.__dict__
     assert all(
         "__registry__" not in declaration_type.__dict__
@@ -118,10 +121,8 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
     assert not hasattr(codemod_workflow, "CodemodRefactorGoal")
     assert not hasattr(codemod_workflow, "CodemodRefactorGoalStageAttempt")
     assert "matches_finding" not in vars(codemod.NominalBoundaryConcept)
-    assert (
-        codemod.NominalBoundaryConcept.matches_finding.__func__
-        is codemod.RefactorConcept.matches_finding.__func__
-    )
+    assert "matches_finding" not in vars(codemod.RefactorConcept)
+    assert "finding_matches_concept" in vars(codemod.FindingRecipeSynthesizer)
 
 
 def test_detector_declarations_own_executable_synthesis_through_mro() -> None:
@@ -319,7 +320,11 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
     )
     snapshot = codemod.CodemodSourceSnapshot.from_modules((), (finding,))
 
-    assert not codemod.NominalBoundaryConcept.matches_finding(finding, snapshot)
+    assert not codemod.FindingRecipeSynthesizer.finding_matches_concept(
+        finding,
+        codemod.NominalBoundaryConcept,
+        snapshot,
+    )
 
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:

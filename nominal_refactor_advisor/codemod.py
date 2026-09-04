@@ -482,8 +482,8 @@ from .registry_identity import (
     REGISTRY_KEY_ATTRIBUTE_NAME,
     SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
-    class_name_registry_key,
     mro_registry_value,
+    suffix_trimmed_class_name_registry_key,
 )
 from .semantic_algebra import (
     ConfusabilityGraph,
@@ -503,7 +503,6 @@ from .semantic_match import (
     AstNameTemplateMatch,
     Maybe,
     loaded_concrete_nominal_descendants,
-    loaded_nominal_descendants,
     single_item,
 )
 from .source_geometry import SourceByteSpan, SourceLineSegmentAuthority
@@ -535,186 +534,25 @@ from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
+from .refactor_concepts import (
+    AutoRegisterClassRegistryConcept as AutoRegisterClassRegistryConcept,
+    AutoRegisterConcept as AutoRegisterConcept,
+    AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
+    AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
+    CallMappingAuthorityConcept as CallMappingAuthorityConcept,
+    ClassFamilyAuthorityConcept as ClassFamilyAuthorityConcept,
+    ConstructorKwargCarrierProjectionConcept as ConstructorKwargCarrierProjectionConcept,
+    ConstructorKwargCollapseConcept as ConstructorKwargCollapseConcept,
+    DataclassPayloadProjectionConcept as DataclassPayloadProjectionConcept,
+    DerivedProjectionConcept as DerivedProjectionConcept,
+    NominalBoundaryConcept as NominalBoundaryConcept,
+    RefactorConcept as RefactorConcept,
+    SemanticCarrierConcept as SemanticCarrierConcept,
+    TupleDictReturnNominalizationConcept as TupleDictReturnNominalizationConcept,
+)
+
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
-
-
-def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
-    return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
-
-
-class RefactorConcept(ABC):
-    """Nominal refactor semantics inherited by executable declarations."""
-
-    @classmethod
-    def concept_key(cls) -> str:
-        return class_name_registry_key(cls.__name__.removesuffix("Concept"), cls)
-
-    @classmethod
-    def declaration_types(cls) -> tuple[type["RefactorConcept"], ...]:
-        """Return pure concept declarations without cataloging execution classes."""
-
-        descendants = frozenset(loaded_nominal_descendants(cls))
-        declarations: set[type[RefactorConcept]] = {cls}
-        while True:
-            discovered = {
-                candidate
-                for candidate in descendants
-                if candidate not in declarations
-                and all(base in declarations for base in candidate.__bases__)
-            }
-            if not discovered:
-                break
-            declarations.update(discovered)
-        declarations_by_key = UniqueIdentityIndexAuthority.declarations_by_handle(
-            declarations,
-            lambda declaration: declaration.concept_key(),
-        )
-        return tuple(declarations_by_key[key] for key in sorted(declarations_by_key))
-
-    @classmethod
-    def declaration_for_key(cls, key: str) -> type["RefactorConcept"]:
-        """Resolve one exact declaration from the declaration-derived key view."""
-
-        declarations_by_key = UniqueIdentityIndexAuthority.declarations_by_handle(
-            cls.declaration_types(),
-            lambda declaration: declaration.concept_key(),
-        )
-        try:
-            return declarations_by_key[key]
-        except KeyError as error:
-            raise ValueError(f"Unknown refactor concept {key!r}") from error
-
-    @classmethod
-    def matches_finding(
-        cls,
-        finding: RefactorFinding,
-        selector_context: "CodemodSelectorContext | None" = None,
-    ) -> bool:
-        """Select findings through their executable declaration's concept MRO."""
-
-        if selector_context is None:
-            raise ValueError("concept-backed goal selection requires source context")
-        synthesizer = FindingRecipeSynthesizer.for_finding(finding)
-        if synthesizer is None:
-            return False
-        evaluation = synthesizer.evaluate_recipe_for_finding(
-            finding,
-            selector_context,
-        )
-        return issubclass(
-            evaluation.required_executable_declaration_type,
-            cls,
-        )
-
-    @classmethod
-    def target_findings(
-        cls,
-        findings: Iterable[RefactorFinding],
-        selector_context: "CodemodSelectorContext | None" = None,
-    ) -> tuple[RefactorFinding, ...]:
-        """Project findings whose executable declaration inherits this concept."""
-
-        return tuple(
-            finding
-            for finding in findings
-            if cls.matches_finding(finding, selector_context)
-        )
-
-    @classmethod
-    def detector_ids_for_findings(
-        cls,
-        findings: Iterable[RefactorFinding],
-    ) -> frozenset[str]:
-        """Derive the conservative detector roster for one concept iteration."""
-
-        return frozenset(
-            (
-                *(finding.detector_id for finding in findings),
-                *IssueDetector.semantic_mirror_detector_ids(),
-                *FindingRecipeSynthesizer.detector_ids_for_concept(cls),
-            )
-        )
-
-    @classmethod
-    def leaf_concept_for_declaration(
-        cls,
-        declaration_type: type["RefactorConcept"],
-    ) -> type["RefactorConcept"]:
-        concepts = tuple(
-            concept
-            for concept in cls.declaration_types()
-            if issubclass(declaration_type, concept)
-        )
-        leaves = tuple(
-            concept
-            for concept in concepts
-            if not any(
-                other is not concept and issubclass(other, concept)
-                for other in concepts
-            )
-        )
-        if len(leaves) != 1:
-            raise TypeError(
-                f"{declaration_type.__name__} must inherit exactly one leaf "
-                "RefactorConcept"
-            )
-        return leaves[0]
-
-
-class NominalBoundaryConcept(RefactorConcept):
-    """Select SSOT authority-boundary findings for nominal extraction."""
-
-
-class SemanticCarrierConcept(NominalBoundaryConcept):
-    """Replace structurally repeated data movement with nominal ownership."""
-
-
-class CallMappingAuthorityConcept(NominalBoundaryConcept):
-    """Move repeated call argument mapping behind its nominal owner."""
-
-
-class ConstructorKwargCollapseConcept(
-    SemanticCarrierConcept,
-    CallMappingAuthorityConcept,
-):
-    """Collapse repeated constructor keyword projections behind an authority."""
-
-
-class ConstructorKwargCarrierProjectionConcept(ConstructorKwargCollapseConcept):
-    """Derive constructor keywords through a nominal carrier authority."""
-
-
-class TupleDictReturnNominalizationConcept(SemanticCarrierConcept):
-    """Replace anonymous tuple or mapping results with nominal ownership."""
-
-
-class DataclassPayloadProjectionConcept(TupleDictReturnNominalizationConcept):
-    """Derive payload items from a dataclass declaration."""
-
-
-class DerivedProjectionConcept(NominalBoundaryConcept):
-    """Derive a repeated projection from its existing nominal authority."""
-
-
-class ClassFamilyAuthorityConcept(NominalBoundaryConcept):
-    """Establish a class-family authority for shared behavior or collection views."""
-
-
-class AutoRegisterConcept(ClassFamilyAuthorityConcept):
-    """Replace registration mirrors with nominal automatic registration."""
-
-
-class AutoRegisterClassRegistryConcept(AutoRegisterConcept):
-    """Derive a class registry from registered class declarations."""
-
-
-class AutoRegisterStrategyFamilyConcept(AutoRegisterConcept):
-    """Replace closed dispatch with an automatically registered strategy family."""
-
-
-class AutoRegisterMroOrderingConcept(AutoRegisterConcept):
-    """Derive registered-family precedence from a declared MRO composition."""
 
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
@@ -2124,7 +1962,7 @@ class CodemodTargetSelector(
 
     __registry__: ClassVar[dict[str, type["CodemodTargetSelector"]]] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
     registry_key: ClassVar[str]
@@ -2766,7 +2604,7 @@ class RefactorRecipeOperation(
     """Agent-authored codemod operation compiled through source-index geometry."""
 
     __registry_key__ = "operation_key_value"
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Operation"
     operation_key_value: ClassVar[str]
@@ -6819,7 +6657,7 @@ class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
 
     __registry__: ClassVar[dict[str, type["ClassMemberPromotionStatement"]]] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
 
     registry_key_suffix: ClassVar[str] = "PromotionStatement"
@@ -12680,6 +12518,46 @@ def codemod_class_plan_from_findings(
 
 class FindingRecipeSynthesizer(ABC):
     """Executable finding semantics inherited by their detector declarations."""
+
+    @classmethod
+    def finding_matches_concept(
+        cls,
+        finding: RefactorFinding,
+        concept_type: type[RefactorConcept],
+        selector_context: CodemodSelectorContext,
+    ) -> bool:
+        """Project one finding through its executable declaration's concept MRO."""
+
+        synthesizer = cls.for_finding(finding)
+        if synthesizer is None:
+            return False
+        evaluation = synthesizer.evaluate_recipe_for_finding(
+            finding,
+            selector_context,
+        )
+        return issubclass(
+            evaluation.required_executable_declaration_type,
+            concept_type,
+        )
+
+    @classmethod
+    def findings_for_concept(
+        cls,
+        findings: Iterable[RefactorFinding],
+        concept_type: type[RefactorConcept],
+        selector_context: CodemodSelectorContext,
+    ) -> tuple[RefactorFinding, ...]:
+        """Return findings whose executable declarations inherit one concept."""
+
+        return tuple(
+            finding
+            for finding in findings
+            if cls.finding_matches_concept(
+                finding,
+                concept_type,
+                selector_context,
+            )
+        )
 
     @classmethod
     def detector_ids_for_concept(
@@ -19716,7 +19594,7 @@ class ContextualSemanticMirrorRecipeBuilder(
         dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
     ] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
 
     registry_key_suffix: ClassVar[str] = "RecipeBuilder"

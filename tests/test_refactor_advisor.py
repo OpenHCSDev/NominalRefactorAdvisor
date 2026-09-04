@@ -19806,14 +19806,21 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
-    with pytest.raises(ValueError, match="requires source context"):
-        SemanticCarrierConcept.target_findings(findings)
-    assert SemanticCarrierConcept.target_findings(findings, snapshot) == findings
+    assert FindingRecipeSynthesizer.findings_for_concept(
+        findings,
+        SemanticCarrierConcept,
+        snapshot,
+    ) == findings
     assert RefactorConcept.leaf_concept_for_declaration(
         SemanticCarrierConcept
     ).concept_key() == ("semantic_carrier")
     assert (
-        TupleDictReturnNominalizationConcept.target_findings(findings, snapshot) == ()
+        FindingRecipeSynthesizer.findings_for_concept(
+            findings,
+            TupleDictReturnNominalizationConcept,
+            snapshot,
+        )
+        == ()
     )
 
 

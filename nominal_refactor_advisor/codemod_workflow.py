@@ -36,9 +36,9 @@ from .codemod import (
     FindingRecipeClassPlanReport,
     FindingRecipeFrontierBudget,
     FindingRecipePlan,
+    FindingRecipeSynthesizer,
     FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
-    RefactorConcept,
 )
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
@@ -56,6 +56,8 @@ from .json_reports import (
 )
 from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
+from .refactor_concepts import RefactorConcept
+
 
 IdentityT = TypeVar("IdentityT", bound=Hashable)
 
@@ -1436,7 +1438,15 @@ class CodemodRefactorGoalRunner:
     ) -> CodemodWorkflowScan:
         """Rerun only active goal detector declarations between stages."""
 
-        detector_ids = self.migration_type.detector_ids_for_findings(target_findings)
+        detector_ids = frozenset(
+            (
+                *(finding.detector_id for finding in target_findings),
+                *IssueDetector.semantic_mirror_detector_ids(),
+                *FindingRecipeSynthesizer.detector_ids_for_concept(
+                    self.migration_type
+                ),
+            )
+        )
         detector_types = tuple(
             detector_type
             for detector_type in IssueDetector.registered_detector_types()
@@ -1750,8 +1760,9 @@ class CodemodRefactorGoalRunner:
         self,
         scan: CodemodWorkflowScan,
     ) -> tuple[RefactorFinding, ...]:
-        return self.migration_type.target_findings(
+        return FindingRecipeSynthesizer.findings_for_concept(
             scan.findings,
+            self.migration_type,
             scan.source_snapshot,
         )
 
