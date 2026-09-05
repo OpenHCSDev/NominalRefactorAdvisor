@@ -5,22 +5,32 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cached_property
+from functools import lru_cache
 import inspect
 from textwrap import dedent
+from typing import cast
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class NativeDeclaration:
     """Keep native identity and lazily inspected source on one declaration."""
 
     declaration: type | Callable[..., object]
 
+    def __hash__(self) -> int:
+        return id(self.declaration)
+
+    def __eq__(self, other: object) -> bool:
+        if type(self) is not type(other):
+            return NotImplemented
+        return self.declaration is cast(NativeDeclaration, other).declaration
+
     @property
     def qualified_name(self) -> str:
         return f"{self.declaration.__module__}.{self.declaration.__qualname__}"
 
-    @cached_property
+    @property
+    @lru_cache(maxsize=None)
     def node(self) -> ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef:
         try:
             source = inspect.getsource(self.declaration)

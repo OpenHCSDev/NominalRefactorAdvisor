@@ -626,6 +626,17 @@ lazily inspects its source. Source matching compares declaration ASTs without
 location attributes. Builtin identity is available independently of source;
 source-dependent operations reject declarations without inspectable source.
 
+Wrappers of the same loaded declaration share the inspected AST. Cache identity
+uses the declaration object, independently of metaclass value equality or
+hashability. A newly loaded declaration receives a separate projection even when
+its qualified name matches an earlier declaration.
+
+``require_source_matches`` compares every proposed AST with the captured native
+projection; its result is not cached. Editing source does not reload a native
+declaration, and a changed source declaration remains unproved against its older
+projection. The cache retains inspected declarations for the process lifetime.
+This is a source-declaration contract, not a proof of arbitrary live monkeypatches.
+
 Collector migration resolves the original and replacement bases by their native
 qualified identities and requires their source declarations to match. The
 original base reference must resolve at class creation, and competing registered

@@ -627,3 +627,53 @@ Final combined validation passed 2,229 tests on Python 3.11 (15 skipped) and all
 detectors with no omissions or findings. The documentation build retains only
 the two previously recorded duplicate-description warnings. Cross-platform CI
 must confirm the metadata-traversal correction on Windows and macOS.
+
+### Native Projection Reuse Without Cached Proof Results
+
+`NativeDeclaration` now keys inspected source by the loaded declaration's object
+identity. Its equality and hash do not delegate to the declaration's metaclass:
+distinct classes may compare equal, and a class may be unhashable. Repeated
+wrappers reuse inspection without a parallel type-name registry. The cache keeps
+loaded declarations and their projections alive for the process lifetime.
+
+Source comparison remains per request. A real source-edit/reload test confirms
+that changing source does not change the old loaded declaration, the changed AST
+is rejected against its captured projection, and reloading creates a distinct
+projection even under the same qualified name. This does not prove arbitrary
+live monkeypatch equivalence.
+
+The 20-collector batch regression inspected native bases 40 times against
+`588e622`, and at most once per base after the change. It also executes the
+original and rewritten batch in native subprocesses and compares their outputs.
+The archived baseline test overrides pytest's repository `pythonpath` explicitly;
+without that override it imports the working checkout and is not baseline evidence.
+
+`docs/examples/native_projection_identity_refactor.py` expresses the complete
+production edit in six stages, including import and decorator changes. Its real
+CLI replay against `588e622` produced an identical module AST. No source-match
+result is cached; current proposals are checked against the reused projection.
+
+The full suites passed 2,237 tests on Python 3.11 (15 skipped) and 2,252 on
+Python 3.14. The focused ASCII-locale run passed 78 tests, and the touched-file
+audit ran all 81 detectors without omissions or findings. Documentation retains
+the two existing duplicate-description warnings.
+
+Windows CI for `588e622` exposed a fixture provenance error: `inspect.getsource`
+normalised the native module's CRLF text before constructing a source snapshot.
+The exact revision guard correctly rejected that text. The fixture now uses
+the existing `read_source_text` authority. In an archived CRLF checkout, all five
+affected cases failed before the correction and passed afterwards; the broader
+78-test native/collector suite then passed on both Python 3.11 and Python 3.14.
+The production revision guard is unchanged. Both macOS jobs and both Linux jobs
+for `588e622` passed, confirming the preceding lazy-metadata traversal correction
+on those platforms; a new Windows run must verify the fixture correction.
+
+A subsequent native probe confirms the next inheritance gap: `Other` inherits
+`ConfiguredCrossModuleCollectorCandidateDetector[int]`, and `Owner` inherits
+`Other` plus `CrossModuleCandidateDetector[int]` while declaring a one-argument
+collector forwarder. Migration currently accepts it, then inherited configured
+dispatch calls the collector with two arguments. The original executes and the
+rewrite raises `TypeError`. The next relation proof must account for inherited
+member ownership through indirect bases, rather than extend direct-name checks.
+This probe used an in-memory source snapshot and separate native subprocesses;
+it did not write source files or change the repository.

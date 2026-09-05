@@ -8,17 +8,75 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor import native_declarations
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     DeriveCandidateCollectorOperation,
+    RefactorRecipe,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.detectors._base import (
     CrossModuleCandidateDetector,
     CrossModuleCollectorCandidateDetector,
 )
+
+
+def test_batched_collectors_inspect_each_native_base_once(
+    tmp_path: Path,
+    native_collector_module: ParsedModule,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_names = tuple(f"Owner{index}" for index in range(20))
+    source = (
+        "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
+        "def collect(modules): return tuple(modules)\n"
+        + "".join(
+            f"class {name}(CrossModuleCandidateDetector[int]):\n"
+            "    def _candidate_items(self, modules, config): return collect(modules)\n"
+            for name in owner_names
+        )
+        + "print(("
+        + ",".join(f"{name}()._candidate_items([1], None)" for name in owner_names)
+        + "))\n"
+    )
+    path = tmp_path / "probe.py"
+    path.write_text(source, encoding="utf-8", newline="")
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    module = ParsedModule(path, "probe", False, ast.parse(source), source)
+    snapshot = CodemodSourceSnapshot.from_modules((module, native_collector_module))
+    recipe = RefactorRecipe(
+        "derive-twenty-collectors",
+        operations=tuple(
+            DeriveCandidateCollectorOperation(
+                target=SourceRewriteTarget(
+                    file_path=path.as_posix(),
+                    qualname=f"{name}._candidate_items",
+                )
+            )
+            for name in owner_names
+        ),
+    )
+    native_calls = []
+    getsource = native_declarations.inspect.getsource
+
+    def counted_source(declaration):
+        if (
+            declaration is CrossModuleCandidateDetector
+            or declaration is CrossModuleCollectorCandidateDetector
+        ):
+            native_calls.append(declaration)
+        return getsource(declaration)
+
+    monkeypatch.setattr(native_declarations.inspect, "getsource", counted_source)
+    simulation = recipe.simulate(snapshot)
+    assert simulation.is_clean
+    # Warm projections may already exist; no base may be inspected twice.
+    assert len(native_calls) <= 2
+    assert len(set(native_calls)) == len(native_calls)
+    simulation.apply()
+    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
 @pytest.mark.parametrize(
