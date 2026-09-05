@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
 from .constructor_algebra import (
-    ConstructorConstant,
     ConstructorDerivedField,
     ConstructorVariantCatalog,
     ConstructorVariantSpec,
@@ -436,7 +435,6 @@ class RegistrationShape:
     registered_class: str
     key_fingerprint: str
     key_expression: str
-    registration_style: str
     constructors: ClassVar[ConstructorVariantCatalog] = ConstructorVariantCatalog(
         (
             ConstructorVariantSpec(
@@ -469,9 +467,6 @@ class RegistrationShape:
                         ),
                     ),
                 ),
-                constants=(
-                    ConstructorConstant("registration_style", "registration_call"),
-                ),
             ),
             ConstructorVariantSpec(
                 "from_decorator",
@@ -502,8 +497,31 @@ class RegistrationShape:
                         ),
                     ),
                 ),
-                constants=(
-                    ConstructorConstant("registration_style", "decorator_registration"),
+            ),
+            ConstructorVariantSpec(
+                "from_factory_decorator",
+                (
+                    "parsed_module",
+                    "node",
+                    "registry_name",
+                    "key_expression",
+                    "key_fingerprint",
+                ),
+                parameter_fields=(
+                    "registry_name",
+                    "key_expression",
+                    "key_fingerprint",
+                ),
+                derived_fields=(
+                    ConstructorDerivedField(
+                        "file_path", lambda bound: bound["parsed_module"].file_path
+                    ),
+                    ConstructorDerivedField(
+                        "lineno", lambda bound: bound["node"].lineno
+                    ),
+                    ConstructorDerivedField(
+                        "registered_class", lambda bound: bound["node"].name
+                    ),
                 ),
             ),
         )
@@ -530,10 +548,11 @@ class RegistrationShape:
                 if isinstance(node.targets[0], ast.Subscript)
                 else "..."
             ),
-            registration_style="subscript_assignment",
         )
 
-    from_registration_call, from_decorator = constructors.derived_methods()
+    from_registration_call, from_decorator, from_factory_decorator = (
+        constructors.derived_methods()
+    )
 
     @property
     def symbol(self) -> str:

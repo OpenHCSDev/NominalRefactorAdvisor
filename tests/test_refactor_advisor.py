@@ -14830,17 +14830,43 @@ def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
     assert "self.kind" in finding.summary
 
 
-def test_detects_deferred_class_registration(tmp_path: Path) -> None:
+def test_manual_class_registration_owns_decorator_factory_registration(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nHANDLERS = {}\n\n\ndef register_handler(event_type):\n    def decorator(cls):\n        HANDLERS[event_type] = cls\n        return cls\n    return decorator\n\n\n@register_handler("user.created")\nclass UserCreatedHandler:\n    def handle(self, event):\n        return event\n\n\n@register_handler("order.placed")\nclass OrderPlacedHandler:\n    def handle(self, event):\n        return event\n\n\nclass PaymentFailedHandler:\n    def handle(self, event):\n        return event\n',
+        '\nHANDLERS: dict[str, type] = {}\n\n\ndef register_handler(event_type):\n    def decorator(cls):\n        HANDLERS[event_type] = cls\n        return cls\n    return decorator\n\n\n@register_handler("user.created")\nclass UserCreatedHandler:\n    def handle(self, event):\n        return event\n\n\n@register_handler("order.placed")\nclass OrderPlacedHandler:\n    def handle(self, event):\n        return event\n\n\nclass PaymentFailedHandler:\n    def handle(self, event):\n        return event\n',
+    )
+    module = parse_python_modules(tmp_path)[0]
+    assert collect_family_items(module, RegistrationShapeFamily) == (
+        RegistrationShapeFamily.collect(module)
     )
     findings = analyze_path(tmp_path)
     finding = next(
-        (item for item in findings if item.detector_id == "deferred_class_registration")
+        (item for item in findings if item.detector_id == "manual_class_registration")
     )
     assert "HANDLERS" in finding.summary
+    assert set(finding.metrics.plan_class_names) == {
+        "UserCreatedHandler",
+        "OrderPlacedHandler",
+    }
+    assert not any(
+        item.detector_id == "deferred_class_registration" for item in findings
+    )
+
+
+def test_decorator_factory_requires_a_proved_registry_write(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nHANDLERS = {}\n\n\ndef register_handler(event_type):\n    def decorator(cls):\n        announce(event_type, cls)\n        return cls\n    return decorator\n\n\n@register_handler("user.created")\nclass UserCreatedHandler:\n    pass\n\n\n@register_handler("order.placed")\nclass OrderPlacedHandler:\n    pass\n',
+    )
+
+    assert not any(
+        item.detector_id == "manual_class_registration"
+        for item in analyze_path(tmp_path)
+    )
 
 
 def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) -> None:
@@ -23401,6 +23427,20 @@ def test_detects_auto_register_decorator_family(tmp_path: Path) -> None:
             "class Beta:\n"
             "    pass\n"
         ),
+        (
+            "REGISTRY = {}\n\n\n"
+            "def register(key):\n"
+            "    def decorate(cls):\n"
+            "        REGISTRY[key] = cls\n"
+            "        return cls\n"
+            "    return decorate\n\n\n"
+            "@register('alpha')\n"
+            "class Alpha:\n"
+            "    pass\n\n\n"
+            "@register('beta')\n"
+            "class Beta:\n"
+            "    pass\n"
+        ),
     ),
 )
 def test_behavior_bearing_registration_syntax_is_detected_but_not_deleted(
@@ -23462,6 +23502,7 @@ def test_spec_families_use_autoregistration() -> None:
         "AssignmentRegistrationShapeSpec",
         "CallRegistrationShapeSpec",
         "DecoratorRegistrationShapeSpec",
+        "FactoryDecoratorRegistrationShapeSpec",
     }
     assert field_specs == {
         "DataclassBodyFieldObservationSpec",
@@ -23572,13 +23613,9 @@ def test_collects_registration_shapes_via_spec_family(
 
     monkeypatch.setattr(ast, "walk", unexpected_walk)
     shapes = collect_family_items(module, RegistrationShapeFamily)
-    assert {shape.registration_style for shape in shapes} == {
-        "decorator_registration",
-        "subscript_assignment",
-    }
-    assert {shape.registration_style: shape.key_expression for shape in shapes} == {
-        "decorator_registration": "'alpha'",
-        "subscript_assignment": "'beta'",
+    assert {(shape.registered_class, shape.key_expression) for shape in shapes} == {
+        ("Alpha", "'alpha'"),
+        ("Alpha", "'beta'"),
     }
 
 

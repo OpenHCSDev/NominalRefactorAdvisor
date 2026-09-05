@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Callable, ClassVar, Generic, TypeVar
 
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -528,7 +530,24 @@ def _native_registration_shapes(
                         root_agnostic_expression_fingerprint(key_expression),
                     )
                 )
-        return [*assignments, *calls, *decorators]
+        factory_shapes = _factory_decorator_registration_shapes(
+            source_module,
+            (
+                *(
+                    syntax_index.statement_for(node)
+                    for node in syntax_index.top_level_assignment_statements()
+                ),
+                *(
+                    syntax_index.function_for(node)
+                    for node in syntax_index.top_level_declarations("function")
+                ),
+                *(
+                    syntax_index.class_for(node)
+                    for node in syntax_index.top_level_declarations("class")
+                ),
+            ),
+        )
+        return [*assignments, *calls, *decorators, *factory_shapes]
     except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
         return None
 
@@ -650,6 +669,162 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
                 )
             )
         return shapes
+
+
+@dataclass(frozen=True)
+class RegistryMutatingDecoratorFactory:
+    """Source-proved decorator factory that writes a class into a registry."""
+
+    function_name: str
+    registry_name: str
+    key_parameter_index: int
+
+    @classmethod
+    def from_function(
+        cls,
+        function: ast.FunctionDef,
+        registry_names: frozenset[str],
+    ) -> "RegistryMutatingDecoratorFactory | None":
+        parameters = (*function.args.posonlyargs, *function.args.args)
+        parameter_names = tuple(parameter.arg for parameter in parameters)
+        nested_functions = tuple(
+            statement
+            for statement in function.body
+            if isinstance(statement, ast.FunctionDef)
+        )
+        returned_factory_names = {
+            statement.value.id
+            for statement in function.body
+            if isinstance(statement, ast.Return)
+            and isinstance(statement.value, ast.Name)
+        }
+        nested_function = next(
+            (
+                candidate
+                for candidate in nested_functions
+                if candidate.name in returned_factory_names
+            ),
+            None,
+        )
+        if nested_function is None:
+            return None
+        registered_parameters = (
+            *nested_function.args.posonlyargs,
+            *nested_function.args.args,
+        )
+        if not registered_parameters:
+            return None
+        registered_parameter_name = registered_parameters[0].arg
+        returns_registered_class = any(
+            isinstance(statement, ast.Return)
+            and isinstance(statement.value, ast.Name)
+            and statement.value.id == registered_parameter_name
+            for statement in nested_function.body
+        )
+        if not returns_registered_class:
+            return None
+        for statement in nested_function.body:
+            if not (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Subscript)
+                and isinstance(statement.targets[0].value, ast.Name)
+                and statement.targets[0].value.id in registry_names
+                and isinstance(statement.targets[0].slice, ast.Name)
+                and statement.targets[0].slice.id in parameter_names
+                and isinstance(statement.value, ast.Name)
+                and statement.value.id == registered_parameter_name
+            ):
+                continue
+            key_parameter_name = statement.targets[0].slice.id
+            return cls(
+                function_name=function.name,
+                registry_name=statement.targets[0].value.id,
+                key_parameter_index=parameter_names.index(key_parameter_name),
+            )
+        return None
+
+    def shape_for_class(
+        self,
+        parsed_module: ParsedModule | SourceModule,
+        node: ast.ClassDef,
+    ) -> RegistrationShape | None:
+        decorator = next(
+            (
+                decorator
+                for decorator in node.decorator_list
+                if isinstance(decorator, ast.Call)
+                and AstExpressionProjection.terminal_name(decorator.func)
+                == self.function_name
+                and len(decorator.args) > self.key_parameter_index
+            ),
+            None,
+        )
+        if decorator is None:
+            return None
+        key_expression = decorator.args[self.key_parameter_index]
+        return RegistrationShape.from_factory_decorator(
+            parsed_module,
+            node,
+            self.registry_name,
+            ast.unparse(key_expression),
+            root_agnostic_expression_fingerprint(key_expression),
+        )
+
+
+def _factory_decorator_registration_shapes(
+    parsed_module: ParsedModule | SourceModule,
+    statements: Sequence[ast.stmt],
+) -> tuple[RegistrationShape, ...]:
+    registry_names = frozenset(
+        registry_name
+        for statement in statements
+        if (
+            registry_name := _empty_registry_declaration_name(statement)
+        )
+        is not None
+    )
+    factories = tuple(
+        factory
+        for statement in statements
+        if isinstance(statement, ast.FunctionDef)
+        and (
+            factory := RegistryMutatingDecoratorFactory.from_function(
+                statement,
+                registry_names,
+            )
+        )
+        is not None
+    )
+    return tuple(
+        shape
+        for statement in statements
+        if isinstance(statement, ast.ClassDef)
+        for factory in factories
+        if (shape := factory.shape_for_class(parsed_module, statement)) is not None
+    )
+
+
+def _empty_registry_declaration_name(statement: ast.stmt) -> str | None:
+    match statement:
+        case ast.Assign(targets=[ast.Name(id=name)], value=ast.Dict(keys=[])):
+            return name
+        case ast.AnnAssign(target=ast.Name(id=name), value=ast.Dict(keys=[])):
+            return name
+        case _:
+            return None
+
+
+class FactoryDecoratorRegistrationShapeSpec(RegistrationShapeSpec):
+    """Collect registry writes hidden behind a source-proved decorator factory."""
+
+    def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
+        return list(
+            _factory_decorator_registration_shapes(
+                parsed_module,
+                parsed_module.module.body,
+            )
+        )
 
 
 class FieldObservationSpec(AutoRegisteredModuleShapeSpec[FieldObservation], ABC):

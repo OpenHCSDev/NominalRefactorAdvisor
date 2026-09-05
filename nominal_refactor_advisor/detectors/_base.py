@@ -6199,104 +6199,6 @@ def _manual_fiber_tag_candidates(
     return tuple(candidates)
 
 
-def _module_registry_names(module: ParsedModule) -> tuple[str, ...]:
-    names: list[str] = []
-    for node in module.module.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(
-                target, ast.Name
-            ) and SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(node.value):
-                names.append(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(
-                node.target, ast.Name
-            ) and SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(node.value):
-                names.append(node.target.id)
-    return tuple(names)
-
-
-def _manual_registry_candidates(
-    module: ParsedModule,
-) -> tuple[ManualRegistryCandidate, ...]:
-    registry_names = set(_module_registry_names(module))
-    if not registry_names:
-        return ()
-    candidates: list[ManualRegistryCandidate] = []
-    module_classes = [
-        node for node in module.module.body if isinstance(node, ast.ClassDef)
-    ]
-    handler_classes = tuple(
-        (
-            node.name
-            for node in module_classes
-            if node.name.endswith("Handler")
-            or any(
-                (
-                    isinstance(item, ast.FunctionDef) and item.name == "handle"
-                    for item in node.body
-                )
-            )
-        )
-    )
-    for node in module.module.body:
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        for subnode in node.body:
-            if not isinstance(subnode, ast.FunctionDef):
-                continue
-            registry_name: str | None = None
-            for inner_node in _walk_nodes(subnode):
-                if isinstance(inner_node, ast.Assign):
-                    for target in inner_node.targets:
-                        if isinstance(target, ast.Subscript) and isinstance(
-                            target.value, ast.Name
-                        ):
-                            if target.value.id in registry_names:
-                                registry_name = target.value.id
-                elif isinstance(inner_node, ast.Return) and isinstance(
-                    inner_node.value, ast.Name
-                ):
-                    if (
-                        inner_node.value.id == subnode.args.args[0].arg
-                        if subnode.args.args
-                        else False
-                    ):
-                        continue
-            if registry_name is None:
-                continue
-            decorated_class_names = tuple(
-                (
-                    class_node.name
-                    for class_node in module_classes
-                    if any(
-                        (
-                            isinstance(decorator, ast.Call)
-                            and isinstance(decorator.func, ast.Name)
-                            and (decorator.func.id == node.name)
-                            for decorator in class_node.decorator_list
-                        )
-                    )
-                )
-            )
-            if len(decorated_class_names) < 2:
-                continue
-            unregistered_class_names = sorted_tuple(
-                set(handler_classes) - set(decorated_class_names)
-            )
-            candidates.append(
-                ManualRegistryCandidate(
-                    file_path=module.file_path,
-                    line=node.lineno,
-                    subject_name=registry_name,
-                    name_family=decorated_class_names,
-                    decorator_name=node.name,
-                    unregistered_class_names=unregistered_class_names,
-                )
-            )
-    return tuple(candidates)
-
-
 def _shared_abstract_nominal_authority(
     classes: tuple[ast.ClassDef, ...],
     *,
@@ -6515,10 +6417,6 @@ def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
         f"# Split `{candidate.class_name}` into one ABC root plus one subclass per fiber case.\n"
         f"# Keep only case-relevant fields in each subclass constructor."
     )
-
-
-def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
-    return f"# Replace decorator `{candidate.decorator_name}` and registry `{candidate.registry_name}`\n# with `from metaclass_registry import AutoRegisterMeta`, a declarative class key, and\n# `cls.__registry__` so class creation and registration are one event."
 
 
 _CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
@@ -8359,13 +8257,6 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
     assigned_field_names: tuple[str, ...]
     method_line = AliasProperty[int]("line")
     case_names = AliasProperty[tuple[str, ...]]("name_family")
-
-
-@dataclass(frozen=True)
-class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin):
-    decorator_name: str
-    unregistered_class_names: tuple[str, ...]
-    registry_name = AliasProperty[str]("subject_name")
 
 
 @dataclass(frozen=True)

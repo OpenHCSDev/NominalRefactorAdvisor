@@ -3858,51 +3858,6 @@ declare_candidate_rule_detector(
 )
 
 
-class DeferredClassRegistrationDetector(
-    ModuleCollectorCandidateDetector[ManualRegistryCandidate]
-):
-    candidate_collector = _manual_registry_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Class registration is decoupled from class existence",
-        "Manual decorator- or helper-based registration leaves a reachable state where a class exists but the registry has not been updated. The host already provides zero-delay registration via `metaclass-registry` or another class-time hook.",
-        "zero-delay metaclass-registry class registration with collision checks and runtime provenance",
-        "class registration is performed as a separate auxiliary step rather than at class creation time",
-        (
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, registry_candidate: ManualRegistryCandidate
-    ) -> RefactorFinding:
-        evidence = [
-            SourceLocation(
-                registry_candidate.file_path,
-                registry_candidate.line,
-                registry_candidate.decorator_name,
-            )
-        ]
-        evidence.extend(
-            (
-                SourceLocation(
-                    registry_candidate.file_path, registry_candidate.line, class_name
-                )
-                for class_name in registry_candidate.class_names[:5]
-            )
-        )
-        return self.build_finding(
-            f"Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation.",
-            tuple(evidence),
-            metrics=RegistrationMetrics(
-                registration_site_count=len(registry_candidate.class_names),
-                registry_name=registry_candidate.registry_name,
-            ),
-        )
-
-
 class StructuralConfusabilityDetector(
     ModuleCollectorCandidateDetector[StructuralConfusabilityCandidate]
 ):
