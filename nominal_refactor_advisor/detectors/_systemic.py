@@ -33,6 +33,7 @@ from ..codemod import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
+    DirectBuildFindingRendererFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
 )
@@ -3418,11 +3419,16 @@ declare_candidate_rule_detector(
 )
 
 
-class DirectBuildFindingRendererDetector(
-    ModuleCollectorCandidateDetector[DirectBuildFindingRendererCandidate]
+class DirectBuildFindingRendererDetectorBase(
+    ModuleCollectorCandidateDetector[DirectBuildFindingRendererCandidate],
+    DirectBuildFindingRendererFindingRecipeSynthesizer,
 ):
-    candidate_collector = staticmethod(_direct_build_finding_renderer_candidates)
-    finding_spec = high_confidence_spec(
+    """Compose direct-renderer detection with its executable replacement."""
+
+
+declare_candidate_rule_detector(
+    DirectBuildFindingRendererCandidate,
+    high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Direct build_finding renderer should be a typed renderer value",
         "A `_finding_for_candidate` method whose entire body is `return self.build_finding(...)` does not own control flow. It is a data renderer over one candidate type, so the candidate-to-finding algorithm should live once in the ABC and the detector should supply a typed renderer object.",
@@ -3438,25 +3444,21 @@ class DirectBuildFindingRendererDetector(
             ObservationTag.NORMALIZED_AST,
             ObservationTag.PARTIAL_VIEW,
         ),
-    )
-
-    def _finding_for_candidate(
-        self, renderer: DirectBuildFindingRendererCandidate
-    ) -> RefactorFinding:
-        keyword_summary = ", ".join(renderer.keyword_names) or "no keywords"
-        return self.build_finding(
-            (
-                f"`{renderer.class_name}.{renderer.method_name}` is a direct "
-                f"`build_finding(...)` renderer with {renderer.positional_arg_count} "
-                f"positional payloads and {keyword_summary}."
-            ),
-            (renderer.evidence,),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=1,
-                mapping_name=renderer.class_name,
-                field_names=("summary", "evidence", *renderer.keyword_names),
-            ),
-        )
+    ),
+    summary=lambda renderer: (
+        f"`{renderer.class_name}.{renderer.method_name}` is a direct "
+        f"`build_finding(...)` renderer with {renderer.positional_arg_count} "
+        f"positional payloads and "
+        f"{', '.join(renderer.keyword_names) or 'no keywords'}."
+    ),
+    metrics=lambda renderer: MappingMetrics.from_field_names(
+        mapping_site_count=1,
+        mapping_name=renderer.class_name,
+        field_names=("summary", "evidence", *renderer.keyword_names),
+    ),
+    candidate_collector=DirectBuildFindingRendererCandidate.from_module,
+    detector_base=DirectBuildFindingRendererDetectorBase,
+)
 
 
 declare_candidate_rule_detector(

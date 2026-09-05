@@ -243,28 +243,6 @@ class HelperSupportProjectionAuthority:
         Visitor().visit(node)
         return roots
 
-    def concrete_detector_base_name(self, node: ast.ClassDef) -> str | None:
-        if not any(
-            (
-                isinstance(statement, ast.Assign)
-                and any(
-                    (name_id(target) == "detector_id" for target in statement.targets)
-                )
-                for statement in node.body
-            )
-        ):
-            return None
-        base_names = tuple(
-            (
-                base_name
-                for base_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(
-                    node
-                )
-                if base_name in _TYPED_CANDIDATE_DETECTOR_BASE_NAMES
-            )
-        )
-        return single_item(base_names) if len(base_names) == 1 else None
-
     def if_returns_none_only(self, node: ast.If) -> bool:
         return bool(
             len(node.body) == 1
@@ -3649,11 +3627,6 @@ def _static_typed_observation_detector_candidates(
     return tuple(candidates)
 
 
-_TYPED_CANDIDATE_DETECTOR_BASE_NAMES = (
-    DerivedCandidateCollectorMixin.collector_base_names()
-)
-
-
 def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     positional = (*method.args.posonlyargs, *method.args.args)
     payload_names = tuple(
@@ -3715,10 +3688,8 @@ def _typed_candidate_cast_boilerplate_candidates(
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        detector_base_name = (
-            HELPER_SUPPORT_PROJECTION_AUTHORITY.concrete_detector_base_name(node)
-        )
-        if detector_base_name is None:
+        detector_shape = ConcreteCandidateDetectorShape.from_class(node)
+        if detector_shape is None:
             continue
         for statement in node.body:
             if not (
@@ -3739,7 +3710,7 @@ def _typed_candidate_cast_boilerplate_candidates(
                     parameter_name=parameter_name,
                     local_name=local_name,
                     candidate_type_name=candidate_type_name,
-                    detector_base_name=detector_base_name,
+                    detector_base_name=detector_shape.base_name,
                 )
             )
     return tuple(candidates)
@@ -3817,62 +3788,6 @@ def _finding_spec_build_boilerplate_candidates(
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
     )
-
-
-def _self_build_finding_call(node: ast.AST) -> ast.Call | None:
-    return (
-        Maybe.of(return_call(node))
-        .combine(
-            lambda call: as_ast(call.func, ast.Attribute),
-            lambda call, function: (
-                call
-                if function.attr == "build_finding"
-                and name_id(function.value) == "self"
-                else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _direct_build_finding_renderer_candidates(
-    module: ParsedModule,
-) -> tuple[DirectBuildFindingRendererCandidate, ...]:
-    candidates: list[DirectBuildFindingRendererCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        base_name = HELPER_SUPPORT_PROJECTION_AUTHORITY.concrete_detector_base_name(
-            node
-        )
-        if base_name is None:
-            continue
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.FunctionDef)
-                and statement.name == "_finding_for_candidate"
-            ):
-                continue
-            body = statements_without_docstring(statement.body)
-            call = (
-                _self_build_finding_call(single_item(body)) if len(body) == 1 else None
-            )
-            if call is None:
-                continue
-            candidates.append(
-                DirectBuildFindingRendererCandidate(
-                    file_path=module.file_path,
-                    line=statement.lineno,
-                    class_name=node.name,
-                    method_name=statement.name,
-                    base_name=base_name,
-                    positional_arg_count=len(call.args),
-                    keyword_names=tuple(
-                        (keyword.arg for keyword in call.keywords if keyword.arg)
-                    ),
-                )
-            )
-    return tuple(candidates)
 
 
 def _source_segment(module: ParsedModule, node: ast.expr) -> str:

@@ -14503,7 +14503,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalCandidate:\n    pass\n\n\nclass ProjectDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
+        '\nclass LocalCandidate:\n    pass\n\n\nclass ProjectDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "project"\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
     )
     findings = [
         item
@@ -14555,6 +14555,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     assert "candidate_collector=local_candidates" in rewritten
     assert "detector_base=ModuleCollectorCandidateDetector" in rewritten
     assert "detector_name='ProjectDetector'" in rewritten
+    assert "detector_id" not in rewritten
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == "declarative_detector_class"
@@ -14569,6 +14570,21 @@ def test_declarative_detector_class_requires_representable_class_shell(
         tmp_path,
         "pkg/mod.py",
         '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n    unrelated_cache = {}\n',
+    )
+
+    assert not any(
+        finding.detector_id == "declarative_detector_class"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_declarative_detector_class_preserves_custom_detector_identity(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "custom"\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
     )
 
     assert not any(
@@ -14650,7 +14666,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            scaffold="CandidateFindingRenderer(...)",\n        )\n',
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    finding_spec = LOCAL_FINDING_SPEC\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            metrics=candidate.metrics,\n        )\n',
     )
     findings = [
         item
@@ -14659,6 +14675,105 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     ]
     assert len(findings) == 1
     assert "LocalDetector._finding_for_candidate" in findings[0].summary
+
+    modules = parse_python_modules(tmp_path)
+    source_path = (tmp_path / "pkg/mod.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("direct_build_finding_renderer",),
+    )
+
+    assert len(plan.records) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    ), plan.records[0].reason
+    assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
+        EnsureImportOperation,
+        PatchTargetOperation,
+    )
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[source_path]
+    assert simulation.is_clean is True
+    assert "def _finding_for_candidate" not in rewritten
+    assert "finding_renderer = CandidateFindingRenderer(" in rewritten
+    assert "summary=lambda candidate:" in rewritten
+    assert "evidence=lambda candidate:" in rewritten
+    assert "metrics=lambda candidate: candidate.metrics" in rewritten
+    simulation.document_simulation.apply()
+    next_findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "direct_build_finding_renderer"
+        for finding in next_findings
+    )
+    declarative_findings = tuple(
+        finding
+        for finding in next_findings
+        if finding.detector_id == "declarative_detector_class"
+    )
+    assert len(declarative_findings) == 1
+    next_snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        declarative_findings,
+    )
+    next_plan = next_snapshot.plan_from_findings(
+        declarative_findings,
+        detector_ids=("declarative_detector_class",),
+    )
+    assert next_plan.records[0].status is (
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    ), next_plan.records[0].reason
+    next_plan.simulate(
+        next_snapshot,
+        backend=CodemodBackend.AST_SPAN,
+    ).document_simulation.apply()
+    assert not any(
+        finding.detector_id
+        in {"direct_build_finding_renderer", "declarative_detector_class"}
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_direct_build_finding_renderer_requires_representable_payload(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            title="Local override",\n        )\n',
+    )
+
+    assert not any(
+        finding.detector_id == "direct_build_finding_renderer"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_direct_build_finding_renderer_preserves_source_comments(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(  # explain the unusual evidence\n            candidate.summary,\n            (candidate.evidence,),\n        )\n',
+    )
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "direct_build_finding_renderer"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path),
+        findings,
+    )
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("direct_build_finding_renderer",),
+    )
+
+    assert len(plan.records) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+    assert plan.records[0].reason == "finding renderer method contains comments"
 
 
 def test_finding_spec_construction_detector_owns_canonical_builder_guidance(

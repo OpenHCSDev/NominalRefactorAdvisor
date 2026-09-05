@@ -1268,6 +1268,20 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     ] = None
 
     @classmethod
+    def required_declaration_field_names(cls) -> tuple[str, ...]:
+        return tuple(
+            field_item.name
+            for field_item in fields(cls)
+            if field_item.default is MISSING
+            and field_item.default_factory is MISSING
+        )
+
+    @classmethod
+    def optional_declaration_field_names(cls) -> frozenset[str]:
+        required_names = frozenset(cls.required_declaration_field_names())
+        return frozenset(field_item.name for field_item in fields(cls)) - required_names
+
+    @classmethod
     def presentation_context_tokens(cls) -> frozenset[str]:
         return frozenset(
             token for field_item in fields(cls) for token in field_item.name.split("_")
@@ -2203,6 +2217,9 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
 
 @dataclass(frozen=True)
 class DetectorDeclarationOptions(Generic[CandidateItemT]):
+    detector_name_field_name: ClassVar[str] = "detector_name"
+    detector_base_field_name: ClassVar[str] = "detector_base"
+
     detector_name: str | None = None
     detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector
     candidate_collector: DetectorCollector[CandidateItemT] | None = None
@@ -2213,6 +2230,12 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
     @classmethod
     def field_names(cls) -> frozenset[str]:
         return frozenset(cls.__dataclass_fields__)
+
+    @classmethod
+    def explicit_class_field_names(cls) -> frozenset[str]:
+        return frozenset(
+            {cls.detector_name_field_name, cls.detector_base_field_name}
+        )
 
     @classmethod
     def from_kwargs(
@@ -2238,6 +2261,10 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
 
 @dataclass(frozen=True)
 class DetectorDeclaration(Generic[CandidateItemT]):
+    detector_id_field_name: ClassVar[str] = "detector_id"
+    finding_spec_field_name: ClassVar[str] = "finding_spec"
+    finding_renderer_field_name: ClassVar[str] = "finding_renderer"
+
     candidate_type: type[CandidateItemT]
     finding_spec: FindingSpec
     finding_renderer: CandidateFindingRenderer[CandidateItemT]
@@ -2264,13 +2291,25 @@ class DetectorDeclaration(Generic[CandidateItemT]):
 
     @classmethod
     def required_class_shell_field_names(cls) -> tuple[str, ...]:
-        return ("finding_spec", "finding_renderer")
+        return (cls.finding_spec_field_name, cls.finding_renderer_field_name)
+
+    @classmethod
+    def optional_class_shell_field_names(cls) -> frozenset[str]:
+        return (
+            DetectorDeclarationOptions.field_names()
+            - DetectorDeclarationOptions.explicit_class_field_names()
+        )
+
+    @classmethod
+    def derived_class_shell_field_names(cls) -> frozenset[str]:
+        return frozenset({cls.detector_id_field_name})
 
     @classmethod
     def class_shell_field_names(cls) -> frozenset[str]:
-        explicit_class_fields = {"detector_name", "detector_base"}
-        return frozenset(cls.required_class_shell_field_names()) | (
-            DetectorDeclarationOptions.field_names() - explicit_class_fields
+        return (
+            frozenset(cls.required_class_shell_field_names())
+            | cls.optional_class_shell_field_names()
+            | cls.derived_class_shell_field_names()
         )
 
     @staticmethod
@@ -7437,10 +7476,132 @@ class FindingSpecConstructionCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
+class ConcreteCandidateDetectorShape:
+    base_name: str
+
+    @classmethod
+    def from_class(cls, node: ast.ClassDef) -> "ConcreteCandidateDetectorShape | None":
+        declares_detector_id = any(
+            binding is not None
+            and binding.name == DetectorDeclaration.detector_id_field_name
+            for statement in node.body
+            for binding in (named_value_binding(statement),)
+        )
+        if not declares_detector_id:
+            return None
+        base_names = tuple(
+            base_name
+            for base in node.bases
+            for base_name in (
+                name_id(base)
+                if isinstance(base, ast.Name)
+                else (
+                    name_id(base.value) if isinstance(base, ast.Subscript) else None
+                ),
+            )
+            if base_name in DerivedCandidateCollectorMixin.collector_base_names()
+        )
+        if len(base_names) != 1:
+            return None
+        return cls(base_names[0])
+
+
+@dataclass(frozen=True)
 class DirectBuildFindingRendererCandidate(
     PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate
 ):
     base_name: str
+    parameter_name: str
+
+    @staticmethod
+    def build_call(method: ast.FunctionDef) -> ast.Call | None:
+        if (
+            method.decorator_list
+            or len(method.body) != 1
+            or method.args.posonlyargs
+            or method.args.vararg is not None
+            or method.args.kwarg is not None
+            or method.args.kwonlyargs
+            or method.args.defaults
+            or method.args.kw_defaults
+            or len(method.args.args) != 2
+            or method.args.args[0].arg != "self"
+        ):
+            return None
+        call = return_call(method.body[0])
+        function = call.func if call is not None else None
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == IssueDetector.build_finding.__name__
+            and name_id(function.value) == "self"
+        ):
+            return None
+        required_names = CandidateFindingRenderer.required_declaration_field_names()
+        if len(call.args) != len(required_names) or any(
+            isinstance(argument, ast.Starred) for argument in call.args
+        ):
+            return None
+        keyword_names = tuple(
+            keyword.arg for keyword in call.keywords if keyword.arg is not None
+        )
+        if (
+            len(keyword_names) != len(call.keywords)
+            or len(frozenset(keyword_names)) != len(keyword_names)
+            or not frozenset(keyword_names)
+            <= CandidateFindingRenderer.optional_declaration_field_names()
+        ):
+            return None
+        payload_values = (*call.args, *(keyword.value for keyword in call.keywords))
+        if any(
+            isinstance(item, ast.Name) and item.id == "self"
+            for value in payload_values
+            for item in ast.walk(value)
+        ):
+            return None
+        return call
+
+    @classmethod
+    def from_class(
+        cls,
+        module: ParsedModule,
+        node: ast.ClassDef,
+    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+        shape = ConcreteCandidateDetectorShape.from_class(node)
+        if shape is None:
+            return ()
+        return tuple(
+            cls(
+                file_path=module.file_path,
+                line=method.lineno,
+                class_name=node.name,
+                method_name=method.name,
+                base_name=shape.base_name,
+                parameter_name=method.args.args[1].arg,
+                positional_arg_count=len(call.args),
+                keyword_names=tuple(
+                    keyword.arg
+                    for keyword in call.keywords
+                    if keyword.arg is not None
+                ),
+            )
+            for method in node.body
+            if isinstance(method, ast.FunctionDef)
+            and method.name == CandidateFindingDetector._finding_for_candidate.__name__
+            for call in (cls.build_call(method),)
+            if call is not None
+        )
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ParsedModule,
+    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+        return tuple(
+            candidate
+            for node in module.module.body
+            if isinstance(node, ast.ClassDef)
+            for candidate in cls.from_class(module, node)
+        )
 
 
 @dataclass(frozen=True)
@@ -7468,7 +7629,17 @@ class DeclarativeDetectorClassCandidate(ClassLineWitnessCandidate):
         required_names = frozenset(
             DetectorDeclaration.required_class_shell_field_names()
         )
-        return values if required_names <= values.keys() else None
+        if not required_names <= values.keys():
+            return None
+        detector_id_field_name = DetectorDeclaration.detector_id_field_name
+        if detector_id_field_name in values:
+            detector_id = values[detector_id_field_name]
+            if not (
+                isinstance(detector_id, ast.Constant)
+                and detector_id.value == _detector_id_value_from_class_name(node.name)
+            ):
+                return None
+        return values
 
     @classmethod
     def from_class(
