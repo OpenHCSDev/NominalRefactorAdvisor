@@ -15,7 +15,6 @@ from contextlib import contextmanager
 import hashlib
 import io
 import gc
-import keyword
 import os
 import pickle
 import sys
@@ -41,6 +40,12 @@ from .implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,
 )
+from .lexical_bindings import (
+    ImportBoundNameProjection as ImportBoundNameProjection,
+    ImportedNameOrigin as ImportedNameOrigin,
+    LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority as LexicalScopeBindingAuthority,
+)
 from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
@@ -61,6 +66,10 @@ from .observation_shapes import (
     LiteralKind,
     RegistrationShape,
     SentinelTypeObservation,
+)
+from .python_module_identity import (
+    PythonModulePathIdentity as PythonModulePathIdentity,
+    python_module_name_is_importable as python_module_name_is_importable,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .source_geometry import SourceLineSegmentAuthority, read_source_text
@@ -436,125 +445,6 @@ class PythonModuleParseContext(ParseCacheDirectory):
         init=False,
         repr=False,
         compare=False,
-    )
-
-
-@dataclass(frozen=True)
-class PythonModulePathIdentity(SourceFileIdentity):
-    """Module import identity derived from one source path and analysis root."""
-
-    path: Path
-    import_name: str
-    is_package_init: bool
-
-    @classmethod
-    def from_path(
-        cls,
-        path: Path,
-        analysis_root: Path,
-    ) -> "PythonModulePathIdentity":
-        import_root = cls.import_root(path, analysis_root)
-        return cls.from_import_root(path, import_root)
-
-    @classmethod
-    def from_import_root(
-        cls,
-        path: Path,
-        import_root: Path,
-    ) -> "PythonModulePathIdentity":
-        relative = path.resolve().relative_to(import_root.resolve())
-        module_parts = list(relative.with_suffix("").parts)
-        is_package_init = bool(module_parts and module_parts[-1] == "__init__")
-        if is_package_init:
-            module_parts = module_parts[:-1]
-        import_name = ".".join(module_parts) if module_parts else "__init__"
-        return cls(
-            path=path,
-            import_name=import_name,
-            is_package_init=is_package_init,
-        )
-
-    @classmethod
-    def from_source_path(cls, path: Path) -> "PythonModulePathIdentity":
-        """Derive context-free identity when no parsed project declarations exist."""
-
-        import_root = Path(path.anchor) if path.is_absolute() else Path.cwd()
-        return cls.from_import_root(path, import_root)
-
-    def resolve_import_from_module(
-        self,
-        *,
-        imported_module: str | None,
-        level: int,
-    ) -> str | None:
-        """Resolve one ``from`` import against this module's package identity."""
-
-        if level == 0:
-            return imported_module
-        package_parts = self.import_name.split(".")
-        if not self.is_package_init:
-            package_parts = package_parts[:-1]
-        if level > 1:
-            if level - 1 > len(package_parts):
-                return None
-            package_parts = package_parts[: len(package_parts) - (level - 1)]
-        if imported_module:
-            return ".".join((*package_parts, *imported_module.split(".")))
-        return ".".join(package_parts)
-
-    @staticmethod
-    def analysis_root_for_scan_root(root: Path) -> Path:
-        return root.parent if root.is_file() else root
-
-    @staticmethod
-    def import_root(path: Path, analysis_root: Path) -> Path:
-        """Use the outer edge of the source package as import-name authority."""
-
-        package_directory = path.parent
-        import_root: Path | None = None
-        while (package_directory / "__init__.py").is_file():
-            import_root = package_directory.parent
-            package_directory = package_directory.parent
-        return analysis_root if import_root is None else import_root
-
-    @property
-    def declared_source_relative_path(self) -> Path:
-        module_parts = tuple(self.import_name.split("."))
-        if self.is_package_init:
-            if module_parts == ("__init__",):
-                return Path("__init__.py")
-            return Path(*module_parts, "__init__.py")
-        return Path(*module_parts[:-1], f"{module_parts[-1]}.py")
-
-    @property
-    def declared_import_root(self) -> Path:
-        if self.is_package_init != (self.path.name == "__init__.py"):
-            raise ValueError(
-                f"Package-init identity does not describe {self.path}"
-            )
-        import_root = self.path.resolve()
-        for _part in self.declared_source_relative_path.parts:
-            import_root = import_root.parent
-        if (
-            import_root / self.declared_source_relative_path
-        ).resolve() != self.path.resolve():
-            raise ValueError(
-                f"Module name {self.import_name!r} does not describe {self.path}"
-            )
-        return import_root
-
-    @property
-    def is_importable(self) -> bool:
-        return python_module_name_is_importable(self.import_name)
-
-
-def python_module_name_is_importable(module_name: str) -> bool:
-    """Return whether a dotted source identity is valid Python import syntax."""
-
-    parts = module_name.split(".")
-    return bool(
-        parts
-        and all(part.isidentifier() and not keyword.iskeyword(part) for part in parts)
     )
 
 
@@ -1358,130 +1248,6 @@ class BuiltinCallName(StrEnum):
                 cls.TUPLE,
             )
         )
-
-
-@dataclass(frozen=True)
-class ImportedNameOrigin:
-    """One explicitly bound import name and its resolved nominal origin."""
-
-    bound_name: str
-    qualified_name: str | None
-
-
-@dataclass(frozen=True)
-class ImportBoundNameProjection:
-    """Project Python import statements to names bound in their lexical scope."""
-
-    statement: ast.Import | ast.ImportFrom
-
-    def names(self) -> tuple[str, ...]:
-        return tuple(
-            name
-            for alias in self.statement.names
-            if (name := self.alias_bound_name(alias))
-        )
-
-    def origins(
-        self, module_identity: PythonModulePathIdentity
-    ) -> tuple[ImportedNameOrigin, ...]:
-        return tuple(
-            ImportedNameOrigin(bound_name, self.alias_origin(alias, module_identity))
-            for alias in self.statement.names
-            if (bound_name := self.alias_bound_name(alias))
-        )
-
-    def alias_origin(
-        self, alias: ast.alias, module_identity: PythonModulePathIdentity
-    ) -> str | None:
-        if isinstance(self.statement, ast.Import):
-            return alias.name if alias.asname else alias.name.split(".", 1)[0]
-        module_name = module_identity.resolve_import_from_module(
-            imported_module=self.statement.module,
-            level=self.statement.level,
-        )
-        return None if module_name is None else f"{module_name}.{alias.name}"
-
-    def name_sources(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (name, self.alias_import_source(alias))
-            for alias in self.statement.names
-            for name in (self.alias_bound_name(alias),)
-            if name
-        )
-
-    def alias_bound_name(self, alias: ast.alias) -> str:
-        if alias.name == "*":
-            return ""
-        if alias.asname:
-            return alias.asname
-        if isinstance(self.statement, ast.Import):
-            return alias.name.split(".", maxsplit=1)[0]
-        return alias.name
-
-    def alias_import_source(self, alias: ast.alias) -> str:
-        alias_source = alias.name
-        if alias.asname:
-            alias_source = f"{alias.name} as {alias.asname}"
-        if isinstance(self.statement, ast.Import):
-            return f"import {alias_source}\n"
-        module_name = self.statement.module or ""
-        module_path = f"{'.' * self.statement.level}{module_name}"
-        return f"from {module_path} import {alias_source}\n"
-
-
-class LexicalScopeBindingAuthority:
-    """Recover names bound by one lexical scope without entering child scopes."""
-
-    @staticmethod
-    def bound_names(nodes: Iterable[ast.AST]) -> frozenset[str]:
-        bound: set[str] = set()
-
-        class ScopeBindingVisitor(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> None:
-                if isinstance(node.ctx, (ast.Store, ast.Del)):
-                    bound.add(node.id)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                bound.add(node.name)
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                bound.add(node.name)
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                bound.add(node.name)
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_Import(self, node: ast.Import) -> None:
-                bound.update(ImportBoundNameProjection(node).names())
-
-            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-                bound.update(ImportBoundNameProjection(node).names())
-
-        visitor = ScopeBindingVisitor()
-        for node in nodes:
-            visitor.visit(node)
-        return frozenset(bound)
-
-    @staticmethod
-    def argument_names(
-        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    ) -> frozenset[str]:
-        arguments = node.args
-        return frozenset(
-            argument.arg
-            for argument in (
-                *arguments.posonlyargs,
-                *arguments.args,
-                *arguments.kwonlyargs,
-            )
-        ) | frozenset(
-            argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument
-        )
-
-
-LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()
 
 
 class ModuleAnnotationEvaluationMode(StrEnum):

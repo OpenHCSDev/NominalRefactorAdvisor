@@ -19,7 +19,6 @@ from typing import cast
 
 from .ast_tools import (
     AstParentIndex,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
     statements_without_docstring,
@@ -58,6 +57,7 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,

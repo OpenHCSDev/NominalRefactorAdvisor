@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from .ast_tools import (
     AstExpressionProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ParsedModule,
 )
 from .class_index import (
@@ -23,6 +22,7 @@ from .class_index import (
     ModuleNominalBindingWitness,
     module_star_import_origins,
 )
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 _NESTED_METHOD_SCOPES = (
     ast.AsyncFunctionDef,
@@ -597,7 +597,6 @@ class RedundantClassAuthorityCollapseProof:
                 f"Class authority {indexed_class.qualname!r} rebinds a method"
             )
         return methods_by_name
-
 
 
 @dataclass(frozen=True)

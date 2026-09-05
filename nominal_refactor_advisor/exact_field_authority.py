@@ -10,7 +10,6 @@ from itertools import combinations
 
 from .ast_tools import (
     AstExpressionProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
@@ -25,6 +24,7 @@ from .class_index import (
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .source_geometry import (
     ClassHeaderSourceSpan,
     SourceCommentLineIndex,

@@ -9,7 +9,6 @@ from .ast_tools import (
     AstParentIndex,
     CompactModuleIdentity,
     CollectedFamily,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ParsedModule,
     statements_without_docstring,
 )
@@ -25,6 +24,7 @@ from .class_index import (
 )
 from .collection_algebra import sorted_tuple
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 
 

@@ -31,6 +31,7 @@ from .analysis_cache import (
     PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
+from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import read_source_text
 from .ast_tools import (
     CollectedFamily,
@@ -38,7 +39,6 @@ from .ast_tools import (
     CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
     ParsedModule,
-    PythonModulePathIdentity,
     PythonModuleRootParser,
     PythonSourceSemanticHash,
     PythonSourcePathDiscovery,

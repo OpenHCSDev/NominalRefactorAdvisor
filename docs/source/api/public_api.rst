@@ -48,6 +48,19 @@ write; deferred module and class namespace lookup uses the final write.
 Deferred closure lookup with multiple writes remains unresolved. Conditional
 writes also remain unresolved.
 
+``lexical_bindings`` owns ``ScopeBindingCollector``,
+``LexicalScopeBindingAuthority`` and import-name/origin projection.
+``FunctionBindingProjection`` uses the same collector when deriving function
+locals. Declaration headers are visited in their enclosing scope; function and
+class bodies are separate scopes. Comprehension loop targets remain internal,
+while assignment-expression targets retain their enclosing ownership. Lambda
+defaults are visited without entering the lambda body. These binding rules also
+supply class-member collision checks.
+
+``python_module_identity`` owns importable module names derived from source
+paths. The former ``ast_tools`` exports refer to the same declaration objects;
+production consumers import from the owning modules.
+
 The ``call_binding`` module owns Python signature and argument-binding
 declarations. ``value_expression`` owns the shared exact-reference and opaque
 value model. Neither depends on product-flow collection. ``product_flow``

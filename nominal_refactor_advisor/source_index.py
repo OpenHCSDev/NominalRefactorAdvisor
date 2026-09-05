@@ -15,7 +15,6 @@ from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     ParsedModule,
     PythonModulePathAuthority,
-    PythonModulePathIdentity,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .json_reports import (
@@ -28,6 +27,7 @@ from .models import (
     SourceLocation,
     stable_source_location_id,
 )
+from .python_module_identity import PythonModulePathIdentity
 
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",

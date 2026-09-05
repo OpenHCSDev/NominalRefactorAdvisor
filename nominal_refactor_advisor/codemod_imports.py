@@ -14,7 +14,6 @@ from dataclasses import (
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from .ast_tools import ImportBoundNameProjection
 from .codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
@@ -33,6 +32,7 @@ from .codemod_source_edits import (
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
+from .lexical_bindings import ImportBoundNameProjection
 
 if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext

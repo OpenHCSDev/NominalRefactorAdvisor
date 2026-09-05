@@ -10,12 +10,12 @@ from typing import TypeAlias
 from .ast_tools import (
     AstExpressionProjection,
     EagerNameLoadCollector,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,

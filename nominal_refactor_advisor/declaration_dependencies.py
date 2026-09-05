@@ -17,10 +17,14 @@ from .annotation_semantics import (
     ModuleNameReferenceScope,
     StringizedAnnotationSurface,
 )
-from .ast_tools import ImportBoundNameProjection
 from .assignment_projection import (
     NamedAssignmentSelection,
     SingleAssignmentAndValueNameProjection,
+)
+from .lexical_bindings import (
+    ImportBoundNameProjection,
+    ScopeBindingCollector,
+    _store_names,
 )
 from .source_geometry import SourceByteSpan
 
@@ -276,7 +280,7 @@ class FunctionBindingProjection:
         cls,
         node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     ) -> "FunctionBindingProjection":
-        collector = _CurrentScopeBindingCollector()
+        collector = ScopeBindingCollector()
         if isinstance(node, ast.Lambda):
             collector.visit(node.body)
         else:
@@ -407,83 +411,6 @@ class _ClassScope:
 _DependencyScope: TypeAlias = FunctionBindingProjection | _ClassScope
 
 
-@dataclass
-class _ComprehensionContainingScopeBindingCollector(ast.NodeVisitor):
-    """Collect walrus targets owned outside comprehension scopes."""
-
-    bound_names: set[str]
-
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        self.bound_names.update(_store_names(node.target))
-        self.visit(node.value)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-
-class _CurrentScopeBindingCollector(ast.NodeVisitor):
-    """Collect compile-time bindings without descending into child scopes."""
-
-    def __init__(self) -> None:
-        self.bound_names: set[str] = set()
-        self.global_names: set[str] = set()
-        self.nonlocal_names: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bound_names.add(node.id)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.bound_names.add(node.name)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.bound_names.add(node.name)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.bound_names.add(node.name)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-    def visit_Import(self, node: ast.Import) -> None:
-        self.bound_names.update(ImportBoundNameProjection(node).names())
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.bound_names.update(ImportBoundNameProjection(node).names())
-
-    def visit_Global(self, node: ast.Global) -> None:
-        self.global_names.update(node.names)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        self.nonlocal_names.update(node.names)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
-        self.generic_visit(node)
-
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
-        self.generic_visit(node)
-
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
-
-    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
-        if node.rest is not None:
-            self.bound_names.add(node.rest)
-        self.generic_visit(node)
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        _ComprehensionContainingScopeBindingCollector(self.bound_names).visit(node)
-
-    visit_SetComp = visit_ListComp
-    visit_DictComp = visit_ListComp
-    visit_GeneratorExp = visit_ListComp
-
-
 class _DeclarationDependencyCollector(ast.NodeVisitor):
     """Resolve names against the lexical scopes carried by moved declarations."""
 
@@ -603,7 +530,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             for keyword in node.keywords:
                 self.visit(keyword)
             self._visit_type_parameters(node)
-            bindings = _CurrentScopeBindingCollector()
+            bindings = ScopeBindingCollector()
             for statement in node.body:
                 bindings.visit(statement)
             scope = _ClassScope(
@@ -829,11 +756,3 @@ def _type_parameter_names(
     if sys.version_info < (3, 12):
         return frozenset()
     return frozenset(parameter.name for parameter in node.type_params)
-
-
-def _store_names(target: ast.AST) -> tuple[str, ...]:
-    if isinstance(target, ast.Name):
-        return (target.id,)
-    if isinstance(target, ast.Tuple | ast.List):
-        return tuple(name for element in target.elts for name in _store_names(element))
-    return ()

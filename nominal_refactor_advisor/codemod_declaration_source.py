@@ -24,7 +24,6 @@ from typing import (
 from .ast_tools import (
     AstKeywordSourceProjection,
     FunctionDefinitionNode,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     is_docstring_statement,
 )
 from .codemod_source_edits import (
@@ -43,6 +42,7 @@ from .declaration_dependencies import (
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .source_geometry import (
     ClassHeaderSourceSpan,
     SourceLineSegmentAuthority,

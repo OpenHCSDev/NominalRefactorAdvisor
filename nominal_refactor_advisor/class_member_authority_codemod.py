@@ -17,7 +17,6 @@ from functools import cached_property
 
 from .ast_tools import (
     EagerNameLoadCollector,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     statements_without_docstring,
 )
 from .class_index import (
@@ -63,6 +62,7 @@ from .exact_method_authority import (
     ExactMethodRoleComponent,
     ParallelMirroredLeafFamilyComponent,
 )
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,

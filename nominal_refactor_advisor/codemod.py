@@ -41,11 +41,9 @@ from .assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from .ast_tools import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ROOT_NAME_PROJECTION,
     AstParentIndex,
     BuiltinCallName,
-    ImportBoundNameProjection,
     ParsedModule,
     root_agnostic_expression_fingerprint,
     statements_without_docstring,
@@ -599,6 +597,10 @@ from .json_reports import (
     json_report_cached_property,
     json_report_field,
     json_report_property,
+)
+from .lexical_bindings import (
+    ImportBoundNameProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .manual_registry import (
     AutoRegisterInstanceViewComponent,

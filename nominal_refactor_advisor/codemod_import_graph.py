@@ -10,11 +10,11 @@ from dataclasses import (
 )
 from functools import cached_property
 
-from .ast_tools import python_module_name_is_importable
 from .codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
 )
+from .python_module_identity import python_module_name_is_importable
 from .source_index import (
     SourceFileDigest,
     SourceIndex,

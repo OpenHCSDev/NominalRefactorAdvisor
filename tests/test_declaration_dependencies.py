@@ -295,9 +295,27 @@ def test_assignment_dependencies_preserve_value_and_annotation_contexts() -> Non
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 syntax")
-def test_type_parameter_scope_owns_declaration_references() -> None:
+@pytest.mark.parametrize(
+    "parameter,annotations,annotation_count",
+    (
+        ("T: Bound", ("Bound",), 3),
+        pytest.param(
+            "T: Bound = Default",
+            ("Bound", "Default"),
+            4,
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 13), reason="PEP 696 defaults"
+            ),
+        ),
+    ),
+)
+def test_type_parameter_scope_owns_declaration_references(
+    parameter: str,
+    annotations: tuple[str, ...],
+    annotation_count: int,
+) -> None:
     projection = _projection(
-        "class Container[T: Bound = Default](Base[T]):\n"
+        f"class Container[{parameter}](Base[T]):\n"
         "    value: T\n"
         "\n"
         "    def resolve(self) -> T:\n"
@@ -305,5 +323,5 @@ def test_type_parameter_scope_owns_declaration_references() -> None:
     )
 
     assert projection.execution_names == frozenset(("Base",))
-    assert projection.annotation_names == frozenset(("Bound", "Default"))
-    assert projection.annotation_count == 4
+    assert projection.annotation_names == frozenset(annotations)
+    assert projection.annotation_count == annotation_count

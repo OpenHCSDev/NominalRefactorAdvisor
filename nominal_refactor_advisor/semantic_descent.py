@@ -35,7 +35,6 @@ from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
-    PythonModulePathIdentity,
     PythonSourcePathPolicy,
     module_syntax_index,
     python_module_path_identities_for_roots,
@@ -89,6 +88,7 @@ from .models import (
     SourceLocation,
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
+from .python_module_identity import PythonModulePathIdentity
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import (
     SemanticIdentifierTokenProjection,

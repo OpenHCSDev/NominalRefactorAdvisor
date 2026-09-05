@@ -18,10 +18,8 @@ from .assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from .ast_tools import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ParsedModule,
     REGISTERED_TYPE_LINEAGE,
-    ImportBoundNameProjection,
     SharedRegistryRootBase,
 )
 from .class_index import (
@@ -66,6 +64,10 @@ from .declaration_dependencies import (
     DeclarationDependencyProjection,
     ModuleLexicalDependencyProjection,
     MovableDeclaration,
+)
+from .lexical_bindings import (
+    ImportBoundNameProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .semantic_match import single_item
 from .source_index import SourceFileDigest

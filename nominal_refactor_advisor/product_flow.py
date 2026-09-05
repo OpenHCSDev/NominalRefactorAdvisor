@@ -18,9 +18,7 @@ from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
-    ImportBoundNameProjection,
     ParsedModule,
-    PythonModulePathIdentity,
 )
 from .call_binding import (
     CompactBoundCallArgument as CompactBoundCallArgument,
@@ -34,6 +32,8 @@ from .call_binding import (
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
+from .lexical_bindings import ImportBoundNameProjection
+from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import SourceByteSpan
 from .value_expression import (
     CompactValueExpression as CompactValueExpression,

@@ -7,8 +7,7 @@ import re
 from dataclasses import dataclass
 from functools import cached_property
 
-from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY
-
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 @dataclass(frozen=True)
 class ClassVarAnnotationAuthority:

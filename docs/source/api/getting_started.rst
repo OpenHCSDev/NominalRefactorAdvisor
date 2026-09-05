@@ -305,6 +305,13 @@ methods. NRA's :download:`assignment projection plan
 refactor applied to its own source. Check construction and method behaviour
 after changing the inheritance relationship.
 
+For a larger ownership change, NRA's :download:`lexical-binding plan
+<../../examples/lexical_binding_authority_refactor.py>` composes five stages:
+extract an authority, move a dependency closure into it, separate module-path
+identity, rename the shared collector, and replace its consumer's method body.
+The movement and rename operations derive the affected import edits from each
+projected snapshot.
+
 Use ``prepend_function_body`` to introduce statements before the existing
 executable body. It preserves the docstring and existing statements, including
 nested decorators, and expands inline suites when needed. The witness example

@@ -27,10 +27,8 @@ from .annotation_semantics import (
 )
 from .ast_tools import (
     AstExpressionProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     CompactModuleIdentity,
     CollectedFamily,
-    ImportBoundNameProjection,
     ParsedModule,
     PythonSourcePathPolicy,
     SourceModule,
@@ -48,6 +46,10 @@ from .class_mro import ClassMroAuthority
 from .declaration_dependencies import ClassScopeDependency
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from .lexical_bindings import (
+    ImportBoundNameProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+)
 from .native_syntax import NativePythonSyntaxIndex
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
 from .source_identity import resolved_source_path_text
