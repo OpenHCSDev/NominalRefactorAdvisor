@@ -330,3 +330,35 @@ and CRLF inputs are exercised. `docs/examples/method_proof_cost_separation_refac
 records the applied three-stage DSL change. Missing ownership still blocks
 automatic role synthesis, and the existing receiver, closure, MRO and
 source-ownership checks remain authoritative.
+
+### Regex Observation: Imported Identity and Undecided Ownership
+
+The regex-bundle observer treated a parameter named `re` as the standard library
+and missed module aliases, imported function aliases, captured aliases and
+keyword pattern arguments. It also counted calls whose arguments were invalid.
+Twelve focused regressions failed against the old recogniser. The new projection
+uses the shared lexical dependency model, top-level declaration index and module
+binding snapshot. The operation enum refers to actual standard-library function
+declarations; qualified identities and signature binding derive from them.
+
+This remains observation evidence. Repeated literals do not prove that the
+sites must change together or that a new typed grammar is their correct owner.
+The finding no longer prescribes that architecture. Its threshold selects
+substantial repeated syntax, not correctness or rewrite eligibility. Local or
+ambiguous bindings remain unproved rather than receiving a spelling fallback.
+
+The path now reuses `named_function_nodes`, removing `SurfaceFunctionIndex`, its
+private aliases and the old positional tuple-based grouping. Imported-root filtering
+avoids the expensive lexical projection for unrelated modules. Native tests
+cover all nine declared regex operations; source tests cover shadowing, alias
+capture, signature errors and the lazy analysis path.
+`docs/examples/regex_observation_cleanup.py` records the ten applied cleanup
+stages, after the new detector declaration was authored.
+
+A direct-collector benchmark across 123 NRA modules exposed repeated projection
+construction on warm scans (about 0.27 seconds). A bounded source-keyed cache
+reduced warm runs to about 0.01 seconds in that probe. These modules produced no
+regex-bundle candidates, so this is not an end-to-end or regex-heavy workload
+claim. A weak-reference regression verifies that analysis memory release drops
+the parsed module; another assertion changes the threshold while retaining the
+same source projection, ruling out cached configuration decisions.

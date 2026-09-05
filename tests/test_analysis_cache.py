@@ -351,9 +351,8 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert isinstance(function, ast.FunctionDef)
     ast_tools_module._walk_nodes(module)
     ast_tools_module.walk_function_body_nodes(function)
-    ast_tools_module.named_function_nodes(module)
+    assert ast_tools_module.named_function_nodes(module) == (("project", function),)
     ast_tools_module.module_syntax_index(module)
-    runtime_detectors.SurfaceFunctionIndex.from_module(module)
 
     cleared_cache_count = release_module_analysis_memory()
 
@@ -362,7 +361,6 @@ def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
     assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
     assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
     assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
-    assert runtime_detectors.SurfaceFunctionIndex.from_module.cache_info().currsize == 0
 
 
 def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:

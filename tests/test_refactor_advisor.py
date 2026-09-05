@@ -25419,7 +25419,8 @@ def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "parse_one" in finding.summary
     assert "parse_two" in finding.summary
-    assert "typed syntax authority" in finding.title
+    assert finding.title == "Sibling functions repeat regex patterns"
+    assert finding.authority_evidence is None
 
 
 def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:

@@ -20,6 +20,8 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
+from ._regex_bundle import RepeatedLocalRegexBundleDetector
+
 from ..ast_tools import (
     CollectedFamily,
     ParsedModule,
@@ -86,8 +88,6 @@ from ._base import high_confidence_certified_spec
 from ._helpers import *
 
 
-
-
 def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
@@ -151,8 +151,6 @@ class LiteralDispatchFindingFactory:
 
 
 LITERAL_DISPATCH_FINDING_FACTORY = LiteralDispatchFindingFactory()
-
-
 
 
 _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
@@ -1194,10 +1192,6 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
 
 def _stable_text_digest(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
-
-
-
-
 
 
 def _native_call_terminal_name(
@@ -2943,40 +2937,6 @@ class NumericLiteralDispatchDetector(
         )
 
 
-_RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
-_SurfaceFunctionItems: TypeAlias = tuple[tuple[str, _RuntimeFunctionNode], ...]
-
-
-@dataclass(frozen=True)
-class SurfaceFunctionIndex:
-    functions: _SurfaceFunctionItems
-
-    @classmethod
-    @lru_cache(maxsize=None)
-    def from_module(cls, module_node: ast.Module) -> "SurfaceFunctionIndex":
-        functions: list[tuple[str, _RuntimeFunctionNode]] = []
-
-        def visit_body(body: list[ast.stmt], prefix: tuple[str, ...]) -> None:
-            for statement in body:
-                if isinstance(statement, ast.ClassDef):
-                    visit_body(
-                        statements_without_docstring(statement.body),
-                        (*prefix, statement.name),
-                    )
-                    continue
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions.append((".".join((*prefix, statement.name)), statement))
-
-        visit_body(statements_without_docstring(module_node.body), ())
-        return cls(tuple(functions))
-
-
-
-
-
-
-
-
 @dataclass(frozen=True)
 class MirroredImportFallbackCandidate(LineWitnessCandidate):
     imported_modules: tuple[str, ...]
@@ -3104,156 +3064,6 @@ class MirroredImportFallbackDetector(
                 field_count=import_candidate.imported_name_count,
                 mapping_name="mirrored import fallback",
                 field_names=import_candidate.imported_modules,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class RepeatedLocalRegexBundleCandidate(FunctionEvidenceLocationsCandidate):
-    owner_name: str
-    regex_literals: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return "repeated local regex bundle"
-
-
-def _regex_literal_from_call(node: ast.Call) -> str | None:
-    func = node.func
-    if not (
-        isinstance(func, ast.Attribute)
-        and isinstance(func.value, ast.Name)
-        and (func.value.id == "re")
-        and (
-            func.attr
-            in {"compile", "findall", "finditer", "search", "match", "fullmatch", "sub"}
-        )
-    ):
-        return None
-    if not node.args:
-        return None
-    pattern_arg = node.args[0]
-    if not (
-        isinstance(pattern_arg, ast.Constant) and isinstance(pattern_arg.value, str)
-    ):
-        return None
-    return pattern_arg.value
-
-
-def _is_substantial_regex_literal(literal: str) -> bool:
-    if len(literal) < 12:
-        return False
-    if not any((token in literal for token in ("\\", "[", "(", "{", "^", "$"))):
-        return False
-    alpha_count = sum(1 for char in literal if char.isalpha())
-    return alpha_count >= 3
-
-
-def _local_regex_literals_by_function(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, int]:
-    literals: dict[str, int] = {}
-    for node in walk_function_body_nodes(function):
-        if not isinstance(node, ast.Call):
-            continue
-        literal = _regex_literal_from_call(node)
-        if literal is None or not _is_substantial_regex_literal(literal):
-            continue
-        literals.setdefault(literal, node.lineno)
-    return literals
-
-
-def _function_owner_name(qualname: str) -> str:
-    if "." not in qualname:
-        return "<module>"
-    return qualname.rsplit(".", 1)[0]
-
-
-def _repeated_local_regex_bundle_candidates(
-    module: ParsedModule, config: DetectorConfig
-) -> tuple[RepeatedLocalRegexBundleCandidate, ...]:
-    functions_by_owner: dict[
-        (str, list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, dict[str, int]]])
-    ] = defaultdict(list)
-    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
-        literals = _local_regex_literals_by_function(function)
-        if literals:
-            functions_by_owner[_function_owner_name(qualname)].append(
-                (qualname, function, literals)
-            )
-
-    candidates: list[RepeatedLocalRegexBundleCandidate] = []
-    for owner_name, functions in functions_by_owner.items():
-        for left_index, (left_name, _left_function, left_literals) in enumerate(
-            functions
-        ):
-            for right_name, _right_function, right_literals in functions[
-                left_index + 1 :
-            ]:
-                shared = sorted_tuple(set(left_literals) & set(right_literals))
-                if len(shared) < config.min_repeated_local_regex_literals:
-                    continue
-                line_numbers = (
-                    min((left_literals[literal] for literal in shared)),
-                    min((right_literals[literal] for literal in shared)),
-                )
-                candidates.append(
-                    RepeatedLocalRegexBundleCandidate(
-                        file_path=module.file_path,
-                        line=min(line_numbers),
-                        owner_name=owner_name,
-                        function_names=(left_name, right_name),
-                        regex_literals=shared,
-                        line_numbers=line_numbers,
-                    )
-                )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.function_names,
-            candidate.regex_literals,
-        ),
-    )
-
-
-class RepeatedLocalRegexBundleDetector(
-    ConfiguredModuleCollectorCandidateDetector[RepeatedLocalRegexBundleCandidate]
-):
-    candidate_collector = staticmethod(_repeated_local_regex_bundle_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated local regex bundles should become a typed syntax authority",
-        "Sibling functions redeclare the same substantial regex grammar locally. That makes each function a partial syntax authority instead of deriving parsing from one typed grammar object.",
-        "single typed syntax authority deriving all repeated regex recognizers",
-        "substantial regex literals are redeclared inside sibling functions",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, regex_candidate: RepeatedLocalRegexBundleCandidate
-    ) -> RefactorFinding:
-        functions = ", ".join(regex_candidate.function_names)
-        return self.build_finding(
-            (
-                f"{regex_candidate.file_path} repeats {len(regex_candidate.regex_literals)} "
-                f"local regex grammar literals across {functions}."
-            ),
-            regex_candidate.evidence_locations,
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(regex_candidate.function_names),
-                mapping_name="regex syntax authority",
-                field_names=regex_candidate.regex_literals,
-                source_name=regex_candidate.owner_name,
-                identity_field_names=(),
             ),
         )
 

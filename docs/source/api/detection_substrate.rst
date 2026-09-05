@@ -42,6 +42,26 @@ derivation. The recorded :download:`native contract evidence refactor
 <../../examples/native_contract_evidence_refactor.py>` applies this change
 through scoped assignments, a function prelude and exact target patches.
 
+The ``repeated_local_regex_bundle`` observer recognises calls through stable
+module bindings to declared standard-library regex operations. Lexical lookup
+excludes parameters and local names that shadow those bindings. Module aliases,
+imported function aliases and single-assignment captured aliases are supported;
+argument positions and keywords are checked against each operation's native
+signature. Unpacked calls, invalid bindings and unresolved local aliases do not
+contribute pattern evidence. This is a source-level observation, not a runtime
+equivalence or pattern-validity proof. Ownership remains undecided, and the
+observer does not synthesise a rewrite or prescribe a new grammar class.
+
+The observer uses the shared function syntax index, lexical dependency
+projection, declaration index and module binding snapshot. Modules without
+relevant imported bindings skip the deeper lexical analysis. A bounded source
+projection cache reuses these facts across scans; threshold-dependent decisions
+remain uncached. ``release_module_analysis_memory`` clears that cache through
+the existing discovery mechanism. The recorded
+:download:`regex observation cleanup <../../examples/regex_observation_cleanup.py>`
+removes the obsolete spelling-based collector and duplicate function index;
+the new source-backed detector declaration is a prerequisite of that plan.
+
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the
 finding's evidence tuple, so finding-backed semantic-descent graphs are derived
