@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodPlanDocument,
@@ -351,7 +354,7 @@ def test_renames_forward_annotations_from_final_assignment_authority(
     assert "CanonicalType = int" in rewritten
 
 
-def test_binding_rename_rejects_unresolved_eager_forward_annotation(
+def test_binding_rename_respects_runtime_forward_annotation_mode(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/__init__.py", "")
@@ -369,13 +372,31 @@ def test_binding_rename_rejects_unresolved_eager_forward_annotation(
         new_name="CanonicalType",
     )
 
-    with pytest.raises(
-        CodemodOperationPreflightError,
-        match="unresolved eager annotation reference",
-    ):
-        RefactorRecipe("reject-eager-forward-annotation").with_operation(
-            operation
-        ).simulate(snapshot)
+    command = [
+        sys.executable, "-c",
+        "import runpy, sys; namespace = runpy.run_path(sys.argv[1]); "
+        "print(namespace['identity'].__annotations__['value'] is int)",
+        str(module_path),
+    ]
+    before = subprocess.run(command, capture_output=True, text=True)
+    recipe = RefactorRecipe("rename-forward-annotation").with_operation(operation)
+    if ModuleAnnotationEvaluationMode.runtime_default().annotations_execute_at_declaration:
+        assert before.returncode != 0
+        assert "NameError" in before.stderr
+        with pytest.raises(
+            CodemodOperationPreflightError,
+            match="unresolved eager annotation reference",
+        ):
+            recipe.simulate(snapshot)
+        return
+    assert before.returncode == 0, before.stderr
+    assert before.stdout.strip() == "True"
+    simulation = recipe.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = subprocess.run(command, capture_output=True, text=True, check=True)
+    assert after.stdout == before.stdout
+    assert "value: CanonicalType" in module_path.read_text()
 
 
 def test_binding_rename_rejects_ambiguous_assignment_authority(
