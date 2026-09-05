@@ -5938,79 +5938,6 @@ def _schema_accessor_family_candidates(
     )
 
 
-def _indexed_family_wrapper_candidates_for_function(
-    module: ParsedModule, node: ast.FunctionDef
-) -> Iterable[IndexedFamilyWrapperCandidate]:
-    del module
-    if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
-        return
-    value = node.body[0].value
-    if not isinstance(value, ast.ListComp) or len(value.generators) != 1:
-        return
-    generator = value.generators[0]
-    if not isinstance(generator.target, ast.Name) or generator.target.id != "item":
-        return
-    if not isinstance(generator.iter, ast.Call):
-        return
-    collector_name = AstExpressionProjection.terminal_name(generator.iter.func)
-    if collector_name not in {
-        "_collect_items_from_spec_root",
-        "collect_family_items",
-    }:
-        return
-    if collector_name == "_collect_items_from_spec_root":
-        if len(generator.iter.args) < 3:
-            return
-        spec_root_name = AstExpressionProjection.terminal_name(generator.iter.args[0])
-        item_type_name = AstExpressionProjection.terminal_name(generator.iter.args[2])
-    else:
-        if len(generator.iter.args) < 2:
-            return
-        spec_root_name = AstExpressionProjection.terminal_name(generator.iter.args[1])
-        item_type_name = AstExpressionProjection.terminal_name(generator.iter.args[1])
-    if spec_root_name is None or item_type_name is None:
-        return
-    if not _is_instance_filter(generator.ifs, item_type_name):
-        return
-    yield IndexedFamilyWrapperCandidate(
-        function_name=node.name,
-        lineno=node.lineno,
-        collector_name=collector_name,
-        spec_root_name=spec_root_name,
-        item_type_name=item_type_name,
-    )
-
-
-def _indexed_family_wrapper_candidates(
-    module: ParsedModule,
-) -> tuple[IndexedFamilyWrapperCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        module.module,
-        ast.FunctionDef,
-        _indexed_family_wrapper_candidates_for_function,
-        sort_key=lambda item: item.lineno,
-    )
-
-
-def _is_instance_filter(filters: list[ast.expr], item_type_name: str) -> bool:
-    for condition in filters:
-        if not isinstance(condition, ast.Call):
-            continue
-        if AstExpressionProjection.terminal_name(condition.func) != "isinstance":
-            continue
-        if len(condition.args) != 2:
-            continue
-        if (
-            not isinstance(condition.args[0], ast.Name)
-            or condition.args[0].id != "item"
-        ):
-            continue
-        if AstExpressionProjection.terminal_name(condition.args[1]) == item_type_name:
-            return True
-    return False
-
-
 def _collect_class_sentinel_attrs(
     module: ast.Module,
 ) -> dict[str, list[SourceLocation]]:
@@ -6032,28 +5959,6 @@ def _collect_class_sentinel_attrs(
                 SourceLocation("<module>", stmt.lineno, f"{node.name}.{target.id}")
             )
     return grouped
-
-
-def _predicate_factory_chain_branch_count(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> int | None:
-    current = as_ast(function.body[0], ast.If) if function.body else None
-    branches: list[ast.If] = []
-    while current is not None:
-        branches.append(current)
-        current = as_ast(single_item(current.orelse), ast.If)
-    if len(branches) < 2:
-        return None
-    for branch in branches:
-        if not _test_has_call(branch.test):
-            return None
-        if not any((return_call(statement) is not None for statement in branch.body)):
-            return None
-    return len(branches)
-
-
-def _test_has_call(node: ast.AST) -> bool:
-    return any((isinstance(child, ast.Call) for child in _walk_nodes(node)))
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

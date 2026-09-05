@@ -10299,7 +10299,6 @@ def test_ast_keyword_source_projection_owns_keyword_rendering(
     )
 
 
-PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
 REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
@@ -14555,27 +14554,6 @@ def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
     assert "sample_biased_rotations" in finding.summary
 
 
-def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass UnsafeRequest:\n    _handler_impl: object\n    payload: object\n\n\n@dataclass(frozen=True)\nclass SafeRequest:\n    handler_runtime: HandlerRuntime\n",
-    )
-
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID
-        )
-    )
-
-    assert "UnsafeRequest" in finding.summary
-    assert "_handler_impl" in finding.summary
-    assert "SafeRequest" not in finding.summary
-
-
 def test_source_segment_projection_reuses_cached_geometry(
     tmp_path: Path,
 ) -> None:
@@ -15049,16 +15027,6 @@ def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 1 for finding in findings))
 
 
-def test_detects_predicate_factory_chain(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef build(param_type):\n    if is_optional(param_type):\n        return OptionalInfo()\n    elif is_dataclass(param_type):\n        return DataclassInfo()\n    return GenericInfo()\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 2 for finding in findings))
-
-
 def test_detects_config_attribute_dispatch(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -15265,7 +15233,14 @@ def test_markdown_output_reports_required_relation_without_first_move(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\ndef build(param_type):\n    if is_optional(param_type):\n        return OptionalInfo()\n    elif is_dataclass(param_type):\n        return DataclassInfo()\n    return GenericInfo()\n",
+        "\ndef render(pattern_id):\n"
+        "    if pattern_id == 3:\n"
+        "        return 'dispatch'\n"
+        "    elif pattern_id == 5:\n"
+        "        return 'abc'\n"
+        "    elif pattern_id == 14:\n"
+        "        return 'schema'\n"
+        "    return 'other'\n",
     )
     findings = analyze_path(tmp_path)
     output = MARKDOWN_RENDERER.report(findings)
@@ -23743,16 +23718,6 @@ def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
     assert "polymorphic family" in finding.title
 
 
-def test_detects_manual_indexed_family_expansion(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass FieldObservationSpec: ...\nclass FieldObservation: ...\nclass ConfigDispatchObservationSpec: ...\nclass ConfigDispatchObservation: ...\n\n\ndef collect_field_observations(parsed_module):\n    return [\n        item\n        for item in _collect_items_from_spec_root(\n            FieldObservationSpec, parsed_module, FieldObservation\n        )\n        if isinstance(item, FieldObservation)\n    ]\n\n\ndef collect_config_dispatch_observations(parsed_module):\n    return [\n        item\n        for item in _collect_items_from_spec_root(\n            ConfigDispatchObservationSpec, parsed_module, ConfigDispatchObservation\n        )\n        if isinstance(item, ConfigDispatchObservation)\n    ]\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.detector_id == "manual_indexed_family" for finding in findings))
-
-
 def test_collects_scoped_shape_wrapper_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
@@ -25561,76 +25526,6 @@ def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Payload" in finding.summary
     assert "ViewerStreamKwargName" in finding.summary
-
-
-def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/proof_prefix.py",
-        """
-class DeferredStreamPrefixCompactionAuthority:
-    @classmethod
-    def rebase(cls, certificate, prefix_summary, retained_indices, original_count):
-        certified_count = certificate.prefix_count
-        if certified_count == original_count:
-            projected_summary = subset(prefix_summary, retained_indices)
-            return PrefixCertificate.from_optional_summary(
-                projected_summary,
-                prefix_count=len(retained_indices),
-            )
-        if certified_count > original_count:
-            source_summary = subset(prefix_summary, range(original_count))
-            projected_summary = subset(source_summary, retained_indices)
-            trailing_summary = subset(prefix_summary, range(original_count, certified_count))
-            return PrefixCertificate.from_summary_sequence(
-                (projected_summary, trailing_summary),
-                prefix_count=len(retained_indices) + certified_count - original_count,
-            )
-        if certified_count == len(retained_indices):
-            projected_summary = subset(prefix_summary, retained_indices)
-            return PrefixCertificate.from_optional_summary(
-                projected_summary,
-                prefix_count=len(retained_indices),
-            )
-        raise ValueError("unrelated")
-""",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "load_bearing_relation_branch"
-        )
-    )
-    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
-    assert "DeferredStreamPrefixCompactionAuthority.rebase" in (finding.summary)
-    assert "nominal relation-case" in (finding.capability_gap or "")
-
-
-def test_load_bearing_relation_branch_accepts_nominal_case_authority(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/proof_prefix.py",
-        """
-class StreamPrefixCompactionRelationAuthority:
-    @staticmethod
-    def certificate(request):
-        cases = tuple(
-            case
-            for case in RelationCase.__registry__.values()
-            if case().matches(request)
-        )
-        if len(cases) != 1:
-            raise ValueError("requires exactly one case")
-        return cases[0]().certificate(request)
-""",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "load_bearing_relation_branch" for finding in findings
-    )
 
 
 def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:

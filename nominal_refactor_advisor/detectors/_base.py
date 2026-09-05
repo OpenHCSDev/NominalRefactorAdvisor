@@ -7943,15 +7943,6 @@ class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class IndexedFamilyWrapperCandidate:
-    function_name: str
-    lineno: int
-    collector_name: str
-    spec_root_name: str
-    item_type_name: str
-
-
-@dataclass(frozen=True)
 class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
     qualname: str
 
