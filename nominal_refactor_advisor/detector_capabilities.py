@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from abc import ABC
+
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
@@ -57,7 +59,7 @@ class DetectorContributionRole(StrEnum):
     def __new__(
         cls,
         value: str,
-        contract_type: type[object],
+        contract_type: type[ABC],
         description: str,
     ) -> "DetectorContributionRole":
         member = str.__new__(cls, value)
@@ -67,7 +69,7 @@ class DetectorContributionRole(StrEnum):
         return member
 
     @property
-    def contract_type(self) -> type[object]:
+    def contract_type(self) -> type[ABC]:
         return self._contract_type
 
     @property
@@ -85,11 +87,7 @@ class DetectorContributionRole(StrEnum):
 
         if not self.applies_to(detector_type):
             return None
-        abstract_member_names = tuple(
-            member_name
-            for member_name, member in vars(self.contract_type).items()
-            if getattr(member, "__isabstractmethod__", False)
-        )
+        abstract_member_names = self.contract_type.__abstractmethods__
         return DetectorContributionEvidence(
             role=self,
             contract=NominalDeclarationIdentity.from_declaration(self.contract_type),
@@ -122,24 +120,24 @@ class NominalContractMemberEvidence(DataclassJsonReport):
     @classmethod
     def from_mro(
         cls,
-        declaration_type: type[object],
-        requirement_type: type[object],
+        declaration_type: type[ABC],
+        requirement_type: type[ABC],
         member_name: str,
     ) -> "NominalContractMemberEvidence":
+        if (
+            requirement_type not in declaration_type.__mro__
+            or member_name not in requirement_type.__abstractmethods__
+        ):
+            raise TypeError(
+                f"{member_name!r} is not a nominal contract obligation of "
+                f"{declaration_type.__qualname__} through {requirement_type.__qualname__}"
+            )
         implementation_type = next(
-            (
-                candidate
-                for candidate in declaration_type.__mro__
-                if member_name in vars(candidate)
-                and not getattr(
-                    vars(candidate)[member_name],
-                    "__isabstractmethod__",
-                    False,
-                )
-            ),
-            None,
+            candidate
+            for candidate in declaration_type.__mro__
+            if member_name in vars(candidate)
         )
-        if implementation_type is None:
+        if member_name in declaration_type.__abstractmethods__:
             raise TypeError(
                 f"{declaration_type.__qualname__} does not fulfill abstract "
                 f"member {member_name!r} through its MRO"
@@ -159,7 +157,7 @@ class NominalContractMemberEvidence(DataclassJsonReport):
 
 @cache
 def _declaration_member_source(
-    declaration_type: type[object],
+    declaration_type: type[ABC],
     member_name: str,
 ) -> SourceLocation:
     """Recover one physical member source once for every composed leaf."""

@@ -33,6 +33,15 @@ typed evidence to a declared evaluator; they do not grant recipe capability.
 Run ``nominal-refactor-advisor --detector-capabilities`` to emit the same
 declaration-derived inventory as JSON without performing a source scan.
 
+Contract-member evidence derives required slots from the contract's native
+``__abstractmethods__`` set, including inherited obligations. Implementation
+ownership is the first declaration supplying the member in Python's MRO. An
+abstract override cannot be bypassed to claim a concrete ancestor's
+implementation, and virtual ABC registration does not establish native
+derivation. The recorded :download:`native contract evidence refactor
+<../../examples/native_contract_evidence_refactor.py>` applies this change
+through scoped assignments, a function prelude and exact target patches.
+
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the
 finding's evidence tuple, so finding-backed semantic-descent graphs are derived

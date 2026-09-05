@@ -285,3 +285,24 @@ Native before/after CLI tests cover function, async-function, class and module
 annotations, both alias orders, and explicit postponed versus interpreter-default
 evaluation on Python 3.11 and 3.14. This demonstrates a targeted authored change;
 the DSL does not infer that the evaluation policy is the desired one.
+
+### Capability Inventory: Native Contract Fulfilment
+
+The current inventory contains 81 required-relation observers, 21 recipe
+evaluators and 15 recipe synthesis declarations. Those counts describe
+contracts, not successful source transformations. Inspection of their evidence
+producer found two deviations from native derivation: it omitted inherited
+abstract slots and skipped abstract overrides when looking for a concrete
+implementation. The first left all 15 synthesis contributions without their
+inherited evaluator-slot evidence. The second could report fulfilment for a
+class that Python refused to instantiate.
+
+The proof now uses the ABC's native obligation set and first-owner MRO lookup,
+with explicit rejection of unrelated or merely virtual contract membership.
+Native regression cases distinguish abstract-first and concrete-first multiple
+inheritance, re-abstraction, unrelated methods and virtual registration. Existing
+catalogue tests now check native obligations instead of reproducing the old
+filtered lookup. `docs/examples/native_contract_evidence_refactor.py` records
+the applied nine-stage DSL plan. Exact annotation and guard patches remain
+authored source fragments; this plan does not demonstrate semantic selectors
+for arbitrary expression edits.

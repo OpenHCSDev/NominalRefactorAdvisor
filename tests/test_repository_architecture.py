@@ -253,25 +253,15 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
                     if candidate.__module__ == member.implementation.module_name
                     and candidate.__qualname__ == member.implementation.qualname
                 )
-                assert getattr(
-                    vars(requirement_type)[member.member_name],
-                    "__isabstractmethod__",
-                    False,
-                )
-                assert not getattr(
-                    vars(implementation_type)[member.member_name],
-                    "__isabstractmethod__",
-                    False,
+                assert member.member_name in requirement_type.__abstractmethods__
+                assert (
+                    member.member_name
+                    not in capability.detector_type.__abstractmethods__
                 )
                 assert implementation_type is next(
                     candidate
                     for candidate in capability.detector_type.__mro__
                     if member.member_name in vars(candidate)
-                    and not getattr(
-                        vars(candidate)[member.member_name],
-                        "__isabstractmethod__",
-                        False,
-                    )
                 )
 
     numeric_dispatch = next(
