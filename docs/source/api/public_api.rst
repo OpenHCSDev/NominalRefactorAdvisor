@@ -42,6 +42,18 @@ hooks, cyclic graphs and inconsistent C3 orders remain open. Imported base
 resolution preserves qualified paths across analysis-root boundaries; an
 unrelated class with the same terminal name does not establish a binding.
 
+``CompactFunctionFlow.binding_resolution_for`` owns source-write selection for
+lexical and class-method lookup. Explicit use positions select the preceding
+write; deferred module and class namespace lookup uses the final write.
+Deferred closure lookup with multiple writes remains unresolved. Conditional
+writes also remain unresolved.
+
+Method selection checks that the selected definition is the function's source
+declaration. Reassigned or deleted methods cannot authorise call replacement;
+a later method definition can supersede an earlier assignment. Annotation-only
+statements do not replace module or class values, while function-local
+annotations retain their lexical binding effect.
+
 The codemod surface models source-anchored candidate rewrites and simulations.
 A clean current-snapshot simulation is not an application recommendation;
 export and application require a proof across reachable refactor trajectories.

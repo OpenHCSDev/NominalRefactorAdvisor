@@ -219,6 +219,17 @@ class CompactFlowOwnerKind(StrEnum):
         member.supports_exact_value_aliases = supports_exact_value_aliases
         return member
 
+    def deferred_binding_resolution(
+        self, mutations: tuple[CompactLexicalMutation, ...]
+    ) -> CompactBindingMutationResolution:
+        """Module and class bodies finish before deferred namespace lookup."""
+
+        if len(mutations) == 1 or not self.is_function_scope:
+            return ExactCompactBindingMutation(mutations[-1])
+        return OpenCompactBindingMutation(
+            CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
+        )
+
 
 class CompactControlBranchKind(StrEnum):
     """Typed child suites needed for conservative dominance reasoning."""
@@ -902,6 +913,56 @@ class CompactLexicalMutation:
     line: int
 
 
+class CompactFunctionTargetResolutionViolation(StrEnum):
+    """Typed reasons a call target lacks one closed nominal declaration."""
+
+    DYNAMIC_BINDING = "dynamic_binding"
+    MISSING_DECLARATION = "missing_declaration"
+    AMBIGUOUS_DECLARATION = "ambiguous_declaration"
+    INCOMPLETE_RECEIVER_FAMILY = "incomplete_receiver_family"
+    UNSUPPORTED_RECEIVER = "unsupported_receiver"
+
+
+class CompactBindingMutationResolution(ABC):
+    """The source write selected for a name, or an unresolved lookup obligation."""
+
+    @property
+    @abstractmethod
+    def mutation(self) -> CompactLexicalMutation | None:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def violation(self) -> CompactFunctionTargetResolutionViolation | None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExactCompactBindingMutation(CompactBindingMutationResolution):
+    selected_mutation: CompactLexicalMutation
+
+    @property
+    def mutation(self) -> CompactLexicalMutation:
+        return self.selected_mutation
+
+    @property
+    def violation(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class OpenCompactBindingMutation(CompactBindingMutationResolution):
+    failure: CompactFunctionTargetResolutionViolation
+
+    @property
+    def mutation(self) -> None:
+        return None
+
+    @property
+    def violation(self) -> CompactFunctionTargetResolutionViolation:
+        return self.failure
+
+
 class CompactValueOriginViolation(StrEnum):
     """Reason one lexical value lacks a single unchanged local origin."""
 
@@ -1253,6 +1314,31 @@ class CompactFunctionFlow:
                 continue
             grouped.setdefault(mutation.reference.root_name, []).append(mutation)
         return {name: tuple(mutations) for name, mutations in grouped.items()}
+
+    def binding_resolution_for(
+        self, root_name: str, use_position: CompactFlowPosition | None = None
+    ) -> CompactBindingMutationResolution | None:
+        """Select one binding from ordered flow facts; absence permits outer lookup."""
+
+        mutations = self.mutations_by_root_name.get(root_name, ())
+        if not mutations:
+            return None
+        if any(mutation.position.branch_path for mutation in mutations):
+            return OpenCompactBindingMutation(
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+            )
+        if use_position is None:
+            return self.owner.kind.deferred_binding_resolution(mutations)
+        dominating = tuple(
+            mutation
+            for mutation in mutations
+            if mutation.position.dominates(use_position)
+        )
+        if not dominating:
+            return OpenCompactBindingMutation(
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+            )
+        return ExactCompactBindingMutation(dominating[-1])
 
     @cached_property
     def exact_aliases_by_binding_mutation(
@@ -1753,6 +1839,8 @@ class _CompactFlowCollector(ast.NodeVisitor):
             )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is None and not self.owner.kind.is_function_scope:
+            return
         if isinstance(node.value, ast.Call):
             binding = LexicalValueReference.from_expression(node.target)
             if binding is not None:

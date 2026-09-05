@@ -15,6 +15,8 @@ from nominal_refactor_advisor.product_flow import (
     CompactFunctionBindingKind,
     CompactFunctionSignature,
     CompactFlowOwnerKind,
+    CompactFunctionTargetResolutionViolation,
+    CompactMutationKind,
     CompactKeywordArgument,
     CompactParameterKind,
     CompactProductFlowModuleProjectionFamily,
@@ -24,9 +26,9 @@ from nominal_refactor_advisor.product_flow import (
     ExactCompactValueOrigin,
     LexicalValueReference,
     OpenCompactValueOrigin,
+    OpenCompactBindingMutation,
     compact_product_flow_projection,
 )
-
 
 def _parsed_module(source: str) -> ParsedModule:
     return ParsedModule(
@@ -46,6 +48,46 @@ def _signature(source: str) -> CompactFunctionSignature:
 
 def _value(name: str) -> LexicalValueReference:
     return LexicalValueReference(name)
+
+
+def test_annotation_only_statements_bind_locals_but_not_namespaces() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "value: int\nclass Owner:\n value: int\ndef run():\n value: int\n"
+        )
+    )
+    for flow in projection.flows:
+        assert (
+            "value" in flow.mutations_by_root_name
+        ) is flow.owner.kind.is_function_scope
+
+
+def test_binding_selection_distinguishes_source_position_and_final_namespace() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module("def consume(): pass\nconsume()\nconsume = None\n")
+    )
+    flow = projection.flows[0]
+    immediate = flow.binding_resolution_for("consume", flow.calls[0].position)
+    deferred = flow.binding_resolution_for("consume")
+    assert immediate is not None and immediate.mutation is not None
+    assert deferred is not None and deferred.mutation is not None
+    assert immediate.mutation.kind is CompactMutationKind.DEFINITION
+    assert deferred.mutation.kind is CompactMutationKind.ASSIGNMENT
+    assert flow.binding_resolution_for("absent") is None
+    assert pickle.loads(pickle.dumps(immediate)) == immediate
+
+
+def test_deferred_closure_binding_keeps_multiple_writes_unresolved() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module("def outer():\n value = 1\n value = 2\n")
+    )
+    flow = next(flow for flow in projection.flows if flow.owner.qualname == "outer")
+    resolution = flow.binding_resolution_for("value")
+    assert isinstance(resolution, OpenCompactBindingMutation)
+    assert (
+        resolution.violation
+        is CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
+    )
 
 
 def _contains_ast(value: object) -> bool:

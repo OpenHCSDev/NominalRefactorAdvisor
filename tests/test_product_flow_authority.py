@@ -520,6 +520,67 @@ def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
     assert resolution.callee.identity.symbol == "pkg.ambiguous_methods.Left.consume"
 
 
+@pytest.mark.parametrize(
+    "write",
+    (
+        "    consume = replacement\n",
+        "    consume: object = replacement\n",
+        "    if flag:\n        consume = replacement\n",
+        "    del consume\n",
+        "    class consume: pass\n",
+    ),
+)
+@pytest.mark.parametrize("base", ("Owner", "Child"))
+def test_method_selection_respects_class_body_writes(write: str, base: str) -> None:
+    repository = _repository(
+        _module(
+            "probe",
+            "class Owner:\n"
+            "    @staticmethod\n"
+            "    def consume(value): return value\n"
+            + write
+            + "class Child(Owner): pass\n"
+            f"def run(): return {base}.consume(1)\n",
+        )
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+    assert (
+        resolution.target_resolution.violation
+        is CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+    )
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    (
+        ("    consume = replacement\n", ""),
+        ("", "    consume: object\n"),
+    ),
+)
+def test_method_selection_uses_final_class_binding(before: str, after: str) -> None:
+    repository = _repository(
+        _module(
+            "probe",
+            "class Owner:\n" + before + "    @staticmethod\n"
+            "    def consume(value): return value\n"
+            + after
+            + "def run(): return Owner.consume(1)\n",
+        )
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is not None
+    assert resolution.resolved_call.callee.identity.symbol == "probe.Owner.consume"
+
+
 def test_repository_rejects_duplicate_nominal_function_declaration() -> None:
     repository = _repository(
         _module(

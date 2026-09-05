@@ -209,6 +209,57 @@ def test_nested_selected_calls_require_separate_stages(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == source
 
 
+@pytest.mark.parametrize("base", ("Owner", "Child"))
+def test_dsl_does_not_replace_shadowed_method_calls(tmp_path: Path, base: str) -> None:
+    path = tmp_path / "probe.py"
+    source = (
+        "class Owner:\n"
+        "    @staticmethod\n"
+        "    def render(value): return value + 1\n"
+        "    render = staticmethod(lambda value: value + 100)\n"
+        "class Child(Owner): pass\n"
+        f"def run(value=3): return {base}.render(value)\n"
+        "print(run())\n"
+    )
+    path.write_text(source, newline="", encoding="utf-8")
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    assert before.strip() == "103"
+    sequence = CodemodPlanSequence.from_operations(
+        (_operation(path, "value + 1", callee="Owner.render"),)
+    )
+    with pytest.raises(ValueError, match="[Uu]nresolved|No resolved"):
+        sequence.simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
+    assert path.read_bytes() == source.encode()
+    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+
+
+def test_dsl_replaces_method_after_earlier_class_assignment(tmp_path: Path) -> None:
+    path = tmp_path / "probe.py"
+    source = (
+        "class Owner:\n"
+        "    render = None\n"
+        "    @staticmethod\n"
+        "    def render(value): return value + 1\n"
+        "    render: object\n"
+        "def run(value=3): return Owner.render(value)\n"
+        "print(run())\n"
+    )
+    path.write_text(source, newline="", encoding="utf-8")
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    sequence = CodemodPlanSequence.from_operations(
+        (_operation(path, "value + 1", callee="Owner.render"),)
+    )
+    simulation = sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert simulation.is_clean
+    simulation.apply()
+    assert "Owner.render(value)" not in path.read_text(encoding="utf-8")
+    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+
+
 def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
     tmp_path: Path,
 ) -> None:

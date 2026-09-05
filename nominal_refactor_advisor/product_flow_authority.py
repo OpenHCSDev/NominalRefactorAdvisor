@@ -33,6 +33,8 @@ from .product_flow import (
     CompactFunctionCall,
     CompactFunctionDeclaration,
     CompactFunctionFlow,
+    CompactFunctionTargetResolutionViolation as CompactFunctionTargetResolutionViolation,
+    CompactLexicalMutation,
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
     CompactProductFlowModuleProjectionFamily,
@@ -41,7 +43,6 @@ from .product_flow import (
     LexicalValueReference,
     compact_product_flow_projection,
 )
-
 
 @dataclass(frozen=True)
 class CompactProductFlowContext:
@@ -87,16 +88,6 @@ class ResolvedCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return (self.resolved_declaration.identity.symbol,)
-
-
-class CompactFunctionTargetResolutionViolation(StrEnum):
-    """Typed reasons a call target lacks one closed nominal declaration."""
-
-    DYNAMIC_BINDING = "dynamic_binding"
-    MISSING_DECLARATION = "missing_declaration"
-    AMBIGUOUS_DECLARATION = "ambiguous_declaration"
-    INCOMPLETE_RECEIVER_FAMILY = "incomplete_receiver_family"
-    UNSUPPORTED_RECEIVER = "unsupported_receiver"
 
 
 @dataclass(frozen=True)
@@ -1097,41 +1088,16 @@ class CompactProductFlowRepository:
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
             )
 
-        mutations = tuple(
-            mutation
-            for mutation in context.flow.mutations
-            if mutation.reference.root_name == root_name
-            and not mutation.reference.attribute_path
-        )
-        if not mutations:
+        selection = context.flow.binding_resolution_for(root_name, use_position)
+        if selection is None:
             return None
-        if any(mutation.position.branch_path for mutation in mutations):
+        if selection.violation is not None:
             return OpenCompactFunctionTarget(
                 self._possible_binding_symbols(context, reference),
-                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+                selection.violation,
             )
-
-        if use_position is not None:
-            dominating = tuple(
-                mutation
-                for mutation in mutations
-                if mutation.position.dominates(use_position)
-            )
-            if not dominating:
-                return OpenCompactFunctionTarget(
-                    self._possible_binding_symbols(context, reference),
-                    CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-                )
-            binding = dominating[-1]
-        elif context.flow.owner.kind.is_module_scope:
-            binding = mutations[-1]
-        elif len(mutations) == 1:
-            binding = mutations[0]
-        else:
-            return OpenCompactFunctionTarget(
-                self._possible_binding_symbols(context, reference),
-                CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-            )
+        binding = selection.mutation
+        assert binding is not None
 
         if binding.kind.is_import_binding:
             alias_target = (
@@ -1162,7 +1128,8 @@ class CompactProductFlowRepository:
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
                 )
             binding_symbol = ".".join((binding_symbol, *reference.attribute_path))
-        return self._function_resolution_for_symbol(binding_symbol)
+            return self._function_resolution_for_symbol(binding_symbol)
+        return self._selected_function_resolution(binding_symbol, binding)
 
     def _possible_binding_symbols(
         self,
@@ -1195,6 +1162,16 @@ class CompactProductFlowRepository:
         self,
         symbol: str,
     ) -> CompactFunctionTargetResolution:
+        owner_symbol, _, member_name = symbol.rpartition(".")
+        owner = self.class_index.class_for(owner_symbol)
+        if owner is not None:
+            return self._class_method_resolution(owner, member_name)
+        return self._declared_function_resolution(symbol)
+
+    def _declared_function_resolution(
+        self,
+        symbol: str,
+    ) -> CompactFunctionTargetResolution:
         declaration = self.function_declarations_by_symbol.get(symbol)
         if declaration is not None:
             return ResolvedCompactFunctionTarget(declaration)
@@ -1203,66 +1180,75 @@ class CompactProductFlowRepository:
                 (symbol,),
                 CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
             )
-        owner_symbol, separator, member_name = symbol.rpartition(".")
-        if not separator:
-            return OpenCompactFunctionTarget(
-                (symbol,),
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-            )
-        owner = self.class_index.class_for(owner_symbol)
-        if owner is None:
-            return OpenCompactFunctionTarget(
-                (symbol,),
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-            )
-        if owner.method_names.count(member_name) > 1:
-            return OpenCompactFunctionTarget(
-                (symbol,),
-                CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-            )
-        return self._inherited_method_resolution(owner_symbol, member_name)
+        return OpenCompactFunctionTarget(
+            (symbol,),
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        )
 
-    def _inherited_method_resolution(
+    def _selected_function_resolution(
         self,
-        owner_symbol: str,
+        symbol: str,
+        binding: CompactLexicalMutation,
+    ) -> CompactFunctionTargetResolution:
+        """A selected definition must identify this function's source declaration."""
+
+        resolution = self._declared_function_resolution(symbol)
+        if (
+            resolution.declaration is not None
+            and resolution.declaration.line != binding.line
+        ):
+            return OpenCompactFunctionTarget(
+                (symbol,),
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            )
+        return resolution
+
+    def _class_method_resolution(
+        self,
+        owner: CompactIndexedClass,
         member_name: str,
     ) -> CompactFunctionTargetResolution:
         possible_symbols = [
             f"{class_symbol}.{member_name}"
             for class_symbol in (
-                owner_symbol,
-                *self.class_index.ancestor_symbols(owner_symbol),
+                owner.symbol,
+                *self.class_index.ancestor_symbols(owner.symbol),
             )
         ]
-        mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
-        if mro is None:
-            return OpenCompactFunctionTarget(
-                tuple(possible_symbols),
-                CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
-            )
-        for current in mro.declarations:
+        owners = (owner,)
+        context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
+        if context is None or member_name not in context.flow.mutations_by_root_name:
+            mro = self.class_index.mro_authority.resolve(owner.symbol).mro_type
+            if mro is None:
+                return OpenCompactFunctionTarget(
+                    tuple(possible_symbols),
+                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+                )
+            owners = mro.declarations
+        for current in owners:
             candidate_symbol = f"{current.symbol}.{member_name}"
-            if any(
-                member.name == member_name and member.expression is not None
-                for member in current.direct_member_declarations
-            ):
+            context = self.flow_contexts_by_owner_symbol.get(current.symbol)
+            if context is None:
+                return OpenCompactFunctionTarget(
+                    tuple(possible_symbols),
+                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+                )
+            selection = context.flow.binding_resolution_for(member_name)
+            if selection is None:
+                continue
+            if selection.violation is not None:
+                return OpenCompactFunctionTarget(
+                    tuple(possible_symbols),
+                    selection.violation,
+                )
+            binding = selection.mutation
+            assert binding is not None
+            if not binding.kind.is_definition_binding:
                 return OpenCompactFunctionTarget(
                     tuple(possible_symbols),
                     CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
                 )
-            declaration = self.function_declarations_by_symbol.get(candidate_symbol)
-            if declaration is not None:
-                return ResolvedCompactFunctionTarget(declaration)
-            if candidate_symbol in self.ambiguous_function_declaration_symbols:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-                )
-            if current.method_names.count(member_name) > 1:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-                )
+            return self._selected_function_resolution(candidate_symbol, binding)
         return OpenCompactFunctionTarget(
             tuple(possible_symbols),
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
