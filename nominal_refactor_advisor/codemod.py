@@ -749,9 +749,6 @@ class SourceDerivedAuthorityProjectionOperation(
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
 
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), self.projection_target)
-
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceTargetOperation(SourceReprovedOperation):
@@ -2334,16 +2331,6 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
         default=(),
     )
 
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (
-            *super().referenced_source_targets(),
-            *(
-                target
-                for replacement in self.call_replacements
-                for target in replacement.referenced_source_targets()
-            ),
-        )
-
     def source_edits_from_snapshot(
         self,
         context: CodemodSourceSnapshot,
@@ -2649,9 +2636,6 @@ class DirectClassBaseReplacementOperationABC(
     replacement_base: SourceRewriteTarget = codemod_payload_field(
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), self.replacement_base)
 
     @abstractmethod
     def source_edits_from_snapshot(
@@ -4500,7 +4484,7 @@ class PrependFunctionBodyOperation(FunctionBodySourcePayload, FunctionMutationOp
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceDeclaredCallArgumentsOperation(SourceReprovedOperation):
+class ReplaceDeclaredCallArgumentsOperation(RepositorySourceReprovedOperation):
     """Replace arguments of declaration-resolved calls in one selected scope."""
 
     callee: SourceRewriteTarget = codemod_payload_field(PayloadRecordValueCodec(SourceRewriteTarget))

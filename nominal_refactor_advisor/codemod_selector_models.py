@@ -173,7 +173,7 @@ class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewriteTargetReference:
+class SourceRewriteTargetReference(CodemodPayloadRecord):
     """Shared owner for DSL records that reference source-index targets."""
 
     target: SourceRewriteTarget = codemod_payload_field(
@@ -182,7 +182,7 @@ class SourceRewriteTargetReference:
     )
 
     def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (self.target,)
+        return self.records_of_type(SourceRewriteTarget)
 
 
 @dataclass(frozen=True, kw_only=True)

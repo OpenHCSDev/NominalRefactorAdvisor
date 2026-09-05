@@ -195,20 +195,33 @@ The following plan extracts two renderer helpers from NRA's historical
 ``codemod.py`` at revision ``b849d95``. The final stage rewrites the promoted
 method's multiline signature, retaining its parameters and annotations:
 
-.. literalinclude:: ../../examples/renderer_extraction_sequence.json
-   :language: json
+Use ``CodemodPlanSequence.from_operations`` to write the edits directly in Python.
+It derives the recipe wrappers and stage identifiers and re-proves each operation
+against the preceding stage's output. Reuse ``SourceRewriteTarget`` objects when
+several edits address the same declaration:
 
-Change the file, class, and member names for your source, and save the plan as
-``renderer-plan.json``. Preview the complete batch:
+.. literalinclude:: ../../examples/renderer_refactor.py
+   :language: python
+   :start-at: module =
+   :end-before: WITNESS =
+
+Download the :download:`complete Python example <../../examples/renderer_refactor.py>`
+and change its file, class, and member names for your source. The script emits
+the normal JSON plan; it does not apply edits. Preview its combined extraction
+and witness migration:
 
 .. code-block:: bash
 
-   nominal-refactor-advisor path/to/package \
-     --codemod-plan renderer-plan.json --codemod-simulate
+   python renderer_refactor.py | nominal-refactor-advisor path/to/package \
+     --codemod-plan - --codemod-simulate
 
 Review the diff, then use ``--codemod-apply`` in place of
 ``--codemod-simulate`` and run the affected tests. Method promotion moves the
 existing bodies and decorators; the plan does not contain copies of them.
+
+Use ``CodemodPlanDocument`` when multiple operations must resolve against the
+same snapshot, then combine documents or sequences with ``CodemodPlanSequence.compose``.
+``from_operations`` intentionally gives each operation its own projected state.
 
 ``replace_function_signature`` accepts a single-line replacement suffix for
 either a single-line or multiline original signature. It retains the function
@@ -226,9 +239,8 @@ reads of an existing parameter to an access path such as ``witness.candidate``.
 Both the original parameter and the access path's root must exist at this stage.
 Then remove the old parameters and update the callers in the same batch.
 
-The :download:`renderer witness sequence <../../examples/renderer_witness_sequence.json>`
-extends the renderer extraction example above. Compose the two sequences with
-``CodemodPlanSequence.compose`` and simulate the combined batch.
+The ``WITNESS`` sequence in the Python example extends the extraction above.
+Its ``PLAN`` composes both sequences with ``CodemodPlanSequence.compose``.
 The regression test obtains its witness through NRA's actual source-reproof
 operation and executes the renderer helpers before and after applying the plan.
 

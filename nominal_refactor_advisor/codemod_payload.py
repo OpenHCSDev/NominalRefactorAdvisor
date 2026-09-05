@@ -36,6 +36,19 @@ class DataclassPayloadProjection(DataclassJsonReport, ABC):
 
     omit_none_payload_values: ClassVar[bool] = False
 
+    def records_of_type(
+        self, record_type: type[PayloadProjectionT],
+    ) -> tuple[PayloadProjectionT, ...]:
+        """Traverse nominal records through their declared payload codecs."""
+
+        matches = (self,) if isinstance(self, record_type) else ()
+        return matches + tuple(
+            record
+            for binding in self.payload_bindings()
+            for child in binding.nested_records(self)
+            for record in child.records_of_type(record_type)
+        )
+
     @classmethod
     @lru_cache(maxsize=None)
     def payload_bindings(cls) -> PayloadBindingSet[Self, object]:
@@ -119,6 +132,11 @@ class PayloadValueCodec(Generic[PayloadValueT], ABC):
 
         return (field_name,)
 
+    def nested_records(self, value: object) -> tuple[DataclassPayloadProjection, ...]:
+        """Scalar codecs expose no child records."""
+
+        return ()
+
     def payload_items(
         self,
         value: object,
@@ -138,13 +156,30 @@ PayloadProjectionT = TypeVar("PayloadProjectionT", bound=DataclassPayloadProject
 
 
 @dataclass(frozen=True)
-class FlattenedPayloadRecordValueCodec(
+class SinglePayloadRecordValueCodecABC(
     PayloadValueCodec[PayloadProjectionT],
     Generic[PayloadProjectionT],
+    ABC,
 ):
-    """Flatten one nested nominal record into its enclosing object payload."""
+    """Own validation and traversal for one declared nominal record."""
 
     record_type: type[PayloadProjectionT]
+
+    def required_record(self, value: object) -> PayloadProjectionT:
+        if not isinstance(value, self.record_type):
+            raise TypeError(f"record payload codec requires {self.record_type.__name__}")
+        return value
+
+    def serialize(self, value: object) -> JsonValue:
+        return json_report_object(self.required_record(value))
+
+    def nested_records(self, value: object) -> tuple[PayloadProjectionT, ...]:
+        return (self.required_record(value),)
+
+
+@dataclass(frozen=True)
+class FlattenedPayloadRecordValueCodec(SinglePayloadRecordValueCodecABC[PayloadProjectionT]):
+    """Flatten one nested nominal record into its enclosing object payload."""
 
     def read(
         self,
@@ -153,13 +188,6 @@ class FlattenedPayloadRecordValueCodec(
     ) -> PayloadProjectionT:
         del field_name
         return self.record_type.from_payload_fields(payload)
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, self.record_type):
-            raise TypeError(
-                f"flattened payload-record codec requires {self.record_type.__name__}"
-            )
-        return json_report_object(value)
 
     def payload_field_names(self, field_name: str) -> tuple[str, ...]:
         del field_name
@@ -173,10 +201,7 @@ class FlattenedPayloadRecordValueCodec(
         omit_none: bool = False,
     ) -> tuple[tuple[str, JsonValue], ...]:
         del field_name
-        if not isinstance(value, self.record_type):
-            raise TypeError(
-                f"flattened payload-record codec requires {self.record_type.__name__}"
-            )
+        value = self.required_record(value)
         return tuple(
             self.record_type.payload_bindings()
             .payload(value, omit_none=omit_none)
@@ -557,12 +582,9 @@ PayloadRecordT = TypeVar("PayloadRecordT", bound=CodemodPayloadRecord)
 
 @dataclass(frozen=True)
 class PayloadRecordValueCodec(
-    PayloadValueCodec[PayloadRecordT],
-    Generic[PayloadRecordT],
+    SinglePayloadRecordValueCodecABC[PayloadRecordT],
 ):
     """Required object payload decoded by its nominal record declaration."""
-
-    record_type: type[PayloadRecordT]
 
     def read(
         self,
@@ -571,13 +593,6 @@ class PayloadRecordValueCodec(
     ) -> PayloadRecordT:
         value = ObjectPayloadValueCodec().read(payload, field_name)
         return self.record_type.from_json_value(cast(JsonValue, value))
-
-    def serialize(self, value: object) -> JsonValue:
-        if not isinstance(value, self.record_type):
-            raise TypeError(
-                f"record payload codec requires {self.record_type.__name__}"
-            )
-        return json_report_object(value)
 
 
 @dataclass(frozen=True)
@@ -601,7 +616,7 @@ class PayloadRecordArrayValueCodec(
             raise ValueError(f"Expected record array field {field_name!r}")
         return tuple(self.record_type.from_json_value(item) for item in value)
 
-    def serialize(self, value: object) -> JsonValue:
+    def nested_records(self, value: object) -> tuple[PayloadRecordT, ...]:
         if not isinstance(value, (list, tuple)) or not all(
             isinstance(item, self.record_type) for item in value
         ):
@@ -609,7 +624,10 @@ class PayloadRecordArrayValueCodec(
                 f"record-array payload codec requires {self.record_type.__name__} "
                 "values"
             )
-        return tuple(json_report_object(item) for item in value)
+        return tuple(value)
+
+    def serialize(self, value: object) -> JsonValue:
+        return tuple(json_report_object(item) for item in self.nested_records(value))
 
 
 @dataclass(frozen=True)
@@ -651,6 +669,9 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
     field_name: str
     constructor_argument_name: str
     codec: PayloadValueCodec[PayloadValueT]
+
+    def nested_records(self, owner: PayloadOwnerT) -> tuple[DataclassPayloadProjection, ...]:
+        return self.codec.nested_records(getattr(owner, self.constructor_argument_name))
 
     def constructor_kwargs(
         self,

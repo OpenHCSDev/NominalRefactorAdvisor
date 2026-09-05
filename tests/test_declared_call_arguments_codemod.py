@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+from nominal_refactor_advisor.json_reports import json_report_object
 
 
 def _document(
@@ -149,6 +151,24 @@ def test_import_alias_resolves_declaring_module_and_retains_argument_order(
     )
     simulation = document.simulate(snapshot)
     assert simulation.is_clean
+    cli = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(path),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+            "--json",
+        ],
+        input=json.dumps(json_report_object(document.as_sequence())),
+        capture_output=True,
+        text=True,
+    )
+    assert cli.returncode == 0, cli.stderr
+    assert json.loads(cli.stdout)["plan_sequence_simulation"]["is_clean"]
+    assert path.read_text() == source
     simulation.apply()
     assert "chosen(first=mark(1), second=mark(2))" in path.read_text()
     assert subprocess.check_output([sys.executable, str(path)], text=True) == expected

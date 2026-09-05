@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -33,15 +34,14 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     module_path.parent.mkdir()
     module_path.write_text(source)
     expected = subprocess.check_output([sys.executable, str(module_path)], text=True)
-    plan_path = root / "docs/examples/renderer_extraction_sequence.json"
-    sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
+    plan_path = root / "docs/examples/renderer_refactor.py"
+    authored = runpy.run_path(str(plan_path))
+    sequence = authored["PLAN" if with_witness else "EXTRACTION"]
+    assert isinstance(sequence, CodemodPlanSequence)
+    assert "patch_target" not in json.dumps(json_report_object(sequence))
     if with_witness:
-        witness_plan = root / "docs/examples/renderer_witness_sequence.json"
-        assert "patch_target" not in witness_plan.read_text()
-        sequence = CodemodPlanSequence.compose((
-            sequence,
-            CodemodPlanSequence.from_payload_fields(json.loads(witness_plan.read_text())),
-        ))
+        emitted = subprocess.check_output([sys.executable, str(plan_path)], text=True)
+        assert CodemodPlanSequence.from_json_value(json.loads(emitted)) == sequence
     cli_result = subprocess.run(
         [
             sys.executable, "-m", "nominal_refactor_advisor", str(tmp_path),
@@ -57,7 +57,7 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean
-    assert simulation.stage_count == (10 if with_witness else 4)
+    assert simulation.stage_count == (11 if with_witness else 4)
     assert module_path.read_text() == source
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(module_path)], text=True) == expected

@@ -1170,9 +1170,23 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
     )
 
     @classmethod
+    def from_operations(
+        cls, operations: Iterable[RefactorRecipeOperation],
+    ) -> "CodemodPlanSequence":
+        """Re-prove each operation against the preceding operation's output."""
+
+        return cls(documents=tuple(
+            CodemodPlanDocument(recipes=(RefactorRecipe(
+                recipe_id=f"stage-{index}-{operation.operation_key()}",
+                operations=(operation,),
+            ),))
+            for index, operation in enumerate(operations, start=1)
+        ))
+
+    @classmethod
     def compose(
         cls,
-        sequences: Iterable["CodemodPlanSequence"],
+        sequences: Iterable[CodemodPlanRoot],
     ) -> "CodemodPlanSequence":
         """Compose plan documents or existing sequences as ordered replay stages."""
 
@@ -1181,7 +1195,7 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
             documents=tuple(
                 document
                 for sequence in sequence_tuple
-                for document in sequence.documents
+                for document in sequence.as_sequence().documents
             )
         )
 
