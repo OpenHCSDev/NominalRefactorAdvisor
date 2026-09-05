@@ -23,6 +23,7 @@ from dataclasses import (
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
+from types import FunctionType
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -552,7 +553,8 @@ from .detectors._base import (
     DetectorDeclarationOptions,
     DirectBuildFindingRendererCandidate,
     IssueDetector,
-    LineWitnessCandidate,
+    ModuleCollectedLineWitnessCandidate,
+    declare_module_detector,
 )
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .finding_recipe_actions import (
@@ -3071,50 +3073,91 @@ class CandidateCollectorMigration:
         )
 
 
+SourceRecipeCandidateT = TypeVar(
+    "SourceRecipeCandidateT", bound=ModuleCollectedLineWitnessCandidate,
+)
+SourceRecipeNodeT = TypeVar("SourceRecipeNodeT", bound=ast.AST)
+
+
+@dataclass(frozen=True)
+class CurrentLineWitness(Generic[SourceRecipeCandidateT, SourceRecipeNodeT]):
+    """Current source evidence, derived during execution and never serialized."""
+
+    target: AstTargetDigest
+    node: SourceRecipeNodeT
+    candidate: SourceRecipeCandidateT
+    module: ParsedModule
+
+
 @dataclass(frozen=True, kw_only=True)
-class DeriveCandidateCollectorOperation(RepositorySourceReprovedOperation):
-    """Replace one proved forwarding method with its collector declaration."""
+class LineWitnessSourceReprovedOperation(
+    RepositorySourceReprovedOperation,
+    Generic[SourceRecipeCandidateT, SourceRecipeNodeT],
+    ABC,
+):
+    """Persist a target; rederive its candidate and edits on every execution."""
+
+    candidate_type: ClassVar[type[ModuleCollectedLineWitnessCandidate]]
+    target_node_kind: ClassVar[AstTargetNodeKind]
+
+    def required_witness(
+        self, snapshot: CodemodSourceSnapshot,
+    ) -> CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT]:
+        _identifier, target, node = self.target_node_from_context(snapshot)
+        target.require_kind(type(self).target_node_kind, "Unexpected line witness target kind")
+        if not type(self).target_node_kind.accepts(node):
+            raise ValueError("Line witness source does not match its indexed target kind")
+        module = snapshot.parsed_module_for_source_path(target.file_path)
+        candidates = tuple(
+            candidate for candidate in type(self).candidate_type.from_module(module)
+            if candidate.witness_name == target.qualname and candidate.line == target.line
+        )
+        if len(candidates) != 1:
+            raise ValueError(
+                f"{target.qualname!r} belongs to {len(candidates)} current "
+                f"{type(self).candidate_type.__name__} witnesses"
+            )
+        return CurrentLineWitness(
+            target, cast(SourceRecipeNodeT, node),
+            cast(SourceRecipeCandidateT, candidates[0]), module,
+        )
 
     def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.source_edits_for_witness(snapshot, self.required_witness(snapshot))
+
+    @abstractmethod
+    def source_edits_for_witness(
         self,
         snapshot: CodemodSourceSnapshot,
+        witness: CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT],
     ) -> tuple[NominalSourceEdit, ...]:
-        return self.required_migration(snapshot).source_edits(snapshot)
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeriveCandidateCollectorOperation(
+    LineWitnessSourceReprovedOperation[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
+):
+    """Replace one proved forwarding method with its collector declaration."""
+
+    candidate_type = CandidateCollectorBoilerplateCandidate
+    target_node_kind = AstTargetNodeKind.METHOD
+
+    def source_edits_for_witness(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        witness: CurrentLineWitness[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.required_migration(snapshot, witness).source_edits(snapshot)
 
     def required_migration(
         self,
         snapshot: CodemodSourceSnapshot,
+        witness: CurrentLineWitness[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
     ) -> CandidateCollectorMigration:
-        _target_identifier, method_target, _method_node = self.target_node_from_context(
-            snapshot
-        )
-        method_target.require_kind(
-            AstTargetNodeKind.METHOD,
-            "Candidate collector derivation requires a method target",
-        )
-        matching_modules = tuple(
-            module
-            for module in snapshot.parsed_modules
-            if module.file_path == method_target.file_path
-        )
-        if len(matching_modules) != 1:
-            raise ValueError(
-                f"Candidate collector source module count is {len(matching_modules)}"
-            )
-        matching_candidates = tuple(
-            candidate
-            for candidate in CandidateCollectorBoilerplateCandidate.from_module(
-                matching_modules[0]
-            )
-            if candidate.symbol == method_target.qualname
-            and candidate.line == method_target.line
-        )
-        if len(matching_candidates) != 1:
-            raise ValueError(
-                f"{method_target.qualname!r} belongs to {len(matching_candidates)} "
-                "current candidate collector forwarding components"
-            )
-        candidate = matching_candidates[0]
+        candidate = witness.candidate
         class_target_ids = SourceIndexTargetSelector(
             node_kinds=(AstTargetNodeKind.CLASS,),
             file_paths=(candidate.file_path,),
@@ -4832,40 +4875,14 @@ class FindingEvidenceActionKeysMixin:
         )
 
 
-SourceRecipeCandidateT = TypeVar(
-    "SourceRecipeCandidateT",
-    bound=LineWitnessCandidate,
-)
-SourceRecipeNodeT = TypeVar("SourceRecipeNodeT", bound=ast.AST)
-
-
 class SourceReprovedLineWitnessFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
-    Generic[SourceRecipeCandidateT, SourceRecipeNodeT],
     ABC,
 ):
-    """Compile one line witness only after re-proving its current source shape."""
+    """Compile evidence into an operation that owns current-source reproof."""
 
-    candidate_type: ClassVar[type[LineWitnessCandidate]]
-    candidate_collector: ClassVar[
-        Callable[[ParsedModule], tuple[LineWitnessCandidate, ...]]
-    ]
-    target_node_kind: ClassVar[AstTargetNodeKind]
-    target_node_type: ClassVar[type[ast.AST]]
-
-    @classmethod
-    @abstractmethod
-    def recipe_for_current_candidate(
-        cls,
-        finding: RefactorFinding,
-        candidate: SourceRecipeCandidateT,
-        target: AstTargetDigest,
-        node: SourceRecipeNodeT,
-        module: ParsedModule,
-        context: CodemodSelectorContext,
-    ) -> RefactorRecipe:
-        """Build the leaf rewrite from one currently proved candidate."""
+    operation_type: ClassVar[type[LineWitnessSourceReprovedOperation]]
 
     def evaluate_recipe_for_finding(
         self,
@@ -4887,7 +4904,7 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
                 context.source_index,
             ).required_path()
             target_ids = SourceIndexTargetSelector(
-                node_kinds=(type(self).target_node_kind,),
+                node_kinds=(type(self).operation_type.target_node_kind,),
                 file_paths=(source_path,),
                 qualnames=(evidence.subject_symbol,),
             ).target_ids(context)
@@ -4895,62 +4912,77 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
                 raise ValueError(
                     f"Line witness target count is {len(target_ids)}"
                 )
-            target = context.source_index.target_by_id[target_ids[0]]
-            node = context.ast_target_nodes_by_id[target.target_id]
-            if not isinstance(node, type(self).target_node_type):
-                raise ValueError(
-                    f"Line witness target is not {type(self).target_node_type.__name__}"
-                )
-            module = context.parsed_module_for_source_path(target.file_path)
-            candidates = tuple(
-                candidate
-                for candidate in type(self).candidate_collector(module)
-                if candidate.witness_name == target.qualname
-                and candidate.line == target.line
+            operation = type(self).operation_type(
+                target=SourceRewriteTarget(target_id=target_ids[0]),
             )
-            if len(candidates) != 1:
-                raise ValueError(
-                    f"{target.qualname!r} belongs to {len(candidates)} current "
-                    f"{type(self).candidate_type.__name__} witnesses"
-                )
-            candidate = candidates[0]
-            if not isinstance(candidate, type(self).candidate_type):
-                raise TypeError(
-                    f"Line witness is not {type(self).candidate_type.__name__}"
-                )
-            recipe = type(self).recipe_for_current_candidate(
-                finding,
-                cast(SourceRecipeCandidateT, candidate),
-                target,
-                cast(SourceRecipeNodeT, node),
-                module,
-                context,
-            )
-            for operation in recipe.operations:
-                operation.source_edits(context)
+            operation.source_edits(context)
+            recipe = RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
+                reason=finding.summary,
+            ).with_operation(operation)
         except (CodemodOperationPreflightError, KeyError, TypeError, ValueError) as error:
             return self.rejected_evaluation(str(error))
         return self.executable_evaluation(recipe)
 
 
-class DirectBuildFindingRendererFindingRecipeSynthesizer(
-    SourceReprovedLineWitnessFindingRecipeSynthesizer[
+@dataclass(frozen=True, kw_only=True)
+class CollectorDeclarationOperation(
+    LineWitnessSourceReprovedOperation[SourceRecipeCandidateT, SourceRecipeNodeT],
+    ABC,
+):
+    """Derive a declaration rewrite and its import from current collector source."""
+
+    declaration_factory: ClassVar[type | FunctionType]
+
+    def source_edits_for_witness(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        witness: CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT],
+    ) -> tuple[NominalSourceEdit, ...]:
+        CandidateCollectorBaseReference.require_for_target(witness.module, witness.node)
+        source = snapshot.sources_by_file_path[witness.target.file_path]
+        span = SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(witness.node)
+        )
+        if span.contains_comment(source):
+            raise ValueError("declaration source contains comments")
+        original = witness.module.source_segments.segment_for_node(witness.node)
+        if original is None:
+            raise ValueError("declaration source is unavailable")
+        replacement = type(self).replacement_source(witness)
+        factory = type(self).declaration_factory
+        operations = (
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=witness.target.file_path),
+                import_source=f"from {factory.__module__} import {factory.__name__}\n",
+            ),
+            PatchTargetOperation(
+                target=SourceRewriteTarget(target_id=witness.target.target_id),
+                replacements=(SourceTextReplacement(old_source=original, new_source=replacement),),
+            ),
+        )
+        return tuple(edit for operation in operations for edit in operation.source_edits(snapshot))
+
+    @classmethod
+    @abstractmethod
+    def replacement_source(
+        cls, witness: CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT],
+    ) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclareCandidateFindingRendererOperation(
+    CollectorDeclarationOperation[
         DirectBuildFindingRendererCandidate,
         ast.FunctionDef,
     ],
-    ClassFamilyAuthorityConcept,
 ):
     """Replace one direct finding-builder method with a typed renderer value."""
 
     candidate_type = DirectBuildFindingRendererCandidate
-    candidate_collector = DirectBuildFindingRendererCandidate.from_module
     target_node_kind = AstTargetNodeKind.METHOD
-    target_node_type = ast.FunctionDef
-
-    renderer_import_source = (
-        f"from {CallableCandidateFindingRenderer.__module__} import "
-        f"{CallableCandidateFindingRenderer.__name__}\n"
-    )
+    declaration_factory = CallableCandidateFindingRenderer
 
     @staticmethod
     def renderer_lambda(parameter_name: str, value: ast.expr) -> ast.Lambda:
@@ -4966,11 +4998,13 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
         )
 
     @classmethod
-    def renderer_source(
+    def replacement_source(
         cls,
-        candidate: DirectBuildFindingRendererCandidate,
-        call: ast.Call,
+        witness: CurrentLineWitness[DirectBuildFindingRendererCandidate, ast.FunctionDef],
     ) -> str:
+        call = witness.candidate.build_call(witness.node)
+        if call is None:
+            raise ValueError("finding renderer call is no longer derivable")
         assignment = ast.Assign(
             targets=[
                 ast.Name(
@@ -4980,83 +5014,35 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
             ],
             value=ast.Call(
                 func=ast.Name(
-                    id=CallableCandidateFindingRenderer.__name__,
+                    id=cls.declaration_factory.__name__,
                     ctx=ast.Load(),
                 ),
-                args=[cls.renderer_lambda(candidate.parameter_name, call)],
+                args=[cls.renderer_lambda(witness.candidate.parameter_name, call)],
                 keywords=[],
             ),
         )
         return ast.unparse(ast.fix_missing_locations(assignment))
 
-    @classmethod
-    def recipe_for_current_candidate(
-        cls,
-        finding: RefactorFinding,
-        candidate: DirectBuildFindingRendererCandidate,
-        target: AstTargetDigest,
-        node: ast.FunctionDef,
-        module: ParsedModule,
-        context: CodemodSelectorContext,
-    ) -> RefactorRecipe:
-        CandidateCollectorBaseReference.require_for_target(module, node)
-        call = candidate.build_call(node)
-        if call is None:
-            raise ValueError("finding renderer call is no longer derivable")
-        source = context.sources_by_file_path[target.file_path]
-        method_span = SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(node)
-        )
-        if method_span.contains_comment(source):
-            raise ValueError("finding renderer method contains comments")
-        method_source = module.source_segments.segment_for_node(node)
-        if method_source is None:
-            raise ValueError("finding renderer method source is unavailable")
-        return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-declare-renderer",
-            reason="Derive the direct finding builder from a typed renderer value.",
-        ).with_operation(
-            EnsureImportOperation(
-                target=SourceRewriteTarget(file_path=target.file_path),
-                import_source=cls.renderer_import_source,
-            )
-        ).with_operation(
-            PatchTargetOperation(
-                target=SourceRewriteTarget(target_id=target.target_id),
-                replacements=(
-                    SourceTextReplacement(
-                        old_source=method_source,
-                        new_source=cls.renderer_source(candidate, call),
-                    ),
-                ),
-            )
-        )
-
-
-class DeclarativeDetectorClassFindingRecipeSynthesizer(
-    SourceReprovedLineWitnessFindingRecipeSynthesizer[
+@dataclass(frozen=True, kw_only=True)
+class DeclareDetectorClassOperation(
+    CollectorDeclarationOperation[
         DeclarativeDetectorClassCandidate,
         ast.ClassDef,
     ],
-    ClassFamilyAuthorityConcept,
 ):
     """Replace one metadata-only detector shell with its declaration call."""
 
     candidate_type = DeclarativeDetectorClassCandidate
-    candidate_collector = DeclarativeDetectorClassCandidate.from_module
     target_node_kind = AstTargetNodeKind.CLASS
-    target_node_type = ast.ClassDef
+    declaration_factory = staticmethod(declare_module_detector)
 
-    detector_declaration_import_source = (
-        "from nominal_refactor_advisor.detectors._base import "
-        "declare_module_detector\n"
-    )
-
-    @staticmethod
-    def declaration_source(
-        candidate: DeclarativeDetectorClassCandidate,
-        node: ast.ClassDef,
+    @classmethod
+    def replacement_source(
+        cls,
+        witness: CurrentLineWitness[DeclarativeDetectorClassCandidate, ast.ClassDef],
     ) -> str:
+        candidate, node = witness.candidate, witness.node
+        ModuleLexicalDependencyProjection.require_class_body_independence(node)
         assignment_values = candidate.assignment_values(node)
         if assignment_values is None:
             raise ValueError(
@@ -5088,90 +5074,32 @@ class DeclarativeDetectorClassFindingRecipeSynthesizer(
             )
         return ast.unparse(
             ast.Call(
-                func=ast.Name(id="declare_module_detector", ctx=ast.Load()),
+                func=ast.Name(id=cls.declaration_factory.__name__, ctx=ast.Load()),
                 args=arguments,
                 keywords=keywords,
             )
         )
 
-    @classmethod
-    def recipe_for_current_candidate(
-        cls,
-        finding: RefactorFinding,
-        candidate: DeclarativeDetectorClassCandidate,
-        target: AstTargetDigest,
-        node: ast.ClassDef,
-        module: ParsedModule,
-        context: CodemodSelectorContext,
-    ) -> RefactorRecipe:
-        CandidateCollectorBaseReference.require_for_target(module, node)
-        ModuleLexicalDependencyProjection.require_class_body_independence(node)
-        source = context.sources_by_file_path[target.file_path]
-        class_span = SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(node)
-        )
-        if class_span.contains_comment(source):
-            raise ValueError("detector class source contains comments")
-        class_source = module.source_segments.segment_for_node(node)
-        if class_source is None:
-            raise ValueError("detector class source is unavailable")
-        return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-declare-detector",
-            reason="Derive the metadata-only detector class from its declaration.",
-        ).with_operation(
-            EnsureImportOperation(
-                target=SourceRewriteTarget(file_path=target.file_path),
-                import_source=cls.detector_declaration_import_source,
-            )
-        ).with_operation(
-            PatchTargetOperation(
-                target=SourceRewriteTarget(target_id=target.target_id),
-                replacements=(
-                    SourceTextReplacement(
-                        old_source=class_source,
-                        new_source=cls.declaration_source(candidate, node),
-                    ),
-                ),
-            )
-        )
+
+class DirectBuildFindingRendererFindingRecipeSynthesizer(
+    SourceReprovedLineWitnessFindingRecipeSynthesizer, ClassFamilyAuthorityConcept,
+):
+    operation_type = DeclareCandidateFindingRendererOperation
+
+
+class DeclarativeDetectorClassFindingRecipeSynthesizer(
+    SourceReprovedLineWitnessFindingRecipeSynthesizer, ClassFamilyAuthorityConcept,
+):
+    operation_type = DeclareDetectorClassOperation
 
 
 class CandidateCollectorBoilerplateFindingRecipeSynthesizer(
-    SourceReprovedLineWitnessFindingRecipeSynthesizer[
-        CandidateCollectorBoilerplateCandidate,
-        ast.FunctionDef,
-    ],
+    SourceReprovedLineWitnessFindingRecipeSynthesizer,
     ClassFamilyAuthorityConcept,
 ):
     """Compile a forwarding-method finding through its current source witness."""
 
-    candidate_type = CandidateCollectorBoilerplateCandidate
-    candidate_collector = CandidateCollectorBoilerplateCandidate.from_module
-    target_node_kind = AstTargetNodeKind.METHOD
-    target_node_type = ast.FunctionDef
-
-    @classmethod
-    def recipe_for_current_candidate(
-        cls,
-        finding: RefactorFinding,
-        candidate: CandidateCollectorBoilerplateCandidate,
-        target: AstTargetDigest,
-        node: ast.FunctionDef,
-        module: ParsedModule,
-        context: CodemodSelectorContext,
-    ) -> RefactorRecipe:
-        del cls, candidate, node, module, context
-        return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-derive-candidate-collector",
-            reason=(
-                "Replace candidate forwarding boilerplate with a typed "
-                "collector declaration."
-            ),
-        ).with_operation(
-            DeriveCandidateCollectorOperation(
-                target=SourceRewriteTarget(target_id=target.target_id),
-            )
-        )
+    operation_type = DeriveCandidateCollectorOperation
 
 
 class SingleSourcePathFindingMixin:

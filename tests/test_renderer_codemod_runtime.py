@@ -13,7 +13,12 @@ import pytest
 
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.codemod import CodemodBackend, CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod import (
+    CodemodBackend,
+    CodemodPlanDocument,
+    CodemodPlanSequence,
+    CodemodSourceSnapshot,
+)
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.detectors._base import DetectorDeclarationOptions
 
@@ -318,3 +323,63 @@ def test_detector_rewrite_retains_unresolved_binding_evidence(
     plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
     assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "nominal collector base" in plan.records[0].reason
+
+
+@pytest.mark.parametrize("detector_id", ("direct_build_finding_renderer", "declarative_detector_class"))
+def test_saved_detector_plan_reproves_imports_on_execution(
+    tmp_path: Path, detector_id: str,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", "'summary', ()"))
+    expected = _execute(module_path)
+    for current_id in ("direct_build_finding_renderer", "declarative_detector_class"):
+        findings = tuple(
+            finding for finding in analyze_path(tmp_path)
+            if finding.detector_id == current_id
+        )
+        snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+        plan = snapshot.plan_from_findings(findings, detector_ids=(current_id,))
+        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        if current_id != detector_id:
+            plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN).document_simulation.apply()
+            continue
+        restored = CodemodPlanDocument.from_payload_fields(
+            CodemodPlanDocument.project_json_object(plan.document)
+        )
+        drifted = snapshot.with_virtual_sources({
+            module_path.as_posix(): snapshot.sources_by_file_path[module_path.as_posix()].replace(
+                "from nominal_refactor_advisor.detectors._base import ",
+                "from unrelated import ",
+            ),
+        })
+        assert len(restored.recipes[0].operations) == 1
+        with pytest.raises(ValueError, match="nominal collector base"):
+            restored.recipes[0].operations[0].source_edits(drifted)
+        assert _execute(module_path) == expected
+        break
+
+
+@pytest.mark.parametrize("payload", ("'summary', ()", "'summary', (), title=__class__.__name__"))
+def test_authored_detector_sequence_is_one_runtime_checked_batch(
+    tmp_path: Path, payload: str,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    source = _RUNTIME_SOURCE.replace("PAYLOAD", payload)
+    module_path.write_text(source)
+    expected = _execute(module_path)
+    plan_path = Path(__file__).parents[1] / "docs/examples/detector_declaration_sequence.json"
+    sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    if "__class__" in payload:
+        with pytest.raises(ValueError, match="class scope"):
+            sequence.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        assert module_path.read_text() == source
+        assert _execute(module_path) == expected
+        return
+    simulation = sequence.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert simulation.is_clean
+    assert simulation.stage_count == 2
+    assert module_path.read_text() == source
+    simulation.apply()
+    assert _execute(module_path) == expected
+    assert "class ProbeDetector" not in module_path.read_text()

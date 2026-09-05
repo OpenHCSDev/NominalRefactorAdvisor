@@ -101,10 +101,23 @@ STABLE_ID_AUTHORITY = StableIdAuthority()
 class AstTargetNodeKind(StrEnum):
     """Source-index AST target kinds."""
 
-    MODULE = "module"
-    CLASS = "class"
-    FUNCTION = "function"
-    METHOD = "method"
+    MODULE = "module", (ast.Module,)
+    CLASS = "class", (ast.ClassDef,)
+    FUNCTION = "function", (ast.FunctionDef, ast.AsyncFunctionDef)
+    METHOD = "method", (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    node_types: tuple[type[ast.AST], ...]
+
+    def __new__(
+        cls, value: str, node_types: tuple[type[ast.AST], ...],
+    ) -> "AstTargetNodeKind":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.node_types = node_types
+        return member
+
+    def accepts(self, node: ast.AST) -> bool:
+        return isinstance(node, self.node_types)
 
     @property
     def is_module(self) -> bool:

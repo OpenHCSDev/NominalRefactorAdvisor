@@ -184,6 +184,29 @@ relation without copying source spans or resorting to a textual patch.
      "selection_count": {"exact": 1}
    }
 
+Converting a Detector to a Declaration
+--------------------------------------
+
+To replace a direct finding-builder method and then its metadata-only detector
+class, put the two transformations in separate stages. Change the file and
+target names in this plan to match your detector:
+
+.. literalinclude:: ../../examples/detector_declaration_sequence.json
+   :language: json
+
+Save the plan as ``detector-plan.json`` and preview the combined change:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/package \
+     --codemod-plan detector-plan.json --codemod-simulate
+
+The second stage reads the renderer declaration produced by the first. Each
+operation checks the current collector base, source shape, and relevant scope
+dependencies. The plan stores targets, not replacement text. Review the diff,
+then replace ``--codemod-simulate`` with ``--codemod-apply`` to apply the batch.
+Run your detector tests against the result.
+
 Renaming a Top-Level Binding Authority
 --------------------------------------
 

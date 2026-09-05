@@ -6348,6 +6348,15 @@ class LineWitnessCandidate(SourceLineReference, ABC, metaclass=AutoRegisterMeta)
     evidence = _LINE_WITNESS_NAME_EVIDENCE
 
 
+class ModuleCollectedLineWitnessCandidate(LineWitnessCandidate, ABC):
+    """A line witness whose declaration owns its current-source collection."""
+
+    @classmethod
+    @abstractmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
 class WitnessNameAliasMixin(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = "witness_name"
     __skip_if_no_key__ = True
@@ -7392,7 +7401,9 @@ class RepeatedResultAssemblyPipelineCandidate:
 
 
 @dataclass(frozen=True)
-class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+class CandidateCollectorBoilerplateCandidate(
+    ClassMethodLineWitnessCandidate, ModuleCollectedLineWitnessCandidate,
+):
     collector_declaration_name: ClassVar[str] = "candidate_collector"
 
     collector_name: str
@@ -7581,7 +7592,8 @@ class ConcreteCandidateDetectorShape:
 
 @dataclass(frozen=True)
 class DirectBuildFindingRendererCandidate(
-    PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate
+    PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate,
+    ModuleCollectedLineWitnessCandidate,
 ):
     base_name: str
     parameter_name: str
@@ -7656,7 +7668,9 @@ class DirectBuildFindingRendererCandidate(
 
 
 @dataclass(frozen=True)
-class DeclarativeDetectorClassCandidate(ClassLineWitnessCandidate):
+class DeclarativeDetectorClassCandidate(
+    ClassLineWitnessCandidate, ModuleCollectedLineWitnessCandidate,
+):
     base_name: str
     candidate_type_name: str
     assignment_names: tuple[str, ...]

@@ -187,6 +187,8 @@ from nominal_refactor_advisor.codemod import (
     DescendTypeKeyedBehaviorProjectionOperation,
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
+    DeclareCandidateFindingRendererOperation,
+    DeclareDetectorClassOperation,
     EraseDeadCompatibilityOperation,
     ExtractAuthorityOperation,
     ExtractSymbolClosureToNewModuleOperation,
@@ -14450,7 +14452,7 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
     )
     with pytest.raises(
         CodemodOperationPreflightError,
-        match="0 current candidate collector forwarding components",
+        match="0 current CandidateCollectorBoilerplateCandidate witnesses",
     ):
         local_operation.source_edits(drifted_snapshot)
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -14530,8 +14532,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
     assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
-        EnsureImportOperation,
-        PatchTargetOperation,
+        DeclareDetectorClassOperation,
     )
     drifted_snapshot = snapshot.with_virtual_sources(
         {
@@ -14722,8 +14723,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
     assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
-        EnsureImportOperation,
-        PatchTargetOperation,
+        DeclareCandidateFindingRendererOperation,
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[source_path]
@@ -14806,7 +14806,7 @@ def test_direct_build_finding_renderer_preserves_source_comments(tmp_path: Path)
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert plan.records[0].reason == "finding renderer method contains comments"
+    assert plan.records[0].reason == "declaration source contains comments"
 
 
 def test_finding_spec_construction_detector_owns_canonical_builder_guidance(

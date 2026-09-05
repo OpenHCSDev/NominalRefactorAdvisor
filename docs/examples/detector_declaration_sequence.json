@@ -1,0 +1,24 @@
+{
+  "stages": [
+    {
+      "recipes": [{
+        "recipe_id": "declare-renderer",
+        "operations": [{
+          "operation": "declare_candidate_finding_renderer",
+          "file_path": "probe.py",
+          "target_qualname": "ProbeDetector._finding_for_candidate"
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "declare-detector",
+        "operations": [{
+          "operation": "declare_detector_class",
+          "file_path": "probe.py",
+          "target_qualname": "ProbeDetector"
+        }]
+      }]
+    }
+  ]
+}
