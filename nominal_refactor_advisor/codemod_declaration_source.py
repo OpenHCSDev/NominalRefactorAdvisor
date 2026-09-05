@@ -31,6 +31,7 @@ from .codemod_source_edits import (
     SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpan,
+    SourceTextSpanReplacement,
     _joined_rationales,
 )
 from .collection_algebra import sorted_tuple
@@ -146,10 +147,14 @@ class NamedDeclarationSourceAuthority:
     source: str
 
     @cached_property
+    def geometry(self) -> SourceTextGeometry:
+        return SourceTextGeometry(self.source)
+
+    @cached_property
     def name_span(self) -> SourceTextSpan:
         """Return the exact identifier token that declares this source name."""
 
-        geometry = SourceTextGeometry(self.source)
+        geometry = self.geometry
         declaration_tokens = iter(
             token
             for token in geometry.tokens
@@ -524,30 +529,15 @@ class _SingleLogicalLineSource:
 
 
 @dataclass(frozen=True)
-class FunctionSignatureSourceAuthority:
-    """Rewrite one single-line function signature."""
+class FunctionSignatureSourceAuthority(NamedDeclarationSourceAuthority):
+    """Replace a function signature without rewriting its identity or suite."""
 
-    original_line: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef
 
-    @property
-    def declaration_prefix(self) -> str:
-        header = self.header.body
-        prefix, separator, _suffix = header.partition("(")
-        if not separator or not prefix.startswith(("def ", "async def ")):
-            raise ValueError(
-                "Function signature replacement requires a single-line def"
-            )
-        return prefix.rstrip()
-
-    @property
-    def header(self) -> _SingleLogicalLineSource:
-        return _SingleLogicalLineSource.parse(
-            self.original_line,
-            "function signature",
-        )
-
-    def replacement_line(self, signature_suffix: str) -> str:
-        line = self.header
+    def replacement(self, signature_suffix: str) -> SourceTextSpanReplacement:
+        span = self.geometry.function_signature_suffix_span(self.node)
+        if self.geometry.span_contains_comment(span):
+            raise ValueError("Function signature replacement would discard comments")
         suffix = _SingleLogicalLineSource.parse(
             signature_suffix,
             "function signature suffix",
@@ -557,11 +547,16 @@ class FunctionSignatureSourceAuthority:
                 "Replacement function signature suffix must start with '(' and "
                 "end with ':'"
             )
-        replacement_body = f"{self.declaration_prefix}{suffix}"
+        declaration_start = self.geometry.required_node_offsets(self.node)[0]
+        prefix = self.source[declaration_start : span.start_offset]
         try:
-            ast.parse(f"{replacement_body}\n    pass\n")
+            ast.parse(f"{prefix}{suffix}\n    pass\n")
         except SyntaxError as error:
             raise ValueError(
                 f"Replacement function signature is not valid Python: {error}"
             ) from error
-        return line.rebuild(replacement_body)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source=suffix,
+        )

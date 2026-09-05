@@ -4489,7 +4489,7 @@ class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
-    """Replace a single-line function signature while preserving its body."""
+    """Replace function parameters and return annotation, preserving its body."""
 
     signature_suffix: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
@@ -4499,20 +4499,13 @@ class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
         target: AstTargetDigest,
         node: FunctionDefinitionNode,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        editor = SourceTargetEditor(snapshot.sources_by_file_path, target)
-        original_line = editor.file_lines[node.lineno - 1]
-        replacement_line = FunctionSignatureSourceAuthority(
-            original_line,
-        ).replacement_line(self.signature_suffix)
-        return (
-            SourceSpanReplacement(
-                file_path=target.file_path,
-                start_line=node.lineno,
-                end_line=node.lineno,
-                replacement_lines=(replacement_line,),
-                rationale=self.rationale
-                or f"Replace signature of {target.qualname!r}.",
-            ),
+        authority = FunctionSignatureSourceAuthority(
+            node=node, source=snapshot.sources_by_file_path[target.file_path]
+        )
+        return authority.geometry.physical_edits(
+            file_path=target.file_path,
+            replacements=(authority.replacement(self.signature_suffix),),
+            rationale=self.rationale or f"Replace signature of {target.qualname!r}.",
         )
 
 

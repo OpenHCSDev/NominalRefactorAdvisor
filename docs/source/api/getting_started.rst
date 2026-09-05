@@ -184,6 +184,39 @@ relation without copying source spans or resorting to a textual patch.
      "selection_count": {"exact": 1}
    }
 
+Extracting Methods into an Ancestor
+-----------------------------------
+
+To move related methods into a shared ancestor, compose the declaration,
+inheritance, and member-promotion operations in successive stages. Each stage
+resolves targets against the source produced by the previous stage.
+
+The following plan extracts two renderer helpers from NRA's historical
+``codemod.py`` at revision ``b849d95``. The final stage rewrites the promoted
+method's multiline signature, retaining its parameters and annotations:
+
+.. literalinclude:: ../../examples/renderer_extraction_sequence.json
+   :language: json
+
+Change the file, class, and member names for your source, and save the plan as
+``renderer-plan.json``. Preview the complete batch:
+
+.. code-block:: bash
+
+   nominal-refactor-advisor path/to/package \
+     --codemod-plan renderer-plan.json --codemod-simulate
+
+Review the diff, then use ``--codemod-apply`` in place of
+``--codemod-simulate`` and run the affected tests. Method promotion moves the
+existing bodies and decorators; the plan does not contain copies of them.
+
+``replace_function_signature`` accepts a single-line replacement suffix for
+either a single-line or multiline original signature. It retains the function
+name, generic type parameters, decorators, body, and comments outside the
+replaced span. Comments inside that span require an explicit edit before
+replacement. Changes to parameter names or calling conventions need their own
+body and caller edits in the plan.
+
 Converting a Detector to a Declaration
 --------------------------------------
 

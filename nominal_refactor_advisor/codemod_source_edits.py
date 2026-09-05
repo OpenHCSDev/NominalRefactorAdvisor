@@ -962,6 +962,40 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     ) -> SourceTextSpan:
         """Resolve the exact source between one function's parameter parentheses."""
 
+        parentheses = self.function_parameter_parentheses(node)
+        return SourceTextSpan(parentheses.start_offset + 1, parentheses.end_offset - 1)
+
+    def function_signature_suffix_span(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SourceTextSpan:
+        """Resolve parameters and return annotation through the suite colon."""
+
+        parentheses = self.function_parameter_parentheses(node)
+        annotation_end = (
+            self.required_node_offsets(node.returns)[1]
+            if node.returns is not None
+            else parentheses.end_offset
+        )
+        function_end = self.required_node_offsets(node)[1]
+        for token in self.tokens:
+            start = self.token_position_offset(token.start)
+            if (
+                annotation_end <= start < function_end
+                and token.type == tokenize.OP
+                and token.string == ":"
+            ):
+                return SourceTextSpan(
+                    parentheses.start_offset, self.token_position_offset(token.end)
+                )
+        raise ValueError(f"Cannot resolve signature colon for {node.name!r}")
+
+    def function_parameter_parentheses(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SourceTextSpan:
+        """Resolve the parameter delimiters, after any generic type parameters."""
+
         function_start, function_end = self.byte_span_offsets(
             SourceByteSpan.require_node(node)
         )
@@ -988,33 +1022,24 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         )
         if definition_index is None:
             raise ValueError(f"Cannot resolve parameter span for {node.name!r}")
-        opening_index = next(
-            (
-                index
-                for index in range(definition_index + 1, len(indexed_tokens))
-                if indexed_tokens[index][0].type == tokenize.OP
-                and indexed_tokens[index][0].string == "("
-                and indexed_tokens[index][1] < function_end
-            ),
-            None,
-        )
-        if opening_index is None:
-            raise ValueError(f"Cannot resolve parameter opening for {node.name!r}")
+        opening_offset = None
         depth = 0
-        for token, start_offset, end_offset in indexed_tokens[opening_index:]:
+        for token, start_offset, end_offset in indexed_tokens[definition_index + 1 :]:
+            if end_offset > function_end:
+                break
             if token.type != tokenize.OP:
                 continue
+            if token.string == "(" and depth == 0:
+                opening_offset = start_offset
             if token.string in "([{":
                 depth += 1
             elif token.string in ")]}":
                 depth -= 1
-                if depth == 0:
+                if depth == 0 and opening_offset is not None:
                     return SourceTextSpan(
-                        start_offset=indexed_tokens[opening_index][2],
-                        end_offset=start_offset,
+                        start_offset=opening_offset,
+                        end_offset=end_offset,
                     )
-            if end_offset > function_end:
-                break
         raise ValueError(f"Cannot resolve parameter closing for {node.name!r}")
 
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
