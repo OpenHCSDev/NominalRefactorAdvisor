@@ -28,6 +28,16 @@ Structural Hypothesis Surface
 Codemod Candidate Surface
 -------------------------
 
+``ReplaceDeclaredCallTargetOperation`` selects calls by their current declaring
+function or method and replaces only their callable expression. ``target`` names
+the caller scope, ``callee`` names the existing declaration,
+``expression_source`` supplies the new callable expression, and
+``selection_count`` constrains the number of selected calls. Argument bytes are
+retained. Callable-region comments, unresolved selections and invalid expression
+syntax are rejected. The replacement's binding and behaviour remain authored
+decisions, as with ``ReplaceDeclaredCallOperation``. Both operations use the same
+selection, expression parsing, source geometry and payload contracts.
+
 Inherited call selection uses ``CompactClassFamilyIndex.mro_authority``.
 ``ClassMroAuthority`` projects source declarations into inert types and delegates
 C3 linearisation to Python. The projection does not execute analysed modules or

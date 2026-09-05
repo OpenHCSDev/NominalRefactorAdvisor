@@ -137,8 +137,8 @@ class DeclaredCallArgumentsRewrite(DeclaredCallRewriteABC):
 
 
 @dataclass(frozen=True)
-class DeclaredCallExpressionRewrite(DeclaredCallRewriteABC):
-    """Replace a proved call site with one authored expression, preserving precedence."""
+class DeclaredCallExpressionRewriteABC(DeclaredCallRewriteABC, ABC):
+    """Share authored expression validation and precedence across call regions."""
 
     @cached_property
     def expression_source(self) -> str:
@@ -149,8 +149,21 @@ class DeclaredCallExpressionRewrite(DeclaredCallRewriteABC):
         ast.parse(rendered, mode="eval")
         return rendered
 
+    def source_for_call(self, call: CompactResolvedFunctionCall) -> str:
+        return self.expression_source
+
+
+@dataclass(frozen=True)
+class DeclaredCallExpressionRewrite(DeclaredCallExpressionRewriteABC):
+    """Replace the whole selected call with an authored expression."""
+
     def replacement_span(self, node: ast.Call) -> SourceTextSpan:
         return SourceTextSpan(*self.geometry.required_node_offsets(node))
 
-    def source_for_call(self, call: CompactResolvedFunctionCall) -> str:
-        return self.expression_source
+
+@dataclass(frozen=True)
+class DeclaredCallTargetRewrite(DeclaredCallExpressionRewriteABC):
+    """Replace only the callable expression, retaining the original arguments."""
+
+    def replacement_span(self, node: ast.Call) -> SourceTextSpan:
+        return SourceTextSpan(*self.geometry.required_node_offsets(node.func))

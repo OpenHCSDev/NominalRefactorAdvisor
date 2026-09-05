@@ -334,6 +334,19 @@ when several selected calls share one declaration.
 You choose the new expressions and their evaluation order. Signature binding is
 not a proof that those expressions preserve behaviour.
 
+To redirect a call while keeping its arguments, use
+``replace_declared_call_target``. Select the existing declaration with ``callee``
+and supply only the new callable in ``expression_source``, for example
+``self.resolved_target_is_exhaustive_dataclass``. Argument expressions, comments
+and formatting remain unchanged. Several calls can retain different argument
+lists, including nested calls, in one stage.
+
+NRA's :download:`dataclass recipe validation plan
+<../../examples/dataclass_recipe_validation_refactor.py>` uses this operation to
+redirect a caller to its existing base implementation, then deletes an abstract
+hook and four identical forwarding methods. The plan records the chosen
+ownership change; deletion does not independently prove that a method is unused.
+
 To replace a helper call with a shared method or an attribute access, use
 ``replace_declared_call`` with the same ``target``, ``callee``, and
 ``selection_count`` selectors. Set ``expression_source`` to the replacement,
@@ -342,9 +355,10 @@ The operation replaces each selected call as a complete expression, retaining
 the surrounding expression's precedence. Calls to unrelated declarations stay
 unchanged; unresolved selections and removal of existing comments are rejected.
 
-Choose this operation when the replacement changes the callee or removes the
-call altogether. Its checks establish the selected declaration and valid Python
-syntax, not equivalence of the authored expression or binding of a new callee.
+Choose the whole-call operation when changing arguments as well or removing the
+call altogether. Both expression operations establish the selected declaration
+and valid Python syntax, not equivalence of the authored expression or binding
+of a new callee.
 Review evaluation effects and run the relevant behavioural tests. Follow it
 with assignment deletion and import removal in the same sequence when those
 declarations become unused.

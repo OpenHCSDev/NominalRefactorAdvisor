@@ -119,6 +119,7 @@ from .class_member_authority_codemod import (
 )
 from .codemod_function_operations import (
     AliasFunctionOperation as AliasFunctionOperation,
+    CallExpressionSourcePayload as CallExpressionSourcePayload,
     DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
     FunctionBindingProjectionOperationABC as FunctionBindingProjectionOperationABC,
     FunctionBodySourcePayload as FunctionBodySourcePayload,
@@ -128,6 +129,7 @@ from .codemod_function_operations import (
     ProjectFunctionParameterOperation as ProjectFunctionParameterOperation,
     ReplaceDeclaredCallArgumentsOperation as ReplaceDeclaredCallArgumentsOperation,
     ReplaceDeclaredCallOperation as ReplaceDeclaredCallOperation,
+    ReplaceDeclaredCallTargetOperation as ReplaceDeclaredCallTargetOperation,
     ReplaceFunctionBodyOperation as ReplaceFunctionBodyOperation,
     ReplaceFunctionDecoratorsOperation as ReplaceFunctionDecoratorsOperation,
     ReplaceFunctionSignatureOperation as ReplaceFunctionSignatureOperation,
@@ -9814,7 +9816,7 @@ class DataclassAuthorityMappingRecipeBuilder(
         return (
             Maybe.of(self.resolved_authority_target(seed))
             .filter(
-                lambda resolved_target: self.resolved_target_matches_fields(
+                lambda resolved_target: (self.resolved_target_is_exhaustive_dataclass)(
                     resolved_target,
                     field_names,
                 )
@@ -9840,14 +9842,6 @@ class DataclassAuthorityMappingRecipeBuilder(
             seed.authority,
             authority_name,
         )
-
-    @abstractmethod
-    def resolved_target_matches_fields(
-        self,
-        resolved_target: ResolvedClassTarget,
-        field_names: frozenset[str],
-    ) -> bool:
-        raise NotImplementedError
 
     def resolved_target_is_exhaustive_dataclass(
         self,
@@ -10537,16 +10531,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
             "authority instance"
         )
 
-    def resolved_target_matches_fields(
-        self,
-        resolved_target: ResolvedClassTarget,
-        field_names: frozenset[str],
-    ) -> bool:
-        return self.resolved_target_is_exhaustive_dataclass(
-            resolved_target,
-            field_names,
-        )
-
     def projection_shape_is_applicable(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
@@ -10617,16 +10601,6 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
             "dataclass field-name projection requires one local tuple or list that "
             "exhaustively names direct dataclass fields in declaration order, with "
             "the authority already available at runtime"
-        )
-
-    def resolved_target_matches_fields(
-        self,
-        resolved_target: ResolvedClassTarget,
-        field_names: frozenset[str],
-    ) -> bool:
-        return self.resolved_target_is_exhaustive_dataclass(
-            resolved_target,
-            field_names,
         )
 
     def projection_shape_is_applicable(
@@ -10710,16 +10684,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
             "dataclass key/value sequence projection requires one contiguous, "
             "exhaustive, declaration-ordered run of direct pair values read from "
             "a nominally typed authority instance"
-        )
-
-    def resolved_target_matches_fields(
-        self,
-        resolved_target: ResolvedClassTarget,
-        field_names: frozenset[str],
-    ) -> bool:
-        return self.resolved_target_is_exhaustive_dataclass(
-            resolved_target,
-            field_names,
         )
 
     def projection_shape_is_applicable(
@@ -11232,16 +11196,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         return (
             "dataclass constructor projection requires one nominal constructor call "
             "that is equivalent to a direct authority method"
-        )
-
-    def resolved_target_matches_fields(
-        self,
-        resolved_target: ResolvedClassTarget,
-        field_names: frozenset[str],
-    ) -> bool:
-        return self.resolved_target_is_exhaustive_dataclass(
-            resolved_target,
-            field_names,
         )
 
     def projection_shape_is_applicable(

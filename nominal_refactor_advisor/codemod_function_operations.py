@@ -13,6 +13,7 @@ from .codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
     DeclaredCallRewriteABC,
+    DeclaredCallTargetRewrite,
 )
 from .codemod_declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
@@ -219,12 +220,29 @@ class ReplaceDeclaredCallArgumentsOperation(DeclaredCallMutationOperationABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceDeclaredCallOperation(DeclaredCallMutationOperationABC):
-    """Replace resolved calls with an authored expression; equivalence is author-owned."""
+class CallExpressionSourcePayload:
+    """Authored expression shared by whole-call and callable-only edits."""
 
     expression_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    source_authority = DeclaredCallExpressionRewrite
     replacement_source = AliasProperty[str]("expression_source")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceDeclaredCallOperation(
+    CallExpressionSourcePayload, DeclaredCallMutationOperationABC
+):
+    """Replace resolved calls with an authored expression; equivalence is author-owned."""
+
+    source_authority = DeclaredCallExpressionRewrite
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceDeclaredCallTargetOperation(
+    CallExpressionSourcePayload, DeclaredCallMutationOperationABC
+):
+    """Replace a resolved call's callable; new behaviour and binding are author-owned."""
+
+    source_authority = DeclaredCallTargetRewrite
 
 
 @dataclass(frozen=True, kw_only=True)

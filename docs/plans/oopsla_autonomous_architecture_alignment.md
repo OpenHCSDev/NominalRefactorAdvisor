@@ -362,3 +362,37 @@ regex-bundle candidates, so this is not an end-to-end or regex-heavy workload
 claim. A weak-reference regression verifies that analysis memory release drops
 the parsed module; another assertion changes the threshold while retaining the
 same source projection, ruling out cached configuration decisions.
+
+### Dataclass Recipe Validation: Collapse the Forwarding Contract
+
+A self-scan found 21 exact method orbits and six assessed promotion components,
+with no automatically proved placement. One component contained all four
+dataclass mapping recipe builders. Each supplied the same forwarding method for
+an abstract hook, calling the exhaustive-schema validator already owned by their
+base. The hook introduced a second variation point without a distinct policy.
+
+The authored refactor redirects the shared caller to that validator and removes
+the abstract hook and its four implementations. Exact leaf promotion was not the
+appropriate operation: its existing-member rejection correctly prevented
+overwriting the abstract slot without an explicit contract decision.
+`docs/examples/dataclass_recipe_validation_refactor.py` records the six-stage
+plan applied through the real CLI.
+
+This exposed a useful syntax-level gap. Whole-call replacement required copying
+the argument expressions merely to change the callable. The new
+`ReplaceDeclaredCallTargetOperation` shares the existing declaration selection
+and expression machinery, replacing only the callable span. Native CLI tests
+retain argument evaluation order, Unicode, comments and LF/CRLF bytes. Nested
+selected calls can now be redirected in one stage because their callable spans
+do not overlap. MRO, ambiguous selection and comment-protection checks reuse the
+existing authority path. This is an authored edit, not a claim of inferred
+destination binding or behavioural equivalence.
+
+A replay against the preceding commit applied all six stages and produced the
+same recipe-builder ASTs as the working checkout. Before and after the replay,
+the real CLI generated identical recipe documents and diffs for direct payload
+and key/value-sequence projections. All four concrete builders retain the same
+native base-validator identity. Validation passed 2,148 full-suite tests (13
+skipped), 60 focused Python 3.14 tests, and 16 ASCII-locale tests. The touched-file
+audit ran all 81 detectors without omissions or findings. Sphinx built with the
+two existing duplicate-description warnings for dataclass promotion operations.
