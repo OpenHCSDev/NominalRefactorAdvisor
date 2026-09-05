@@ -680,10 +680,7 @@ from .semantic_match import (
     loaded_concrete_nominal_descendants,
     single_item,
 )
-from .source_geometry import (
-    ClassHeaderSourceSpan,
-    SourceByteSpan,
-)
+from .source_geometry import SourceByteSpan
 from .source_index import (
     AstTargetDigest,
     AstTargetNode,
@@ -2380,10 +2377,11 @@ class TargetAdjacentInsertionOperationABC(SourceReprovedOperation, ABC):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        _target_identifier, target, _node = self.target_node_from_context(snapshot)
+        _target_identifier, target, node = self.target_node_from_context(snapshot)
         source = snapshot.sources_by_file_path[target.file_path]
-        insertion_line = self.insertion_line(target)
-        source_lines = source.splitlines(keepends=True)
+        declaration = NamedDeclarationSourceAuthority(node, source)
+        insertion_line = self.insertion_line(declaration.declaration_line_span)
+        source_lines = declaration.geometry.lines
         boundary = SourceInsertionBoundary.from_declaration_line(
             source_lines[target.line - 1]
         )
@@ -2409,7 +2407,7 @@ class TargetAdjacentInsertionOperationABC(SourceReprovedOperation, ABC):
         )
 
     @abstractmethod
-    def insertion_line(self, target: AstTargetDigest) -> int:
+    def insertion_line(self, declaration_span: SourceLineSpan) -> int:
         """Return the leaf operation's insertion geometry."""
 
         raise NotImplementedError
@@ -2419,16 +2417,16 @@ class TargetAdjacentInsertionOperationABC(SourceReprovedOperation, ABC):
 class InsertBeforeTargetOperation(TargetAdjacentInsertionOperationABC):
     """Insert source immediately before a source-index target."""
 
-    def insertion_line(self, target: AstTargetDigest) -> int:
-        return target.line
+    def insertion_line(self, declaration_span: SourceLineSpan) -> int:
+        return declaration_span.start_line
 
 
 @dataclass(frozen=True, kw_only=True)
 class InsertAfterTargetOperation(TargetAdjacentInsertionOperationABC):
     """Insert source immediately after a source-index target."""
 
-    def insertion_line(self, target: AstTargetDigest) -> int:
-        return target.end_line + 1
+    def insertion_line(self, declaration_span: SourceLineSpan) -> int:
+        return declaration_span.end_line + 1
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2984,7 +2982,9 @@ class CandidateCollectorMigration:
             None,
         )
         insertion_line = (
-            ClassHeaderSourceSpan.statement_start_line(anchor)
+            NamedDeclarationSourceAuthority(
+                anchor, self.source
+            ).declaration_line_span.start_line
             if anchor is not None
             else body.declaration_insert_line + 1
         )
@@ -3013,10 +3013,10 @@ class CandidateCollectorMigration:
             raise ValueError(
                 f"{self.candidate.symbol!r} is no longer declared by the target class"
             )
-        return SourceNodeSpan(
+        return NamedDeclarationSourceAuthority(
             method,
-            SourceNodeDecoratorPolicy.INCLUDE,
-        ).line_span.line_deletion(
+            self.source,
+        ).declaration_line_span.line_deletion(
             file_path=self.target.file_path,
             rationale=self.rationale
             or "Delete candidate traversal now owned by the collector base.",
@@ -3024,7 +3024,8 @@ class CandidateCollectorMigration:
 
 
 SourceRecipeCandidateT = TypeVar(
-    "SourceRecipeCandidateT", bound=ModuleCollectedLineWitnessCandidate,
+    "SourceRecipeCandidateT",
+    bound=ModuleCollectedLineWitnessCandidate,
 )
 SourceRecipeNodeT = TypeVar("SourceRecipeNodeT", bound=ast.AST)
 
@@ -4352,10 +4353,10 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
             )
         return SourceInsertion(
             file_path=target_digest.file_path,
-            insertion_line=SourceNodeSpan(
+            insertion_line=NamedDeclarationSourceAuthority(
                 source.dispatch_function.node,
-                SourceNodeDecoratorPolicy.INCLUDE,
-            ).start_line,
+                context.sources_by_file_path[target_digest.file_path],
+            ).declaration_line_span.start_line,
             inserted_lines=SourceTargetEditor.source_lines(
                 f"{source.family_source()}\n\n\n"
             ),

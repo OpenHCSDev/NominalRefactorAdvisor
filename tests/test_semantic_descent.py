@@ -6317,4 +6317,4 @@ def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
         (str(target_module), "Report"): "pkg.mod.Report"
     }
     assert graph.class_index.symbols_by_file_and_qualname is original_locations
-    assert all(str(source_root) in path for path, _name in original_locations)
+    assert all(Path(path).is_relative_to(source_root) for path, _name in original_locations)

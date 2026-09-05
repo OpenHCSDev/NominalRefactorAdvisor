@@ -7495,6 +7495,8 @@ class CandidateCollectorBoilerplateCandidate(
         method: ast.FunctionDef,
         collector_scope: CandidateCollectorScope,
     ) -> tuple[str, bool] | None:
+        if method.decorator_list:
+            return None
         parameter_names = SUPPORT_PROJECTION_AUTHORITY.parameter_names(method)
         if len(parameter_names) != 2:
             return None

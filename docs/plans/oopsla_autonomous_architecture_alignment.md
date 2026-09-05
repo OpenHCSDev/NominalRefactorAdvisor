@@ -437,13 +437,12 @@ about 2.35 seconds. This is a targeted construction probe, not an end-to-end
 speed claim. The remaining full-builder cost warrants a separate audit of its
 repeated module-binding snapshots rather than further graph micro-optimisation.
 
-Replay preparation exposed an open DSL boundary: `InsertBeforeTargetOperation`
-uses the class/function header line rather than the first decorator line. Adding
+Replay preparation exposed a DSL boundary defect: `InsertBeforeTargetOperation`
+used the class/function header line rather than the first decorator line. Adding
 the new type parameter before a decorated class was rejected by source
 validation because it separated the decorator from its declaration. The replay
-uses the existing after-previous-declaration operation; a following batch must
-fix the before-target boundary using shared declaration geometry, including
-native tests for decorator ownership rather than compilation alone.
+used the existing after-previous-declaration operation. The declaration-boundary
+batch below addresses this defect with native decorator-ownership checks.
 
 The completed replay applied all 24 stages to the previous source. Its class
 index and rebasing declarations match the working ASTs, and both native index
@@ -452,3 +451,46 @@ before and after on the diamond fixture. Validation passed 2,159 full-suite test
 (13 skipped), 43 focused Python 3.14 tests and 12 ASCII-locale tests. The final
 touched-file audit ran all 81 detectors with no omissions or findings. The docs
 build retains the existing duplicate-description warnings noted above.
+
+### Declaration Boundaries: Preserve Decorator Ownership
+
+An adjacent insertion can compile successfully while transferring an existing
+decorator to the new declaration. Parenthesised decorators also begin before
+their expression's AST line. `NamedDeclarationSourceAuthority` now derives the
+complete declaration span through the existing token-aware `SourceTextGeometry`.
+Adjacent insertion, generated dispatch-family placement and candidate-collector
+migration consume this shared span instead of reconstructing edit boundaries
+from header or expression positions.
+
+`docs/examples/decorated_declaration_boundary_refactor.py` records the 11-stage
+consumer migration after authoring the span property. The plan contains authored
+signatures, bodies and scoped replacements; it does not infer their equivalence.
+Native tests compare decorator evaluation and ownership across class, function,
+async-function and nested-method insertions, including stacked and parenthesised
+decorators, LF/CRLF source, dataclass constructors and generated dispatch families.
+
+The collector audit also exposed a missing prerequisite: a decorated forwarding
+method can change the result independently of its body. Its candidate declaration
+now requires a plain method before offering collector migration. Regression
+fixtures demonstrate this behavioural difference and verify refusal without
+source changes. This guard establishes one necessary condition, not a complete
+audit of collector binding and signature preservation.
+
+The recorded 11-stage plan replayed against `e9dafe0` with matching implementation
+ASTs. The preceding 24-stage class-index refactor also replayed after inserting
+its shared authority before the decorated index class; both generated index
+classes retained native dataclass construction. The final full suite passed
+2,199 tests (13 skipped). Python 3.14 validation passed 48
+focused tests, and the ASCII-locale run passed 41. The touched-file audit ran all
+81 detectors without omissions or findings. Diataxis keeps the precise span
+contract in the API reference and the authored migration in its runnable example.
+
+Windows CI for the preceding index batch found a test comparing native Windows
+path spelling against normalised index paths. The cache-preservation assertion
+now checks path containment with `Path.is_relative_to`; production rebasing is
+unchanged. Cross-platform CI must verify this correction.
+
+The next collector audit should establish qualified callee identity, binding
+phase, keyword forwarding and signature preservation. Current terminal-name
+recognition is an observation to investigate, not proof that a callable can move
+from a method body into a class-level strategy declaration.

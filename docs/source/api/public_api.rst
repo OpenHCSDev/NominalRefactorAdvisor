@@ -587,7 +587,15 @@ them, and are not published as compatibility aliases.
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
 .. automodule:: nominal_refactor_advisor.codemod_declaration_source
-   :members: PythonExpressionSourceFormatter, ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, FunctionSignatureSourceAuthority
+   :members: PythonExpressionSourceFormatter, NamedDeclarationSourceAuthority, ClassHeaderSpanSourceAuthority, ClassSourceAuthority, ClassBodySourceAuthority, FunctionSignatureSourceAuthority
+
+``NamedDeclarationSourceAuthority.declaration_line_span`` includes the complete
+class, function or async-function declaration, starting at its first decorator's
+``@`` token when present. Token geometry includes parenthesised decorators and
+comments between decorators. Comments preceding the first decorator are outside
+this span. Adjacent insertion operations use this span for placement and retain
+the declaration header's indentation; source-index header positions remain
+navigation locations rather than complete declaration boundaries.
 
 .. automodule:: nominal_refactor_advisor.codemod_paths
    :members: ExactSourcePathResolution, NormalizedSourcePathResolution, ResolvedSourcePathResolution, RelativeSuffixSourcePathResolution, SourcePathCandidateSet, SourcePathCandidateAuthority, SourcePathResolutionAuthority, SourceCreationPathAuthority

@@ -29,6 +29,7 @@ from .ast_tools import (
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
+    SourceLineSpan,
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
@@ -167,6 +168,14 @@ class NamedDeclarationSourceAuthority:
     @cached_property
     def geometry(self) -> SourceTextGeometry:
         return SourceTextGeometry(self.source)
+
+    @cached_property
+    def declaration_line_span(self) -> SourceLineSpan:
+        """Own the complete declaration, including every decorator marker."""
+
+        return self.geometry.node_line_span(
+            SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+        )
 
     @cached_property
     def name_span(self) -> SourceTextSpan:
