@@ -212,7 +212,6 @@ from .codemod_target_selectors import (
 from .declaration_authority_rename import DeclarationAuthorityRenameProof
 from .class_index import (
     ClassFamilyIndex,
-    ClassHeaderSourceSpan,
     ClassMethodReceiverRequirements,
     CompactClassFamilyIndex,
     FunctionNominalParameterBindingAuthority,
@@ -656,7 +655,10 @@ from .semantic_match import (
     loaded_concrete_nominal_descendants,
     single_item,
 )
-from .source_geometry import SourceByteSpan
+from .source_geometry import (
+    ClassHeaderSourceSpan,
+    SourceByteSpan,
+)
 from .source_index import (
     AstTargetDigest,
     AstTargetNode,
@@ -992,12 +994,9 @@ class ClassBaseMutationOperationABC(SourceReprovedOperation, ABC):
             node=node,
             source=snapshot.sources_by_file_path[target.file_path],
         )
-        replacement_lines = self.replacement_header_lines(header_authority)
-        if replacement_lines == header_authority.current_header_lines:
-            return ()
-        return header_authority.geometry.physical_edits(
+        return header_authority.source_edits(
+            self.replacement_header_lines(header_authority),
             file_path=target.file_path,
-            replacements=(header_authority.header_replacement(replacement_lines),),
             rationale=self.rationale or f"Update direct bases of {target.qualname!r}.",
         )
 
@@ -2799,14 +2798,12 @@ class DirectClassBaseReplacementOperationABC(
         )
         return (
             *import_edits,
-            SourceSpanReplacement(
-                file_path=child_target.file_path,
-                start_line=header.start_line,
-                end_line=header.end_line,
-                replacement_lines=header.with_replaced_base(
+            *header.source_edits(
+                header.with_replaced_base(
                     ast.unparse(replaced_bases[0]),
                     replacement.target.name,
                 ),
+                file_path=child_target.file_path,
                 rationale=self.rationale_text(
                     f"Replace direct base {ast.unparse(replaced_bases[0])!r} with "
                     f"{replacement.target.name!r}."
@@ -2952,12 +2949,12 @@ class CandidateCollectorMigration:
         )
         return (
             *import_edits,
-            self.class_header_replacement(),
+            *self.class_header_replacements(),
             self.candidate_declaration_insertion(),
             self.candidate_method_deletion(),
         )
 
-    def class_header_replacement(self) -> SourceSpanReplacement:
+    def class_header_replacements(self) -> tuple[PhysicalSourceEdit, ...]:
         header = ClassHeaderSpanSourceAuthority(node=self.node, source=self.source)
         replaced_base_name = self.candidate.replaced_base_name
         matching_base_items = tuple(
@@ -2981,11 +2978,8 @@ class CandidateCollectorMigration:
             raise ValueError(
                 f"{self.node.name!r} already composes a candidate collector base"
             )
-        return SourceSpanReplacement(
-            file_path=self.target.file_path,
-            start_line=header.start_line,
-            end_line=header.end_line,
-            replacement_lines=header.with_base_items(
+        return header.source_edits(
+            header.with_base_items(
                 tuple(
                     self.contextual_base_source
                     if base_item in matching_base_items
@@ -2993,12 +2987,13 @@ class CandidateCollectorMigration:
                     for base_item in header.base_items
                 )
             ),
+            file_path=self.target.file_path,
             rationale=self.rationale
             or f"Derive {self.node.name!r} candidate traversal from its collector.",
         )
 
     def candidate_declaration_insertion(self) -> SourceInsertion:
-        header = ClassHeaderSpanSourceAuthority(node=self.node, source=self.source)
+        body = ClassBodySourceAuthority(node=self.node, source=self.source)
         anchor = next(
             (
                 statement
@@ -3011,9 +3006,9 @@ class CandidateCollectorMigration:
         insertion_line = (
             ClassHeaderSourceSpan.statement_start_line(anchor)
             if anchor is not None
-            else header.end_line + 1
+            else body.declaration_insert_line + 1
         )
-        indent = f"{header.indentation}    "
+        indent = body.indentation
         return SourceInsertion(
             file_path=self.target.file_path,
             insertion_line=insertion_line,
@@ -3623,12 +3618,10 @@ class ConvertManualRegistryToAutoregisterOperation(
                 node=class_target.node,
                 source=targets.source_for(class_target.file_path),
             )
-            replacements.append(
-                SourceSpanReplacement(
+            replacements.extend(
+                header.source_edits(
+                    header.with_added_base(component.authority_name),
                     file_path=class_target.file_path,
-                    start_line=header.start_line,
-                    end_line=header.end_line,
-                    replacement_lines=header.with_added_base(component.authority_name),
                     rationale=self.rationale_text(
                         f"Add registry authority to {class_target.qualname!r}."
                     ),
@@ -3657,22 +3650,18 @@ class ConvertManualRegistryToAutoregisterOperation(
                     "incompatible metaclass"
                 )
             return ()
-        return (
-            SourceSpanReplacement(
-                file_path=authority_target.file_path,
-                start_line=header.start_line,
-                end_line=header.end_line,
-                replacement_lines=header.with_items(
+        return header.source_edits(
+                header.with_items(
                     header.base_items,
                     (
                         *header.keyword_items,
                         f"metaclass={AUTOREGISTER_META_NAME}",
                     ),
                 ),
+                file_path=authority_target.file_path,
                 rationale=self.rationale_text(
                     f"Make {authority_target.qualname!r} own class registration."
                 ),
-            ),
         )
 
     def existing_authority_declaration_replacements(

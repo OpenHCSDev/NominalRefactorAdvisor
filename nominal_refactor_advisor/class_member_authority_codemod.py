@@ -668,14 +668,10 @@ class ClassBaseAdditionReplacementPlan:
                 node=class_target.node,
                 source=targets.source_for(class_target.file_path),
             )
-            replacements.append(
-                SourceSpanReplacement(
+            replacements.extend(
+                header_authority.source_edits(
+                    header_authority.with_prepended_base(self.base_name),
                     file_path=class_target.file_path,
-                    start_line=header_authority.start_line,
-                    end_line=header_authority.end_line,
-                    replacement_lines=header_authority.with_prepended_base(
-                        self.base_name
-                    ),
                     rationale=self.rationale
                     or f"Add base {self.base_name!r} to {class_target.qualname!r}.",
                 )

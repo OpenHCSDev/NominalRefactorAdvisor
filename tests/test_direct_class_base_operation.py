@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -46,16 +48,12 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
     _write_module(
         tmp_path,
         "pkg/records.py",
-        "class SemanticRecord:\n"
-        "    def to_dict(self):\n"
-        "        return vars(self)\n",
+        "class SemanticRecord:\n    def to_dict(self):\n        return vars(self)\n",
     )
     _write_module(
         tmp_path,
         "pkg/legacy.py",
-        "class LegacyRecord:\n"
-        "    def to_dict(self):\n"
-        "        return vars(self)\n",
+        "class LegacyRecord:\n    def to_dict(self):\n        return vars(self)\n",
     )
     consumer_path = _write_module(
         tmp_path,
@@ -94,6 +92,42 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
     )
 
 
+@pytest.mark.parametrize(
+    "suite", (" value = 7 # retained\n", " # retained\n    value = 7\n")
+)
+def test_cohort_replacement_preserves_suite_boundaries(
+    tmp_path: Path, suite: str
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/records.py", "class SemanticRecord: pass\n")
+    _write_module(tmp_path, "pkg/legacy.py", "class LegacyRecord: pass\n")
+    path = _write_module(
+        tmp_path,
+        "pkg/consumers.py",
+        "from .legacy import LegacyRecord\nclass Alpha(LegacyRecord):" + suite,
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    result = CodemodPlanSequence.from_operations((_operation(tmp_path),)).simulate(
+        snapshot
+    )
+    assert result.is_clean
+    assert (
+        "class Alpha(SemanticRecord):" + suite
+        in result.simulation.rewritten_sources[path.as_posix()]
+    )
+    result.apply()
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.consumers import Alpha; print(Alpha.value, Alpha.__bases__[0].__name__)",
+        ],
+        cwd=tmp_path,
+        text=True,
+    )
+    assert output.strip() == "7 SemanticRecord"
+
+
 def test_rejects_replacement_import_cycle_before_emitting_edits(
     tmp_path: Path,
 ) -> None:
@@ -101,7 +135,7 @@ def test_rejects_replacement_import_cycle_before_emitting_edits(
     _write_module(
         tmp_path,
         "pkg/records.py",
-        "from .legacy import LEGACY_MARKER\n\n" "class SemanticRecord:\n" "    pass\n",
+        "from .legacy import LEGACY_MARKER\n\nclass SemanticRecord:\n    pass\n",
     )
     _write_module(
         tmp_path,
@@ -190,7 +224,7 @@ def test_rejects_incomplete_nominal_base_graph(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/records.py",
-        "class SemanticRecord:\n" "    pass\n",
+        "class SemanticRecord:\n    pass\n",
     )
     _write_module(
         tmp_path,

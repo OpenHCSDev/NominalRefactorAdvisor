@@ -26,7 +26,6 @@ from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     is_docstring_statement,
 )
-from .class_index import ClassHeaderSourceSpan
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
@@ -42,7 +41,10 @@ from .codemod_source_edits import (
 from .collection_algebra import sorted_tuple
 from .declaration_dependencies import FunctionParameterBinding
 from .product_flow import LexicalValueReference
-from .source_geometry import SourceLineSegmentAuthority
+from .source_geometry import (
+    ClassHeaderSourceSpan,
+    SourceLineSegmentAuthority,
+)
 
 if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
@@ -209,32 +211,23 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     def signature_span(self) -> SourceTextSpan:
         """Resolve the header suffix, including generic parameters, through the colon."""
 
-        start, end = self.geometry.required_node_offsets(self.node)
-        for token in self.geometry.unenclosed_tokens(SourceTextSpan(start, end)):
-            if token.type == tokenize.OP and token.string == ":":
-                return SourceTextSpan(
-                    self.name_span.end_offset,
-                    self.geometry.token_position_offset(token.end),
-                )
-        raise ValueError(f"Cannot resolve class header colon for {self.node.name!r}")
+        return SourceTextSpan(
+            self.name_span.end_offset,
+            self.geometry.token_position_offset(self.source_span.end_position),
+        )
 
     @cached_property
     def declaration_prefix(self) -> str:
         """Retain the exact name and generic parameters before the base list."""
 
-        for token in self.geometry.unenclosed_tokens(self.signature_span):
-            if token.type == tokenize.OP and token.string in {"(", ":"}:
-                end = self.geometry.token_position_offset(token.start)
-                start = self.geometry.required_node_offsets(self.node)[0]
-                return self.source[start:end].rstrip()
-        raise ValueError(f"Cannot resolve class base-list boundary for {self.node.name!r}")
+        return self.source_span.declaration_prefix
 
     def header_replacement(self, lines: tuple[str, ...]) -> SourceTextSpanReplacement:
         """Replace only the header, retaining inline suites and trailing comments."""
 
         start = self.geometry.required_node_offsets(self.node)[0]
         span = SourceTextSpan(start, self.signature_span.end_offset)
-        if self.geometry.span_contains_comment(span):
+        if not self.source_span.is_reconstructible:
             raise ValueError("Class header replacement would discard comments")
         return SourceTextSpanReplacement.from_offsets(
             start_offset=span.start_offset,
@@ -242,9 +235,21 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
             replacement_source="".join(lines).removeprefix(self.indentation).rstrip("\r\n"),
         )
 
+    def source_edits(
+        self, lines: tuple[str, ...], *, file_path: str, rationale: str,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        """Apply header rendering through the shared exact-boundary contract."""
+
+        if lines == self.current_header_lines:
+            return ()
+        return self.geometry.physical_edits(
+            file_path=file_path, replacements=(self.header_replacement(lines),),
+            rationale=rationale,
+        )
+
     @cached_property
     def source_span(self) -> ClassHeaderSourceSpan:
-        return ClassHeaderSourceSpan.from_source(self.node, self.source)
+        return ClassHeaderSourceSpan(self.node, self.geometry.lines)
 
     @property
     def source_lines(self) -> tuple[str, ...]:
@@ -400,7 +405,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
     def declaration_insert_line(self) -> int:
         if self.node.body and is_docstring_statement(self.node.body[0]):
             return self.node.body[0].end_lineno or self.node.body[0].lineno
-        return self.node.lineno
+        return ClassHeaderSourceSpan(self.node, self.geometry.lines).end_line
 
     @property
     def before_first_method_offset(self) -> int:

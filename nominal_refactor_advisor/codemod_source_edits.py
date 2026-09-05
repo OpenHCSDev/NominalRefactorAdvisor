@@ -15,7 +15,6 @@ from abc import (
 from collections import defaultdict
 from collections.abc import (
     Iterable,
-    Iterator,
     Mapping,
 )
 from dataclasses import (
@@ -988,19 +987,6 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             else line
             for line_number, line in enumerate(self.lines, start=1)
         )
-
-    def unenclosed_tokens(self, span: SourceTextSpan) -> Iterator[tokenize.TokenInfo]:
-        """Yield tokens outside brackets, including each opening delimiter."""
-
-        depth = 0
-        for token in self.tokens_in_span(span):
-            if depth == 0:
-                yield token
-            if token.type == tokenize.OP:
-                if token.string in "([{":
-                    depth += 1
-                elif token.string in ")]}":
-                    depth -= 1
 
     def call_argument_span(self, node: ast.Call) -> SourceTextSpan:
         """Locate the final call parentheses, retaining a parenthesised callee."""

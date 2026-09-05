@@ -15,7 +15,6 @@ from .ast_tools import (
     ParsedModule,
 )
 from .class_index import (
-    ClassHeaderSourceSpan,
     ClassFamilyIndex,
     CompactDataclassFieldRole,
     DataclassRuntimeDeclaration,
@@ -26,7 +25,11 @@ from .class_index import (
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
-from .source_geometry import SourceCommentLineIndex, SourceLineSegmentAuthority
+from .source_geometry import (
+    ClassHeaderSourceSpan,
+    SourceCommentLineIndex,
+    SourceLineSegmentAuthority,
+)
 
 
 @dataclass(frozen=True)

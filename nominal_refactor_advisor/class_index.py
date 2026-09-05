@@ -12,9 +12,7 @@ import ast
 import builtins
 import copy
 import hashlib
-import io
 import re
-import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import MISSING, dataclass, field, fields, replace
@@ -49,6 +47,7 @@ from .declaration_dependencies import ClassScopeDependency
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .native_syntax import NativePythonSyntaxIndex
+from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
 from .source_identity import resolved_source_path_text
 
 
@@ -607,61 +606,6 @@ class CompactClassHeader(ClassDeclaration):
         return self.base_references_are_complete and len(
             self.resolved_base_symbols
         ) == declared_nominal_base_count(self)
-
-
-@dataclass(frozen=True)
-class ClassHeaderSourceSpan:
-    """Exact source span and reconstruction safety for one class header."""
-
-    node: ast.ClassDef
-    source_lines: tuple[str, ...]
-
-    @classmethod
-    def from_source(cls, node: ast.ClassDef, source: str) -> "ClassHeaderSourceSpan":
-        return cls(node=node, source_lines=tuple(source.splitlines(keepends=True)))
-
-    @property
-    def start_line(self) -> int:
-        return self.node.lineno
-
-    @property
-    def end_line(self) -> int:
-        return (
-            min(self.statement_start_line(statement) for statement in self.node.body)
-            - 1
-        )
-
-    @staticmethod
-    def statement_start_line(statement: ast.stmt) -> int:
-        if not isinstance(
-            statement,
-            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
-        ):
-            return statement.lineno
-        decorator_lines = tuple(
-            decorator.lineno
-            for decorator in statement.decorator_list
-            if decorator.lineno
-        )
-        return min((*decorator_lines, statement.lineno))
-
-    @property
-    def source(self) -> str:
-        return "".join(self.source_lines[self.start_line - 1 : self.end_line])
-
-    @cached_property
-    def contains_comment(self) -> bool:
-        if "#" not in self.source:
-            return False
-        try:
-            tokens = tokenize.generate_tokens(io.StringIO(self.source).readline)
-            return any(token.type == tokenize.COMMENT for token in tokens)
-        except tokenize.TokenError:
-            return True
-
-    @property
-    def is_reconstructible(self) -> bool:
-        return not self.contains_comment
 
 
 @dataclass(frozen=True)
@@ -3631,9 +3575,9 @@ def _compact_indexed_classes(
             class_decorators_are_promotion_safe=(
                 binding_facets.class_decorators_are_promotion_safe
             ),
-            class_header_is_reconstructible=ClassHeaderSourceSpan.from_source(
+            class_header_is_reconstructible=ClassHeaderSourceSpan(
                 node,
-                parsed_module.source,
+                parsed_module.source_segments.lines,
             ).is_reconstructible,
             keyed_family_key_type_name=_keyed_family_key_type_name(node),
             is_final=any(

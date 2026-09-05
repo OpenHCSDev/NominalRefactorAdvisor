@@ -5504,6 +5504,7 @@ def test_derive_candidate_collector_operation(
         "    return ()\n"
         "\n\n"
         "class AlphaDetector(CandidateFindingDetector[Candidate]):\n"
+        "    \"\"\"Collect alpha candidates.\"\"\"\n"
         "    detector_id = 'alpha'\n\n"
         "    def _candidate_items(self, module: ParsedModule, config: DetectorConfig):\n"
         "        return _candidates(module, config)\n\n"
@@ -5540,6 +5541,11 @@ def test_derive_candidate_collector_operation(
     ) in rewritten
     assert "candidate_collector = staticmethod(_candidates)" in rewritten
     assert "def _candidate_items(" not in rewritten
+    rewritten_class = next(
+        node for node in ast.parse(rewritten).body
+        if isinstance(node, ast.ClassDef) and node.name == "AlphaDetector"
+    )
+    assert ast.get_docstring(rewritten_class) == "Collect alpha candidates."
 
 
 def test_derive_candidate_collector_operation_round_trips_without_mirrors() -> None:
