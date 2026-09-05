@@ -4,7 +4,11 @@ import ast
 
 import pytest
 
-from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
+from nominal_refactor_advisor.codemod_declaration_source import (
+    ClassBodySourceAuthority,
+    ClassMemberInsertion,
+    ClassMemberSource,
+)
 from nominal_refactor_advisor.codemod_statement_source import StatementSource
 
 
@@ -66,3 +70,43 @@ def test_nested_inline_class_insertion_retains_docs_comments_and_values(
     assert after["Outer"].Inner.added == 4
     assert after["Outer"].sibling == 3
     assert rewritten.count("# last comment") == 1
+
+
+@pytest.mark.parametrize("indentation", ("    ", "\t"))
+def test_member_insertion_precedes_complete_decorator_and_attached_comment(
+    indentation: str,
+) -> None:
+    source = (
+        "class Owner:\n"
+        f"{indentation}# belongs to method\n"
+        f"{indentation}@(\n"
+        f"{indentation}    staticmethod\n"
+        f"{indentation})\n"
+        f"{indentation}def value(): return 3\n"
+    )
+    authority = ClassBodySourceAuthority(node=ast.parse(source).body[0], source=source)
+    replacement = authority.member_insertion_replacement((indentation + "added = 4\n",))
+    rewritten = authority.geometry.source_with_replacements_in_span(
+        0, len(source), (replacement,)
+    )
+    namespace = {}
+    exec(rewritten, namespace)
+    assert namespace["Owner"].value() == 3
+    assert namespace["Owner"].added == 4
+    assert rewritten.index("added = 4") < rewritten.index("# belongs to method")
+
+
+def test_coalesced_class_members_keep_declared_evaluation_order() -> None:
+    first = ClassMemberInsertion(
+        target_id="owner", members=(ClassMemberSource("z", "    z = 3\n"),)
+    )
+    second = ClassMemberInsertion(
+        target_id="owner", members=(ClassMemberSource("a", "    a = z + 1\n"),)
+    )
+    combined = ClassMemberInsertion._coalesced_same_target((first, second))
+    namespace = {}
+    exec(
+        "class Owner:\n" + "".join(member.source for member in combined.members),
+        namespace,
+    )
+    assert namespace["Owner"].a == 4

@@ -14,6 +14,7 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass
+from functools import partial
 from typing import cast
 
 from .ast_tools import (
@@ -1193,6 +1194,14 @@ class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperat
         )
 
 
+class EnumKeyedQueryMemberInsertion(ClassMemberInsertion):
+    """Canonical members produced by the enum-query source proof, not authored order."""
+
+    member_sequence = staticmethod(
+        partial(sorted_tuple, key=lambda member: member.name)
+    )
+
+
 @dataclass(frozen=True)
 class _EnumKeyedDerivedMapFacadeSourceDerivation:
     """Current-source proof and edit geometry for one enum-keyed query facade."""
@@ -1478,7 +1487,7 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
         replacements_by_path: dict[str, list[SourceTextSpanReplacement]],
         *,
         rationale: str,
-    ) -> ClassMemberInsertion:
+    ) -> EnumKeyedQueryMemberInsertion:
         source = self.module.source
         geometry = SourceTextGeometry(source)
         reverse_span = SourceNodeSpan(
@@ -1535,7 +1544,7 @@ class _EnumKeyedDerivedMapFacadeSourceDerivation:
         )
         if len(enum_targets) != 1:
             raise ValueError("enum-keyed authority does not have one source target")
-        return ClassMemberInsertion(
+        return EnumKeyedQueryMemberInsertion(
             target_id=enum_targets[0].target_id,
             members=(
                 ClassMemberSource(self.component.property_name, property_source),

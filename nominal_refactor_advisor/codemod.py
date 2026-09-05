@@ -30,6 +30,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .codemod_statement_source import AssignmentDeletionSource
+from .codemod_class_operations import InsertClassMemberOperation as InsertClassMemberOperation
 from .codemod_assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
     ReplaceModuleAssignmentOperation as ReplaceModuleAssignmentOperation,

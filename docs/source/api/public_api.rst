@@ -105,6 +105,22 @@ positions begin after ``@``. Statement moves and deletions use that same source
 geometry; moved declaration text is derived from its source rather than stored
 as an independent copy.
 
+``InsertClassMemberOperation`` in ``codemod_class_operations`` derives a
+``ClassMemberSource`` from one authored declaration and emits the existing
+``ClassMemberInsertion`` edit. Member identity comes from lexical binding
+projection, while indentation and insertion position come from
+``ClassBodySourceAuthority``. The payload can contain a method, nested class,
+assignment or annotation-only field binding one name. Imports and multi-member
+blocks are not member declarations for this operation.
+
+Coalescing retains the supplied member order within each destination class.
+Identical insertions for one name merge; conflicting sources or collisions with
+existing direct members fail. Inherited members may be overridden. The operation
+does not establish behavioural equivalence of a new or overriding member.
+``EnumKeyedQueryMemberInsertion`` owns canonical name ordering for the separate,
+source-proved generated enum-query family, allowing independent query recipes
+to compose to identical source. Authored insertions do not use that policy.
+
 ``codemod_assignment_operations`` owns module and named-scope assignment
 replacement. Its operations share ``AssignmentReplacementOperationABC`` and
 the statement geometry in ``codemod_statement_source``. ``codemod`` exports

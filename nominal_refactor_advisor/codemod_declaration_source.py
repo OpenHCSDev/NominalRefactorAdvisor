@@ -7,6 +7,7 @@ import copy
 import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import (
     dataclass,
     replace,
@@ -37,7 +38,6 @@ from .codemod_source_edits import (
     _joined_rationales,
 )
 from .codemod_statement_source import StatementSource
-from .collection_algebra import sorted_tuple
 from .declaration_dependencies import (
     FunctionBindingABC,
     FunctionLocalBinding,
@@ -202,6 +202,10 @@ class ClassSourceAuthority(NamedDeclarationSourceAuthority):
     """Class declaration and source text shared by rewrite projections."""
 
     node: ast.ClassDef
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node, ast.ClassDef):
+            raise ValueError("Class source authority requires a class declaration")
 
 
 @dataclass(frozen=True)
@@ -436,9 +440,11 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
                 and self.node.end_lineno < len(self.geometry.line_offsets)
                 else self.geometry.end_offset
             )
-        insertion_line = ClassHeaderSourceSpan.statement_start_line(first_method)
+        insertion_line = self.geometry.node_start_line(
+            SourceNodeSpan(first_method, SourceNodeDecoratorPolicy.INCLUDE)
+        )
         source_lines = self.geometry.lines
-        method_indent = " " * first_method.col_offset
+        method_indent = self.indentation
         while insertion_line > self.node.lineno + 1:
             preceding_line = source_lines[insertion_line - 2]
             if not (
@@ -511,6 +517,32 @@ class ClassMemberSource:
     name: str
     source: str
 
+    @classmethod
+    def from_source(cls, source: str, *, indentation: str) -> "ClassMemberSource":
+        """Derive the member identity and indented text from one authored declaration."""
+        try:
+            module = ast.parse(source)
+        except SyntaxError as error:
+            raise ValueError(
+                f"Class member source is not valid Python: {error}"
+            ) from error
+        if len(module.body) != 1 or not isinstance(
+            module.body[0],
+            ast.ClassDef
+            | ast.FunctionDef
+            | ast.AsyncFunctionDef
+            | ast.Assign
+            | ast.AnnAssign,
+        ):
+            raise ValueError("Class member source must contain one declaration")
+        names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        if len(names) != 1:
+            raise ValueError("Class member source must bind exactly one member name")
+        return cls(
+            name=next(iter(names)),
+            source=SourceTextGeometry(source).indented_source(indentation),
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class ClassMemberInsertion(NominalSourceEdit):
@@ -518,6 +550,9 @@ class ClassMemberInsertion(NominalSourceEdit):
 
     target_id: str
     members: tuple[ClassMemberSource, ...]
+    member_sequence: ClassVar[
+        Callable[[Iterable[ClassMemberSource]], tuple[ClassMemberSource, ...]]
+    ] = staticmethod(tuple)
 
     def coalesced_with_peers(
         self,
@@ -551,10 +586,7 @@ class ClassMemberInsertion(NominalSourceEdit):
                 members_by_name.setdefault(member.name, member)
         return replace(
             first,
-            members=sorted_tuple(
-                members_by_name.values(),
-                key=lambda member: member.name,
-            ),
+            members=cls.member_sequence(members_by_name.values()),
             rationale=_joined_rationales(
                 insertion.rationale for insertion in insertions
             ),

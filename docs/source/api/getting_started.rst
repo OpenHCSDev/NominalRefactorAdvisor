@@ -290,6 +290,14 @@ and declarations to your source. Field replacement does not rename references
 or update callers automatically; include those changes in the plan. Each stage
 can select names introduced by earlier stages.
 
+Use ``insert_class_member`` to add a method, nested class or field without
+specifying its indentation. Supply one unindented declaration in ``source`` and
+select its destination class. The operation derives the member name, checks for
+an existing direct binding, and inserts before the first method while retaining
+its decorators and attached comments. An inline class body is expanded as needed.
+Several insertions in one ``CodemodPlanDocument`` retain their declared order,
+so a later member can refer to an earlier one.
+
 For an existing shared authority, compose ``add_class_base`` with
 ``delete_class_assignments`` to inherit its fields, then update the affected
 methods. NRA's :download:`assignment projection plan

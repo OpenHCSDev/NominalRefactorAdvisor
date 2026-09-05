@@ -4,7 +4,7 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    InsertAfterTargetOperation,
+    InsertClassMemberOperation,
     ReplaceFunctionBodyOperation,
     ReplaceScopeAssignmentOperation,
     SourceRewriteTarget,
@@ -25,12 +25,12 @@ PLAN = CodemodPlanSequence.from_operations(
             target=resolution,
             body_source="return self.resolved_target",
         ),
-        InsertAfterTargetOperation(
-            target=resolution,
+        InsertClassMemberOperation(
+            target=SourceRewriteTarget(file_path=module, qualname="Call"),
             source=(
-                "    @property\n"
-                "    def callee(self) -> str:\n"
-                "        return self.resolved_target.declaration\n"
+                "@property\n"
+                "def callee(self) -> str:\n"
+                "    return self.resolved_target.declaration\n"
             ),
         ),
         ReplaceFunctionBodyOperation(
