@@ -48,7 +48,6 @@ from ..constructor_algebra import (
 )
 from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
 from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from ..observation_shapes import LineSymbolObservationMixin
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstPredicateRule,
@@ -92,15 +91,11 @@ from ..ast_tools import (
     AstExpressionProjection,
     BuilderCallShape,
     BuilderCallShapeFamily,
-    ClassMarkerObservation,
-    ClassMarkerObservationFamily,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CollectedFamilyPresenceDemand,
-    ConfigDispatchObservation,
     FieldObservation,
     FieldObservationFamily,
-    ConfigDispatchObservationFamily,
     DynamicMethodInjectionObservation,
     DynamicMethodInjectionObservationFamily,
     ParsedModule,
@@ -2463,54 +2458,6 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         raise NotImplementedError
 
 
-TypedObservationItemT = TypeVar(
-    "TypedObservationItemT", bound=LineSymbolObservationMixin
-)
-
-
-class TypedObservationPatternDetector(
-    StaticModulePatternDetector,
-    Generic[TypedObservationItemT],
-    ABC,
-):
-    """Static detector derived from one typed observation family."""
-
-    observation_family: ClassVar[type[CollectedFamily]]
-    observation_type: ClassVar[type[LineSymbolObservationMixin]]
-    summary_template: ClassVar[str]
-    minimum_evidence_count: ClassVar[int] = 1
-    evidence_limit: ClassVar[int | None] = None
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        del config
-        observations = CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-            module, type(self).observation_family, type(self).observation_type
-        )
-        limit = type(self).evidence_limit
-        if limit is not None:
-            observations = observations[:limit]
-        return tuple(
-            (
-                SourceLocation(
-                    observation.file_path, observation.line, observation.symbol
-                )
-                for observation in observations
-            )
-        )
-
-    def _minimum_evidence(self, config: DetectorConfig) -> int:
-        del config
-        return type(self).minimum_evidence_count
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return type(self).summary_template.format(
-            module_path=module.path,
-            evidence_count=len(evidence),
-        )
 
 
 ShapeT = TypeVar("ShapeT")

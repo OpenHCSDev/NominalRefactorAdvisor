@@ -2822,31 +2822,6 @@ class SentinelAttributeSimulationDetector(
         )
 
 
-class ConfigAttributeDispatchDetector(
-    TypedObservationPatternDetector[ConfigDispatchObservation]
-):
-    finding_spec = finding_spec_template(
-        PatternId.CONFIG_CONTRACTS,
-        "Config dispatch is encoded through fragile attribute probing",
-        "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name probing or ad hoc attribute comparisons.",
-        "fail-loud polymorphic configuration contracts",
-        "same config-family choice expressed through attribute-level probing",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.ATTRIBUTE_PROBE,
-            ObservationTag.CONFIG_DISPATCH,
-        ),
-    )
-    observation_family = ConfigDispatchObservationFamily
-    observation_type = ConfigDispatchObservation
-    summary_template = "{module_path} contains {evidence_count} config-specific attribute probes or comparisons."
-    minimum_evidence_count = 2
-
-
 class ConcreteConfigFieldProbeDetector(
     ConfiguredModuleCollectorCandidateDetector[ConcreteConfigFieldProbeCandidate]
 ):
@@ -2881,30 +2856,6 @@ class ConcreteConfigFieldProbeDetector(
             ),
             (probe_candidate.evidence,),
         )
-
-
-class ManualVirtualMembershipDetector(
-    TypedObservationPatternDetector[ClassMarkerObservation]
-):
-    finding_spec = finding_spec_template(
-        PatternId.VIRTUAL_MEMBERSHIP,
-        "Manual class-marker membership should become custom isinstance semantics",
-        "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks suggest a custom isinstance/subclass boundary rather than scattered manual probing.",
-        "runtime-checkable virtual membership on nominal class identity",
-        "same membership question repeated through class-marker probing",
-        (
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.CLASS_MARKER_PROBE,
-            ObservationTag.RUNTIME_MEMBERSHIP,
-        ),
-    )
-    observation_family = ClassMarkerObservationFamily
-    observation_type = ClassMarkerObservation
-    summary_template = "{module_path} performs {evidence_count} class-level marker checks on instances."
-    minimum_evidence_count = 2
 
 
 @dataclass(frozen=True)

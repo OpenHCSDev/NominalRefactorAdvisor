@@ -60,8 +60,6 @@ from nominal_refactor_advisor.ast_tools import (
     AstKeywordSourceProjection,
     AstNameFamily,
     BuiltinCallName,
-    ClassMarkerObservationFamily,
-    ConfigDispatchObservationFamily,
     DynamicMethodInjectionObservationFamily,
     FieldObservationSpec,
     FieldObservationFamily,
@@ -14728,14 +14726,6 @@ def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None
     assert "LocalObservationFamily" in findings[0].summary
 
 
-def test_typed_observation_detector_types_have_source_declarations() -> None:
-    detector_types = base_detectors.TypedObservationPatternDetector.__subclasses__()
-
-    assert detector_types
-    for detector_type in detector_types:
-        assert f"class {detector_type.__name__}" in inspect.getsource(detector_type)
-
-
 def test_detects_enum_metadata_table_parallel_to_enum_members(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -15027,16 +15017,6 @@ def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 1 for finding in findings))
 
 
-def test_detects_config_attribute_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef resolve(config):\n    if hasattr(config, "napari_port"):\n        return config.napari_port\n    if getattr(config, "viewer_type", None) == "fiji":\n        return 2\n    return 0\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 4 for finding in findings))
-
-
 def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -15055,20 +15035,6 @@ def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
     assert "SoftLJConfig" in finding.summary
     assert "gaussians" in finding.summary
     assert "repulsion" in finding.summary
-
-
-def test_collects_config_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef resolve(config):\n    if hasattr(config, "napari_port"):\n        return config.napari_port\n    if getattr(config, "viewer_type", None) == "fiji":\n        return 2\n    return 0\n',
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, ConfigDispatchObservationFamily)
-    assert {item.observed_attribute for item in observations} == {
-        "napari_port",
-        "viewer_type",
-    }
 
 
 def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
@@ -15118,41 +15084,6 @@ def test_parameter_thread_detector_ignores_semantic_decorated_entrypoints(
     )
 
 
-def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef check(instance):\n    if hasattr(instance.__class__, "_is_global_config"):\n        return instance.__class__._is_global_config\n    return False\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 9 for finding in findings))
-
-
-def test_manual_virtual_membership_ignores_private_predicate_helper_calls(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass AxisProjector:\n    @classmethod\n    def project(cls, route_values, viewer_values):\n        start_index = cls._viewer_index(route_values[0], viewer_values)\n        if cls._is_contiguous_subset(route_values, viewer_values, start_index):\n            return route_values, start_index\n        return viewer_values, 0\n\n    @staticmethod\n    def _viewer_index(value, viewer_values):\n        return viewer_values.index(value)\n\n    @staticmethod\n    def _is_contiguous_subset(route_values, viewer_values, start_index):\n        stop_index = start_index + len(route_values)\n        return viewer_values[start_index:stop_index] == route_values\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "manual_virtual_membership" for finding in findings
-    )
-
-
-def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef check(instance):\n    if hasattr(instance.__class__, "_is_global_config"):\n        return instance.__class__._is_global_config\n    return False\n',
-    )
-    module = parse_python_modules(tmp_path)[0]
-    observations = collect_family_items(module, ClassMarkerObservationFamily)
-    assert any((item.marker_name == "_is_global_config" for item in observations))
-
-
 def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -15197,33 +15128,24 @@ def test_collects_dynamic_method_injection_observations_via_spec_family(
     assert [item.mutator_name for item in observations] == ["setattr"]
 
 
-def test_function_observation_families_preserve_nested_definition_ownership(
+def test_function_observation_family_preserves_nested_definition_ownership(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\ndef outer(config, target_type, instance):\n"
+        "\ndef outer(target_type):\n"
         "    def inner():\n"
-        "        if hasattr(config, 'nested_mode'):\n"
-        "            setattr(target_type, 'run', lambda: None)\n"
-        "        return instance.__class__._is_nested\n"
+        "        setattr(target_type, 'run', lambda: None)\n"
         "    return inner()\n",
     )
     module = parse_python_modules(tmp_path)[0]
 
-    config_dispatches = collect_family_items(
-        module,
-        ConfigDispatchObservationFamily,
-    )
-    class_markers = collect_family_items(module, ClassMarkerObservationFamily)
     method_injections = collect_family_items(
         module,
         DynamicMethodInjectionObservationFamily,
     )
 
-    assert config_dispatches == []
-    assert {observation.symbol for observation in class_markers} == {"inner"}
     assert {observation.symbol for observation in method_injections} == {"inner"}
 
 
@@ -25254,9 +25176,7 @@ class Beta:
         )
 
 
-def resolve(config, obj):
-    if hasattr(config, "kind"):
-        return config.kind
+def resolve(obj):
     for scope in [1]:
         for mro_type in type(obj).__mro__:
             if scope and mro_type:
@@ -25271,18 +25191,7 @@ def resolve(config, obj):
     assert collect_structural_observations(modules[0]) is projected_observations
     kinds = {item.observation_kind for item in graph.observations}
     assert ObservationKind.BUILDER_CALL in kinds
-    assert ObservationKind.CONFIG_DISPATCH in kinds
     assert ObservationKind.SENTINEL_TYPE in kinds
-
-
-def test_ignores_non_branch_config_reads(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef resolve(config):\n    port = config.napari_port\n    return port\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any((finding.pattern_id == 4 for finding in findings))
 
 
 def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:

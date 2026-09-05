@@ -30,8 +30,6 @@ class ObservationKind(StrEnum):
     """Canonical observation kinds emitted by the collection substrate."""
 
     BUILDER_CALL = "builder_call"
-    CLASS_MARKER = "class_marker"
-    CONFIG_DISPATCH = "config_dispatch"
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
     FIELD = "field"
     LITERAL_DISPATCH = "literal_dispatch"

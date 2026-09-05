@@ -54,8 +54,6 @@ from .observation_graph import (
 )
 from .observation_shapes import (
     BuilderCallShape,
-    ClassMarkerObservation,
-    ConfigDispatchObservation,
     DynamicMethodInjectionObservation,
     FieldObservation,
     FieldOriginKind,
@@ -3058,8 +3056,6 @@ def _builder_value_key(node: AstFingerprintInput) -> str:
 
 _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
 _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
-_HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
-_GETATTR_CALL_FAMILY = AstNameFamily(frozenset({"getattr"}))
 REGISTRATION_CALL_FAMILY = AstNameFamily(
     frozenset({"register", "add", "register_class", "register_type"})
 )
@@ -4071,129 +4067,6 @@ class TypeGuardProjection:
 TYPE_GUARD_PROJECTION = TypeGuardProjection()
 
 
-def _config_dispatch_observations(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ConfigDispatchObservation, ...]:
-    seen: set[tuple[int, str]] = set()
-    observations: list[ConfigDispatchObservation] = []
-    for node in walk_function_body_nodes(function):
-        if isinstance(node, ast.If):
-            for attr_name in _config_dispatch_attributes(node.test):
-                key = (node.lineno, attr_name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                observations.append(
-                    ConfigDispatchObservation(
-                        file_path=parsed_module.file_path,
-                        line=node.lineno,
-                        symbol=function.name,
-                        observed_attribute=attr_name,
-                    )
-                )
-        if isinstance(node, ast.Match):
-            for attr_name in _match_config_dispatch_attributes(node.subject):
-                key = (node.lineno, attr_name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                observations.append(
-                    ConfigDispatchObservation(
-                        file_path=parsed_module.file_path,
-                        line=node.lineno,
-                        symbol=function.name,
-                        observed_attribute=attr_name,
-                    )
-                )
-    return sorted_tuple(
-        observations, key=lambda item: (item.line, item.observed_attribute)
-    )
-
-
-def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
-    attrs: set[str] = set()
-    for node in _walk_nodes(test):
-        if isinstance(node, ast.Call) and _HASATTR_CALL_FAMILY.matches(node.func):
-            if _call_targets_name(node, "config") and len(node.args) >= 2:
-                if isinstance(node.args[1], ast.Constant) and isinstance(
-                    node.args[1].value, str
-                ):
-                    attrs.add(node.args[1].value)
-        if isinstance(node, ast.Call) and _GETATTR_CALL_FAMILY.matches(node.func):
-            if _call_targets_name(node, "config") and len(node.args) >= 2:
-                if isinstance(node.args[1], ast.Constant) and isinstance(
-                    node.args[1].value, str
-                ):
-                    attrs.add(node.args[1].value)
-        if isinstance(node, ast.Compare):
-            if len(node.ops) != 1 or len(node.comparators) != 1:
-                continue
-            if not isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
-                continue
-            left_name = CONFIG_SUBJECT_PROJECTION.subject_name(node.left)
-            right_name = CONFIG_SUBJECT_PROJECTION.subject_name(node.comparators[0])
-            left_literal = _literal_dispatch_value(node.left)
-            right_literal = _literal_dispatch_value(node.comparators[0])
-            if left_name is not None and right_literal is not None:
-                attrs.add(left_name)
-            if right_name is not None and left_literal is not None:
-                attrs.add(right_name)
-    return sorted_tuple(attrs)
-
-
-def _match_config_dispatch_attributes(subject: ast.AST) -> tuple[str, ...]:
-    attr_name = CONFIG_SUBJECT_PROJECTION.subject_name(subject)
-    if attr_name is not None:
-        return (attr_name,)
-    return ()
-
-
-def _class_marker_observations(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ClassMarkerObservation, ...]:
-    seen: set[tuple[int, str]] = set()
-    observations: list[ClassMarkerObservation] = []
-    for node in walk_function_body_nodes(function):
-        if isinstance(node, ast.Call) and _HASATTR_CALL_FAMILY.matches(node.func):
-            target = node.args[0] if node.args else None
-            marker_name = None
-            if _is_class_target(target):
-                marker_name = (
-                    _constant_string(node.args[1]) if len(node.args) >= 2 else None
-                )
-            if marker_name is not None:
-                key = (node.lineno, marker_name)
-                if key not in seen:
-                    seen.add(key)
-                    observations.append(
-                        ClassMarkerObservation(
-                            file_path=parsed_module.file_path,
-                            line=node.lineno,
-                            symbol=function.name,
-                            marker_name=marker_name,
-                        )
-                    )
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr.startswith("_is_")
-            and _is_class_target(node.value)
-        ):
-            key = (node.lineno, node.attr)
-            if key not in seen:
-                seen.add(key)
-                observations.append(
-                    ClassMarkerObservation(
-                        file_path=parsed_module.file_path,
-                        line=node.lineno,
-                        symbol=function.name,
-                        marker_name=node.attr,
-                    )
-                )
-    return sorted_tuple(observations, key=lambda item: (item.line, item.marker_name))
-
-
 def _sentinel_type_observation(
     parsed_module: ParsedModule,
     node: ast.Assign,
@@ -4278,59 +4151,12 @@ def _dynamic_method_injection_observations(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-def _call_targets_name(node: ast.Call, expected_name: str) -> bool:
-    return bool(
-        node.args
-        and isinstance(node.args[0], ast.Name)
-        and (node.args[0].id == expected_name)
-    )
-
-
-def _constant_string(node: ast.AST | None) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return None
-
-
-def _attribute_name_if_root(node: ast.AST, expected_root: str) -> str | None:
-    if not isinstance(node, ast.Attribute):
-        return None
-    if isinstance(node.value, ast.Name) and node.value.id == expected_root:
-        return node.attr
-    return None
-
-
-class ConfigSubjectProjection:
-    def subject_name(self, node: ast.AST) -> str | None:
-        attr_name = _attribute_name_if_root(node, "config")
-        if attr_name is not None:
-            return attr_name
-        if isinstance(node, ast.Call) and _GETATTR_CALL_FAMILY.matches(node.func):
-            if _call_targets_name(node, "config") and len(node.args) >= 2:
-                return _constant_string(node.args[1])
-        return None
-
-
-CONFIG_SUBJECT_PROJECTION = ConfigSubjectProjection()
 
 
 def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, bool)):
         return node.value
     return None
-
-
-def _is_class_target(node: ast.AST | None) -> bool:
-    if node is None:
-        return False
-    if isinstance(node, ast.Attribute) and node.attr == "__class__":
-        return True
-    if (
-        isinstance(node, ast.Call)
-        and AstExpressionProjection.terminal_name(node.func) == "type"
-    ):
-        return True
-    return False
 
 
 @lru_cache(maxsize=None)
@@ -4496,11 +4322,7 @@ from .observation_families import (
     BuilderCallShapeFamily,
     BuilderCallShapeSpec,
     CallRegistrationShapeSpec,
-    ClassMarkerObservationFamily,
-    ClassMarkerObservationSpec,
     ClassObservationSpec,
-    ConfigDispatchObservationFamily,
-    ConfigDispatchObservationSpec,
     DataclassBodyFieldObservationSpec,
     DecoratorRegistrationShapeSpec,
     DynamicMethodInjectionObservationFamily,
@@ -4530,8 +4352,6 @@ from .observation_families import (
     SentinelTypeObservationSpec,
     SentinelTypeUsageObservationSpec,
     ShapeFamily,
-    StandardClassMarkerObservationSpec,
-    StandardConfigDispatchObservationSpec,
     StandardDynamicMethodInjectionObservationSpec,
     StandardProjectionHelperObservationSpec,
     StringLiteralDispatchObservationFamily,

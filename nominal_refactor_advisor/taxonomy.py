@@ -169,7 +169,6 @@ class ObservationTag(LabeledStrEnum):
     CAPABILITY_MARKER = ("capability_marker", "marker-token checks")
     CLASS_FAMILY = ("class_family", "same-family class clusters")
     CLASS_LEVEL_POSITION = ("class_level_position", "class-level registration position")
-    CLASS_MARKER_PROBE = ("class_marker_probe", "class-marker probes")
     CLOSED_FAMILY_CASES = ("closed_family_cases", "string-key case splits")
     CONFIG_DISPATCH = ("config_dispatch", "config-field dispatch")
     DATAFLOW_ROOT = ("dataflow_root", "shared dataflow roots")

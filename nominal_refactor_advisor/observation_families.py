@@ -12,8 +12,6 @@ from .native_syntax import NativePythonSyntaxIndex
 
 from .observation_shapes import (
     BuilderCallShape,
-    ClassMarkerObservation,
-    ConfigDispatchObservation,
     DynamicMethodInjectionObservation,
     FieldObservation,
     LiteralDispatchObservation,
@@ -48,9 +46,7 @@ from .ast_tools import (
     REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
     _class_body_field_observation,
-    _class_marker_observations,
     _class_name_from_expr,
-    _config_dispatch_observations,
     _dynamic_method_injection_observations,
     root_agnostic_expression_fingerprint,
     _init_field_observations,
@@ -204,22 +200,6 @@ class FunctionAcceptanceMixin(ABC):
         return True
 
 
-class RequiredFunctionParameterMixin(FunctionAcceptanceMixin):
-    required_parameter_name: ClassVar[str]
-
-    def accepts_function(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> bool:
-        return super().accepts_function(function, observation) and any(
-            (
-                arg.arg == type(self).required_parameter_name
-                for arg in function.args.args
-            )
-        )
-
-
 class SyncFunctionOnlyMixin(FunctionAcceptanceMixin):
     def accepts_function(
         self,
@@ -331,41 +311,6 @@ class HelperBackedScopedAssignObservationSpec(
     ) -> ShapeEmission[FamilyItemT] | None:
         del observation
         return type(self).shape_helper(parsed_module, node)
-
-
-class ConfigDispatchObservationSpec(
-    AutoRegisteredModuleShapeSpec[ConfigDispatchObservation],
-    FunctionObservationSpec[ConfigDispatchObservation],
-    ABC,
-):
-    _registry_root = True
-
-
-class StandardConfigDispatchObservationSpec(
-    ConfigDispatchObservationSpec,
-    ModuleOnlyFunctionObservationSpec[ConfigDispatchObservation],
-    RequiredFunctionParameterMixin,
-    TupleResultMixin[ConfigDispatchObservation],
-    HelperBackedScopedFunctionObservationSpec[ConfigDispatchObservation],
-):
-    shape_helper = staticmethod(_config_dispatch_observations)
-    required_parameter_name = "config"
-
-
-class ClassMarkerObservationSpec(
-    AutoRegisteredModuleShapeSpec[ClassMarkerObservation],
-    FunctionObservationSpec[ClassMarkerObservation],
-    ABC,
-):
-    _registry_root = True
-
-
-class StandardClassMarkerObservationSpec(
-    ClassMarkerObservationSpec,
-    TupleResultMixin[ClassMarkerObservation],
-    HelperBackedFunctionObservationSpec[ClassMarkerObservation],
-):
-    shape_helper = staticmethod(_class_marker_observations)
 
 
 class SentinelTypeObservationSpec(
@@ -817,22 +762,6 @@ class BuilderCallShapeFamily(
 ):
     item_type = BuilderCallShape
     spec = _BUILDER_CALL_SHAPE_SPEC
-
-
-class ConfigDispatchObservationFamily(
-    RegisteredSpecCollectedFamily[ConfigDispatchObservation],
-    ObservationFamily[ConfigDispatchObservation],
-):
-    item_type = ConfigDispatchObservation
-    spec_root = ConfigDispatchObservationSpec
-
-
-class ClassMarkerObservationFamily(
-    RegisteredSpecCollectedFamily[ClassMarkerObservation],
-    ObservationFamily[ClassMarkerObservation],
-):
-    item_type = ClassMarkerObservation
-    spec_root = ClassMarkerObservationSpec
 
 
 class SentinelTypeObservationFamily(

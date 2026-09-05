@@ -253,11 +253,6 @@ class FunctionNameObservedNameMixin(ABC):
     observed_name = AliasProperty[str]("function_name")
 
 
-class ObservedAttributeObservedNameMixin(ABC):
-    observed_attribute: str
-    observed_name = AliasProperty[str]("observed_attribute")
-
-
 @dataclass(frozen=True)
 class FieldObservation(
     ExecutionLevelObservationMixin,
@@ -378,34 +373,6 @@ class ScopedShapeWrapperSpec(
     @property
     def fiber_key(self) -> str:
         return f"spec:{'/'.join(self.node_types)}:{self.function_name}"
-
-
-@dataclass(frozen=True)
-class ConfigDispatchObservation(
-    FunctionBodyLineSymbolObservationMixin,
-    ObservedAttributeObservedNameMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.CONFIG_DISPATCH
-    line: int
-    symbol: str
-    observed_attribute: str
-
-    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_attribute")
-
-
-@dataclass(frozen=True)
-class ClassMarkerObservation(
-    FunctionBodyLineSymbolObservationMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.CLASS_MARKER
-    line: int
-    symbol: str
-    marker_name: str
-
-    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("marker_name")
-    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("marker_name")
 
 
 @dataclass(frozen=True)
