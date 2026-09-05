@@ -2,7 +2,7 @@
 
 The advisor does not apply edits here. It represents target-level rewrite plans,
 simulates their effect over source text, and validates the result through the
-declared AST-span parser boundary.
+declared source-validation boundary.
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from .ast_tools import (
     ROOT_NAME_PROJECTION,
     AstParentIndex,
     BuiltinCallName,
-    FunctionDefinitionNode,
     ImportBoundNameProjection,
     ParsedModule,
     root_agnostic_expression_fingerprint,
@@ -271,6 +270,7 @@ from .codemod_declaration_source import (
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
+    FunctionSourceAuthority as FunctionSourceAuthority,
 )
 from .codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
@@ -282,6 +282,7 @@ from .codemod_declaration_source import (
     NamedDeclarationSourceAuthority as NamedDeclarationSourceAuthority,
 )
 from .codemod_declaration_source import (
+    FunctionBodySourceAuthority as FunctionBodySourceAuthority,
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
 )
 from .codemod_declaration_source import (
@@ -543,6 +544,7 @@ from .declaration_dependencies import (
     FunctionBindingProjection,
     ModuleLexicalDependencyProjection,
 )
+from .descriptor_algebra import AliasProperty
 from .detectors._base import (
     CandidateCollectorBaseReference,
     CandidateCollectorBoilerplateCandidate,
@@ -4466,6 +4468,15 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
 class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
     """Source-proved mutation of one function declaration."""
 
+    source_authority: ClassVar[type[FunctionSourceAuthority]]
+
+    @property
+    @abstractmethod
+    def replacement_source(self) -> str:
+        """Project the leaf operation's declared replacement payload."""
+
+        raise NotImplementedError
+
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
@@ -4473,18 +4484,14 @@ class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
         _target_identifier, target, node = self.target_node_from_context(snapshot)
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError(f"Target {target.qualname!r} is not a function")
-        return self.source_edits_for_function(snapshot, target, node)
-
-    @abstractmethod
-    def source_edits_for_function(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        target: AstTargetDigest,
-        node: FunctionDefinitionNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        """Return the leaf operation's edits for one proved function target."""
-
-        raise NotImplementedError
+        authority = type(self).source_authority(
+            node=node, source=snapshot.sources_by_file_path[target.file_path],
+        )
+        return authority.geometry.physical_edits(
+            file_path=target.file_path,
+            replacements=(authority.replacement(self.replacement_source),),
+            rationale=self.rationale or f"{self.operation_key()} on {target.qualname!r}.",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4493,20 +4500,8 @@ class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
 
     signature_suffix: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def source_edits_for_function(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        target: AstTargetDigest,
-        node: FunctionDefinitionNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        authority = FunctionSignatureSourceAuthority(
-            node=node, source=snapshot.sources_by_file_path[target.file_path]
-        )
-        return authority.geometry.physical_edits(
-            file_path=target.file_path,
-            replacements=(authority.replacement(self.signature_suffix),),
-            rationale=self.rationale or f"Replace signature of {target.qualname!r}.",
-        )
+    source_authority = FunctionSignatureSourceAuthority
+    replacement_source = AliasProperty[str]("signature_suffix")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4515,41 +4510,8 @@ class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
 
     body_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def source_edits_for_function(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        target: AstTargetDigest,
-        node: FunctionDefinitionNode,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        if not node.body:
-            raise ValueError(f"Target {target.qualname!r} has no body")
-        body_start = node.body[0].lineno
-        body_end = node.body[-1].end_lineno or node.body[-1].lineno
-        return (
-            SourceSpanReplacement(
-                file_path=target.file_path,
-                start_line=body_start,
-                end_line=body_end,
-                replacement_lines=self._replacement_lines(
-                    SourceTargetEditor(snapshot.sources_by_file_path, target),
-                    body_start,
-                ),
-                rationale=self.rationale or f"Replace body of {target.qualname!r}.",
-            ),
-        )
-
-    def _replacement_lines(
-        self,
-        editor: SourceTargetEditor,
-        body_start: int,
-    ) -> tuple[str, ...]:
-        body_indent = editor.indentation_for_line(body_start)
-        body_lines = SourceTargetEditor.source_lines(self.body_source)
-        if not body_lines:
-            raise ValueError("Replacement function body must not be empty")
-        return tuple(
-            body_indent + line if line.strip() else line for line in body_lines
-        )
+    source_authority = FunctionBodySourceAuthority
+    replacement_source = AliasProperty[str]("body_source")
 
 
 @dataclass(frozen=True, kw_only=True)

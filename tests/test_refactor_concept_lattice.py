@@ -770,7 +770,12 @@ def test_function_mutations_share_typed_current_source_proof() -> None:
         assert issubclass(operation_type, codemod.FunctionMutationOperationABC)
         assert issubclass(operation_type, codemod.SourceReprovedOperation)
         assert "source_edits_from_snapshot" not in operation_type.__dict__
-        assert "source_edits_for_function" in operation_type.__dict__
+        assert "source_edits_for_function" not in operation_type.__dict__
+        assert operation_type.source_edits_from_snapshot is (
+            codemod.FunctionMutationOperationABC.source_edits_from_snapshot
+        )
+        assert issubclass(operation_type.source_authority, codemod.FunctionSourceAuthority)
+        assert "replacement" in operation_type.source_authority.__dict__
 
 
 def test_class_body_source_authority_owns_insertion_geometry() -> None:

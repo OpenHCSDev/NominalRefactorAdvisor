@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import tokenize
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import (
     dataclass,
@@ -28,6 +29,8 @@ from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
     SourceInsertion,
+    SourceNodeDecoratorPolicy,
+    SourceNodeSpan,
     SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpan,
@@ -529,12 +532,23 @@ class _SingleLogicalLineSource:
 
 
 @dataclass(frozen=True)
-class FunctionSignatureSourceAuthority(NamedDeclarationSourceAuthority):
-    """Replace a function signature without rewriting its identity or suite."""
+class FunctionSourceAuthority(NamedDeclarationSourceAuthority, ABC):
+    """Source ownership shared by function header and suite rewrites."""
 
     node: ast.FunctionDef | ast.AsyncFunctionDef
 
-    def replacement(self, signature_suffix: str) -> SourceTextSpanReplacement:
+    @abstractmethod
+    def replacement(self, source: str, /) -> SourceTextSpanReplacement:
+        """Derive the declaration-owned span and its replacement source."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class FunctionSignatureSourceAuthority(FunctionSourceAuthority):
+    """Replace a function signature without rewriting its identity or suite."""
+
+    def replacement(self, signature_suffix: str, /) -> SourceTextSpanReplacement:
         span = self.geometry.function_signature_suffix_span(self.node)
         if self.geometry.span_contains_comment(span):
             raise ValueError("Function signature replacement would discard comments")
@@ -559,4 +573,35 @@ class FunctionSignatureSourceAuthority(NamedDeclarationSourceAuthority):
             start_offset=span.start_offset,
             end_offset=span.end_offset,
             replacement_source=suffix,
+        )
+
+
+@dataclass(frozen=True)
+class FunctionBodySourceAuthority(FunctionSourceAuthority):
+    """Own the function suite, including its first nested declaration's decorators."""
+
+    def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
+        signature_end = self.geometry.function_signature_suffix_span(self.node).end_offset
+        header_line = self.geometry.line_number_for_offset(signature_end - 1)
+        first_statement_line = SourceNodeSpan(
+            self.node.body[0], SourceNodeDecoratorPolicy.INCLUDE,
+        ).start_line
+        header_source = self.geometry.lines[header_line - 1]
+        newline = "\r\n" if header_source.endswith("\r\n") else "\n"
+        if first_statement_line == header_line:
+            start_offset = signature_end
+            indentation = self.geometry.line_indent(signature_end) + "    "
+            prefix = newline
+        else:
+            start_offset = self.geometry.line_offsets[header_line]
+            first_statement_offset = self.geometry.line_offsets[first_statement_line - 1]
+            indentation = self.geometry.line_indent(first_statement_offset)
+            prefix = ""
+        body = SourceTextGeometry(body_source).indented_source(indentation)
+        if not body.endswith(("\n", "\r")):
+            body += newline
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start_offset,
+            end_offset=self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
+            replacement_source=prefix + body,
         )

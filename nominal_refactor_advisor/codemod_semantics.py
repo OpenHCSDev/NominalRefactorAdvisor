@@ -1,6 +1,5 @@
 """Closed semantic axes for codemod execution and proof."""
 
-import ast
 from collections.abc import (
     Callable,
     Iterable,
@@ -51,11 +50,11 @@ class CodemodSourceDependencyScope(StrEnum):
 
 
 def _validate_ast_span_source(source: str, file_path: str) -> None:
-    ast.parse(source, filename=file_path)
+    compile(source, file_path, "exec", dont_inherit=True)
 
 
 class CodemodBackend(StrEnum):
-    """Parser backend carrying its simulated-source validation behavior."""
+    """Source backend carrying its simulated-source validation behavior."""
 
     AST_SPAN = ("ast_span", _validate_ast_span_source)
 
@@ -70,7 +69,7 @@ class CodemodBackend(StrEnum):
         return member
 
     def validate_source(self, source: str, file_path: str) -> None:
-        """Validate source through this backend's declared parser."""
+        """Check syntax and Python compilation rules without executing source."""
 
         self._source_validator(source, file_path)
 

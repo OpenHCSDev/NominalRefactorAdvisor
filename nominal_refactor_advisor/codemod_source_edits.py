@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import sys
 import tokenize
 from abc import (
     ABC,
@@ -917,6 +918,11 @@ class SourceNodeSpan:
 class SourceTextGeometry(SourceLineSegmentAuthority):
     """Line and offset geometry for source-index anchored rewrites."""
 
+    literal_node_types: ClassVar[tuple[type[ast.expr], ...]] = (
+        ast.Constant, ast.JoinedStr,
+        *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
+    )
+
     @cached_property
     def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
         return tuple(tokenize.generate_tokens(io.StringIO(self.source).readline))
@@ -954,6 +960,27 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             <= self.token_position_offset(token.start)
             < span.end_offset
             for token in self.tokens
+        )
+
+    def indented_source(self, indentation: str) -> str:
+        """Indent a Python block while preserving complete literal source spans."""
+
+        module = ast.parse(self.source)
+        if not module.body:
+            raise ValueError("Replacement source block must contain a statement")
+        continuation_lines = frozenset(
+            line_number
+            for node in ast.walk(module)
+            if isinstance(node, self.literal_node_types)
+            for line_number in range(
+                node.lineno + 1, SourceByteSpan.require_node(node).end_line_index + 2
+            )
+        )
+        return "".join(
+            indentation + line
+            if line_number not in continuation_lines and line.strip()
+            else line
+            for line_number, line in enumerate(self.lines, start=1)
         )
 
     def function_parameter_span(
