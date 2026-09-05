@@ -138,6 +138,7 @@ from .source_index import (
     IndexedSourceAuthority,
     SourceFileDigest,
     SourceIndex,
+    SourceIndexBuildArtifacts,
     build_source_index_artifacts,
 )
 
@@ -288,25 +289,21 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         module_tuple = tuple(modules)
         finding_tuple = tuple(findings)
-        return cls._from_modules_with_class_family_index(
+        return cls._from_modules_with_indexes(
             module_tuple,
-            finding_tuple,
             build_class_family_index(module_tuple),
+            build_source_index_artifacts(module_tuple, finding_tuple),
         )
 
     @classmethod
-    def _from_modules_with_class_family_index(
+    def _from_modules_with_indexes(
         cls,
         modules: tuple[ParsedModule, ...],
-        findings: tuple[RefactorFinding, ...],
         class_family_index: ClassFamilyIndex,
+        source_index_artifacts: SourceIndexBuildArtifacts,
     ) -> "CodemodSourceSnapshot":
-        """Build from source and a class index proved for that exact source."""
+        """Build from source and semantic indexes proved for that exact source."""
 
-        source_index_artifacts = build_source_index_artifacts(
-            modules,
-            findings,
-        )
         module_node_cache = {module.file_path: module.module for module in modules}
         return cls(
             source_index=source_index_artifacts.source_index,
@@ -315,9 +312,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             },
             class_family_index=class_family_index,
             module_node_cache=module_node_cache,
-            ast_target_node_cache=(
-                source_index_artifacts.target_artifacts.node_index.nodes_by_target_id
-            ),
+            ast_target_node_cache=source_index_artifacts.node_index.nodes_by_target_id,
             module_import_graph_cache=SourceModuleImportGraph(
                 source_index=source_index_artifacts.source_index,
                 module_nodes_by_file_path=module_node_cache,
@@ -341,13 +336,25 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             for module in projected_modules
             if module.file_path in effective_overlay
         )
-        return type(self)._from_modules_with_class_family_index(
+        return type(self)._from_modules_with_indexes(
             projected_modules,
-            (),
             self.required_class_family_index.projected_with_module_overlay(
                 projected_modules,
                 changed_modules,
             ),
+            self._source_index_build_artifacts.projected_with_module_overlay(
+                projected_modules,
+                changed_modules,
+            ),
+        )
+
+    @cached_property
+    def _source_index_build_artifacts(self) -> SourceIndexBuildArtifacts:
+        """Recover the exact source-index artifacts already held by this snapshot."""
+
+        return SourceIndexBuildArtifacts(
+            source_index=self.source_index,
+            node_index=AstTargetNodeIndex(dict(self.ast_target_nodes_by_id)),
         )
 
     def with_source_file_creations(

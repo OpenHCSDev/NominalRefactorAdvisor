@@ -5687,16 +5687,32 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     beta_source = snapshot.sources_by_file_path[beta_path.as_posix()]
+    source_overlay = {
+        beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")
+    }
+    rebuilt = CodemodSourceSnapshot.from_modules(
+        snapshot.modules_with_source_overlay(source_overlay)
+    )
     monkeypatch.setattr(
         codemod_runtime_module,
         "build_class_family_index",
         lambda _modules: pytest.fail("projected snapshots must overlay the class index"),
     )
-
-    projected = snapshot.with_virtual_sources(
-        {beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")}
+    monkeypatch.setattr(
+        codemod_runtime_module,
+        "build_source_index_artifacts",
+        lambda _modules, _findings: pytest.fail(
+            "projected snapshots must overlay the source index"
+        ),
     )
 
+    projected = snapshot.with_virtual_sources(source_overlay)
+
+    assert projected.source_index == rebuilt.source_index
+    assert (
+        projected.source_index.targets_by_file[alpha_path.as_posix()][0]
+        is snapshot.source_index.targets_by_file[alpha_path.as_posix()][0]
+    )
     assert (
         projected.module_nodes_by_file_path[alpha_path.as_posix()]
         is snapshot.module_nodes_by_file_path[alpha_path.as_posix()]
@@ -5705,6 +5721,14 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
         "pkg.beta.Beta"
     ].resolved_base_symbols == ()
     assert snapshot.with_virtual_sources({beta_path.as_posix(): beta_source}) is snapshot
+    projected_from_partial_cache = replace(
+        snapshot,
+        ast_target_node_cache={},
+    ).with_virtual_sources(source_overlay)
+    alpha_target_id = projected_from_partial_cache.source_index.targets_by_file[
+        alpha_path.as_posix()
+    ][1].target_id
+    assert alpha_target_id in projected_from_partial_cache.ast_target_nodes_by_id
 
 
 def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
@@ -5726,10 +5750,15 @@ def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
         "pkg.beta.Consumer"
     ].resolved_base_symbols == ("pkg.alpha.Shared",)
 
-    projected = snapshot.with_virtual_sources(
-        {competing_alpha_path.as_posix(): "class Shared:\n    pass\n"}
+    source_overlay = {
+        competing_alpha_path.as_posix(): "class Shared:\n    pass\n"
+    }
+    rebuilt = CodemodSourceSnapshot.from_modules(
+        snapshot.modules_with_source_overlay(source_overlay)
     )
+    projected = snapshot.with_virtual_sources(source_overlay)
 
+    assert projected.source_index == rebuilt.source_index
     assert alpha_path.as_posix() in projected.sources_by_file_path
     assert beta_path.as_posix() in projected.sources_by_file_path
     assert projected.required_class_family_index.classes_by_symbol[

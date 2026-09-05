@@ -704,7 +704,90 @@ class SourceIndexBuildArtifacts:
     """Complete source-index build output for codemod snapshot reuse."""
 
     source_index: SourceIndex
-    target_artifacts: AstTargetBuildArtifacts
+    node_index: AstTargetNodeIndex
+
+    def projected_with_module_overlay(
+        self,
+        projected_modules: tuple[ParsedModule, ...],
+        changed_modules: tuple[ParsedModule, ...],
+    ) -> "SourceIndexBuildArtifacts":
+        """Reindex only changed modules while preserving exact target identity."""
+
+        changed_modules_by_path = (
+            UniqueIdentityIndexAuthority.declarations_by_handle(
+                changed_modules,
+                lambda module: module.file_path,
+            )
+        )
+        projected_modules_by_path = (
+            UniqueIdentityIndexAuthority.declarations_by_handle(
+                projected_modules,
+                lambda module: module.file_path,
+            )
+        )
+        if not changed_modules_by_path.keys() <= projected_modules_by_path.keys():
+            raise ValueError("Changed modules must belong to the projected source state")
+        files_by_path = UniqueIdentityIndexAuthority.declarations_by_handle(
+            self.source_index.files,
+            lambda source_file: source_file.file_path,
+        )
+        target_authority = AstTargetDigestsAuthority()
+        projected_files: list[SourceFileDigest] = []
+        projected_targets: list[AstTargetDigest] = []
+        projected_nodes: AstTargetNodeMap = {}
+        for module in projected_modules:
+            file_path = module.file_path
+            if file_path in changed_modules_by_path:
+                file_digest = SourceFileDigest.from_module(module)
+                target_artifacts = target_authority.artifacts(module, file_digest)
+            else:
+                file_digest = files_by_path.get(file_path)
+                if file_digest is None:
+                    raise ValueError(
+                        "Every new projected module must be declared as changed"
+                    )
+                if file_digest.module_path_identity != module.module_path_identity:
+                    raise ValueError(
+                        "Unchanged projected modules must preserve module identity"
+                    )
+                module_targets = self.source_index.targets_by_file[file_path]
+                required_node_ids = tuple(
+                    target.target_id
+                    for target in module_targets
+                    if not target.is_module
+                )
+                if all(
+                    target_id in self.node_index.nodes_by_target_id
+                    for target_id in required_node_ids
+                ):
+                    target_artifacts = AstTargetBuildArtifacts(
+                        targets=module_targets,
+                        node_index=AstTargetNodeIndex(
+                            {
+                                target_id: self.node_index.nodes_by_target_id[target_id]
+                                for target_id in required_node_ids
+                            }
+                        ),
+                    )
+                else:
+                    target_artifacts = target_authority.artifacts(
+                        module,
+                        file_digest,
+                    )
+                    if target_artifacts.targets != module_targets:
+                        raise ValueError(
+                            "Unchanged source produced different target identities"
+                        )
+            projected_files.append(file_digest)
+            projected_targets.extend(target_artifacts.targets)
+            projected_nodes.update(target_artifacts.node_index.nodes_by_target_id)
+        return type(self)(
+            source_index=SourceIndex(
+                files=tuple(projected_files),
+                ast_targets=tuple(projected_targets),
+            ),
+            node_index=AstTargetNodeIndex(projected_nodes),
+        )
 
 
 def iter_statement_definition_nodes(
@@ -977,7 +1060,7 @@ class SourceIndexBuildAuthority:
         self._warm_lookup_indexes(source_index)
         return SourceIndexBuildArtifacts(
             source_index=source_index,
-            target_artifacts=target_artifacts,
+            node_index=target_artifacts.node_index,
         )
 
     def _file_digests(self) -> tuple[SourceFileDigest, ...]:

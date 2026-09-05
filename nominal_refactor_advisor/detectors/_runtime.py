@@ -3725,7 +3725,7 @@ def _cancelable_composition_signals_for_module(
 
     artifacts = build_source_index_artifacts((module,), ())
     source_index = artifacts.source_index
-    nodes_by_target_id = artifacts.target_artifacts.node_index.nodes_by_target_id
+    nodes_by_target_id = artifacts.node_index.nodes_by_target_id
     signals: list[CancelableCompositionSignal] = []
     for target in source_index.ast_targets:
         if not target.is_function_like:

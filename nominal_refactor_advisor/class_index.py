@@ -2554,8 +2554,14 @@ class ClassFamilyIndex:
 
         projected_module_tuple = tuple(projected_modules)
         changed_module_tuple = tuple(changed_modules)
-        changed_path_texts = _resolved_module_path_texts(changed_module_tuple)
-        retained_records = self.class_records_excluding_files(changed_path_texts)
+        changed_file_paths = frozenset(
+            module.file_path for module in changed_module_tuple
+        )
+        retained_records = tuple(
+            record
+            for record in self.classes_by_symbol.values()
+            if record.file_path not in changed_file_paths
+        )
         replaced_symbols = frozenset(self.classes_by_symbol).difference(
             record.symbol for record in retained_records
         )
