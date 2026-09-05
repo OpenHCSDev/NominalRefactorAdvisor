@@ -2068,52 +2068,6 @@ class NominalInstanceExplicitOrderingDetector(
         )
 
 
-class EnumKeyedTableClassAxisShadowDetector(
-    ModuleCollectorCandidateDetector[EnumKeyedTableClassAxisShadowCandidate]
-):
-    candidate_collector = staticmethod(_enum_keyed_table_class_axis_shadow_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Enum-keyed table should derive from auto-registered class-declared axis keys",
-        "The docs require a single writable owner per closed semantic axis. If a module already declares that axis through class-level enum assignments, adding a writable enum-keyed table over the same cases creates duplicate authority and a synchronization surface. The class-declared axis should be the primary owner and any enum-keyed lookup should be derived from the family registry.",
-        "one authoritative metaclass-registry closed-axis owner with derived table/view projections",
-        "module-level enum-keyed table overlaps a class family that already declares the same enum axis",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.PROJECTION_DICT,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, axis_candidate: EnumKeyedTableClassAxisShadowCandidate
-    ) -> RefactorFinding:
-        class_names = ", ".join(axis_candidate.class_names[:4])
-        shared_cases = ", ".join(axis_candidate.shared_case_names[:4])
-        value_names = ", ".join(axis_candidate.value_type_names[:4])
-        return self.build_finding(
-            (
-                f"`{axis_candidate.table_name}` maps `{axis_candidate.key_type_name}` cases {shared_cases} "
-                f"to {value_names}, while classes {class_names} already declare the same axis via "
-                f"`{axis_candidate.key_attr_name}`."
-            ),
-            axis_candidate.evidence,
-            metrics=MappingMetrics(
-                mapping_site_count=len(axis_candidate.shared_case_names),
-                field_count=1,
-                mapping_name=axis_candidate.table_name,
-                field_names=(axis_candidate.key_attr_name,),
-                source_name=axis_candidate.key_type_name,
-                identity_field_names=(axis_candidate.key_attr_name,),
-            ),
-        )
-
-
 class ParallelRegistryProjectionFamilyDetector(
     ModuleCollectorCandidateDetector[ParallelRegistryProjectionFamilyCandidate]
 ):

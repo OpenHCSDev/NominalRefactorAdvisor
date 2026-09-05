@@ -3435,11 +3435,6 @@ _NAME_LITERAL = "name"
 _EVAL_PARSE_MODE = "eval"
 
 
-def _looks_like_type_or_nominal_key(value: str) -> bool:
-    tail = value.rsplit(".", 1)[-1]
-    return bool(tail) and (tail[0].isupper() or "." in value)
-
-
 def _registered_catalog_projection_candidates(
     module: ParsedModule,
 ) -> tuple[RegisteredCatalogProjectionCandidate, ...]:
@@ -4130,16 +4125,6 @@ class _KeyedTableAxisSpec(_FileAxisCaseSpec):
     value_shape_name: str | None
 
 
-@dataclass(frozen=True)
-class _ClassAssignedEnumAxisSpec:
-    file_path: str
-    line: int
-    class_name: str
-    key_attr_name: str
-    key_type_name: str
-    case_name: str
-
-
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
 
 
@@ -4250,123 +4235,6 @@ def _parallel_keyed_family_name_overlap(
         return 0.0
     return len(left_tokens & right_tokens) / float(
         min(len(left_tokens), len(right_tokens))
-    )
-
-
-def _module_class_assigned_enum_axis_specs(
-    module: ParsedModule,
-) -> tuple[_ClassAssignedEnumAxisSpec, ...]:
-    specs: list[_ClassAssignedEnumAxisSpec] = []
-    for statement in statements_without_docstring(module.module.body):
-        if not isinstance(statement, ast.ClassDef):
-            continue
-        assignments = CLASS_NODE_AUTHORITY.direct_assignments(statement)
-        for key_attr_name, value in assignments.items():
-            if value is None:
-                continue
-            case_name = ast.unparse(value)
-            key_type_name = _enum_family_name((case_name,))
-            if key_type_name is None:
-                continue
-            specs.append(
-                _ClassAssignedEnumAxisSpec(
-                    file_path=module.file_path,
-                    line=statement.lineno,
-                    class_name=statement.name,
-                    key_attr_name=key_attr_name,
-                    key_type_name=key_type_name,
-                    case_name=case_name,
-                )
-            )
-    return tuple(specs)
-
-
-def _enum_keyed_table_class_axis_shadow_candidates(
-    module: ParsedModule,
-) -> tuple["EnumKeyedTableClassAxisShadowCandidate", ...]:
-    class_axis_specs = _module_class_assigned_enum_axis_specs(module)
-    if not class_axis_specs:
-        return ()
-    axis_specs_by_key: dict[tuple[str, str], list[_ClassAssignedEnumAxisSpec]] = (
-        defaultdict(list)
-    )
-    for axis_spec in class_axis_specs:
-        axis_specs_by_key[axis_spec.key_type_name, axis_spec.key_attr_name].append(
-            axis_spec
-        )
-    candidates: list[EnumKeyedTableClassAxisShadowCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for table_name, (line, mapping) in sorted(
-        _module_level_named_dicts(module).items()
-    ):
-        if len(mapping.keys) < 2 or any((key is None for key in mapping.keys)):
-            continue
-        table_case_names = tuple(
-            ast.unparse(key) for key in mapping.keys if key is not None
-        )
-        key_type_name = _enum_family_name(table_case_names)
-        if key_type_name is None:
-            continue
-        if not all(
-            (isinstance(value, (ast.Name, ast.Attribute)) for value in mapping.values)
-        ):
-            continue
-        value_type_names = tuple(ast.unparse(value) for value in mapping.values)
-        if not value_type_names or not all(
-            (
-                _looks_like_type_or_nominal_key(value_name)
-                for value_name in value_type_names
-            )
-        ):
-            continue
-        for (axis_key_type_name, key_attr_name), axis_specs in sorted(
-            axis_specs_by_key.items()
-        ):
-            if axis_key_type_name != key_type_name:
-                continue
-            class_sites = sorted_tuple(
-                {(axis_spec.class_name, axis_spec.line) for axis_spec in axis_specs},
-                key=lambda item: (item[1], item[0]),
-            )
-            if len(class_sites) < 2:
-                continue
-            class_case_names = sorted_tuple(
-                {axis_spec.case_name for axis_spec in axis_specs}
-            )
-            shared_case_names = sorted_tuple(
-                set(class_case_names) & set(table_case_names)
-            )
-            if len(shared_case_names) < 2:
-                continue
-            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
-                sorted_tuple(table_case_names), class_case_names
-            )
-            if case_overlap_score < 0.8:
-                continue
-            key = (module.file_path, table_name, key_attr_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                EnumKeyedTableClassAxisShadowCandidate(
-                    file_path=module.file_path,
-                    line=line,
-                    table_name=table_name,
-                    key_type_name=key_type_name,
-                    key_attr_name=key_attr_name,
-                    class_sites=class_sites,
-                    shared_case_names=shared_case_names,
-                    value_type_names=sorted_tuple(set(value_type_names)),
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.key_type_name,
-            item.table_name,
-            item.key_attr_name,
-        ),
     )
 
 
@@ -7546,31 +7414,6 @@ class ParallelKeyedTableAndFamilyCandidate:
             SourceLocation(self.file_path, self.table_line, self.table_name),
             SourceLocation(self.file_path, self.family_line, self.family_name),
         )
-
-
-@dataclass(frozen=True)
-class EnumKeyedTableClassAxisShadowCandidate(LineWitnessCandidate):
-    table_name: str
-    key_type_name: str
-    key_attr_name: str
-    class_sites: tuple[tuple[str, int], ...]
-    shared_case_names: tuple[str, ...]
-    value_type_names: tuple[str, ...]
-
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return tuple((class_name for class_name, _ in self.class_sites))
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [SourceLocation(self.file_path, self.line, self.table_name)]
-        evidence.extend(
-            (
-                SourceLocation(self.file_path, line, class_name)
-                for class_name, line in self.class_sites
-            )
-        )
-        return tuple(evidence[:6])
 
 
 @dataclass(frozen=True)

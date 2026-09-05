@@ -13919,26 +13919,6 @@ def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
     assert findings == []
 
 
-def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\nfrom typing import ClassVar\n\n\nclass RouteKind(Enum):\n    DIRECT = "direct"\n    MULTI_STAGE = "multi_stage"\n\n\nclass NominalRequest:\n    route_kind: ClassVar[RouteKind | None] = None\n\n\nclass DirectRequest(NominalRequest):\n    route_kind: ClassVar[RouteKind] = RouteKind.DIRECT\n\n\nclass MultiStageRequest(NominalRequest):\n    route_kind: ClassVar[RouteKind] = RouteKind.MULTI_STAGE\n\n\nclass DirectRoute:\n    pass\n\n\nclass MultiStageRoute:\n    pass\n\n\nROUTE_REGISTRY = {\n    RouteKind.DIRECT: DirectRoute,\n    RouteKind.MULTI_STAGE: MultiStageRoute,\n}\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "enum_keyed_table_class_axis_shadow"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "ROUTE_REGISTRY" in finding.summary
-    assert "RouteKind" in finding.summary
-    assert "route_kind" in finding.summary
-
-
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
