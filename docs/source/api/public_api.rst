@@ -57,6 +57,34 @@ while assignment-expression targets retain their enclosing ownership. Lambda
 defaults are visited without entering the lambda body. These binding rules also
 supply class-member collision checks.
 
+``lexical_scopes.ClassNamespaceScope`` owns ordered class-name availability
+for declaration dependency resolution. Assignment values, defaults, decorators
+and dictionary entries are traversed in evaluation order. ``if`` branches and
+short-circuit expressions join their possible namespace states.
+``LexicalNameResolution`` distinguishes internal, external and unproved reads;
+``ModuleNameReferenceSurface`` retains that result with the source reference.
+``LexicalScopeABC`` supplies the lookup contract shared by class scopes and
+``FunctionBindingProjection``. The traversal walks enclosing scopes without
+dispatching on their concrete types. Function scopes retain compile-time locals;
+class namespaces participate only in immediate lookup. ``TypeParameterScope``
+retains the enclosing class visibility required by PEP 695 annotation scopes.
+``ScopeBindingProjection`` supplies compile-time declarations to both function
+and class lookup. For a class-local name, a read before assignment or after
+deletion falls back to the module, rather than an enclosing function's local.
+A path-dependent class/module lookup cannot authorise a rename. Loop,
+exception, context-manager and pattern-matching regions retain affected bindings
+as unproved until their execution paths can be established. Unrelated exact
+references remain available. An augmented assignment that reads a module name
+and writes a class name also requires a separate ownership proof.
+The recorded :download:`scope ownership refactor
+<../../examples/lexical_scope_refactor.py>` moves ``FunctionBindingProjection``
+and its helper into this module, deriving consumer imports and the original
+module's identity-preserving re-export through the DSL.
+The :download:`argument binding consolidation
+<../../examples/argument_binding_refactor.py>` then replaces both callers of the
+duplicated parameter-name helper, removes its import and deletes the helper in
+six projected stages.
+
 ``python_module_identity`` owns importable module names derived from source
 paths. The former ``ast_tools`` exports refer to the same declaration objects;
 production consumers import from the owning modules.

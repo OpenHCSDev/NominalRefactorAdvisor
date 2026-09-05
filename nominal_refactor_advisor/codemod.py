@@ -568,10 +568,7 @@ from .codemod_spacing import (
     SourceInsertionBoundary,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .declaration_dependencies import (
-    FunctionBindingProjection,
-    ModuleLexicalDependencyProjection,
-)
+from .declaration_dependencies import ModuleLexicalDependencyProjection
 from .detectors._base import (
     CandidateCollectorBaseReference,
     CandidateCollectorBoilerplateCandidate,
@@ -602,6 +599,7 @@ from .lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
+from .lexical_scopes import FunctionBindingProjection
 from .manual_registry import (
     AutoRegisterInstanceViewComponent,
     DirectManualRegistryComponent,

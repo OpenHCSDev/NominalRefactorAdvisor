@@ -8,7 +8,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
@@ -21,8 +21,17 @@ from .assignment_projection import (
     NamedAssignmentSelection,
     SingleAssignmentAndValueNameProjection,
 )
+from .lexical_scopes import (
+    ClassNamespaceScope,
+    FunctionBindingProjection as FunctionBindingProjection,
+    LexicalNameResolution,
+    LexicalScopeABC,
+    ScopeBindingProjection,
+    TypeParameterScope,
+)
 from .lexical_bindings import (
     ImportBoundNameProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ScopeBindingCollector,
     _store_names,
 )
@@ -116,6 +125,12 @@ class ModuleNameReferenceSurface(ModuleNameReferenceScope):
     reference: ast.Name
     use: DeclarationDependencyUse
     binding_phase: ModuleBindingResolutionPhase
+    resolution: LexicalNameResolution = LexicalNameResolution.EXTERNAL
+
+    @property
+    def required_reference(self) -> ast.Name:
+        self.resolution.require_known(self.reference.id)
+        return self.reference
 
     @property
     def binding_snapshot_line(self) -> int | None:
@@ -143,6 +158,8 @@ class DeclarationDependencyProjection:
         collector = _DeclarationDependencyCollector()
         for declaration in declarations:
             collector.visit_declaration(declaration)
+        for surface in collector.direct_name_surfaces:
+            surface.resolution.require_known(surface.reference.id)
         return cls(
             execution_names=frozenset(
                 collector.names_by_use[DeclarationDependencyUse.EXECUTION]
@@ -219,7 +236,9 @@ class ModuleLexicalDependencyProjection:
 
     @property
     def external_name_references(self) -> tuple[ast.Name, ...]:
-        return tuple(surface.reference for surface in self.direct_name_surfaces)
+        return tuple(
+            surface.required_reference for surface in self.direct_name_surfaces
+        )
 
     @property
     def direct_annotation_name_surfaces(
@@ -243,7 +262,7 @@ class ModuleLexicalDependencyProjection:
 
     def external_references_named(self, name: str) -> tuple[ast.Name, ...]:
         return tuple(
-            surface.reference for surface in self.external_surfaces_named(name)
+            surface.required_reference for surface in self.external_surfaces_named(name)
         )
 
     def referenced_names_among(self, names: Iterable[str]) -> frozenset[str]:
@@ -265,35 +284,6 @@ class ModuleLexicalDependencyProjection:
             )
         )
         return direct_names | deferred_names
-
-
-@dataclass(frozen=True)
-class FunctionBindingProjection:
-    """Bindings owned by one function's compile-time lexical scope."""
-
-    local_names: frozenset[str]
-    global_names: frozenset[str]
-    nonlocal_names: frozenset[str]
-
-    @classmethod
-    def from_function(
-        cls,
-        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-    ) -> "FunctionBindingProjection":
-        collector = ScopeBindingCollector()
-        if isinstance(node, ast.Lambda):
-            collector.visit(node.body)
-        else:
-            for statement in node.body:
-                collector.visit(statement)
-        local_names = collector.bound_names | _argument_names(node.args)
-        return cls(
-            local_names=frozenset(
-                local_names - collector.global_names - collector.nonlocal_names
-            ),
-            global_names=frozenset(collector.global_names),
-            nonlocal_names=frozenset(collector.nonlocal_names),
-        )
 
 
 @dataclass(frozen=True)
@@ -337,7 +327,9 @@ class FunctionParameterBinding(FunctionBindingABC):
     """One unmodified function-parameter binding."""
 
     def without_binding(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        if self.binding_name not in _argument_names(self.node.args):
+        if self.binding_name not in (
+            LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.node)
+        ):
             raise ValueError(
                 f"No parameter {self.binding_name!r} on {self.node.name!r}"
             )
@@ -398,19 +390,6 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
-@dataclass
-class _ClassScope:
-    # Python initializes these names before executing the explicit class body.
-    available_names: set[str] = field(
-        default_factory=lambda: {"__module__", "__qualname__"}
-    )
-    global_names: frozenset[str] = frozenset()
-    nonlocal_names: frozenset[str] = frozenset()
-
-
-_DependencyScope: TypeAlias = FunctionBindingProjection | _ClassScope
-
-
 class _DeclarationDependencyCollector(ast.NodeVisitor):
     """Resolve names against the lexical scopes carried by moved declarations."""
 
@@ -420,7 +399,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         }
         self.use = DeclarationDependencyUse.EXECUTION
         self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
-        self.scopes: list[_DependencyScope] = []
+        self.scopes: list[LexicalScopeABC] = []
         self.annotation_count = 0
         self.owner_classes: list[ast.ClassDef] = []
         self.direct_name_surfaces: list[ModuleNameReferenceSurface] = []
@@ -430,7 +409,21 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self.visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load) and not self._is_internal(node.id):
+        if isinstance(node.ctx, ast.Store):
+            self._record_class_binding((node.id,), LexicalNameResolution.INTERNAL)
+            return
+        if isinstance(node.ctx, ast.Del):
+            self._record_class_binding((node.id,), LexicalNameResolution.EXTERNAL)
+            return
+        resolution = self._resolve_name(node.id)
+        self._record_reference(node, resolution)
+
+    def _record_reference(
+        self,
+        node: ast.Name,
+        resolution: LexicalNameResolution,
+    ) -> None:
+        if resolution.is_external_candidate:
             self.names_by_use[self.use].add(node.id)
             if self.use is not DeclarationDependencyUse.DEFERRED_ANNOTATION:
                 self.direct_name_surfaces.append(
@@ -439,6 +432,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
                         reference=node,
                         use=self.use,
                         binding_phase=self.binding_phase,
+                        resolution=resolution,
                     )
                 )
 
@@ -459,27 +453,49 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+            self.visit(node.target)
         self._visit_annotation(
             node.annotation,
             evaluation_sensitive=(
-                not self.scopes or isinstance(self.scopes[-1], _ClassScope)
+                not self.scopes or self._active_class_scope is not None
             ),
         )
-        if node.value is not None:
-            self.visit(node.value)
-            if not isinstance(node.target, ast.Name):
-                self.visit(node.target)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            self.visit(target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.visit(node.target)
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        for key, value in zip(node.keys, node.values):
+            if key is not None:
+                self.visit(key)
+            self.visit(value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         if isinstance(node.target, ast.Name):
-            if not self._is_internal(node.target.id):
-                self.names_by_use[self.use].add(node.target.id)
+            resolution = self._resolve_name(node.target.id)
+            if resolution.is_external_candidate:
+                # One token both reads the module and writes the class. A name
+                # replacement cannot independently preserve those two owners.
+                self._record_reference(node.target, LexicalNameResolution.UNPROVED)
         else:
             self.visit(node.target)
         self.visit(node.value)
+        self._record_class_binding(
+            _store_names(node.target), LexicalNameResolution.INTERNAL
+        )
 
-    def visit_Import(self, node: ast.Import) -> None:
-        return
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        self._record_class_binding(
+            ImportBoundNameProjection(node).names(), LexicalNameResolution.INTERNAL
+        )
 
     visit_ImportFrom = visit_Import
 
@@ -520,6 +536,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
                 for statement in node.body:
                     self.visit(statement)
             self.scopes.pop()
+        self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
 
     def _visit_class(self, node: ast.ClassDef) -> None:
         for decorator in node.decorator_list:
@@ -530,20 +547,16 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             for keyword in node.keywords:
                 self.visit(keyword)
             self._visit_type_parameters(node)
-            bindings = ScopeBindingCollector()
-            for statement in node.body:
-                bindings.visit(statement)
-            scope = _ClassScope(
-                global_names=frozenset(bindings.global_names),
-                nonlocal_names=frozenset(bindings.nonlocal_names),
+            scope = ClassNamespaceScope(
+                declarations=ScopeBindingProjection.from_nodes(node.body),
             )
             self.scopes.append(scope)
             self.owner_classes.append(node)
             for statement in node.body:
                 self.visit(statement)
-                self._apply_class_binding(statement, scope)
             self.owner_classes.pop()
             self.scopes.pop()
+        self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
 
     def _visit_argument_defaults(self, arguments: ast.arguments) -> None:
         for default in (*arguments.defaults, *arguments.kw_defaults):
@@ -610,7 +623,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         parameter_names = _type_parameter_names(node)
         if parameter_names:
             self.scopes.append(
-                FunctionBindingProjection(
+                TypeParameterScope(
                     local_names=parameter_names,
                     global_names=frozenset(),
                     nonlocal_names=frozenset(),
@@ -665,52 +678,93 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             self.visit(expression)
         self.scopes.pop()
 
-    def _is_internal(self, name: str) -> bool:
-        crossed_function_scope = False
-        crossed_class_scope = False
+    def _resolve_name(self, name: str) -> LexicalNameResolution:
+        class_namespace_visible = True
         for scope in reversed(self.scopes):
-            if isinstance(scope, FunctionBindingProjection):
-                if name in scope.global_names:
-                    return False
-                if name in scope.local_names:
-                    return True
-                crossed_function_scope = True
-                continue
-            if name in scope.global_names:
-                return False
-            if (
-                not crossed_function_scope
-                and not crossed_class_scope
-                and name in scope.available_names
-            ):
-                return True
-            crossed_class_scope = True
-        return False
+            resolution = scope.resolve_name(
+                name, class_namespace_visible=class_namespace_visible
+            )
+            if resolution is not None:
+                return resolution
+            class_namespace_visible &= not scope.hides_enclosing_class_namespace
+        return LexicalNameResolution.EXTERNAL
 
-    @staticmethod
-    def _apply_class_binding(statement: ast.stmt, scope: _ClassScope) -> None:
-        bound_names: set[str] = set()
-        removed_names: set[str] = set()
-        if isinstance(statement, ast.Assign):
-            for target in statement.targets:
-                bound_names.update(_store_names(target))
-        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
-            bound_names.update(_store_names(statement.target))
-        elif isinstance(statement, ast.AugAssign):
-            bound_names.update(_store_names(statement.target))
-        elif isinstance(statement, ast.Import | ast.ImportFrom):
-            bound_names.update(ImportBoundNameProjection(statement).names())
-        elif isinstance(
-            statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
-        ):
-            bound_names.add(statement.name)
-        elif isinstance(statement, ast.Delete):
-            for target in statement.targets:
-                removed_names.update(_store_names(target))
-        scope.available_names.difference_update(removed_names)
-        scope.available_names.update(
-            bound_names - scope.global_names - scope.nonlocal_names
-        )
+    @property
+    def _active_class_scope(self) -> ClassNamespaceScope | None:
+        return self.scopes[-1].execution_namespace if self.scopes else None
+
+    def _record_class_binding(
+        self,
+        names: Iterable[str],
+        resolution: LexicalNameResolution,
+    ) -> None:
+        scope = self._active_class_scope
+        if scope is not None:
+            scope.record(names, resolution)
+
+    def _visit_nodes(self, nodes: Iterable[ast.AST]) -> None:
+        for node in nodes:
+            self.visit(node)
+
+    def _visit_alternatives(self, branches: Iterable[Iterable[ast.AST]]) -> None:
+        scope = self._active_class_scope
+        if scope is None:
+            for branch in branches:
+                self._visit_nodes(branch)
+            return
+        before = dict(scope.bindings)
+        alternatives = []
+        for branch in branches:
+            scope.bindings = dict(before)
+            self._visit_nodes(branch)
+            alternatives.append(scope.bindings)
+        scope.join(alternatives)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        self._visit_alternatives((node.body, node.orelse))
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.visit(node.test)
+        self._visit_alternatives(((node.body,), (node.orelse,)))
+
+    def _visit_short_circuit(self, expressions: list[ast.expr]) -> None:
+        alternatives = []
+        scope = self._active_class_scope
+        for expression in expressions:
+            self.visit(expression)
+            if scope is not None:
+                alternatives.append(dict(scope.bindings))
+        if scope is not None:
+            scope.join(alternatives)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        self._visit_short_circuit(node.values)
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        self.visit(node.left)
+        self._visit_short_circuit(node.comparators)
+
+    def _visit_unproved_control_flow(self, node: ast.AST) -> None:
+        """Retain uncertainty for effects needing loop or exception path proofs."""
+
+        scope = self._active_class_scope
+        if scope is None:
+            self.generic_visit(node)
+            return
+        bindings = ScopeBindingCollector()
+        bindings.visit(node)
+        with scope.unproved_execution(bindings.bound_names):
+            self.generic_visit(node)
+
+    visit_For = _visit_unproved_control_flow
+    visit_AsyncFor = _visit_unproved_control_flow
+    visit_While = _visit_unproved_control_flow
+    visit_Try = _visit_unproved_control_flow
+    visit_TryStar = _visit_unproved_control_flow
+    visit_With = _visit_unproved_control_flow
+    visit_AsyncWith = _visit_unproved_control_flow
+    visit_Match = _visit_unproved_control_flow
 
     @contextmanager
     def _dependency_use(
@@ -735,19 +789,6 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             yield
         finally:
             self.binding_phase = previous
-
-
-def _argument_names(arguments: ast.arguments) -> set[str]:
-    return {
-        argument.arg
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-            *((arguments.vararg,) if arguments.vararg is not None else ()),
-            *((arguments.kwarg,) if arguments.kwarg is not None else ()),
-        )
-    }
 
 
 def _type_parameter_names(

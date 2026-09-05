@@ -259,7 +259,7 @@ class DeclarationAuthorityModuleReferenceProof:
         )
 
     def proves_direct_reference(self, surface: ModuleNameReferenceSurface) -> bool:
-        return self.proves_direct_surface_binding(surface) or (
+        proved = self.proves_direct_surface_binding(surface) or (
             surface.is_direct_annotation
             and not self.annotation_mode.annotations_execute_at_declaration
             and self.final_binding_is_renamed
@@ -268,19 +268,25 @@ class DeclarationAuthorityModuleReferenceProof:
                 self.target.self_binding_owner,
             )
         )
+        if proved:
+            surface.resolution.require_known(surface.reference.id)
+        return proved
 
     def proves_qualified_reference(
         self,
         reference: ast.Attribute,
         root_surface: ModuleNameReferenceSurface,
     ) -> bool:
-        return (
+        proved = (
             self.binding_authority.qualified_name_at(
                 reference,
                 line=root_surface.binding_snapshot_line,
             )
             in self.binding_closure.renamed_symbols
         )
+        if proved:
+            root_surface.resolution.require_known(root_surface.reference.id)
+        return proved
 
     def proves_stringized_annotation(
         self,
