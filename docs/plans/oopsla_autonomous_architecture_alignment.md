@@ -306,3 +306,27 @@ filtered lookup. `docs/examples/native_contract_evidence_refactor.py` records
 the applied nine-stage DSL plan. Exact annotation and guard patches remain
 authored source fragments; this plan does not demonstrate semantic selectors
 for arbitrary expression edits.
+
+### Exact Method Proof Versus Source-Size Heuristics
+
+The property-hook audit found overlap with exact leaf-method promotion for
+larger closed families, but also a distinct observation-only case when the
+receiver's ownership is unknown. The property observer remains until those
+unknown relations have a shared replacement; dropping it now would erase useful
+evidence rather than consolidate it.
+
+The audit exposed a separate obstruction to authored factoring. A complete
+two-leaf family with a shared property and a declared receiver dependency had
+no promotion component solely because its line-count cost estimate did not
+clear a heuristic margin. The same filter prevented a practitioner from
+factoring two exact one-line methods into an explicitly named role. These
+filters conflated an estimate of source size with binding proof.
+
+The component builders now retain all binding-proved exact method families;
+their cost estimates remain descriptive metadata. Native CLI regressions cover
+two-leaf property promotion and a two-stage plan that creates an authored role
+then extracts it into a new module, including derived source imports. Both LF
+and CRLF inputs are exercised. `docs/examples/method_proof_cost_separation_refactor.py`
+records the applied three-stage DSL change. Missing ownership still blocks
+automatic role synthesis, and the existing receiver, closure, MRO and
+source-ownership checks remain authoritative.

@@ -421,8 +421,7 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
                 orbits=orbits,
                 proof=proof,
             )
-            if component.compression_certificate.pays_rent:
-                components.append(component)
+            components.append(component)
         return sorted_tuple(
             components,
             key=lambda component: (
@@ -675,16 +674,13 @@ class ExactMethodRoleComponentBuilder:
             orbits_by_cohort[(orbit.file_path, orbit.class_symbols)].append(orbit)
 
         components = tuple(
-            component
+            ExactMethodRoleComponent(orbits=closed_orbits)
             for cohort_orbits in orbits_by_cohort.values()
             if (
                 closed_orbits := receiver_closed_exact_method_orbits(
                     tuple(sorted(cohort_orbits, key=lambda orbit: orbit.method_name))
                 )
             )
-            if (
-                component := ExactMethodRoleComponent(orbits=closed_orbits)
-            ).compression_certificate.pays_rent
         )
         return sorted_tuple(
             components,

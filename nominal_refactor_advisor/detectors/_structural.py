@@ -165,7 +165,7 @@ declare_candidate_rule_detector(
         "Exact tiny methods expose one repeated nominal role",
         "Several classes without one nominal ancestor own the same complete tiny method declaration. The exact method role is one maintenance object, but the current snapshot does not prove whether an existing authority or a new inheritance boundary should own it.",
         "one proved nominal authority derives the exact method role for every participant",
-        "unrelated classes repeat the same promotion-safe method declaration and the exact-role compression certificate pays rent",
+        "unrelated classes repeat the same promotion-safe method declaration with a closed receiver contract; ownership placement remains a practitioner decision",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,

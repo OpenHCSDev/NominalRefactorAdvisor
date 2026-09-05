@@ -387,8 +387,17 @@ only when one existing direct authority is unique, every direct child
 participates and is a leaf, the method source is exact and promotion-safe, all
 receiver requirements belong to the authority contract, no competing ancestor
 binds the promoted names, no decorator or class-creation hook can observe the
-ownership move, and the complete method batch pays compression rent.  The
+ownership move. The
 codemod preflight reconstructs the same proof from the current full AST.
+Exact-method components retain their source-size cost estimate as descriptive
+metadata. That estimate does not gate proof or execution for either promotion
+to an existing authority or an explicitly named new role. A two-leaf family is
+eligible when its binding obligations are proved, including a one-line method
+or property getter. The recorded :download:`method proof and cost separation
+<../../examples/method_proof_cost_separation_refactor.py>` removes the former
+heuristic veto from both shared component builders. An authored plan can factor
+a role and then extract it into a new module; the extraction stage resolves the
+new declaration and derives its imports from the preceding stage's source.
 ``ReplaceDirectClassBaseOperation`` persists only the displaced and replacement
 class targets.  It derives the complete direct-child cohort, source spelling of
 aliased bases, canonical imports, import-cycle safety, and replacement-relative
