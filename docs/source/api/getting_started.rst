@@ -219,6 +219,11 @@ Review the diff, then use ``--codemod-apply`` in place of
 ``--codemod-simulate`` and run the affected tests. Method promotion moves the
 existing bodies and decorators; the plan does not contain copies of them.
 
+Applying a stored simulation rechecks every file in its supplied source snapshot,
+including files used only for analysis. If a recorded source changed, simulate
+again before applying. Only files in the write set are modified. Rescan the
+repository after adding source files so the snapshot includes the new declarations.
+
 Use ``CodemodPlanDocument`` when multiple operations must resolve against the
 same snapshot, then combine documents or sequences with ``CodemodPlanSequence.compose``.
 ``from_operations`` intentionally gives each operation its own projected state.

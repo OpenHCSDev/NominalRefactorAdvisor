@@ -1721,10 +1721,24 @@ class PlannedRewriteSelectionAuthority:
 
 @dataclass(frozen=True)
 class CodemodSourceRevision(DataclassJsonReport):
-    """Full-source revision required before one simulated file write."""
+    """Full-source revision required by a simulation's read or write context."""
 
     file_path: str
     source_hash: str | None
+
+    @classmethod
+    def capture(
+        cls,
+        sources_by_file_path: Mapping[str, str],
+        *,
+        required_paths: Iterable[str] = (),
+    ) -> tuple["CodemodSourceRevision", ...]:
+        """Capture the supplied source context, including absent creation targets."""
+
+        return tuple(
+            cls.from_sources(path, sources_by_file_path)
+            for path in sorted(set(sources_by_file_path).union(required_paths))
+        )
 
     @classmethod
     def from_sources(

@@ -1378,9 +1378,9 @@ class CodemodSimulationReport(DataclassJsonReport):
         revision_paths = tuple(revision.file_path for revision in self.base_revisions)
         if len(revision_paths) != len(frozenset(revision_paths)):
             raise ValueError("Codemod source revisions require unique file paths")
-        if frozenset(revision_paths) != frozenset(self.changed_file_paths):
+        if not frozenset(self.changed_file_paths).issubset(revision_paths):
             raise ValueError(
-                "Codemod source revisions must cover every changed file exactly"
+                "Codemod source revisions must cover every changed file"
             )
 
     @classmethod
@@ -1449,12 +1449,9 @@ class CodemodSimulationReport(DataclassJsonReport):
     ) -> "CodemodSimulationReport":
         return replace(
             self,
-            base_revisions=tuple(
-                CodemodSourceRevision.from_sources(
-                    file_path,
-                    snapshot.sources_by_file_path,
-                )
-                for file_path in self.changed_file_paths
+            base_revisions=CodemodSourceRevision.capture(
+                snapshot.sources_by_file_path,
+                required_paths=self.changed_file_paths,
             ),
         )
 
@@ -1462,7 +1459,7 @@ class CodemodSimulationReport(DataclassJsonReport):
     def backend(self) -> CodemodBackend:
         return self.parse_validation.backend
 
-    @property
+    @cached_property
     def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
         return {revision.file_path: revision for revision in self.base_revisions}
 
@@ -3573,13 +3570,7 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
                 validated_file_paths=tuple(sorted(changed_sources)),
                 parse_valid=True,
             ),
-            base_revisions=tuple(
-                CodemodSourceRevision.from_sources(
-                    file_path,
-                    self.sources_by_file_path,
-                )
-                for file_path in sorted(changed_sources)
-            ),
+            base_revisions=CodemodSourceRevision.capture(self.sources_by_file_path),
         )
 
     def apply_resolved_rewrite(
