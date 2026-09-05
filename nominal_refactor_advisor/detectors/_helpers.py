@@ -10,7 +10,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from functools import cached_property, lru_cache
+from functools import cached_property
 from itertools import combinations
 from typing import (
     Callable,
@@ -3326,53 +3326,6 @@ def _autoregister_patch(
     )
 
 
-@lru_cache(maxsize=None)
-def _attribute_branch_evidence(
-    module: ParsedModule, attr_name: str
-) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    for node in _walk_nodes(module.module):
-        if isinstance(node, ast.If):
-            if _test_compares_attribute(node.test, attr_name):
-                evidence.append(
-                    SourceLocation(module.file_path, node.lineno, f"if-{attr_name}")
-                )
-        if isinstance(node, ast.Match):
-            subject = node.subject
-            if isinstance(subject, ast.Attribute) and subject.attr == attr_name:
-                evidence.append(
-                    SourceLocation(module.file_path, node.lineno, f"match-{attr_name}")
-                )
-    return evidence
-
-
-def _test_compares_attribute(test: ast.AST, attr_name: str) -> bool:
-    for node in _walk_nodes(test):
-        if isinstance(node, ast.Compare):
-            values = [node.left] + list(node.comparators)
-            attr_match = any(
-                (
-                    isinstance(value, ast.Attribute) and value.attr == attr_name
-                    for value in values
-                )
-            )
-            literal_match = any(
-                (
-                    isinstance(value, ast.Constant)
-                    and isinstance(value.value, (str, int, bool))
-                    for value in values
-                )
-            )
-            if attr_match and literal_match:
-                return True
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == _GETATTR_BUILTIN and len(node.args) >= 2:
-                arg = node.args[1]
-                if isinstance(arg, ast.Constant) and arg.value == attr_name:
-                    return True
-    return False
-
-
 def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     return [
         node
@@ -4952,29 +4905,6 @@ def _schema_accessor_family_candidates(
             ),
         )
     )
-
-
-def _collect_class_sentinel_attrs(
-    module: ast.Module,
-) -> dict[str, list[SourceLocation]]:
-    grouped: dict[str, list[SourceLocation]] = defaultdict(list)
-    for node in _walk_nodes(module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for stmt in node.body:
-            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-                continue
-            target = stmt.targets[0]
-            if not isinstance(target, ast.Name):
-                continue
-            if not isinstance(stmt.value, ast.Constant):
-                continue
-            if not isinstance(stmt.value.value, (str, int, bool)):
-                continue
-            grouped[target.id].append(
-                SourceLocation("<module>", stmt.lineno, f"{node.name}.{target.id}")
-            )
-    return grouped
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

@@ -14864,16 +14864,6 @@ def test_semantic_witness_family_owns_renamed_role_mixin_evidence(
     assert "through MRO" in finding.summary
 
 
-def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Alpha:\n    sigma = "alpha"\n\n\nclass Beta:\n    sigma = "beta"\n\n\ndef choose(obj):\n    if obj.sigma == "alpha":\n        return 1\n    return 2\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert any((finding.pattern_id == 1 for finding in findings))
-
-
 def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -14892,16 +14882,6 @@ def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
     assert "SoftLJConfig" in finding.summary
     assert "gaussians" in finding.summary
     assert "repulsion" in finding.summary
-
-
-def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass Alpha:\n    name = "alpha"\n\n\nclass Beta:\n    name = "beta"\n\n\ndef choose(obj):\n    if obj.name == "alpha":\n        return 1\n    return 2\n',
-    )
-    findings = analyze_path(tmp_path)
-    assert not any((finding.pattern_id == 1 for finding in findings))
 
 
 def test_identity_forwarding_detector_ignores_semantic_decorated_entrypoints(
@@ -21112,7 +21092,7 @@ def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
         (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
     )
     after = after_spec.build(
-        "sentinel_attribute_simulation",
+        "string_backed_reflective_nominal_lookup",
         "Beta exposes the unresolved relation.",
         (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
     )
@@ -21130,7 +21110,7 @@ def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
         SemanticMirrorWithoutDescentDetector.required_relation_identity()
     ]
     after_change = changes_by_declaration[
-        runtime_detectors.SentinelAttributeSimulationDetector.required_relation_identity()
+        structural_detectors.StringBackedReflectiveNominalLookupDetector.required_relation_identity()
     ]
     assert before_change.status is CodemodFindingClassStatus.ELIMINATED
     assert after_change.status is CodemodFindingClassStatus.INTRODUCED
@@ -25967,31 +25947,6 @@ def test_hasattr_self_does_not_prove_a_missing_nominal_contract(
     assert not any(
         finding.detector_id == "reflective_self_attribute_escape"
         for finding in analyze_path(tmp_path)
-    )
-
-
-def test_detects_abc_base_dispatch_over_child_helper_sentinel(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass ShapeStrategy(ABC):\n    helper = ""\n\n    def labels(self, request):\n        if self.helper == "filled_labels":\n            return request.grid.filled_labels()\n        if self.helper == "forced_circle_labels":\n            return request.grid.forced_circle_labels(request.radius)\n        if self.helper == "labels_from_filtered_guides":\n            return request.grid.labels_from_filtered_guides(request.guides)\n        raise ValueError(self.helper)\n\n\nclass RectangleStrategy(ShapeStrategy):\n    helper = "filled_labels"\n\n\nclass CircleStrategy(ShapeStrategy):\n    helper = "forced_circle_labels"\n\n\nclass NaturalStrategy(ShapeStrategy):\n    helper = "labels_from_filtered_guides"\n',
-    )
-
-    findings = analyze_path(tmp_path)
-    matching = [
-        finding
-        for finding in findings
-        if finding.detector_id == "sentinel_attribute_simulation"
-    ]
-
-    assert any(
-        (
-            finding.detector_id == "sentinel_attribute_simulation"
-            and "helper" in finding.summary
-        )
-        for finding in matching
     )
 
 
