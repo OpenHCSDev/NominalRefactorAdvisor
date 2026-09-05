@@ -235,14 +235,35 @@ and the profile's other ownership dependencies share the promotion proof.
 sequence. Native CLI tests cover successful descent and refusal without source
 writes, with LF and CRLF input.
 
-### Open Follow-up: Cross-Module Method Globals
+### Cross-Module Method Globals: Binding Proof Integration
 
 A native two-module probe also confirmed that
-`_TypeKeyedBehaviorMethodDescent._require_target_module_bindings` accepts a
+`_TypeKeyedBehaviorMethodDescent._require_target_module_bindings` accepted a
 same-spelled destination global without proving its origin. With `label =
 "source"` in the projection module and `label = "target"` in the target module,
-descending `return event.name + label` changes `event:source` to `event:target`.
+descending `return event.name + label` changed `event:source` to `event:target`.
 The class-ownership profile does not establish module-global equivalence.
-This remains open: replace the name-presence check using the existing lexical
-dependency and module-binding/import authorities, with native cross-module
-tests. An equal spelling or equal current value cannot prove shared ownership.
+The name-presence check now delegates to `DeclarationModuleBindingTransfer`,
+which uses the lexical dependency collector, source declaration index and
+module binding authority. `DeclarationDependencyUse` owns evaluation-phase
+selection, including eager and deferred annotations. Equal spellings or equal
+current values cannot prove shared ownership. Rebound declarations require
+definition-position evidence and remain unproved by this transfer boundary.
+
+Native CLI regressions cover same-name globals, different imports under one
+alias, builtin shadowing, matching imports, and a two-stage plan that first
+establishes the destination import and then descends the methods. Comprehension
+locals are resolved lexically rather than mistaken for module dependencies.
+The applied six-stage plan is
+`docs/examples/behavior_module_binding_refactor.py`; it also replaces separate
+declaration/final snapshot traversals with one batched authority traversal.
+
+Final review exposed a missing relation in the first transfer implementation:
+quoted annotation names were present in the collector's separate name sets but
+excluded from its direct-source reference list. Native `typing.get_type_hints`
+tests proved that both `'Result'` and `list['Result']` could change meaning
+undetected. The collector now retains one complete reference collection;
+`DeclarationDependencyUse` owns both evaluation phase and direct-source status.
+Name sets and the editable direct-source view are derived from that collection.
+`docs/examples/lexical_reference_projection_refactor.py` records the applied
+eight-stage consolidation, including removal of an unused visitor forwarder.

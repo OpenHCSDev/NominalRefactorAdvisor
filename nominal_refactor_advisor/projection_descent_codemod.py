@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import builtins
 import copy
 import re
 import textwrap
@@ -18,6 +17,10 @@ from functools import partial
 from typing import cast
 
 from nominal_refactor_advisor.class_index import ClassMethodPromotionSafetyProfile
+from nominal_refactor_advisor.declaration_binding_transfer import (
+    DeclarationModuleBindingEnvironment,
+    DeclarationModuleBindingTransfer,
+)
 
 from .ast_tools import (
     AstParentIndex,
@@ -243,27 +246,14 @@ class _TypeKeyedBehaviorMethodDescent:
         return call.args[1]
 
     def _require_target_module_bindings(self, method: ast.FunctionDef) -> None:
-        parameter_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(method)
-        local_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(method.body)
-        required_names = (
-            frozenset(
-                node.id
-                for node in ast.walk(method)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            )
-            - parameter_names
-            - local_names
-            - frozenset(vars(builtins))
-        )
-        target_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            self.target_module.module.body
-        )
-        missing_names = sorted_tuple(required_names - target_bound_names)
-        if missing_names:
-            raise ValueError(
-                f"projected method {method.name!r} requires target-module bindings "
-                f"{missing_names!r}"
-            )
+        DeclarationModuleBindingTransfer(
+            source=DeclarationModuleBindingEnvironment(
+                self.source_module, self.projection_class.node
+            ),
+            destination=DeclarationModuleBindingEnvironment(
+                self.target_module, self.target_class.node
+            ),
+        ).require_preserved(method)
 
     def _rewritten_method_source(
         self,

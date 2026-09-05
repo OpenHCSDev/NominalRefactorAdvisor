@@ -90,26 +90,18 @@ class ClassScopeDependency(StrEnum):
         return tuple(dependency for dependency in cls if dependency.predicate(nodes))
 
 
-class DeclarationDependencyUse(StrEnum):
-    """Execution context in which a declaration resolves an external name."""
-
-    EXECUTION = "execution"
-    EVALUATED_ANNOTATION = "evaluated_annotation"
-    DEFERRED_ANNOTATION = "deferred_annotation"
-
-
 class ModuleBindingResolutionPhase(StrEnum):
     """Module snapshot from which one direct source reference resolves."""
 
-    SOURCE_POSITION = "source_position", lambda reference: reference.lineno
-    FINAL_MODULE = "final_module", lambda _reference: None
+    SOURCE_POSITION = "source_position", lambda line: line
+    FINAL_MODULE = "final_module", lambda _line: None
 
-    snapshot_line_resolver: Callable[[ast.Name], int | None]
+    snapshot_line_resolver: Callable[[int], int | None]
 
     def __new__(
         cls,
         value: str,
-        snapshot_line_resolver: Callable[[ast.Name], int | None],
+        snapshot_line_resolver: Callable[[int], int | None],
     ) -> "ModuleBindingResolutionPhase":
         member = str.__new__(cls, value)
         member._value_ = value
@@ -117,7 +109,52 @@ class ModuleBindingResolutionPhase(StrEnum):
         return member
 
     def snapshot_line_for(self, reference: ast.Name) -> int | None:
-        return self.snapshot_line_resolver(reference)
+        return self.snapshot_line_at(reference.lineno)
+
+    def snapshot_line_at(self, line: int) -> int | None:
+        return self.snapshot_line_resolver(line)
+
+
+class DeclarationDependencyUse(StrEnum):
+    """Execution context and evaluation policy of an external reference."""
+
+    EXECUTION = "execution", True, lambda phase, _eager: phase
+    EVALUATED_ANNOTATION = (
+        "evaluated_annotation",
+        True,
+        lambda phase, eager: (
+            phase if eager else ModuleBindingResolutionPhase.FINAL_MODULE
+        ),
+    )
+    DEFERRED_ANNOTATION = (
+        "deferred_annotation",
+        False,
+        lambda _phase, _eager: ModuleBindingResolutionPhase.FINAL_MODULE,
+    )
+
+    is_direct_source: bool
+    phase_resolver: Callable[
+        [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
+    ]
+
+    def __new__(
+        cls,
+        value: str,
+        is_direct_source: bool,
+        phase_resolver: Callable[
+            [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
+        ],
+    ) -> "DeclarationDependencyUse":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.is_direct_source = is_direct_source
+        member.phase_resolver = phase_resolver
+        return member
+
+    def binding_phase(
+        self, phase: ModuleBindingResolutionPhase, *, eager_annotations: bool
+    ) -> ModuleBindingResolutionPhase:
+        return self.phase_resolver(phase, eager_annotations)
 
 
 @dataclass(frozen=True)
@@ -157,22 +194,22 @@ class DeclarationDependencyProjection:
         cls,
         declarations: tuple[MovableDeclaration, ...],
     ) -> "DeclarationDependencyProjection":
-        collector = _DeclarationDependencyCollector()
-        for declaration in declarations:
-            collector.visit_declaration(declaration)
-        for surface in collector.direct_name_surfaces:
+        projection = ModuleLexicalDependencyProjection.from_module(
+            ast.Module(body=list(declarations), type_ignores=[])
+        )
+        for surface in projection.name_surfaces:
             surface.resolution.require_known(surface.reference.id)
         return cls(
-            execution_names=frozenset(
-                collector.names_by_use[DeclarationDependencyUse.EXECUTION]
+            execution_names=projection.names_for_use(
+                DeclarationDependencyUse.EXECUTION
             ),
-            evaluated_annotation_names=frozenset(
-                collector.names_by_use[DeclarationDependencyUse.EVALUATED_ANNOTATION]
+            evaluated_annotation_names=projection.names_for_use(
+                DeclarationDependencyUse.EVALUATED_ANNOTATION
             ),
-            deferred_annotation_names=frozenset(
-                collector.names_by_use[DeclarationDependencyUse.DEFERRED_ANNOTATION]
+            deferred_annotation_names=projection.names_for_use(
+                DeclarationDependencyUse.DEFERRED_ANNOTATION
             ),
-            annotation_count=collector.annotation_count,
+            annotation_count=projection.annotation_count,
         )
 
     @property
@@ -192,8 +229,20 @@ class DeclarationDependencyProjection:
 class ModuleLexicalDependencyProjection:
     """Reference-bearing dependency surfaces from one lexical traversal."""
 
-    direct_name_surfaces: tuple[ModuleNameReferenceSurface, ...]
+    name_surfaces: tuple[ModuleNameReferenceSurface, ...]
     stringized_annotations: tuple[StringizedAnnotationSurface, ...]
+    annotation_count: int
+
+    def names_for_use(self, use: DeclarationDependencyUse) -> frozenset[str]:
+        return frozenset(
+            surface.reference.id for surface in self.name_surfaces if surface.use is use
+        )
+
+    @cached_property
+    def direct_name_surfaces(self) -> tuple[ModuleNameReferenceSurface, ...]:
+        return tuple(
+            surface for surface in self.name_surfaces if surface.use.is_direct_source
+        )
 
     @classmethod
     def require_class_body_independence(cls, node: ast.ClassDef) -> None:
@@ -232,8 +281,9 @@ class ModuleLexicalDependencyProjection:
         for statement in module.body:
             collector.visit(statement)
         return cls(
-            direct_name_surfaces=tuple(collector.direct_name_surfaces),
+            name_surfaces=tuple(collector.name_surfaces),
             stringized_annotations=tuple(collector.stringized_annotation_surfaces),
+            annotation_count=collector.annotation_count,
         )
 
     @property
@@ -397,17 +447,11 @@ class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
 
     def __init__(self) -> None:
         super().__init__()
-        self.names_by_use: dict[DeclarationDependencyUse, set[str]] = {
-            use: set() for use in DeclarationDependencyUse
-        }
         self.use = DeclarationDependencyUse.EXECUTION
         self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
         self.annotation_count = 0
-        self.direct_name_surfaces: list[ModuleNameReferenceSurface] = []
+        self.name_surfaces: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
-
-    def visit_declaration(self, node: MovableDeclaration) -> None:
-        self.visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
@@ -425,17 +469,15 @@ class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
         resolution: LexicalNameResolution,
     ) -> None:
         if resolution.is_external_candidate:
-            self.names_by_use[self.use].add(node.id)
-            if self.use is not DeclarationDependencyUse.DEFERRED_ANNOTATION:
-                self.direct_name_surfaces.append(
-                    ModuleNameReferenceSurface(
-                        owner_classes=self.owner_classes,
-                        reference=node,
-                        use=self.use,
-                        binding_phase=self.binding_phase,
-                        resolution=resolution,
-                    )
+            self.name_surfaces.append(
+                ModuleNameReferenceSurface(
+                    owner_classes=self.owner_classes,
+                    reference=node,
+                    use=self.use,
+                    binding_phase=self.binding_phase,
+                    resolution=resolution,
                 )
+            )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)

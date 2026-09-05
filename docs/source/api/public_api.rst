@@ -105,6 +105,36 @@ parent's registry key. The recorded :download:`behaviour descent safety refactor
 <../../examples/behavior_descent_safety_refactor.py>` adds the shared proof and
 replaces repeated parameter enumeration with the lexical binding authority.
 
+``DeclarationModuleBindingTransfer`` checks a moved declaration's external
+references in its source and destination environments. Each
+``DeclarationModuleBindingEnvironment`` derives local declaration ownership
+from ``SourceTopLevelDeclarationIndex`` and lookup snapshots from
+``ModuleNominalBindingAuthority``. Equal names or values do not establish the
+same authority. Rebound declarations remain unproved without evidence for the
+particular definition. Builtin shadowing, missing bindings and annotation
+representation changes reject the transfer.
+
+``DeclarationDependencyUse`` owns evaluation-phase selection: method-body
+references use their lexical execution phase, eager annotations use their
+declaration environment, and deferred annotations use final module bindings.
+``ModuleNominalBindingAuthority.snapshots_before`` accepts ``None`` for the
+final module snapshot and batches it with requested source lines in one pass.
+The recorded :download:`module binding proof integration
+<../../examples/behavior_module_binding_refactor.py>` replaces the former
+name-presence check and batches snapshot traversal through the DSL. A plan may
+establish an exact destination import before requesting descent; the later
+stage re-proves the reference against that projected source.
+
+``ModuleLexicalDependencyProjection.name_surfaces`` retains both original-source
+references and names parsed from quoted annotations. The direct-source view and
+dependency-name sets derive from this collection. ``DeclarationDependencyUse``
+declares which references have editable source positions, so parsed annotation
+names cannot be mistaken for source tokens. The :download:`lexical reference
+projection refactor <../../examples/lexical_reference_projection_refactor.py>`
+removes the collector's separate name table and derives these views through an
+eight-stage DSL plan. Its prerequisites are the declared direct-source policy
+on dependency uses and the collector-provided annotation-count field.
+
 ``python_module_identity`` owns importable module names derived from source
 paths. The former ``ast_tools`` exports refer to the same declaration objects;
 production consumers import from the owning modules.

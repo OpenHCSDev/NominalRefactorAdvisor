@@ -27165,6 +27165,117 @@ def test_type_keyed_descent_reuses_evaluated_default_ownership_guard(
         operation.source_edits_from_snapshot(snapshot)
 
 
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize(
+    "source_binding,destination_binding,expression,ensure_import,preserved",
+    (
+        ('label = "source"', 'label = "target"', "event.name + label", "", False),
+        ('label = "same"', 'label = "same"', "event.name + label", "", False),
+        (
+            "from math import sqrt as scale",
+            "from math import ceil as scale",
+            "str(scale(4))",
+            "",
+            False,
+        ),
+        ("", "str = lambda value: 'changed'", "str(event.name)", "", False),
+        (
+            "from math import sqrt as scale",
+            "from math import sqrt as scale",
+            "str(scale(4))",
+            "",
+            True,
+        ),
+        (
+            "from math import sqrt as scale",
+            "",
+            "str(scale(4))",
+            "from math import sqrt as scale",
+            True,
+        ),
+        ("", "", "''.join(letter for letter in event.name)", "", True),
+    ),
+)
+def test_cross_module_behavior_descent_cli_reproves_global_authorities(
+    tmp_path: Path,
+    newline: str,
+    source_binding: str,
+    destination_binding: str,
+    expression: str,
+    ensure_import: str,
+    preserved: bool,
+) -> None:
+    header, projection = _type_keyed_behavior_projection_source().split(
+        "class EventProjection", 1
+    )
+    target_source = header + destination_binding + "\n"
+    projection_source = (
+        header.split("class Event:", 1)[0]
+        + "from .target import Event, NamedEvent, CountedEvent\n"
+        + source_binding
+        + "\n\nclass EventProjection"
+        + projection.replace("return event.name", f"return {expression}")
+    )
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    target_path = package / "target.py"
+    projection_path = package / "projection.py"
+    for path, source in (
+        (target_path, target_source),
+        (projection_path, projection_source),
+    ):
+        path.write_text(source.replace("\n", newline), encoding="utf-8", newline="")
+    runner = tmp_path / "run.py"
+    runner.write_text(
+        "from pkg.target import NamedEvent\n"
+        "from pkg.projection import render_event\n"
+        "event = NamedEvent()\nevent.name = 'event:'\nprint(render_event(event))\n",
+        encoding="utf-8",
+    )
+    before = subprocess.check_output([sys.executable, str(runner)])
+    original = {path: path.read_bytes() for path in (target_path, projection_path)}
+    operations = []
+    if ensure_import:
+        operations.append(
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=target_path.as_posix()),
+                import_source=ensure_import,
+            )
+        )
+    operations.append(
+        DescendTypeKeyedBehaviorProjectionOperation(
+            target=SourceRewriteTarget(
+                file_path=projection_path.as_posix(), qualname="EventProjection"
+            )
+        )
+    )
+    plan = CodemodPlanSequence.from_operations(tuple(operations))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(package),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+            "--json",
+        ],
+        input=json.dumps(json_report_object(plan)),
+        capture_output=True,
+        text=True,
+    )
+    if preserved:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert b"class EventProjection" not in projection_path.read_bytes()
+    else:
+        assert result.returncode != 0
+        assert "binding authority" in result.stdout + result.stderr
+        assert {path: path.read_bytes() for path in original} == original
+    assert subprocess.check_output([sys.executable, str(runner)]) == before
+
+
 def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     tmp_path: Path,
 ) -> None:
