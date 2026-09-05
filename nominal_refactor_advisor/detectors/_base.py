@@ -2201,10 +2201,6 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
         )
 
 
-def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
-    return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
-
-
 @dataclass(frozen=True)
 class DetectorDeclarationOptions(Generic[CandidateItemT]):
     detector_name: str | None = None
@@ -2215,11 +2211,14 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
     ) = None
 
     @classmethod
+    def field_names(cls) -> frozenset[str]:
+        return frozenset(cls.__dataclass_fields__)
+
+    @classmethod
     def from_kwargs(
         cls, options: "DetectorDeclarationOptionKwargs[CandidateItemT]"
     ) -> DetectorDeclarationOptions[CandidateItemT]:
-        option_names = set(cls.__dataclass_fields__)
-        unknown_names = set(options) - option_names
+        unknown_names = set(options) - cls.field_names()
         if unknown_names:
             raise TypeError(
                 f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
@@ -2251,8 +2250,8 @@ class DetectorDeclaration(Generic[CandidateItemT]):
 
     @property
     def class_name(self) -> str:
-        return self.options.detector_name or _detector_name_from_candidate_type(
-            self.candidate_type
+        return self.options.detector_name or self.class_name_from_candidate_name(
+            self.candidate_type.__name__
         )
 
     @property
@@ -2266,6 +2265,17 @@ class DetectorDeclaration(Generic[CandidateItemT]):
     @classmethod
     def required_class_shell_field_names(cls) -> tuple[str, ...]:
         return ("finding_spec", "finding_renderer")
+
+    @classmethod
+    def class_shell_field_names(cls) -> frozenset[str]:
+        explicit_class_fields = {"detector_name", "detector_base"}
+        return frozenset(cls.required_class_shell_field_names()) | (
+            DetectorDeclarationOptions.field_names() - explicit_class_fields
+        )
+
+    @staticmethod
+    def class_name_from_candidate_name(candidate_type_name: str) -> str:
+        return f"{candidate_type_name.removesuffix('Candidate')}Detector"
 
     def runtime_namespace(
         self,
@@ -7439,6 +7449,67 @@ class DeclarativeDetectorClassCandidate(ClassLineWitnessCandidate):
     candidate_type_name: str
     assignment_names: tuple[str, ...]
     line_count: int
+
+    @classmethod
+    def assignment_values(cls, node: ast.ClassDef) -> dict[str, ast.expr] | None:
+        if node.decorator_list:
+            return None
+        values: dict[str, ast.expr] = {}
+        for statement in node.body:
+            binding = named_value_binding(statement)
+            if (
+                binding is None
+                or binding.value is None
+                or binding.name in values
+                or binding.name not in DetectorDeclaration.class_shell_field_names()
+            ):
+                return None
+            values[binding.name] = binding.value
+        required_names = frozenset(
+            DetectorDeclaration.required_class_shell_field_names()
+        )
+        return values if required_names <= values.keys() else None
+
+    @classmethod
+    def from_class(
+        cls,
+        module: ParsedModule,
+        node: ast.ClassDef,
+    ) -> "DeclarativeDetectorClassCandidate | None":
+        if node.end_lineno is None or len(node.bases) != 1:
+            return None
+        base = ParameterizedBaseSource.from_node(node.bases[0])
+        if (
+            base is None
+            or base.base_name not in DerivedCandidateCollectorMixin.collector_base_names()
+            or not base.parameter_source.isidentifier()
+        ):
+            return None
+        assignment_values = cls.assignment_values(node)
+        if assignment_values is None:
+            return None
+        return cls(
+            file_path=module.file_path,
+            line=node.lineno,
+            class_name=node.name,
+            base_name=base.base_name,
+            candidate_type_name=base.parameter_source,
+            assignment_names=tuple(assignment_values),
+            line_count=node.end_lineno - node.lineno + 1,
+        )
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ParsedModule,
+    ) -> tuple["DeclarativeDetectorClassCandidate", ...]:
+        return tuple(
+            candidate
+            for node in module.module.body
+            if isinstance(node, ast.ClassDef)
+            for candidate in (cls.from_class(module, node),)
+            if candidate is not None
+        )
 
 
 @dataclass(frozen=True)

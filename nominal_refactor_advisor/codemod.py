@@ -541,7 +541,9 @@ from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .declaration_dependencies import FunctionBindingProjection
 from .detectors._base import (
     CandidateCollectorBoilerplateCandidate,
+    DeclarativeDetectorClassCandidate,
     DerivedCandidateCollectorMixin,
+    DetectorDeclaration,
     IssueDetector,
 )
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
@@ -4820,6 +4822,138 @@ class FindingEvidenceActionKeysMixin:
                 }
             ),
         )
+
+
+class DeclarativeDetectorClassFindingRecipeSynthesizer(
+    PrimaryEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """Replace one metadata-only detector shell with its declaration call."""
+
+    detector_declaration_import_source = (
+        "from nominal_refactor_advisor.detectors._base import "
+        "declare_module_detector\n"
+    )
+
+    @staticmethod
+    def declaration_source(
+        candidate: DeclarativeDetectorClassCandidate,
+        node: ast.ClassDef,
+    ) -> str:
+        assignment_values = candidate.assignment_values(node)
+        if assignment_values is None:
+            raise ValueError(
+                f"{candidate.class_name!r} is no longer a declarative detector shell"
+            )
+        required_names = DetectorDeclaration.required_class_shell_field_names()
+        arguments = [
+            ast.Name(id=candidate.candidate_type_name, ctx=ast.Load()),
+            *(assignment_values[name] for name in required_names),
+        ]
+        option_names = DetectorDeclaration.class_shell_field_names() - frozenset(
+            required_names
+        )
+        keywords = [
+            ast.keyword(arg=name, value=assignment_values[name])
+            for name in assignment_values
+            if name in option_names
+        ]
+        keywords.append(
+            ast.keyword(
+                arg="detector_base",
+                value=ast.Name(id=candidate.base_name, ctx=ast.Load()),
+            )
+        )
+        if candidate.class_name != DetectorDeclaration.class_name_from_candidate_name(
+            candidate.candidate_type_name
+        ):
+            keywords.append(
+                ast.keyword(
+                    arg="detector_name",
+                    value=ast.Constant(value=candidate.class_name),
+                )
+            )
+        return ast.unparse(
+            ast.Call(
+                func=ast.Name(id="declare_module_detector", ctx=ast.Load()),
+                args=arguments,
+                keywords=keywords,
+            )
+        )
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return self.rejected_evaluation(
+                "detector declaration derivation requires source context"
+            )
+        evidence = finding.primary_evidence
+        if evidence is None:
+            return self.rejected_evaluation(
+                "detector declaration derivation requires one class witness"
+            )
+        try:
+            source_path = SourcePathResolutionAuthority.from_source_index(
+                evidence.file_path,
+                context.source_index,
+            ).required_path()
+            target_ids = SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.CLASS,),
+                file_paths=(source_path,),
+                qualnames=(evidence.subject_symbol,),
+            ).target_ids(context)
+            if len(target_ids) != 1:
+                raise ValueError(
+                    f"detector declaration evidence target count is {len(target_ids)}"
+                )
+            target = context.source_index.target_by_id[target_ids[0]]
+            node = context.ast_target_nodes_by_id[target.target_id]
+            if not isinstance(node, ast.ClassDef):
+                raise ValueError("detector declaration target is not a class")
+            module = context.parsed_module_for_source_path(target.file_path)
+            candidates = tuple(
+                candidate
+                for candidate in DeclarativeDetectorClassCandidate.from_module(module)
+                if candidate.class_name == target.qualname
+                and candidate.line == target.line
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"{target.qualname!r} belongs to {len(candidates)} current "
+                    "declarative detector shells"
+                )
+            candidate = candidates[0]
+            class_source = module.source_segments.segment_for_node(node)
+            if class_source is None:
+                raise ValueError("detector class source is unavailable")
+            recipe = RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-declare-detector",
+                reason="Derive the metadata-only detector class from its declaration.",
+            ).with_operation(
+                EnsureImportOperation(
+                    target=SourceRewriteTarget(file_path=target.file_path),
+                    import_source=type(self).detector_declaration_import_source,
+                )
+            ).with_operation(
+                PatchTargetOperation(
+                    target=SourceRewriteTarget(target_id=target.target_id),
+                    replacements=(
+                        SourceTextReplacement(
+                            old_source=class_source,
+                            new_source=type(self).declaration_source(candidate, node),
+                        ),
+                    ),
+                )
+            )
+            for operation in recipe.operations:
+                operation.source_edits(context)
+        except (CodemodOperationPreflightError, KeyError, ValueError) as error:
+            return self.rejected_evaluation(str(error))
+        return self.executable_evaluation(recipe)
 
 
 class CandidateCollectorBoilerplateFindingRecipeSynthesizer(

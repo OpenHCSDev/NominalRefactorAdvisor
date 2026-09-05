@@ -75,6 +75,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.CandidateCollectorBoilerplateFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
+    codemod.DeclarativeDetectorClassFindingRecipeSynthesizer: (
+        codemod.ClassFamilyAuthorityConcept
+    ),
     codemod.EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer: (
         codemod.DerivedProjectionConcept
     ),
@@ -95,6 +98,9 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ),
     detectors.AutoRegisterExplicitPriorityOrderingDetector: (
         codemod.AutoRegisterMroOrderingConcept
+    ),
+    detectors.DeclarativeDetectorClassDetector: (
+        codemod.ClassFamilyAuthorityConcept
     ),
     detectors.ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
     detectors.DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,

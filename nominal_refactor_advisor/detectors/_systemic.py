@@ -32,6 +32,7 @@ from ..class_index import (
 from ..codemod import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
+    DeclarativeDetectorClassFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
 )
@@ -3185,6 +3186,13 @@ declare_candidate_rule_detector(
 )
 
 
+class DeclarativeDetectorClassDetectorBase(
+    ModuleCollectorCandidateDetector[DeclarativeDetectorClassCandidate],
+    DeclarativeDetectorClassFindingRecipeSynthesizer,
+):
+    """Compose declarative-shell detection with its executable replacement."""
+
+
 declare_candidate_rule_detector(
     DeclarativeDetectorClassCandidate,
     high_confidence_certified_spec(
@@ -3213,7 +3221,8 @@ declare_candidate_rule_detector(
         field_names=candidate.assignment_names,
         source_name=candidate.base_name,
     ),
-    candidate_collector=_declarative_detector_class_candidates,
+    candidate_collector=DeclarativeDetectorClassCandidate.from_module,
+    detector_base=DeclarativeDetectorClassDetectorBase,
 )
 
 

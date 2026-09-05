@@ -14503,7 +14503,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
+        '\nclass LocalCandidate:\n    pass\n\n\nclass ProjectDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
     )
     findings = [
         item
@@ -14512,9 +14512,69 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     ]
 
     assert len(findings) == 1
-    assert "LocalDetector" in findings[0].summary
+    assert "ProjectDetector" in findings[0].summary
     assert "LocalCandidate" in findings[0].summary
     assert "candidate_collector" in findings[0].summary
+
+    modules = parse_python_modules(tmp_path)
+    source_path = (tmp_path / "pkg/mod.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("declarative_detector_class",),
+    )
+
+    assert len(plan.records) == 1
+    assert plan.records[0].status is (
+        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    ), plan.records[0].reason
+    assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
+        EnsureImportOperation,
+        PatchTargetOperation,
+    )
+    drifted_snapshot = snapshot.with_virtual_sources(
+        {
+            source_path: snapshot.sources_by_file_path[source_path].replace(
+                "    candidate_collector = local_candidates\n",
+                "    candidate_collector = local_candidates\n"
+                "    unrelated_cache = {}\n",
+            )
+        }
+    )
+    with pytest.raises(
+        ValueError,
+        match="did not resolve to exactly one eligible source-index target",
+    ):
+        plan.document.recipes[0].operations[-1].source_edits(drifted_snapshot)
+    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[source_path]
+    assert simulation.is_clean is True
+    assert "class ProjectDetector" not in rewritten
+    assert "declare_module_detector(" in rewritten
+    assert "LocalCandidate" in rewritten
+    assert "candidate_collector=local_candidates" in rewritten
+    assert "detector_base=ModuleCollectorCandidateDetector" in rewritten
+    assert "detector_name='ProjectDetector'" in rewritten
+    simulation.document_simulation.apply()
+    assert not any(
+        finding.detector_id == "declarative_detector_class"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_declarative_detector_class_requires_representable_class_shell(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n    unrelated_cache = {}\n',
+    )
+
+    assert not any(
+        finding.detector_id == "declarative_detector_class"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None:
