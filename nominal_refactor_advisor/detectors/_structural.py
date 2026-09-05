@@ -510,37 +510,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    ConstantPropertyDefaultBundleCandidate,
-    high_confidence_spec(
-        PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Constant property defaults should derive from descriptors",
-        "A class that repeats many one-line properties returning literal defaults is using method syntax for data. The default surface should be declared as typed descriptors or a property-default table while real override behavior stays in subclasses.",
-        "typed constant-property descriptor defaults on the nominal base",
-        "same class repeats constant-return property methods for default hook values",
-        (
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}."
-    ),
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=len(candidate.property_names),
-        mapping_name=candidate.class_name,
-        field_names=candidate.property_names,
-    ),
-    detector_name="ConstantPropertyDefaultBundleDetector",
-    candidate_collector=_constant_property_default_bundle_candidates,
-)
-
-
 class ReflectiveSelfAttributeEscapeDetector(
     ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]
 ):
@@ -737,46 +706,6 @@ class ExportPolicyPredicateDetector(
                 ),
             )
         ]
-
-
-class DerivedIndexedSurfaceDetector(
-    ModuleCollectorCandidateDetector[DerivedIndexedSurfaceCandidate]
-):
-    candidate_collector = staticmethod(_derived_indexed_surface_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual indexed module surfaces should derive from the authoritative type family",
-        "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. That splits authority between the family and a second registry projection.",
-        "one derived index projected from the authoritative local type family",
-        "manual dict index repeats keys and values already implied by local type families",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, index_candidate: DerivedIndexedSurfaceCandidate
-    ) -> RefactorFinding:
-        root_names = ", ".join(index_candidate.derivable_root_names)
-        return self.build_finding(
-            (
-                f"`{index_candidate.surface_name}` manually indexes {len(index_candidate.value_names)} local types by `{index_candidate.key_kind}` even though that surface is derivable from local `{root_names}` families."
-            ),
-            (
-                SourceLocation(
-                    index_candidate.file_path,
-                    index_candidate.line,
-                    index_candidate.surface_name,
-                ),
-            ),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(index_candidate.value_names),
-                mapping_name=index_candidate.surface_name,
-                field_names=index_candidate.derivable_root_names,
-            ),
-        )
 
 
 declare_candidate_rule_detector(
@@ -1206,45 +1135,6 @@ class SupportPreludeModuleFactFamily(CollectedFamily[SupportPreludeModuleFact]):
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(SupportPreludeModuleFact.from_source_module)
     collect = staticmethod(SupportPreludeModuleFact.from_parsed_module)
-
-
-class AlternateConstructorFamilyDetector(
-    ModuleCollectorCandidateDetector[AlternateConstructorFamilyGroup]
-):
-    candidate_collector = _alternate_constructor_family_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Alternate constructors should collapse into one provenance-dispatched builder",
-        "Several classmethods on one record class rebuild the same keyword schema from different source node types. That provenance family should collapse into one authoritative constructor with dispatch over source kind.",
-        "single provenance-aware builder for one record schema",
-        "same record schema is rebuilt across sibling alternate constructors for different source types",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, group: AlternateConstructorFamilyGroup
-    ) -> RefactorFinding:
-        evidence = tuple(
-            (
-                SourceLocation(
-                    group.file_path, line, f"{group.class_name}.{method_name}"
-                )
-                for method_name, line in zip(
-                    group.method_names, group.line_numbers, strict=True
-                )
-            )
-        )
-        return self.build_finding(
-            (
-                f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
-            ),
-            evidence,
-            metrics=group.mapping_metrics,
-        )
 
 
 declare_candidate_rule_detector(

@@ -7309,13 +7309,6 @@ class PropertyAliasHookGroup(PropertyHookGroup):
 
 
 @dataclass(frozen=True)
-class ConstantPropertyDefaultBundleCandidate(ClassLineWitnessCandidate):
-    property_names: tuple[str, ...]
-    return_expressions: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
 class GuardedWrapperSpecPair:
     file_path: str
     spec_name: str
@@ -7350,14 +7343,6 @@ class RepeatedBaseBundleCandidate(ClassLineNumbersGroup):
 class ExportSurfaceCandidate(LineWitnessCandidate):
     export_symbol: str
     exported_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
-    surface_name: str
-    key_kind: str
-    value_names: tuple[str, ...]
-    derivable_root_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -7423,11 +7408,6 @@ class SubclassTraversalGroup:
     materialization_kinds: tuple[SubclassMaterializationKind, ...]
     registry_attribute_names: tuple[str, ...]
     filter_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AlternateConstructorFamilyGroup(KeywordMethodFamilyCandidate):
-    source_type_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

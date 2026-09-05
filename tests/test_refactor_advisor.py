@@ -26013,23 +26013,6 @@ def test_ignores_semantic_overlap_without_shared_base(tmp_path: Path) -> None:
     )
 
 
-def test_detects_constant_property_default_bundle(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Metrics:\n    @property\n    def count(self):\n        return 0\n\n    @property\n    def names(self):\n        return ()\n\n    @property\n    def label(self):\n        return None\n\n    @property\n    def flags(self):\n        return ()\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "constant_property_default_bundle"
-        )
-    )
-    assert "Metrics" in finding.summary
-
-
 def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -26201,24 +26184,6 @@ def test_nominal_definition_family_does_not_imply_parallel_table_authority(
         finding.detector_id == "type_indexed_definition_boilerplate"
         for finding in findings
     )
-
-
-def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass CommandRoot(ABC):\n    pass\n\n\nclass AlphaCommand(CommandRoot):\n    pass\n\n\nclass BetaCommand(CommandRoot):\n    pass\n\n\nclass GammaCommand(CommandRoot):\n    pass\n\n\nCOMMAND_BY_NAME = {\n    "alpha": AlphaCommand,\n    "beta": BetaCommand,\n    "gamma": GammaCommand,\n}\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "derived_indexed_surface"
-        )
-    )
-    assert "COMMAND_BY_NAME" in finding.summary
-    assert "CommandRoot" in finding.summary
 
 
 def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) -> None:
@@ -26524,24 +26489,6 @@ def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> No
     )
     assert "all_plugins" in finding.summary
     assert "all_metrics" in finding.summary
-
-
-def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass RegistrationShape:\n    @classmethod\n    def from_assignment(cls, parsed_module, node: Assign, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.value.id,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.target,\n            registration_style="assignment",\n        )\n\n    @classmethod\n    def from_registration_call(cls, parsed_module, node: Call, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.func.id,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.args[0],\n            registration_style="call",\n        )\n\n    @classmethod\n    def from_decorator(cls, parsed_module, node: ClassDef, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.name,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.name,\n            registration_style="decorator",\n        )\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "alternate_constructor_family"
-        )
-    )
-    assert "RegistrationShape" in finding.summary
-    assert "from_assignment" in finding.summary
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
