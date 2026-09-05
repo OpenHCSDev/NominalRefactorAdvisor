@@ -318,6 +318,22 @@ throughout, with no exact-text patches.
 Reusing an Existing Authority
 -----------------------------
 
+To change a function's decorators without rewriting its implementation, use
+``replace_function_decorators`` with a declaration ``target`` and
+``decorators_source``, such as ``"@cached_property"``. The source can contain
+multiple decorators in their intended order; an empty string removes them.
+Existing comments in the replaced block require review and are not discarded.
+
+This recorded NRA plan memoizes three projections of an immutable declaration:
+
+.. literalinclude:: ../../examples/cache_call_declaration_projections.py
+   :language: python
+
+Review dependency mutability and decorator behaviour before applying such a
+change. The operation checks Python syntax and source ownership, not whether
+memoization is appropriate for the selected function. Its header and body remain
+unchanged, including comments and multiline literals.
+
 To share an existing function implementation, use ``alias_function`` with a
 ``target`` and an ``implementation`` selector. Both declarations must be in the
 same lexical scope, and the selected implementation must be bound before the

@@ -55,6 +55,7 @@ from .codemod_source_edits import (
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextGeometry,
+    SourceLineSpan,
 )
 from .exact_field_authority import ExactDataclassFieldAuthorityComponent
 from .exact_method_authority import (
@@ -1017,11 +1018,15 @@ class ExistingDataclassFieldAuthorityTargets:
     def authority_name(self) -> str:
         return self.authority.node.name
 
-    @property
-    def authority_span(self) -> SourceNodeSpan:
-        return SourceNodeSpan(
-            self.authority.node,
-            SourceNodeDecoratorPolicy.INCLUDE,
+    @cached_property
+    def authority_span(self) -> SourceLineSpan:
+        return SourceTextGeometry(
+            self.participants.source_for(self.authority.file_path)
+        ).node_line_span(
+            SourceNodeSpan(
+                self.authority.node,
+                SourceNodeDecoratorPolicy.INCLUDE,
+            )
         )
 
     @property
@@ -1075,7 +1080,7 @@ class ExistingDataclassFieldAuthorityTargets:
         if not self.requires_relocation:
             return ()
         source = self.participants.source_for(self.authority.file_path)
-        authority_source = self.authority_span.line_span.source_from(source)
+        authority_source = self.authority_span.source_from(source)
         rationale = f"Move field authority {self.authority_name!r} before its users."
         return (
             SourceInsertion(
@@ -1361,10 +1366,8 @@ class ClassMemberPromotionStatement(ABC):
         raise NotImplementedError
 
     @property
-    def start_line(self) -> int:
-        return SourceNodeSpan(
-            self.statement, SourceNodeDecoratorPolicy.INCLUDE
-        ).start_line
+    def source_span(self) -> SourceNodeSpan:
+        return SourceNodeSpan(self.statement, SourceNodeDecoratorPolicy.INCLUDE)
 
     @property
     def end_line(self) -> int:
@@ -1462,28 +1465,27 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 
 
 @dataclass(frozen=True)
-class ClassMemberMoveProofContext:
+class ClassMemberMoveProofContext(SourceTextGeometry):
     """Current-source facts shared by every selected class member."""
 
     source_class: ResolvedClassTarget
     destination_class: ResolvedClassTarget
-    source: str
     module_bound_names: frozenset[str]
     source_class_bound_names: frozenset[str]
 
     @property
     def source_lines(self) -> tuple[str, ...]:
-        return tuple(self.source.splitlines(keepends=True))
+        return self.lines
 
     def require_no_attached_leading_comment(
         self,
         member: ClassMemberPromotionStatement,
     ) -> None:
-        if member.start_line <= self.source_class.node.lineno + 1:
+        start_line = self.node_start_line(member.source_span)
+        if start_line <= self.source_class.node.lineno + 1:
             return
-        source_lines = self.source.splitlines()
-        member_line = source_lines[member.start_line - 1]
-        preceding_line = source_lines[member.start_line - 2]
+        member_line = self.lines[start_line - 1]
+        preceding_line = self.lines[start_line - 2]
         indentation = member_line[: len(member_line) - len(member_line.lstrip())]
         if preceding_line.startswith(indentation) and preceding_line.removeprefix(
             indentation

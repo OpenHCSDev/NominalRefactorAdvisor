@@ -257,6 +257,28 @@ def test_alias_at_eof_preserves_absence_of_final_newline(tmp_path: Path) -> None
     assert path.read_bytes().endswith(b"second = first")
 
 
+def test_alias_owns_parenthesized_multiline_decorator_marker(tmp_path: Path) -> None:
+    path = tmp_path / "probe.py"
+    source = (
+        "class Owner:\n"
+        "    @staticmethod\n"
+        "    def first(value): return value\n"
+        "    @(\n"
+        "        staticmethod\n"
+        "    )\n"
+        "    def second(value): return value\n"
+        "print(Owner.second(3))\n"
+    )
+    path.write_text(source, encoding="utf-8", newline="")
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    simulation = _plan(path, "Owner.second", "Owner.first").simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    simulation.apply()
+    assert "    second = first\n" in path.read_text(encoding="utf-8")
+    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+
+
 @pytest.mark.parametrize(
     "decorator,parameters",
     (

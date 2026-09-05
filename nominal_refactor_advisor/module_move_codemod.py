@@ -471,7 +471,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             self.destination_insertion(context),
             *(
                 block.deletion_replacement(
-                    source=context.sources_by_file_path[self.source_path],
                     rationale=self.rationale,
                 )
                 for block in self.source_blocks

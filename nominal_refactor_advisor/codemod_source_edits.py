@@ -479,10 +479,14 @@ class SourceSpanDeletion(SourceSpanEdit):
 
         target_node = context.ast_target_nodes_by_id.get(target_digest.target_id)
         return (
-            SourceNodeSpan(
-                target_node,
-                SourceNodeDecoratorPolicy.INCLUDE,
-            ).line_span
+            SourceTextGeometry(
+                context.sources_by_file_path[target_digest.file_path]
+            ).node_line_span(
+                SourceNodeSpan(
+                    target_node,
+                    SourceNodeDecoratorPolicy.INCLUDE,
+                )
+            )
             if isinstance(target_node, ast.stmt)
             else SourceLineSpan(
                 target_digest.line,
@@ -539,10 +543,12 @@ class SourceSpanDeletion(SourceSpanEdit):
         return cls.for_statement_span(
             file_path=file_path,
             source=source,
-            statement_span=SourceNodeSpan(
-                statement,
-                SourceNodeDecoratorPolicy.INCLUDE,
-            ).line_span,
+            statement_span=SourceTextGeometry(source).node_line_span(
+                SourceNodeSpan(
+                    statement,
+                    SourceNodeDecoratorPolicy.INCLUDE,
+                )
+            ),
             rationale=rationale,
         )
 
@@ -890,7 +896,7 @@ class SourceTextPatch:
 
 @dataclass(frozen=True)
 class SourceNodeSpan:
-    """AST statement span projected into source line coordinates."""
+    """AST envelope; SourceTextGeometry resolves exact decorated source bounds."""
 
     node: ast.stmt
     decorator_policy: SourceNodeDecoratorPolicy = SourceNodeDecoratorPolicy.EXCLUDE
@@ -1096,7 +1102,28 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         raise ValueError(f"Cannot resolve parameter closing for {node.name!r}")
 
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
-        return self._line_span_offsets(span.start_line, span.end_line)
+        return self._line_span_offsets(self.node_start_line(span), span.end_line)
+
+    def node_start_line(self, span: SourceNodeSpan) -> int:
+        """Recover decorator markers that AST expression positions can omit."""
+
+        node = span.node
+        if not (
+            span.decorator_policy.includes_decorators
+            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.decorator_list
+        ):
+            return node.lineno
+        expression_start = self.required_node_offsets(node.decorator_list[0])[0]
+        token_index = bisect_left(self.token_start_offsets, expression_start)
+        for index in range(token_index - 1, -1, -1):
+            token = self.tokens[index]
+            if token.exact_type == tokenize.AT:
+                return token.start[0]
+        raise ValueError("Decorated declaration has no source decorator marker")
+
+    def node_line_span(self, span: SourceNodeSpan) -> SourceLineSpan:
+        return SourceLineSpan(self.node_start_line(span), span.end_line)
 
     def statement_deletion_span(self, span: "SourceLineSpan") -> "SourceLineSpan":
         """Include the separator owned by one deleted statement."""

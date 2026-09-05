@@ -10,13 +10,14 @@ from nominal_refactor_advisor.codemod_statement_source import StatementSource
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 @pytest.mark.parametrize("indentation", ("    ", "        ", "\t"))
+@pytest.mark.parametrize(
+    "decorator", ("    @staticmethod\n", "    @(\n        staticmethod\n    )\n")
+)
 def test_decorated_member_projection_preserves_literal_bytes(
-    newline: str, indentation: str
+    newline: str, indentation: str, decorator: str
 ) -> None:
     source = (
-        "class Original:\n"
-        "    @staticmethod\n"
-        "    def text():\n"
+        "class Original:\n" + decorator + "    def text():\n"
         "        return '''first\n"
         "  literal indentation\n"
         "        last''' # retained comment\n"

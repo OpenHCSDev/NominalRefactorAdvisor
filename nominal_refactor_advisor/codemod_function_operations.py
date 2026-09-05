@@ -19,6 +19,7 @@ from .codemod_declaration_source import (
     FunctionAliasSourceAuthority,
     FunctionBodyPrefixSourceAuthority,
     FunctionBodySourceAuthority,
+    FunctionDecoratorsSourceAuthority,
     FunctionLocalProjectionSourceAuthority,
     FunctionParameterProjectionSourceAuthority,
     FunctionRegionSourceAuthority,
@@ -135,6 +136,18 @@ class AliasFunctionOperation(RepositorySourceReprovedOperation):
             rationale=self.rationale
             or f"Alias {target.qualname!r} to {implementation.qualname!r}.",
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionDecoratorsOperation(FunctionMutationOperationABC):
+    """Replace a function's decorator block while retaining its header and suite."""
+
+    decorators_source: str = codemod_payload_field(
+        EmptyDefaultStringPayloadValueCodec(), default=""
+    )
+
+    source_authority = FunctionDecoratorsSourceAuthority
+    replacement_source = AliasProperty[str]("decorators_source")
 
 
 @dataclass(frozen=True, kw_only=True)

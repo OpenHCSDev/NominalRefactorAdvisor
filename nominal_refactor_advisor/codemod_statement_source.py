@@ -41,10 +41,9 @@ class StatementDeletionSource(SourceTextGeometry):
             first_index, first = run[0]
             last_index, last = run[-1]
             first_span = SourceNodeSpan(first, SourceNodeDecoratorPolicy.INCLUDE)
-            start = self.line_offsets[
-                first_span.start_line - 1
-            ] + SourceByteSpan.character_column(
-                self.lines[first_span.start_line - 1], first.col_offset
+            first_line = self.node_start_line(first_span)
+            start = self.line_offsets[first_line - 1] + SourceByteSpan.character_column(
+                self.lines[first_line - 1], first.col_offset
             )
             end = self.required_node_offsets(last)[1]
             replacement = ""
@@ -101,7 +100,7 @@ class StatementSource(SourceTextGeometry):
 
     def member_source(self, indentation: str) -> str:
         span = SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
-        first_line = span.start_line
+        first_line = self.node_start_line(span)
         original_line = self.lines[first_line - 1]
         original_indentation = original_line[
             : len(original_line) - len(original_line.lstrip())

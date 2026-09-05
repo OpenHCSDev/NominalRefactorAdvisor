@@ -951,11 +951,10 @@ class SourceTopLevelSymbolMoveSelection:
 
 
 @dataclass(frozen=True)
-class MovedTopLevelDeclarationSource:
+class MovedTopLevelDeclarationSource(SourceTextGeometry):
     """Exact source block for one moved module-level declaration."""
 
     declaration: SourceTopLevelDeclaration
-    moved_source: str
 
     @classmethod
     def from_declaration(
@@ -963,14 +962,15 @@ class MovedTopLevelDeclarationSource:
         declaration: SourceTopLevelDeclaration,
         source_by_path: Mapping[str, str],
     ) -> MovedTopLevelDeclarationSource:
-        span = declaration.source_span
-        source = source_by_path[declaration.source_path]
         return cls(
             declaration=declaration,
-            moved_source="".join(
-                source.splitlines(keepends=True)[span.start_line - 1 : span.end_line]
-            ),
+            source=source_by_path[declaration.source_path],
         )
+
+    @cached_property
+    def moved_source(self) -> str:
+        start, end = self.node_span_offsets(self.declaration.source_span)
+        return self.source[start:end]
 
     @property
     def name(self) -> str:
@@ -978,7 +978,7 @@ class MovedTopLevelDeclarationSource:
 
     @property
     def source_start_line(self) -> int:
-        return self.declaration.source_span.start_line
+        return self.node_start_line(self.declaration.source_span)
 
     @property
     def source_end_line(self) -> int:
@@ -987,10 +987,9 @@ class MovedTopLevelDeclarationSource:
     def deletion_replacement(
         self,
         *,
-        source: str,
         rationale: str,
     ) -> SourceSpanDeletion:
-        source_lines = source.splitlines(keepends=True)
+        source_lines = self.lines
         deletion_start_line = self.source_start_line
         deletion_end_line = self.source_end_line
         while (

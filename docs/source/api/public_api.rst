@@ -82,6 +82,13 @@ where receiver binding has not been established. Callable identity alone does
 not prove that the original call signature applies to such transfers.
 
 The codemod surface models source-anchored candidate rewrites and simulations.
+``FunctionDecoratorsSourceAuthority`` owns the decorator region independently
+of a function's header and suite. ``SourceTextGeometry`` resolves decorator
+markers from tokens, including parenthesized multiline expressions whose AST
+positions begin after ``@``. Statement moves and deletions use that same source
+geometry; moved declaration text is derived from its source rather than stored
+as an independent copy.
+
 Simulation applies planned replacement source verbatim, including its final
 newline. Operation-specific renderers supply any required separators before
 handing source to simulation; exact offset edits retain their requested bytes

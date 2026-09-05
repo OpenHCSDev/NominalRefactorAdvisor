@@ -656,7 +656,8 @@ class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
         if self.geometry.span_contains_comment(span):
             raise ValueError("Function alias would discard comments")
         first = _SingleLogicalLineSource.parse(
-            self.geometry.lines[node_span.start_line - 1], "Function alias"
+            self.geometry.lines[self.geometry.node_start_line(node_span) - 1],
+            "Function alias",
         )
         last = _SingleLogicalLineSource.parse(
             self.geometry.lines[node_span.end_line - 1], "Function alias"
@@ -665,6 +666,40 @@ class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
             start_offset=span.start_offset,
             end_offset=span.end_offset,
             replacement_source=f"{first.indent}{self.node.name} = {reference.root_name}{last.newline}",
+        )
+
+
+@dataclass(frozen=True)
+class FunctionDecoratorsSourceAuthority(FunctionRegionSourceAuthority):
+    """Own only the decorator block preceding a function's unchanged header."""
+
+    def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
+        first_line = self.geometry.node_start_line(
+            SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+        )
+        span = SourceTextSpan(
+            self.geometry.line_offsets[first_line - 1],
+            self.geometry.line_offsets[self.node.lineno - 1],
+        )
+        if self.geometry.span_contains_comment(span):
+            raise ValueError("Function decorator replacement would discard comments")
+        header = _SingleLogicalLineSource.parse(
+            self.geometry.lines[self.node.lineno - 1], "Function header"
+        )
+        prefix = decorators_source
+        if prefix and not prefix.endswith(("\n", "\r")):
+            prefix += header.newline or "\n"
+        scaffold = SourceTextGeometry(prefix + "def _decorated(): pass\n")
+        module = ast.parse(scaffold.source)
+        if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
+            raise ValueError("Replacement must contain only function decorators")
+        rendered = scaffold.indented_source(header.indent)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source="".join(
+                rendered.splitlines(keepends=True)[: module.body[0].lineno - 1]
+            ),
         )
 
 
@@ -722,9 +757,12 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
     def layout(self) -> FunctionSuiteLayout:
         signature_end = self.geometry.function_signature_suffix_span(self.node).end_offset
         header_line = self.geometry.line_number_for_offset(signature_end - 1)
-        first_statement_line = SourceNodeSpan(
-            self.node.body[0], SourceNodeDecoratorPolicy.INCLUDE,
-        ).start_line
+        first_statement_line = self.geometry.node_start_line(
+            SourceNodeSpan(
+                self.node.body[0],
+                SourceNodeDecoratorPolicy.INCLUDE,
+            )
+        )
         header_source = self.geometry.lines[header_line - 1]
         newline = "\r\n" if header_source.endswith("\r\n") else "\n"
         is_inline = first_statement_line == header_line
@@ -792,9 +830,12 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
                 )
             insertion = self.geometry.node_span_offsets(SourceNodeSpan(docstring))[1]
         else:
-            first_statement_line = SourceNodeSpan(
-                self.node.body[0], SourceNodeDecoratorPolicy.INCLUDE,
-            ).start_line
+            first_statement_line = self.geometry.node_start_line(
+                SourceNodeSpan(
+                    self.node.body[0],
+                    SourceNodeDecoratorPolicy.INCLUDE,
+                )
+            )
             insertion = self.geometry.line_offsets[first_statement_line - 1]
         separator = "" if self.source[:insertion].endswith(("\n", "\r")) else layout.newline
         return SourceTextSpanReplacement.from_offsets(

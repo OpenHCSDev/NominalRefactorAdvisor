@@ -120,6 +120,7 @@ from .codemod_function_operations import (
     ReplaceDeclaredCallArgumentsOperation as ReplaceDeclaredCallArgumentsOperation,
     ReplaceDeclaredCallOperation as ReplaceDeclaredCallOperation,
     ReplaceFunctionBodyOperation as ReplaceFunctionBodyOperation,
+    ReplaceFunctionDecoratorsOperation as ReplaceFunctionDecoratorsOperation,
     ReplaceFunctionSignatureOperation as ReplaceFunctionSignatureOperation,
 )
 from .codemod_operations import (
@@ -305,6 +306,7 @@ from .codemod_declaration_source import (
 from .codemod_declaration_source import (
     FunctionBodySourceAuthority as FunctionBodySourceAuthority,
     FunctionBodyPrefixSourceAuthority as FunctionBodyPrefixSourceAuthority,
+    FunctionDecoratorsSourceAuthority as FunctionDecoratorsSourceAuthority,
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
 )
 from .codemod_declaration_source import (

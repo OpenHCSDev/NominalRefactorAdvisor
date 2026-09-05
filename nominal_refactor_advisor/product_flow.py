@@ -876,7 +876,7 @@ class CompactFunctionDeclaration:
             )
         )
 
-    @property
+    @cached_property
     def binding_kind(self) -> CompactFunctionBindingKind:
         return CompactFunctionBindingKind.from_declaration(
             self.owner_class_qualname,
@@ -901,7 +901,7 @@ class CompactFunctionDeclaration:
             and self.owner_class_qualname == owner.qualname
         )
 
-    @property
+    @cached_property
     def signature_decorator_hazard(self) -> bool:
         binding_decorator_count = sum(
             decorator.matches_any(self.decorators)
@@ -924,7 +924,7 @@ class CompactFunctionDeclaration:
             return None
         return self.signature.parameters[0].name
 
-    @property
+    @cached_property
     def call_signature(self) -> CompactFunctionSignature:
         return self.signature.without_leading_parameters(
             self.binding_kind.implicit_parameter_count
