@@ -8203,9 +8203,9 @@ class TypedCandidateCastBoilerplateCandidate(ClassMethodLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
+class FindingSpecConstructionCandidate(LineWitnessCandidate):
     constructor_name: str
-    recommended_constructor_name: str
+    recommended_builder_name: str
     redundant_keyword_names: tuple[str, ...]
     redundant_keyword_values: tuple[str, ...]
     witness_name = AliasProperty[str]("constructor_name")
@@ -8216,13 +8216,6 @@ class DirectBuildFindingRendererCandidate(
     PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate
 ):
     base_name: str
-
-
-@dataclass(frozen=True)
-class CanonicalFindingSpecBuilderCandidate(
-    BuilderKeywordSurface, ClassLineWitnessCandidate
-):
-    constructor_name: str
 
 
 @dataclass(frozen=True)

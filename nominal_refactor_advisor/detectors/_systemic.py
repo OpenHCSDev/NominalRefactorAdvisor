@@ -42,7 +42,7 @@ from ..registry_identity import (
 from ..taxonomy import CapabilityTag, ObservationTag
 
 from ._base import *
-from ._finding_spec_defaults import FindingSpecDefaultFieldCandidateCollector
+from ._finding_spec_defaults import FindingSpecConstructionCandidateCollector
 from ._helpers import *
 
 
@@ -3656,16 +3656,16 @@ declare_candidate_rule_detector(
 )
 
 
-class FindingSpecDefaultFieldBoilerplateDetector(
-    ModuleCollectorCandidateDetector[FindingSpecDefaultFieldCandidate]
+class FindingSpecConstructionBoilerplateDetector(
+    ModuleCollectorCandidateDetector[FindingSpecConstructionCandidate]
 ):
-    candidate_collector = FindingSpecDefaultFieldCandidateCollector.collect
+    candidate_collector = FindingSpecConstructionCandidateCollector.collect
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "FindingSpec semantic defaults should be constructor-derived",
-        "FindingSpec constructors already encode confidence and certification defaults. Restating those semantic fields in every detector is declaration boilerplate; the constructor should carry the shared semantic tier and leave only true local residue.",
-        "constructor-level semantic spec defaults with no repeated confidence/certification payload",
-        "FindingSpec call repeats semantic default keywords that can be derived from its constructor",
+        "FindingSpec construction should use its typed semantic factory",
+        "FindingSpec factories own semantic tier defaults and canonical coordinate order. Calling the record constructor directly repeats either that schema, those defaults, or both at every detector declaration.",
+        "one typed FindingSpec factory per semantic tier",
+        "FindingSpec record is constructed directly instead of through its semantic-tier factory",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -3678,9 +3678,9 @@ class FindingSpecDefaultFieldBoilerplateDetector(
     )
 
     def _finding_for_candidate(
-        self, field_candidate: FindingSpecDefaultFieldCandidate
+        self, field_candidate: FindingSpecConstructionCandidate
     ) -> RefactorFinding:
-        keyword_summary = ", ".join(
+        redundant_defaults = ", ".join(
             (
                 f"{name}={value}"
                 for name, value in zip(
@@ -3689,17 +3689,12 @@ class FindingSpecDefaultFieldBoilerplateDetector(
                     strict=True,
                 )
             )
-        )
-        constructor_note = (
-            f" and use `{field_candidate.recommended_constructor_name}`"
-            if field_candidate.recommended_constructor_name
-            != field_candidate.constructor_name
-            else ""
-        )
+        ) or "no explicit semantic defaults"
         return self.build_finding(
             (
-                f"`{field_candidate.constructor_name}` restates derived semantic defaults "
-                f"{keyword_summary}{constructor_note}."
+                f"`{field_candidate.constructor_name}` constructs FindingSpec directly "
+                f"with {redundant_defaults}; use the semantic-tier factory "
+                f"`{field_candidate.recommended_builder_name}`."
             ),
             (field_candidate.evidence,),
             metrics=MappingMetrics.from_field_names(
@@ -3776,36 +3771,6 @@ class DirectBuildFindingRendererDetector(
                 field_names=("summary", "evidence", *renderer.keyword_names),
             ),
         )
-
-
-declare_candidate_rule_detector(
-    CanonicalFindingSpecBuilderCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "FindingSpec coordinates should use one typed semantic builder",
-        "Detector specs repeatedly enumerate the same semantic coordinate names: pattern, title, why, capability gap, relation context, and tag axes. A typed builder can make that product structure explicit once and leave each detector to provide only its coordinate values.",
-        "typed FindingSpec builder with canonical semantic coordinate order",
-        "detector repeats FindingSpec keyword schema locally",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.class_name}` builds `{candidate.constructor_name}` by spelling {len(candidate.keyword_names)} FindingSpec coordinate keywords; use `{candidate.builder_name}`."
-    ),
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=1,
-        mapping_name=candidate.class_name,
-        field_names=candidate.keyword_names,
-    ),
-    candidate_collector=_canonical_finding_spec_builder_candidates,
-)
 
 
 declare_candidate_rule_detector(

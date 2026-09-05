@@ -4021,62 +4021,6 @@ def _direct_build_finding_renderer_candidates(
     return tuple(candidates)
 
 
-@lru_cache(maxsize=1)
-def _canonical_finding_spec_field_names() -> tuple[str, ...]:
-    signature = inspect.signature(FindingSpecFactory.__call__)
-    return tuple(
-        name
-        for name, parameter in signature.parameters.items()
-        if name != "self"
-        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    )
-
-
-def _canonical_finding_spec_builder_candidates(
-    module: ParsedModule,
-) -> tuple[CanonicalFindingSpecBuilderCandidate, ...]:
-    candidates: list[CanonicalFindingSpecBuilderCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for statement in node.body:
-            if not isinstance(statement, ast.Assign):
-                continue
-            if not any(
-                (name_id(target) == "finding_spec" for target in statement.targets)
-            ):
-                continue
-            call = as_ast(statement.value, ast.Call)
-            if call is None or call.args:
-                continue
-            constructor_name = name_id(call.func)
-            factory = (
-                finding_spec_factory_for_constructor_name(constructor_name)
-                if constructor_name is not None
-                else None
-            )
-            if factory is None:
-                continue
-            keyword_names = tuple(
-                keyword.arg for keyword in call.keywords if keyword.arg
-            )
-            if not set(_canonical_finding_spec_field_names()[:5]).issubset(
-                keyword_names
-            ):
-                continue
-            candidates.append(
-                CanonicalFindingSpecBuilderCandidate(
-                    file_path=module.file_path,
-                    line=statement.lineno,
-                    class_name=node.name,
-                    constructor_name=constructor_name,
-                    builder_name=factory.builder_name,
-                    keyword_names=keyword_names,
-                )
-            )
-    return tuple(candidates)
-
-
 def _source_segment(module: ParsedModule, node: ast.expr) -> str:
     return module.source_segments.segment_for_node(node) or ast.unparse(node)
 

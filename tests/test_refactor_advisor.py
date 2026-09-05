@@ -14687,7 +14687,9 @@ def test_detects_enum_metadata_table_parallel_to_enum_members(tmp_path: Path) ->
     assert "label" in findings[0].summary
 
 
-def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
+def test_finding_spec_construction_derives_redundant_semantic_defaults(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -14696,10 +14698,10 @@ def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
     findings = [
         item
         for item in analyze_path(tmp_path)
-        if item.detector_id == "finding_spec_default_field_boilerplate"
+        if item.detector_id == "finding_spec_construction_boilerplate"
     ]
     assert len(findings) == 1
-    assert "HighConfidenceFindingSpec" in findings[0].summary
+    assert "high_confidence_spec" in findings[0].summary
     assert "confidence=HIGH_CONFIDENCE" in findings[0].summary
     assert "certification=STRONG_HEURISTIC" in findings[0].summary
 
@@ -14735,7 +14737,9 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     assert "LocalDetector._finding_for_candidate" in findings[0].summary
 
 
-def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
+def test_finding_spec_construction_detector_owns_canonical_builder_guidance(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -14744,7 +14748,7 @@ def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
     findings = [
         item
         for item in analyze_path(tmp_path)
-        if item.detector_id == "canonical_finding_spec_builder"
+        if item.detector_id == "finding_spec_construction_boilerplate"
     ]
     assert len(findings) == 1
     assert "high_confidence_spec" in findings[0].summary

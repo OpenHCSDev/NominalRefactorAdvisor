@@ -7,8 +7,7 @@ from dataclasses import dataclass, replace
 
 from ..ast_tools import AstExpressionProjection, ParsedModule
 from ._base import (
-    CANDIDATE_COLLECTION_AUTHORITY,
-    FindingSpecDefaultFieldCandidate,
+    FindingSpecConstructionCandidate,
     FindingSpecFactory,
     FindingSpecSemanticDefaults,
     FindingSpecSemanticField,
@@ -16,6 +15,7 @@ from ._base import (
     finding_spec_factory_for_constructor_name,
     finding_spec_factory_for_defaults,
 )
+from ._helpers import HELPER_SYNTAX_PROJECTION_AUTHORITY
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ class FindingSpecCallSemantics:
         if factory is None:
             return None
         keywords = FindingSpecSemanticKeywords.from_keywords(node.keywords)
-        return cls(constructor_name, factory, keywords) if keywords.items else None
+        return cls(constructor_name, factory, keywords)
 
     @property
     def recommended_factory(self) -> FindingSpecFactory | None:
@@ -122,20 +122,18 @@ class FindingSpecCallSemantics:
         self,
         module: ParsedModule,
         node: ast.Call,
-    ) -> FindingSpecDefaultFieldCandidate | None:
+    ) -> FindingSpecConstructionCandidate | None:
         recommended_factory = self.recommended_factory
         if recommended_factory is None:
             return None
         redundant_keywords = self.keywords.redundant_against(
             recommended_factory.semantic_defaults
         )
-        if not redundant_keywords:
-            return None
-        return FindingSpecDefaultFieldCandidate(
+        return FindingSpecConstructionCandidate(
             file_path=module.file_path,
             line=node.lineno,
             constructor_name=self.constructor_name,
-            recommended_constructor_name=recommended_factory.constructor_name,
+            recommended_builder_name=recommended_factory.builder_name,
             redundant_keyword_names=tuple(
                 keyword.field.value for keyword in redundant_keywords
             ),
@@ -147,14 +145,14 @@ class FindingSpecCallSemantics:
         )
 
 
-class FindingSpecDefaultFieldCandidateCollector:
-    """Collect redundant semantic call fields through their typed interpretation."""
+class FindingSpecConstructionCandidateCollector:
+    """Collect direct spec construction through its typed semantic interpretation."""
 
     @staticmethod
     def candidate(
         module: ParsedModule,
         node: ast.Call,
-    ) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
+    ) -> tuple[FindingSpecConstructionCandidate, ...]:
         semantics = FindingSpecCallSemantics.from_call(node)
         if semantics is None:
             return ()
@@ -165,10 +163,18 @@ class FindingSpecDefaultFieldCandidateCollector:
     def collect(
         cls,
         module: ParsedModule,
-    ) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
-        return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-            module,
-            module.module,
-            ast.Call,
-            cls.candidate,
+    ) -> tuple[FindingSpecConstructionCandidate, ...]:
+        return tuple(
+            candidate
+            for node in module.module.body
+            if isinstance(node, ast.ClassDef)
+            for statement in node.body
+            for target_value in (
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(statement),
+            )
+            if target_value is not None
+            for target, value in (target_value,)
+            if isinstance(target, ast.Name) and target.id == "finding_spec"
+            if isinstance(value, ast.Call)
+            for candidate in cls.candidate(module, value)
         )
