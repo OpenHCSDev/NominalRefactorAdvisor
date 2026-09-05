@@ -6417,15 +6417,6 @@ class NominalAuthorityShape:
 
 
 @dataclass(frozen=True)
-class ManualFamilyRosterCandidate(LineWitnessCandidate):
-    owner_name: str
-    member_names: tuple[str, ...]
-    member_locations: tuple[SourceLocation, ...]
-    family_base_name: str
-    constructor_style: str
-
-
-@dataclass(frozen=True)
 class InheritanceFamilyRentSurface(ClassLineWitnessCandidate):
     concrete_class_names: tuple[str, ...]
     abstract_method_names: tuple[str, ...]

@@ -103,7 +103,6 @@ from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import (
     _semantic_descent as semantic_descent_detectors,
 )
-from nominal_refactor_advisor.detectors import _surface as surface_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import (
@@ -3020,10 +3019,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
             predicate_projection,
         ),
         (
-            surface_detectors.ManualFamilyRosterDetector,
-            replace(empty_projection, manual_family_rosters=(object(),)),
-        ),
-        (
             systemic_detectors.RepeatedKeyedFamilyDetector,
             replace(empty_projection, repeated_keyed_family_roots=(object(),)),
         ),
@@ -4841,7 +4836,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         systemic_detectors.PrematureRegistryInfrastructureDetector,
         systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
         systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
-        surface_detectors.ManualFamilyRosterDetector,
     )
     calls = 0
     original_builder = base_detectors.build_compact_class_family_index
@@ -5199,7 +5193,6 @@ def test_compact_roster_candidates_preserve_semantics(
         "_family_roster_member",
         "_extract_family_roster_members",
         "_best_shared_family_base_name",
-        "_manual_family_roster_candidates",
     ):
         assert not hasattr(helper_detectors, deleted_shadow)
 
@@ -5290,30 +5283,6 @@ def test_compact_roster_candidates_preserve_semantics(
         ("Exporter", "EXPORT_FORMATS", "format", 1.0),
         ("Exporter", "DEFAULT_EXPORTERS", None, 1.0),
     }
-    manual_family_candidates = (
-        surface_detectors._compact_manual_family_roster_candidates(context)
-    )
-    assert len(manual_family_candidates) == 1
-    manual_family_candidate = manual_family_candidates[0]
-    assert manual_family_candidate.owner_name == "DEFAULT_EXPORTERS"
-    assert manual_family_candidate.member_names == ("CsvExporter", "JsonExporter")
-    assert manual_family_candidate.family_base_name == "Exporter"
-    assert manual_family_candidate.constructor_style == "constructor_call"
-    assert tuple(
-        (Path(location.file_path).name, location.symbol)
-        for location in manual_family_candidate.member_locations
-    ) == (
-        ("implementations.py", "CsvExporter"),
-        ("implementations.py", "JsonExporter"),
-    )
-    assert (
-        surface_detectors.ManualFamilyRosterDetector()._candidate_items(
-            list(modules), config
-        )
-        == manual_family_candidates
-    )
-
-
 def test_concrete_family_detectors_share_one_compact_graph_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5328,7 +5297,6 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
-        surface_detectors.ManualFamilyRosterDetector,
         runtime_detectors.AutoRegisterMetaUnderRentedDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
     )
@@ -6249,9 +6217,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert systemic_detectors.RegistryProjectionPolicyAuthorityDetector in (
-        partition.compact_global_detector_types
-    )
-    assert surface_detectors.ManualFamilyRosterDetector in (
         partition.compact_global_detector_types
     )
     assert structural_detectors.SemanticOverlapMethodDetector in (

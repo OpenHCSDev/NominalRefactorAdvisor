@@ -34,7 +34,6 @@ from ..class_index import (
     CompactClassReferenceResolver,
     CompactExactTypeGuard,
     CompactIndexedClass,
-    CompactManualFamilyRosterObservation,
     CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -1697,7 +1696,6 @@ class _CompactConcreteFamilyContext:
     class_reference_resolver: CompactClassReferenceResolver
     module_name_by_file_path: tuple[tuple[str, str], ...]
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...]
-    manual_family_rosters: tuple[CompactManualFamilyRosterObservation, ...]
     latent_rosters: tuple[LatentRosterObservation, ...]
     parallel_mirrored_leaf_family_builder: ParallelMirroredLeafFamilyComponentBuilder
 
@@ -1724,11 +1722,6 @@ def _compact_concrete_family_context(
             root
             for projection in projections
             for root in projection.manual_subclass_roster_roots
-        ),
-        manual_family_rosters=tuple(
-            roster
-            for projection in projections
-            for roster in projection.manual_family_rosters
         ),
         latent_rosters=tuple(
             roster for projection in projections for roster in projection.latent_rosters

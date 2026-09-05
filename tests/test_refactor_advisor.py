@@ -25450,7 +25450,9 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
     assert payload["execution_plan"]["connected_component_count"] == 1
 
 
-def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> None:
+def test_latent_roster_detects_function_returned_implementation_family(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -25461,7 +25463,7 @@ def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> N
         (
             finding
             for finding in findings
-            if finding.detector_id == "manual_family_roster"
+            if finding.detector_id == "latent_implementation_roster"
         )
     )
     assert "default_detectors" in finding.summary

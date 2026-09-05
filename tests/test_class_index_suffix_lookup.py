@@ -191,7 +191,7 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     )
 
     assert walked_roots == [
-        module.module for module in modules for _root_walk in range(3)
+        module.module for module in modules for _root_walk in range(2)
     ]
     assert compact_resolver.known_symbols is compact_index.classes_by_symbol
     assert (

@@ -1095,7 +1095,6 @@ class CompactModuleClassProjection(
     manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
     latent_rosters: tuple["LatentRosterObservation", ...] = ()
     named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
-    manual_family_rosters: tuple["CompactManualFamilyRosterObservation", ...] = ()
     class_methods: tuple["CompactClassMethod", ...] = ()
 
     def header_core(self) -> "CompactModuleClassProjection":
@@ -1658,6 +1657,20 @@ class LatentRosterObservation:
         *,
         roster_prefix: str | None = None,
     ) -> tuple["LatentRosterObservation", ...]:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = _trim_leading_docstring(list(statement.body))
+            if (
+                len(body) == 1
+                and isinstance(body[0], ast.Return)
+                and body[0].value is not None
+            ):
+                return cls.from_value(
+                    parsed_module,
+                    statement,
+                    roster_name=statement.name,
+                    value=body[0].value,
+                )
+            return ()
         target_value: tuple[ast.AST, ast.AST] | None = None
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target_value = statement.targets[0], statement.value
@@ -1846,15 +1859,6 @@ class CompactSourceLocation:
 
     file_path: str
     line: int
-
-
-@dataclass(frozen=True)
-class CompactManualFamilyRosterObservation(CompactSourceLocation):
-    """Top-level local class roster before its shared base is resolved."""
-
-    owner_name: str
-    member_names: tuple[str, ...]
-    constructor_style: str
 
 
 @dataclass(frozen=True)
@@ -4017,7 +4021,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 named_projection_surfaces=_compact_named_projection_surfaces(
                     parsed_module
                 ),
-                manual_family_rosters=_compact_manual_family_rosters(parsed_module),
                 class_methods=class_methods,
             )
         ]
@@ -4702,76 +4705,6 @@ def _compact_class_methods(
             if establishes_nominal_family or method.statement_count <= 2:
                 methods.append(method)
     return tuple(methods)
-
-
-def _compact_manual_family_rosters(
-    parsed_module: ParsedModule,
-) -> tuple[CompactManualFamilyRosterObservation, ...]:
-    known_class_names = {
-        node.name
-        for node in _walk_nodes(parsed_module.module)
-        if isinstance(node, ast.ClassDef)
-    }
-    observations: list[CompactManualFamilyRosterObservation] = []
-    for statement in _trim_leading_docstring(list(parsed_module.module.body)):
-        owner_name: str | None = None
-        source_node: ast.AST | None = None
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = _trim_leading_docstring(list(statement.body))
-            if (
-                len(body) == 1
-                and isinstance(body[0], ast.Return)
-                and body[0].value is not None
-            ):
-                owner_name = statement.name
-                source_node = body[0].value
-        elif (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-        ):
-            owner_name = statement.targets[0].id
-            source_node = statement.value
-        if owner_name is None or not isinstance(
-            source_node, (ast.Tuple, ast.List, ast.Set)
-        ):
-            continue
-        members = tuple(
-            _compact_manual_family_roster_member(element, known_class_names)
-            for element in source_node.elts
-        )
-        if len(members) < 2 or any(member is None for member in members):
-            continue
-        member_names, constructor_styles = zip(
-            *(member for member in members if member is not None), strict=True
-        )
-        observations.append(
-            CompactManualFamilyRosterObservation(
-                file_path=parsed_module.file_path,
-                line=statement.lineno,
-                owner_name=owner_name,
-                member_names=member_names,
-                constructor_style="+".join(sorted(set(constructor_styles))),
-            )
-        )
-    return tuple(observations)
-
-
-def _compact_manual_family_roster_member(
-    node: ast.AST,
-    known_class_names: set[str],
-) -> tuple[str, str] | None:
-    if isinstance(node, ast.Name) and node.id in known_class_names:
-        return node.id, "class_reference"
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in known_class_names
-        and not node.args
-        and not node.keywords
-    ):
-        return node.func.id, "constructor_call"
-    return None
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
