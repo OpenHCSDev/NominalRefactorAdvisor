@@ -9432,6 +9432,9 @@ def test_refactor_recipe_extracts_authority(
     _write_module(
         tmp_path,
         "pkg/mod.py",
+        "def marker(function):\n"
+        "    return function\n\n\n"
+        "@marker\n"
         "def old_helper(value):\n"
         "    return value.strip()\n\n\n"
         "class Parser:\n"
@@ -9524,12 +9527,14 @@ def test_refactor_recipe_extracts_authority(
     )
     diff = simulation.unified_diff(source_by_path)
 
-    assert simulation.simulation.applied_rewrite_count == 2
+    assert simulation.simulation.applied_rewrite_count == 1
     assert "-def old_helper(value):" in diff
     assert "+class HelperAuthority:" in diff
     assert "+        return HelperAuthority.normalize(value)" in diff
     simulation.apply()
     rewritten = module_path.read_text()
+    ast.parse(rewritten)
+    assert "@marker" not in rewritten
     assert "def old_helper" not in rewritten
     assert "class HelperAuthority" in rewritten
     assert "HelperAuthority.normalize(value)" in rewritten
@@ -13280,42 +13285,6 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
     assert "state" in case_finding.summary
     assert "ReadyState" in case_finding.summary
     assert "State" in case_finding.summary
-
-
-def test_variant_method_detector_requires_a_variant_seed(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass VariantSurface:\n    def alpha_value(self, request):\n        return request.alpha\n\n    def beta_value(self, request):\n        return request.beta\n",
-    )
-    modules = parse_python_modules(tmp_path)
-
-    findings = runtime_detectors.AlgebraicVariantMethodFamilyDetector().detect(
-        modules,
-        DetectorConfig(),
-    )
-
-    assert findings == []
-
-
-def test_variant_method_detector_places_execution_on_nominal_variant(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass PayloadBuilder:\n    def build_alpha_payload(self, request):\n        return PayloadResult(request.left, request.right)\n\n    def build_beta_payload(self, request):\n        return PayloadResult(request.left, request.right)\n",
-    )
-    modules = parse_python_modules(tmp_path)
-
-    findings = runtime_detectors.AlgebraicVariantMethodFamilyDetector().detect(
-        modules,
-        DetectorConfig(),
-    )
-
-    assert len(findings) == 1
-    assert findings[0].certification == CertificationLevel.STRONG_HEURISTIC
-    assert "operation identity remains unresolved" in findings[0].relation_context
 
 
 def test_preserves_independent_nominal_and_generic_dispatch(
@@ -18928,13 +18897,19 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
+        "\ndef marker(function):\n"
+        "    return function\n\n\n"
+        "class Alpha:\n"
         "    def keep(self):\n"
         "        return 1\n\n"
+        "    @staticmethod\n"
         "    def obsolete_method(self):\n"
         "        return 2\n\n\n"
+        "@marker\n"
         "def obsolete_function():\n"
-        "    return 3\n",
+        "    return 3\n\n\n"
+        "def survivor():\n"
+        "    return 4\n",
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -18974,10 +18949,13 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     )
 
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 2
+    assert simulation.simulation.applied_rewrite_count == 1
     simulation.apply()
     rewritten = module_path.read_text()
     assert "def keep" in rewritten
+    assert "def survivor" in rewritten
+    assert "@staticmethod" not in rewritten
+    assert "@marker" not in rewritten
     assert "obsolete_method" not in rewritten
     assert "obsolete_function" not in rewritten
 

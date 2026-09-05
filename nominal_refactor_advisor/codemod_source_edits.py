@@ -467,16 +467,61 @@ class SourceSpanDeletion(SourceSpanEdit):
         return ()
 
     @classmethod
+    def target_span(
+        cls,
+        context: "CodemodSelectorContext",
+        target_digest: AstTargetDigest,
+    ) -> SourceLineSpan:
+        """Derive the complete decorated span owned by one AST target."""
+
+        target_node = context.ast_target_nodes_by_id.get(target_digest.target_id)
+        return (
+            SourceNodeSpan(
+                target_node,
+                SourceNodeDecoratorPolicy.INCLUDE,
+            ).line_span
+            if isinstance(target_node, ast.stmt)
+            else SourceLineSpan(
+                target_digest.line,
+                target_digest.end_line,
+            )
+        )
+
+    @classmethod
     def for_target(
         cls,
+        context: "CodemodSelectorContext",
         target_digest: AstTargetDigest,
         *,
         rationale: str = "",
     ) -> Self:
+        """Delete exactly one complete target while preserving its separator."""
+
+        target_span = cls.target_span(context, target_digest)
         return cls(
             file_path=target_digest.file_path,
-            start_line=target_digest.line,
-            end_line=target_digest.end_line,
+            start_line=target_span.start_line,
+            end_line=target_span.end_line,
+            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
+    @classmethod
+    def for_statement(
+        cls,
+        context: "CodemodSelectorContext",
+        target_digest: AstTargetDigest,
+        *,
+        rationale: str = "",
+    ) -> Self:
+        """Delete one complete target and the separator owned by its statement."""
+
+        deletion_span = SourceTextGeometry(
+            context.sources_by_file_path[target_digest.file_path]
+        ).statement_deletion_span(cls.target_span(context, target_digest))
+        return cls(
+            file_path=target_digest.file_path,
+            start_line=deletion_span.start_line,
+            end_line=deletion_span.end_line,
             rationale=rationale or f"Delete target {target_digest.qualname!r}.",
         )
 

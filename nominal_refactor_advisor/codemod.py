@@ -2141,22 +2141,10 @@ class TargetDeletionOperationABC(RefactorRecipeOperation, ABC):
     ) -> tuple[PhysicalSourceEdit, ...]:
         target_identifier = self.target.required_target_id(context.source_index)
         target_digest = context.source_index.target_by_id[target_identifier]
-        target_node = context.ast_target_nodes_by_id.get(target_identifier)
-        if isinstance(target_node, ast.stmt):
-            target_span = SourceNodeSpan(
-                target_node,
-                SourceNodeDecoratorPolicy.INCLUDE,
-            ).line_span
-        else:
-            target_span = SourceLineSpan(
-                target_digest.line,
-                target_digest.end_line,
-            )
         return (
-            SourceTextGeometry(
-                context.sources_by_file_path[target_digest.file_path]
-            ).statement_deletion_span(target_span).line_deletion(
-                file_path=target_digest.file_path,
+            SourceSpanDeletion.for_statement(
+                context,
+                target_digest,
                 rationale=self.rationale
                 or f"Delete target {target_digest.qualname!r}.",
             ),
@@ -2266,17 +2254,12 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
         context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         return tuple(
-            self.line_replacement_for(context.source_index.target_by_id[target_id])
+            SourceSpanDeletion.for_statement(
+                context,
+                context.source_index.target_by_id[target_id],
+                rationale=self.rationale,
+            )
             for target_id in self.selected_target_ids(context)
-        )
-
-    def line_replacement_for(
-        self,
-        target_digest: AstTargetDigest,
-    ) -> SourceSpanDeletion:
-        return SourceSpanDeletion.for_target(
-            target_digest,
-            rationale=self.rationale,
         )
 
 
@@ -2373,16 +2356,18 @@ class ExtractAuthorityOperation(AuthoritySourceOperation):
     ) -> tuple[PhysicalSourceEdit, ...]:
         target_identifier = self.target.required_target_id(context.source_index)
         target_digest = context.source_index.target_by_id[target_identifier]
+        target_span = SourceSpanDeletion.target_span(context, target_digest)
         self.required_authority_claim(context)
         return (
             SourceInsertion(
                 file_path=target_digest.file_path,
-                insertion_line=target_digest.line,
+                insertion_line=target_span.start_line,
                 inserted_lines=SourceTargetEditor.source_lines(self.authority_source),
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
             SourceSpanDeletion.for_target(
+                context,
                 target_digest,
                 rationale=self.rationale
                 or f"Delete helper target {target_digest.qualname!r}.",

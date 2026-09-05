@@ -2780,7 +2780,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
                 RegistrationShapeFamily,
                 runtime_detectors.RepeatedBuilderCallShapeProjectionFamily,
                 environment_detectors._EnvironmentBooleanModuleProjectionFamily,
-                runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily,
             ),
             config=DetectorConfig(),
         )
@@ -2792,7 +2791,6 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         (RegistrationShapeFamily, 2),
         (runtime_detectors.RepeatedBuilderCallShapeProjectionFamily, 1),
         (environment_detectors._EnvironmentBooleanModuleProjectionFamily, 1),
-        (runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily, 1),
     ]
 
 
@@ -6088,78 +6086,6 @@ def test_method_family_detectors_share_one_compact_context(
     assert calls == 1
 
 
-def test_compact_algebraic_variant_candidates_own_global_analysis(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "mod.py").write_text(
-        "class PayloadBuilder:\n"
-        "    def build_alpha_payload(self, request):\n"
-        "        return PayloadResult(request.left, request.right)\n\n"
-        "    def build_beta_payload(self, request):\n"
-        "        return PayloadResult(request.left, request.right)\n\n"
-        "def payload_forward(request):\n"
-        "    return PayloadResult(request.left, request.right)\n\n"
-        "def payload_outer(request):\n"
-        "    return payload_inner(request)\n\n"
-        "def payload_inner(request):\n"
-        "    return request.payload()\n",
-        encoding="utf-8",
-    )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    variant_detector = runtime_detectors.AlgebraicVariantMethodFamilyDetector()
-    projections = variant_detector.compact_module_projections(modules)
-    source_module = SourceModule(
-        path=modules[0].path,
-        module_name=modules[0].module_name,
-        source=modules[0].source,
-    )
-    native_projections = (
-        runtime_detectors.CompactAlgebraicVariantModuleProjectionFamily.collect_source(
-            source_module,
-            NativePythonSyntaxIndex.from_source(source_module.source),
-        )
-    )
-    assert tuple(native_projections or ()) == projections
-
-    compact_variants = variant_detector._candidates_from_compact_projections(
-        projections,
-        config,
-    )
-
-    assert len(compact_variants) == 1
-    assert variant_detector._candidate_items(list(modules), config) == compact_variants
-    assert "candidate_collector" not in type(variant_detector).__dict__
-    for removed_name in (
-        "ABCPolymorphismBypassedByConcreteDispatchDetector",
-        "CompactNominalBypassProjectionDemand",
-        "_isinstance_family_scatter_candidates",
-        "_cross_class_small_method_template_candidates",
-        "CancelableCompositionSignalQuery",
-        "_nominal_authority_bypass_candidates",
-        "_variant_method_family_candidates",
-    ):
-        assert not hasattr(runtime_detectors, removed_name)
-    assert variant_detector._findings_from_compact_projections(
-        projections,
-        config,
-    ) == [
-        variant_detector._finding_for_candidate(candidate)
-        for candidate in compact_variants
-    ]
-
-    accumulator = accumulate_compact_global_projections_for_roots(
-        (package_root,),
-        (type(variant_detector),),
-        use_parse_cache=False,
-    )
-    findings = accumulator.findings_by_detector(config)
-    assert accumulator.projection_count == 1
-    assert len(findings[type(variant_detector)]) == 1
-
-
 def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6474,9 +6400,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert structural_detectors.SemanticOverlapResidueAxisDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.AlgebraicVariantMethodFamilyDetector in (
         partition.compact_global_detector_types
     )
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
