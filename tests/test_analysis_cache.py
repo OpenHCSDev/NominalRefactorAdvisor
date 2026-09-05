@@ -2477,125 +2477,6 @@ def test_native_constant_projection_matches_ast_family(
     assert native == collect_family_items(parsed_module, family)
 
 
-def test_native_subclass_traversal_projection_matches_ast_family(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "registry.py"
-    module_path.write_text(
-        "class PluginBase: pass\n"
-        "def all_plugins():\n"
-        "    ordered = []\n"
-        "    queue = list(PluginBase.__subclasses__())\n"
-        "    while queue:\n"
-        "        current = queue.pop(0)\n"
-        "        queue.extend(current.__subclasses__())\n"
-        "        if not current.__dict__.get('plugin_name'):\n"
-        "            continue\n"
-        "        ordered.append(current)\n"
-        "    return tuple(ordered)\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = helper_detectors.SubclassTraversalSiteFamily
-
-    native = family.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, family)
-    assert native is not None
-    assert (
-        native[0].materialization_kind
-        is base_detectors.SubclassMaterializationKind.TYPE
-    )
-
-
-def test_native_export_policy_projection_matches_ast_family(
-    tmp_path: Path,
-) -> None:
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    module_path = package_root / "exports.py"
-    module_path.write_text(
-        "class Root: pass\n"
-        "def _is_public_export(name, value):\n"
-        "    if name.startswith('_'): return False\n"
-        "    if not isinstance(value, type): return False\n"
-        "    return issubclass(value, Root)\n"
-        "__all__ = sorted(\n"
-        "    name for name, value in globals().items()\n"
-        "    if _is_public_export(name, value)\n"
-        ")\n",
-        encoding="utf-8",
-    )
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = structural_detectors.ExportPolicyPredicateCandidateFamily
-
-    native = family.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, family)
-
-
-def test_native_support_prelude_projection_matches_ast_family(
-    tmp_path: Path,
-) -> None:
-    assert not hasattr(
-        structural_detectors,
-        "_support_prelude_module_family_candidates",
-    )
-    assert not hasattr(
-        structural_detectors,
-        "_support_prelude_module_family_candidates_from_facts",
-    )
-    assert not hasattr(structural_detectors, "_native_support_prelude_module_facts")
-
-    package_root = tmp_path / "pkg"
-    package_root.mkdir()
-    (package_root / "support.py").write_text(
-        "from pathlib import Path\n",
-        encoding="utf-8",
-    )
-    module_path = package_root / "alpha.py"
-    module_path.write_text(
-        "from .support import *\n@decorator\nclass AlphaMixin: pass\n",
-        encoding="utf-8",
-    )
-    parsed_module = next(
-        module
-        for module in parse_python_modules(package_root, use_parse_cache=False)
-        if module.path == module_path
-    )
-    source_module = SourceModule(
-        path=parsed_module.path,
-        module_name=parsed_module.module_name,
-        source=parsed_module.source,
-    )
-    family = structural_detectors.SupportPreludeModuleFactFamily
-
-    native = family.collect_source(
-        source_module,
-        NativePythonSyntaxIndex.from_source(source_module.source),
-    )
-
-    assert native == collect_family_items(parsed_module, family)
-
-
 @pytest.mark.parametrize(
     "family, source",
     (
@@ -4216,7 +4097,7 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     )
     detector_types = (
         runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
-        structural_detectors.ExportPolicyPredicateDetector,
+        systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
     )
     observed_retain_findings: list[bool] = []
     observed_consumer: list[object] = []
@@ -5885,10 +5766,6 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
             structural_detectors.OverlappingInheritanceFamiliesDetector,
             base_detectors.OverlappingInheritanceFamiliesCandidate,
         ),
-        (
-            structural_detectors.SemanticOverlapResidueAxisDetector,
-            base_detectors.SemanticOverlapResidueAxisCandidate,
-        ),
     )
 
     for detector_type, candidate_type in detector_candidate_pairs:
@@ -6060,7 +5937,6 @@ def test_method_family_detectors_share_one_compact_context(
         structural_detectors.SemanticOverlapMethodDetector,
         structural_detectors.SemanticOverlapMethodFamilyDetector,
         structural_detectors.OverlappingInheritanceFamiliesDetector,
-        structural_detectors.SemanticOverlapResidueAxisDetector,
     )
     calls = 0
     original_builder = structural_detectors.CompactMethodFamilyContext.from_projections
@@ -6330,9 +6206,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
     assert systemic_detectors.NominalInstanceExplicitOrderingDetector in (
         partition.compact_global_detector_types
     )
-    assert structural_detectors.SupportPreludeModuleFamilyDetector in (
-        partition.compact_global_detector_types
-    )
     assert environment_detectors.EnvironmentBooleanAuthorityDriftDetector in (
         partition.compact_global_detector_types
     )
@@ -6397,9 +6270,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert structural_detectors.OverlappingInheritanceFamiliesDetector in (
-        partition.compact_global_detector_types
-    )
-    assert structural_detectors.SemanticOverlapResidueAxisDetector in (
         partition.compact_global_detector_types
     )
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (

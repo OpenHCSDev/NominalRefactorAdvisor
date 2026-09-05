@@ -25980,25 +25980,6 @@ def test_method_family_detects_whole_family_template(tmp_path: Path) -> None:
     assert len(finding.evidence) == 6
 
 
-def test_method_family_detects_residue_axis_catalog(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_csv(cleaned)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_json(cleaned)\n        self.write(checked, suffix=".json")\n        return checked\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_xml(cleaned)\n        self.write(checked, suffix=".xml")\n        return checked\n',
-    )
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "semantic_overlap_residue_axis"
-    ]
-    finding = next(finding for finding in findings if "Exporter" in finding.summary)
-    assert "emit" in finding.summary
-    assert "validate" in finding.summary
-    assert "('call', 'constant')" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
 def test_ignores_semantic_overlap_without_shared_base(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -26256,29 +26237,6 @@ def test_codemod_facade_reexports_declaration_owned_types(
     )
 
 
-def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/alpha.py",
-        '\nclass Root:\n    pass\n\n\ndef _is_public_alpha_export(name, value):\n    if name.startswith("_"):\n        return False\n    if not isinstance(value, type) or value.__module__ != __name__:\n        return False\n    return issubclass(value, Root)\n\n\n__all__ = sorted(\n    name for name, value in globals().items() if _is_public_alpha_export(name, value)\n)\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/beta.py",
-        '\nclass Root:\n    pass\n\n\ndef _is_public_beta_export(name, value):\n    if name.startswith("_"):\n        return False\n    if not isinstance(value, type) or value.__module__ != __name__:\n        return False\n    return issubclass(value, Root)\n\n\n__all__ = sorted(\n    name for name, value in globals().items() if _is_public_beta_export(name, value)\n)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "export_policy_predicate"
-        )
-    )
-    assert "_is_public_alpha_export" in finding.summary
-    assert "_is_public_beta_export" in finding.summary
-
-
 def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     tmp_path: Path,
 ) -> None:
@@ -26446,49 +26404,6 @@ def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None
     assert "from_error_context" in finding.summary
     assert "type[ViewerWindowResultFactory]" in finding.summary
     assert "Protocol" not in finding.capability_gap
-
-
-def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass PluginRegistry:\n    @classmethod\n    def all_registered_plugins(cls):\n        seen = set()\n        ordered = []\n        queue = list(cls.__subclasses__())\n        while queue:\n            current = queue.pop(0)\n            queue.extend(current.__subclasses__())\n            registry = current.__dict__.get("_registered_plugin_types")\n            if registry is None:\n                continue\n            for plugin_type in registry:\n                if plugin_type in seen:\n                    continue\n                seen.add(plugin_type)\n                ordered.append(plugin_type())\n        return tuple(ordered)\n\n\nclass HandlerRegistry:\n    @classmethod\n    def all_registered_handlers(cls):\n        seen = set()\n        ordered = []\n        queue = list(cls.__subclasses__())\n        while queue:\n            current = queue.pop(0)\n            queue.extend(current.__subclasses__())\n            registry = current.__dict__.get("_registered_handler_types")\n            if registry is None:\n                continue\n            for handler_type in registry:\n                if handler_type in seen:\n                    continue\n                seen.add(handler_type)\n                ordered.append(handler_type)\n        return tuple(ordered)\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "registry_traversal_substrate"
-        )
-    )
-    assert "all_registered_plugins" in finding.summary
-    assert "all_registered_handlers" in finding.summary
-
-
-def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/plugins.py",
-        '\nclass PluginBase:\n    pass\n\n\ndef all_plugins():\n    seen = set()\n    ordered = []\n    queue = list(PluginBase.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not current.__dict__.get("plugin_name"):\n            continue\n        if current in seen:\n            continue\n        seen.add(current)\n        ordered.append(current)\n    return tuple(sorted(ordered, key=lambda item: item.__name__))\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/metrics.py",
-        "\nfrom dataclasses import is_dataclass\n\n\nclass MetricBase:\n    pass\n\n\ndef all_metrics():\n    discovered = []\n    queue = list(MetricBase.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not is_dataclass(current):\n            continue\n        discovered.append(current)\n    return tuple(sorted(discovered, key=lambda item: item.__name__))\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "registry_traversal_substrate"
-            and "all_plugins" in finding.summary
-            and ("all_metrics" in finding.summary)
-        )
-    )
-    assert "all_plugins" in finding.summary
-    assert "all_metrics" in finding.summary
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
@@ -26831,27 +26746,6 @@ def test_regex_group_extractor_method_rejects_nonmatching_shapes(
     assert (
         regex_extractor_detectors._RegexGroupExtractorMethod.from_method(method) is None
     )
-
-
-def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) -> None:
-    _write_module(tmp_path, "pkg/support.py", "\nfrom pathlib import Path\n")
-    for name in ("alpha", "beta", "gamma"):
-        _write_module(
-            tmp_path,
-            f"pkg/{name}.py",
-            f"\nfrom .support import *\n\n\nclass {name.title()}Mixin:\n    pass\n",
-        )
-
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "support_prelude_module_family"
-        )
-    )
-
-    assert "3 one-class modules" in finding.summary
-    assert "support" in finding.summary
 
 
 def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(

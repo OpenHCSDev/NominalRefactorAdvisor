@@ -7363,54 +7363,6 @@ class ConcreteTypeUnionContractCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ExportPolicyPredicateCandidate(
-    WitnessCarrierCandidate, SubjectNameFunctionNameMixin
-):
-    role_names: tuple[str, ...]
-    root_type_names: tuple[str, ...]
-
-
-class SubclassMaterializationKind(StrEnum):
-    """Result projection performed by one subclass-family traversal."""
-
-    INSTANTIATE = "instantiate"
-    TYPE = _TYPE_NAME_LITERAL
-    PROJECTION = "projection"
-
-    @classmethod
-    def from_append_argument(cls, argument: ast.AST) -> Self:
-        if isinstance(argument, ast.Call):
-            return cls.INSTANTIATE
-        if isinstance(argument, ast.Name):
-            return cls.TYPE
-        return cls.PROJECTION
-
-
-@dataclass(frozen=True)
-class SubclassTraversalSite:
-    file_path: str
-    line: int
-    symbol: str
-    root_expression: str
-    materialization_kind: SubclassMaterializationKind
-    registry_attribute_names: tuple[str, ...]
-    filter_names: tuple[str, ...]
-
-    evidence = _LINE_SYMBOL_EVIDENCE
-
-
-@dataclass(frozen=True)
-class SubclassTraversalGroup:
-    symbols: tuple[str, ...]
-    file_paths: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    root_expressions: tuple[str, ...]
-    materialization_kinds: tuple[SubclassMaterializationKind, ...]
-    registry_attribute_names: tuple[str, ...]
-    filter_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
     method_name: str
     reflective_builtin: str
