@@ -1,28 +1,38 @@
-"""Exact extraction and removal of statements within Python scopes."""
+"""Exact extraction, replacement and removal of statements within Python scopes."""
 
 from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import groupby
 
-from .assignment_projection import NamedAssignmentSelection
+from .assignment_projection import (
+    NamedAssignmentSelection,
+    AssignmentStatementNameProjection,
+)
 from .ast_tools import is_docstring_statement
 from .codemod_source_edits import (
     SourceNodeSpan,
     SourceNodeDecoratorPolicy,
     SourceTextGeometry,
+    SourceTextSpan,
     SourceTextSpanReplacement,
 )
 from .source_geometry import SourceByteSpan
 
 
 @dataclass(frozen=True)
-class StatementDeletionSource(SourceTextGeometry):
-    """Remove selected statements and their separators, not neighbouring code."""
+class StatementScopeSource(SourceTextGeometry):
+    """One module, class or function body and its original source geometry."""
 
     node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
     file_path: str
+
+
+@dataclass(frozen=True)
+class StatementDeletionSource(StatementScopeSource):
+    """Remove selected statements and their separators, not neighbouring code."""
 
     def replacements_for_statements(
         self, statements: tuple[ast.stmt, ...]
@@ -89,6 +99,64 @@ class AssignmentDeletionSource(StatementDeletionSource):
     ) -> tuple[SourceTextSpanReplacement, ...]:
         return self.replacements_for_statements(
             NamedAssignmentSelection(names).statements(self.node.body)
+        )
+
+
+@dataclass(frozen=True)
+class AssignmentSource(SourceTextGeometry):
+    """One authored direct-name assignment, including an annotation-only field."""
+
+    @cached_property
+    def statement(self) -> ast.Assign | ast.AnnAssign:
+        try:
+            module = ast.parse(self.source)
+        except SyntaxError as error:
+            raise ValueError(
+                f"Assignment source is not valid Python: {error}"
+            ) from error
+        if len(module.body) != 1:
+            raise ValueError("Assignment source must contain exactly one statement")
+        statement = module.body[0]
+        if (
+            not isinstance(statement, ast.Assign | ast.AnnAssign)
+            or AssignmentStatementNameProjection(statement).direct_name is None
+        ):
+            raise ValueError("Statement is not a single direct-name assignment")
+        start, end = self.required_node_offsets(statement)
+        if self.source[:start].strip() or self.source[end:].strip():
+            raise ValueError("Assignment source contains text outside its statement")
+        return statement
+
+    @property
+    def name(self) -> str:
+        return AssignmentStatementNameProjection(self.statement).names[0]
+
+    def replacement_source(self, indentation: str) -> str:
+        start, end = self.required_node_offsets(self.statement)
+        return (
+            SourceTextGeometry(self.source[start:end])
+            .indented_source(indentation)
+            .removeprefix(indentation)
+        )
+
+
+@dataclass(frozen=True)
+class AssignmentReplacementSource(StatementScopeSource):
+    """Replace one complete assignment without owning its neighbours or suffix."""
+
+    def replacement(
+        self, name: str, replacement: AssignmentSource
+    ) -> SourceTextSpanReplacement:
+        (statement,) = NamedAssignmentSelection((name,)).statements(self.node.body)
+        span = SourceTextSpan(*self.required_node_offsets(statement))
+        if self.span_contains_comment(span):
+            raise ValueError("Assignment replacement would discard comments")
+        line = self.lines[statement.lineno - 1]
+        indentation = line[: len(line) - len(line.lstrip())]
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source=replacement.replacement_source(indentation),
         )
 
 

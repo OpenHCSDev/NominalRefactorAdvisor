@@ -32,15 +32,40 @@ def test_assignment_statement_projection_includes_augmented_targets() -> None:
     assert AssignmentStatementNameProjection(statement).names == ("result",)
 
 
-@pytest.mark.parametrize("source,names,only_names", (
-    ("first, *rest = values", ("first", "rest"), True),
-    ("(first, [second, *rest]) = values", ("first", "second", "rest"), True),
-    ("first = obj.attr = value", ("first",), False),
-    ("first, obj[0] = values", ("first",), False),
-    ("obj.attr = value", (), False),
-))
+@pytest.mark.parametrize(
+    "source,name",
+    (
+        ("result = 3", "result"),
+        ("result: int", "result"),
+        ("result: int = 3", "result"),
+        ("result += 3", "result"),
+        ("(result,) = values", None),
+        ("result = other = 3", None),
+        ("obj.result = 3", None),
+    ),
+)
+def test_direct_name_is_shared_by_value_projection(
+    source: str, name: str | None
+) -> None:
+    statement = ast.parse(source).body[0]
+    assert AssignmentStatementNameProjection(statement).direct_name == name
+    assert SingleAssignmentAndValueNameProjection(statement).direct_name == name
+
+
+@pytest.mark.parametrize(
+    "source,names,only_names",
+    (
+        ("first, *rest = values", ("first", "rest"), True),
+        ("(first, [second, *rest]) = values", ("first", "second", "rest"), True),
+        ("first = obj.attr = value", ("first",), False),
+        ("first, obj[0] = values", ("first",), False),
+        ("obj.attr = value", (), False),
+    ),
+)
 def test_assignment_names_and_write_completeness_share_target_leaves(
-    source: str, names: tuple[str, ...], only_names: bool,
+    source: str,
+    names: tuple[str, ...],
+    only_names: bool,
 ) -> None:
     projection = AssignmentStatementNameProjection(ast.parse(source).body[0])
     assert projection.names == names

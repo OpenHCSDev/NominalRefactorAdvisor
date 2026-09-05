@@ -271,6 +271,32 @@ projection root. The author chooses the field relationship; the operation does
 not infer it or change signatures and callers automatically. Review reflected
 parameter names and debug/template-string expression labels when changing an API.
 
+To retain a richer object instead of storing one of its fields, use
+``replace_scope_assignment`` to replace the old field declaration, then update
+its projections and construction sites in the same sequence. The operation
+selects a direct assignment by ``assignment_name`` in the target class or
+function; ``source`` supplies its replacement, including annotation-only fields.
+
+This example retains a resolved target and derives the existing callee view:
+
+.. literalinclude:: ../../examples/retain_resolution_refactor.py
+   :language: python
+   :start-at: module =
+   :end-before: if __name__
+
+The :download:`complete plan <../../examples/retain_resolution_refactor.py>`
+emits JSON for ``--codemod-simulate`` or ``--codemod-apply``. Adapt the selectors
+and declarations to your source. Field replacement does not rename references
+or update callers automatically; include those changes in the plan. Each stage
+can select names introduced by earlier stages.
+
+For an existing shared authority, compose ``add_class_base`` with
+``delete_class_assignments`` to inherit its fields, then update the affected
+methods. NRA's :download:`assignment projection plan
+<../../examples/assignment_projection_refactor.py>` records this three-stage
+refactor applied to its own source. Check construction and method behaviour
+after changing the inheritance relationship.
+
 Use ``prepend_function_body`` to introduce statements before the existing
 executable body. It preserves the docstring and existing statements, including
 nested decorators, and expands inline suites when needed. The witness example

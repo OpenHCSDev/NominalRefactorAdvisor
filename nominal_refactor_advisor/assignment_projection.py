@@ -65,6 +65,16 @@ class AssignmentStatementNameProjection:
         )
 
     @property
+    def direct_name(self) -> str | None:
+        """The sole direct-name target, without flattening unpacking or chains."""
+        targets = self.targets
+        return (
+            AssignmentTargetNameProjection(targets[0]).direct_name
+            if len(targets) == 1
+            else None
+        )
+
+    @property
     def binds_only_names(self) -> bool:
         return bool(self.targets) and all(
             AssignmentTargetNameProjection(target).binds_only_names
@@ -111,24 +121,17 @@ class NamedAssignmentSelection:
 
 
 @dataclass(frozen=True)
-class SingleAssignmentAndValueNameProjection:
+class SingleAssignmentAndValueNameProjection(AssignmentStatementNameProjection):
     """Projection of a single direct-name assignment and its value expression."""
-
-    statement: ast.stmt
 
     @property
     def pair(self) -> tuple[str, ast.expr] | None:
-        if isinstance(self.statement, ast.Assign) and len(self.statement.targets) == 1:
-            name = AssignmentTargetNameProjection(self.statement.targets[0]).direct_name
-            if name is not None:
-                return name, self.statement.value
         if (
-            isinstance(self.statement, ast.AnnAssign)
+            isinstance(self.statement, ast.Assign | ast.AnnAssign)
             and self.statement.value is not None
+            and (name := self.direct_name) is not None
         ):
-            name = AssignmentTargetNameProjection(self.statement.target).direct_name
-            if name is not None:
-                return name, self.statement.value
+            return name, self.statement.value
         return None
 
     @property

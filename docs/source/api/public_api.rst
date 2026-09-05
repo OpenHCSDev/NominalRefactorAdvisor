@@ -105,6 +105,21 @@ positions begin after ``@``. Statement moves and deletions use that same source
 geometry; moved declaration text is derived from its source rather than stored
 as an independent copy.
 
+``codemod_assignment_operations`` owns module and named-scope assignment
+replacement. Its operations share ``AssignmentReplacementOperationABC`` and
+the statement geometry in ``codemod_statement_source``. ``codemod`` exports
+the same operation classes.
+
+``ReplaceModuleAssignmentOperation`` derives the selected name from its
+replacement source. ``ReplaceScopeAssignmentOperation`` selects a direct
+class or function assignment by ``assignment_name``; the replacement may use a
+new name. Both support annotated fields without initialisers. The replacement
+must be one direct-name assignment. Ambiguous selection, partial selection of
+a multi-name assignment, and removal of embedded comments are rejected.
+Neighbouring statements, suffix comments and file-ending bytes are retained;
+authored multiline literals retain their contents. Changes to names, types,
+initialisation and dependent references remain author-selected semantic changes.
+
 Simulation applies planned replacement source verbatim, including its final
 newline. Operation-specific renderers supply any required separators before
 handing source to simulation; exact offset edits retain their requested bytes

@@ -30,6 +30,11 @@ from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .codemod_statement_source import AssignmentDeletionSource
+from .codemod_assignment_operations import (
+    AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
+    ReplaceModuleAssignmentOperation as ReplaceModuleAssignmentOperation,
+    ReplaceScopeAssignmentOperation as ReplaceScopeAssignmentOperation,
+)
 from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
@@ -1710,60 +1715,6 @@ class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
             source=snapshot.sources_by_file_path[source_path],
             node=module,
             file_path=source_path,
-        )
-
-
-@dataclass(frozen=True, kw_only=True)
-class ReplaceModuleAssignmentOperation(SourcePayloadOperation):
-    """Replace the module assignment named by the supplied declaration."""
-
-    @cached_property
-    def assignment_name(self) -> str:
-        try:
-            module = ast.parse(
-                self.source,
-                filename=f"<{self.operation_key()}-source>",
-            )
-        except SyntaxError as error:
-            raise ValueError(
-                f"Module assignment source is not valid Python: {error}"
-            ) from error
-        if len(module.body) != 1:
-            raise ValueError(
-                "Module assignment source must contain exactly one statement"
-            )
-        return SingleAssignmentAndValueNameProjection(module.body[0]).required_name
-
-    def source_edits(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        source_path = self.required_source_path(
-            context,
-            "replace_module_assignment",
-        )
-        module = context.module_nodes_by_file_path[source_path]
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if self.assignment_name
-            in AssignmentStatementNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            raise ValueError(
-                f"Expected one top-level assignment for {self.assignment_name!r} "
-                f"in {source_path!r}; found {len(matching_statements)}"
-            )
-        statement = matching_statements[0]
-        return (
-            SourceSpanReplacement(
-                file_path=source_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
-                replacement_lines=SourceTargetEditor.source_lines(self.source),
-                rationale=self.rationale
-                or f"Replace module assignment {self.assignment_name!r}.",
-            ),
         )
 
 
