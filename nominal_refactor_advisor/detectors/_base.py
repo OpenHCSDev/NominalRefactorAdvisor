@@ -46,7 +46,11 @@ from ..constructor_algebra import (
     ConstructorVariantCatalog,
     ConstructorVariantSpec,
 )
-from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
+from ..descriptor_algebra import (
+    AliasProperty,
+    ClassAliasProperty,
+    CollectionAttributeProjection,
+)
 from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
@@ -1251,8 +1255,30 @@ ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 
 
+class CandidateFindingRendererABC(Generic[CandidateItemT], ABC):
+    """Render one candidate through the detector's finding construction contract."""
+
+    @abstractmethod
+    def build(
+        self, detector: IssueDetector, candidate: CandidateItemT
+    ) -> RefactorFinding:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CandidateFindingRenderer(Generic[CandidateItemT]):
+class CallableCandidateFindingRenderer(CandidateFindingRendererABC[CandidateItemT]):
+    """Keep a renderer's expressions in one invocation and one lexical scope."""
+
+    render: Callable[[IssueDetector, CandidateItemT], RefactorFinding]
+
+    def build(
+        self, detector: IssueDetector, candidate: CandidateItemT
+    ) -> RefactorFinding:
+        return self.render(detector, candidate)
+
+
+@dataclass(frozen=True)
+class CandidateFindingRenderer(CandidateFindingRendererABC[CandidateItemT]):
     target_finding_type: ClassVar[type[RefactorFinding]] = RefactorFinding
     summary: CandidateSummaryRenderer[CandidateItemT]
     evidence: CandidateEvidenceRenderer[CandidateItemT]
@@ -1266,20 +1292,6 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
         CandidateItemT,
         SourceLocation,
     ] = None
-
-    @classmethod
-    def required_declaration_field_names(cls) -> tuple[str, ...]:
-        return tuple(
-            field_item.name
-            for field_item in fields(cls)
-            if field_item.default is MISSING
-            and field_item.default_factory is MISSING
-        )
-
-    @classmethod
-    def optional_declaration_field_names(cls) -> frozenset[str]:
-        required_names = frozenset(cls.required_declaration_field_names())
-        return frozenset(field_item.name for field_item in fields(cls)) - required_names
 
     @classmethod
     def presentation_context_tokens(cls) -> frozenset[str]:
@@ -1508,7 +1520,7 @@ def _contextual_global_candidate_signature(
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
     candidate_type: ClassVar[type[CandidateItemT]]
-    finding_renderer: ClassVar[CandidateFindingRenderer[CandidateItemT] | None] = None
+    finding_renderer: ClassVar[CandidateFindingRendererABC[CandidateItemT] | None] = None
 
     @classmethod
     def required_candidate_type(cls) -> type[CandidateItemT]:
@@ -1520,13 +1532,13 @@ class RenderedFindingMixin(Generic[CandidateItemT]):
         return cls.candidate_type
 
     @classmethod
-    def required_finding_renderer(cls) -> CandidateFindingRenderer[CandidateItemT]:
+    def required_finding_renderer(cls) -> CandidateFindingRendererABC[CandidateItemT]:
         detector_declaration = cast(
             type[IssueDetector], cls
         ).resolved_detector_declaration()
         if detector_declaration is not None:
             return cast(
-                CandidateFindingRenderer[CandidateItemT],
+                CandidateFindingRendererABC[CandidateItemT],
                 detector_declaration.finding_renderer,
             )
         renderer = cls.finding_renderer
@@ -2229,7 +2241,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 
     @classmethod
     def field_names(cls) -> frozenset[str]:
-        return frozenset(cls.__dataclass_fields__)
+        return frozenset(item.name for item in fields(cls) if item.init)
 
     @classmethod
     def explicit_class_field_names(cls) -> frozenset[str]:
@@ -2267,7 +2279,7 @@ class DetectorDeclaration(Generic[CandidateItemT]):
 
     candidate_type: type[CandidateItemT]
     finding_spec: FindingSpec
-    finding_renderer: CandidateFindingRenderer[CandidateItemT]
+    finding_renderer: CandidateFindingRendererABC[CandidateItemT]
     module_name: str
     source_file_path: str
     source_line: int
@@ -2323,6 +2335,10 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             "__module__": self.module_name,
             "__firstlineno__": self.source_line,
             "detector_declaration": self,
+            **{
+                name: ClassAliasProperty(f"detector_declaration.{name}")
+                for name in self.required_class_shell_field_names()
+            },
         }
 
     def install(
@@ -2342,7 +2358,11 @@ class DetectorDeclaration(Generic[CandidateItemT]):
 
 
 DetectorNamespaceValue: TypeAlias = (
-    str | int | DetectorDeclaration[CandidateItemT] | type[IssueDetector]
+    str
+    | int
+    | DetectorDeclaration[CandidateItemT]
+    | type[IssueDetector]
+    | ClassAliasProperty[object]
 )
 
 
@@ -2373,7 +2393,7 @@ def _declare_module_detector_in(
 def declare_module_detector(
     candidate_type: type[CandidateItemT],
     finding_spec: FindingSpec,
-    finding_renderer: CandidateFindingRenderer[CandidateItemT],
+    finding_renderer: CandidateFindingRendererABC[CandidateItemT],
     **detector_options: Unpack[DetectorDeclarationOptionKwargs[CandidateItemT]],
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
@@ -7534,28 +7554,6 @@ class DirectBuildFindingRendererCandidate(
             isinstance(function, ast.Attribute)
             and function.attr == IssueDetector.build_finding.__name__
             and name_id(function.value) == "self"
-        ):
-            return None
-        required_names = CandidateFindingRenderer.required_declaration_field_names()
-        if len(call.args) != len(required_names) or any(
-            isinstance(argument, ast.Starred) for argument in call.args
-        ):
-            return None
-        keyword_names = tuple(
-            keyword.arg for keyword in call.keywords if keyword.arg is not None
-        )
-        if (
-            len(keyword_names) != len(call.keywords)
-            or len(frozenset(keyword_names)) != len(keyword_names)
-            or not frozenset(keyword_names)
-            <= CandidateFindingRenderer.optional_declaration_field_names()
-        ):
-            return None
-        payload_values = (*call.args, *(keyword.value for keyword in call.keywords))
-        if any(
-            isinstance(item, ast.Name) and item.id == "self"
-            for value in payload_values
-            for item in ast.walk(value)
         ):
             return None
         return call

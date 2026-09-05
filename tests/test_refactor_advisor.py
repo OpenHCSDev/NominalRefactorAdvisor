@@ -14696,10 +14696,9 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     rewritten = simulation.simulation.rewritten_sources[source_path]
     assert simulation.is_clean is True
     assert "def _finding_for_candidate" not in rewritten
-    assert "finding_renderer = CandidateFindingRenderer(" in rewritten
-    assert "summary=lambda candidate:" in rewritten
-    assert "evidence=lambda candidate:" in rewritten
-    assert "metrics=lambda candidate: candidate.metrics" in rewritten
+    assert "finding_renderer = CallableCandidateFindingRenderer(" in rewritten
+    assert "lambda self, candidate: self.build_finding(" in rewritten
+    assert "metrics=candidate.metrics" in rewritten
     simulation.document_simulation.apply()
     next_findings = analyze_path(tmp_path)
     assert not any(
@@ -14734,7 +14733,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     )
 
 
-def test_direct_build_finding_renderer_requires_representable_payload(
+def test_direct_build_finding_renderer_accepts_complete_builder_payload(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -14743,7 +14742,7 @@ def test_direct_build_finding_renderer_requires_representable_payload(
         '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            title="Local override",\n        )\n',
     )
 
-    assert not any(
+    assert any(
         finding.detector_id == "direct_build_finding_renderer"
         for finding in analyze_path(tmp_path)
     )

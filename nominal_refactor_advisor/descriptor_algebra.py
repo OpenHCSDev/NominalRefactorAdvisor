@@ -39,6 +39,20 @@ class AliasProperty(Generic[ValueT]):
 
 
 @dataclass(frozen=True)
+class ClassAliasProperty(AliasProperty[ValueT]):
+    """Project an alias through the owning class for class and instance reads."""
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[object] | None = None,
+    ) -> ValueT:
+        if owner is None:
+            raise TypeError("Class alias access requires an owner")
+        return super().__get__(owner)
+
+
+@dataclass(frozen=True)
 class ConstantProperty(Generic[ValueT]):
     """Descriptor for properties that always return the same immutable value."""
 

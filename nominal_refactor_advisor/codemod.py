@@ -541,7 +541,7 @@ from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from .declaration_dependencies import FunctionBindingProjection
 from .detectors._base import (
     CandidateCollectorBoilerplateCandidate,
-    CandidateFindingRenderer,
+    CallableCandidateFindingRenderer,
     DeclarativeDetectorClassCandidate,
     DerivedCandidateCollectorMixin,
     DetectorDeclaration,
@@ -4944,8 +4944,8 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
     target_node_type = ast.FunctionDef
 
     renderer_import_source = (
-        f"from {CandidateFindingRenderer.__module__} import "
-        f"{CandidateFindingRenderer.__name__}\n"
+        f"from {CallableCandidateFindingRenderer.__module__} import "
+        f"{CallableCandidateFindingRenderer.__name__}\n"
     )
 
     @staticmethod
@@ -4953,7 +4953,7 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
         return ast.Lambda(
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg=parameter_name)],
+                args=[ast.arg(arg="self"), ast.arg(arg=parameter_name)],
                 kwonlyargs=[],
                 kw_defaults=[],
                 defaults=[],
@@ -4967,16 +4967,6 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
         candidate: DirectBuildFindingRendererCandidate,
         call: ast.Call,
     ) -> str:
-        field_values = (
-            *zip(
-                CandidateFindingRenderer.required_declaration_field_names(),
-                call.args,
-                strict=True,
-            ),
-            *((keyword.arg, keyword.value) for keyword in call.keywords),
-        )
-        if any(field_name is None for field_name, _value in field_values):
-            raise ValueError("Renderer payload contains an unpacked keyword")
         assignment = ast.Assign(
             targets=[
                 ast.Name(
@@ -4986,17 +4976,11 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
             ],
             value=ast.Call(
                 func=ast.Name(
-                    id=CandidateFindingRenderer.__name__,
+                    id=CallableCandidateFindingRenderer.__name__,
                     ctx=ast.Load(),
                 ),
-                args=[],
-                keywords=[
-                    ast.keyword(
-                        arg=field_name,
-                        value=cls.renderer_lambda(candidate.parameter_name, value),
-                    )
-                    for field_name, value in field_values
-                ],
+                args=[cls.renderer_lambda(candidate.parameter_name, call)],
+                keywords=[],
             ),
         )
         return ast.unparse(ast.fix_missing_locations(assignment))
@@ -5073,16 +5057,14 @@ class DeclarativeDetectorClassFindingRecipeSynthesizer(
             raise ValueError(
                 f"{candidate.class_name!r} is no longer a declarative detector shell"
             )
-        required_names = DetectorDeclaration.required_class_shell_field_names()
         arguments = [
             ast.Name(id=candidate.candidate_type_name, ctx=ast.Load()),
-            *(assignment_values[name] for name in required_names),
         ]
-        option_names = DetectorDeclaration.optional_class_shell_field_names()
+        derived_names = DetectorDeclaration.derived_class_shell_field_names()
         keywords = [
             ast.keyword(arg=name, value=assignment_values[name])
             for name in assignment_values
-            if name in option_names
+            if name not in derived_names
         ]
         keywords.append(
             ast.keyword(

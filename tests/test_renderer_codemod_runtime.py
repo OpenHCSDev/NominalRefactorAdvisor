@@ -1,0 +1,134 @@
+"""Execute generated renderer declarations through the real detector runtime."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import ClassVar
+
+import pytest
+
+from nominal_refactor_advisor.analysis import analyze_path
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.codemod import CodemodBackend, CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
+from nominal_refactor_advisor.detectors._base import DetectorDeclarationOptions
+
+
+@dataclass(frozen=True)
+class ExtendedDeclarationOptions(DetectorDeclarationOptions):
+    helper: ClassVar[str] = "helper"
+    computed: str = field(default="derived", init=False)
+
+
+@pytest.mark.parametrize(
+    "option_name",
+    ("detector_name_field_name", "detector_base_field_name", "helper", "computed"),
+)
+def test_declaration_options_reject_non_constructor_fields(option_name: str) -> None:
+    assert option_name not in ExtendedDeclarationOptions.field_names()
+    with pytest.raises(TypeError, match="Unknown detector declaration option"):
+        ExtendedDeclarationOptions.from_kwargs({option_name: "invalid"})
+
+
+_RUNTIME_SOURCE = '''
+import json
+from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector
+from nominal_refactor_advisor.models import FindingSpec, FindingBuildContext, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+
+EVENTS = []
+
+def record(name):
+    EVENTS.append(name)
+    return None
+
+def retain(name, value):
+    EVENTS.append(name)
+    return value
+
+class ProbeCandidate:
+    pass
+
+class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):
+    detector_id = "probe"
+    candidate_collector = retain('collector', staticmethod(lambda module: ()))
+    finding_spec = retain('spec', FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Runtime probe", why="Runtime probe",
+        capability_gap="Runtime probe", relation_context="Runtime probe",
+    ))
+
+    def _finding_for_candidate(self, candidate):
+        return self.build_finding(PAYLOAD)
+
+if __name__ == "__main__":
+    result = ProbeDetector()._finding_for_candidate(ProbeCandidate())
+    print(json.dumps({
+        "summary": result.summary,
+        "title": result.title,
+        "evidence": [item.symbol for item in result.evidence],
+        "events": EVENTS,
+    }))
+'''
+
+
+def _execute(path: Path) -> dict[str, object]:
+    result = subprocess.run(
+        [sys.executable, str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize(
+    "payload, expected",
+    (
+        (
+            "'summary', (), metrics=record('metrics'), "
+            "compression_certificate=record('certificate')",
+            {"summary": "summary", "title": "Runtime probe", "evidence": [],
+             "events": ["collector", "spec", "metrics", "certificate"]},
+        ),
+        (
+            "(label := 'shared'), (SourceLocation(__file__, 1, label),), "
+            "title=self.finding_spec.title + ' override'",
+            {"summary": "shared", "title": "Runtime probe override",
+             "evidence": ["shared"], "events": ["collector", "spec"]},
+        ),
+        (
+            "*('expanded', ()), context=FindingBuildContext(title='context'), "
+            "**{'metrics': record('metrics'), 'title': 'override'}",
+            {"summary": "expanded", "title": "override", "evidence": [],
+             "events": ["collector", "spec", "metrics"]},
+        ),
+    ),
+    ids=("evaluation-order", "shared-local-and-self", "context-and-unpacking"),
+)
+def test_renderer_and_detector_collapse_preserve_runtime(
+    tmp_path: Path, payload: str, expected: dict[str, object],
+) -> None:
+    module_path = tmp_path / "probe.py"
+    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", payload))
+    assert _execute(module_path) == expected
+
+    for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
+        findings = tuple(
+            finding for finding in analyze_path(tmp_path)
+            if finding.detector_id == detector_id
+        )
+        assert len(findings) == 1
+        snapshot = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path), findings,
+        )
+        plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
+        assert plan.records[0].status is (
+            FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        ), plan.records[0].reason
+        simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        assert simulation.is_clean
+        simulation.document_simulation.apply()
+        assert _execute(module_path) == expected

@@ -15,6 +15,7 @@ from nominal_refactor_advisor.detectors import (
     IssueDetector,
 )
 from nominal_refactor_advisor.detectors._base import DerivedCandidateCollectorMixin
+from nominal_refactor_advisor.descriptor_algebra import ClassAliasProperty
 from nominal_refactor_advisor.detectors._runtime import (
     RepeatedBuilderCallShapeProjectionFamily,
 )
@@ -109,11 +110,13 @@ def test_generated_detector_types_retain_their_nominal_declaration() -> None:
         assert vars(detector_type)["detector_declaration"] is declaration
         assert {
             "candidate_type",
-            "finding_spec",
-            "finding_renderer",
             "candidate_collector",
             "source_candidate_collector",
         }.isdisjoint(vars(detector_type))
+        for name in declaration.required_class_shell_field_names():
+            assert isinstance(vars(detector_type)[name], ClassAliasProperty)
+            assert getattr(detector_type, name) is getattr(declaration, name)
+            assert getattr(detector_type(), name) is getattr(declaration, name)
         assert detector_type.required_relation_finding_spec() is declaration.finding_spec
         assert detector_type.required_relation_source() == declaration.source
         assert detector_type.__module__ == declaration.module_name
@@ -145,7 +148,7 @@ def test_finding_obligation_identity_descends_from_nominal_spec_owner() -> None:
             assert vars(declaration_type)["finding_spec"] is finding_spec
         else:
             assert vars(declaration_type)["detector_declaration"] is detector_declaration
-            assert "finding_spec" not in vars(declaration_type)
+            assert isinstance(vars(declaration_type)["finding_spec"], ClassAliasProperty)
             assert detector_declaration.finding_spec is finding_spec
         assert declaration_type.required_relation_pattern_id() is finding_spec.pattern_id
 
