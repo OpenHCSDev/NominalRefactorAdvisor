@@ -3299,32 +3299,18 @@ def _rebase_class_family_index(
 ) -> ClassFamilyIndex | None:
     if class_index is None:
         return None
-    classes_by_symbol = {
-        symbol: replace(
-            indexed_class,
-            file_path=rebase_checkout_path(
-                indexed_class.file_path,
-                source_roots,
-                target_roots,
-            ),
-        )
-        for symbol, indexed_class in class_index.classes_by_symbol.items()
-    }
     return replace(
         class_index,
-        classes_by_symbol=classes_by_symbol,
-        symbols_by_file_and_qualname={
-            (
-                rebase_checkout_path(
-                    file_path,
+        classes_by_symbol={
+            symbol: replace(
+                indexed_class,
+                file_path=rebase_checkout_path(
+                    indexed_class.file_path,
                     source_roots,
                     target_roots,
                 ),
-                qualname,
-            ): symbol
-            for (file_path, qualname), symbol in (
-                class_index.symbols_by_file_and_qualname.items()
             )
+            for symbol, indexed_class in class_index.classes_by_symbol.items()
         },
     )
 

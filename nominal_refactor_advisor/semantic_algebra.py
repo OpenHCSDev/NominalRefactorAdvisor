@@ -9,8 +9,10 @@ so detectors can use them as evidence instead of local line-count thresholds.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from itertools import combinations
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
@@ -268,6 +270,54 @@ class VertexIndexEdge:
 
     def as_pair(self) -> tuple[int, int]:
         return (self.left, self.right)
+
+
+@dataclass(frozen=True)
+class DirectedGraph(Generic[ValueT]):
+    """Ordered adjacency with lazy, cycle-safe breadth-first reachability."""
+
+    neighbors: Mapping[ValueT, tuple[ValueT, ...]]
+
+    @cached_property
+    def reversed(self) -> DirectedGraph[ValueT]:
+        incoming: dict[ValueT, list[ValueT]] = {vertex: [] for vertex in self.neighbors}
+        for vertex, neighbors in self.neighbors.items():
+            for neighbor in neighbors:
+                incoming.setdefault(neighbor, []).append(vertex)
+        return DirectedGraph(
+            {vertex: tuple(neighbors) for vertex, neighbors in incoming.items()}
+        )
+
+    @cached_property
+    def _reachability_by_vertex(self) -> dict[ValueT, tuple[ValueT, ...]]:
+        return {}
+
+    def reachable_from(self, vertex: ValueT) -> tuple[ValueT, ...]:
+        """Return each reachable vertex once; a cycle can reach its own root."""
+
+        cached = self._reachability_by_vertex.get(vertex)
+        if cached is not None:
+            return cached
+        pending = deque(self.neighbors.get(vertex, ()))
+        reached: dict[ValueT, None] = {}
+        while pending:
+            current = pending.popleft()
+            if current in reached:
+                continue
+            reached[current] = None
+            pending.extend(self.neighbors.get(current, ()))
+        result = tuple(reached)
+        self._reachability_by_vertex[vertex] = result
+        return result
+
+    def nonempty_reachability_from(
+        self, vertices: Iterable[ValueT]
+    ) -> dict[ValueT, tuple[ValueT, ...]]:
+        return {
+            vertex: reachable
+            for vertex in vertices
+            if (reachable := self.reachable_from(vertex))
+        }
 
 
 @dataclass(frozen=True)

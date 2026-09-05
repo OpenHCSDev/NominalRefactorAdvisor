@@ -28,6 +28,21 @@ Structural Hypothesis Surface
 Codemod Candidate Surface
 -------------------------
 
+``ClassDeclarationIndex`` owns a class-declaration map and derives identity,
+child, ancestor and descendant views from it. ``ClassFamilyIndex`` specialises
+the record type to ``IndexedClass``; ``CompactClassFamilyIndex`` specialises it
+to ``CompactIndexedClass``. Their constructors take only ``classes_by_symbol``.
+The former constructor arguments for derived maps are no longer independent
+inputs. Both builders use the shared unique-identity gate before resolving
+bases, leaving colliding class symbols unproved.
+
+Individual ancestor and descendant queries cache only the requested root's
+reachability. The bulk map properties materialise their complete derived views
+on demand. ``DirectedGraph`` owns ordered adjacency, reversal and cycle-safe
+breadth-first traversal; it uses a deque and retains declaration order among
+neighbours. Reachability order is distinct from Python's C3 MRO. Method lookup
+continues to use ``ClassMroAuthority`` below.
+
 ``ReplaceDeclaredCallTargetOperation`` selects calls by their current declaring
 function or method and replaces only their callable expression. ``target`` names
 the caller scope, ``callee`` names the existing declaration,

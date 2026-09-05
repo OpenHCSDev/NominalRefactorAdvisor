@@ -396,3 +396,59 @@ native base-validator identity. Validation passed 2,148 full-suite tests (13
 skipped), 60 focused Python 3.14 tests, and 16 ASCII-locale tests. The touched-file
 audit ran all 81 detectors without omissions or findings. Sphinx built with the
 two existing duplicate-description warnings for dataclass promotion operations.
+
+### Class Indexes: One Declaration Map, Derived Graph Views
+
+The self-scan's duplicated class-index lookups led to the underlying ownership
+problem: both compact and syntax-backed indexes accepted five independently
+supplied maps derived from their declarations. Their builders also repeated
+child, ancestor and descendant traversal. Four regressions exposed duplicated
+implementation ownership and eagerly stored graph views; a fifth test established
+matching graph results before changing either implementation.
+
+`ClassDeclarationIndex[ClassDeclarationT]` now owns the common lookup surface and
+derives all views from `classes_by_symbol`. Its two specialisations retain their
+record types and specialised capabilities. A generic `DirectedGraph` supplies
+ordered adjacency reversal and cycle-safe reachability. Per-root queries are
+lazy, and deque traversal replaces list-front removal. Tests cover diamonds,
+imported bases, ambiguous simple names, nested classes, unresolved bases, cycles,
+duplicate edges, dangling vertices and native-MRO distinctions.
+
+Colliding qualified identities exposed another difference: the full builder
+overwrote a prior class record, while the compact builder excluded the ambiguous
+handle. The full builder now uses the same existing `UniqueIdentityIndexAuthority`
+gate before base resolution. The new collision regression failed before that
+change. No spelling fallback or second collision policy was added.
+
+`docs/examples/class_declaration_index_refactor.py` records the 24-stage DSL
+refactor, after the new shared declarations were authored. It adds the generic
+bases, deletes duplicate fields and methods, rewrites the two builder bodies and
+removes their obsolete traversal helpers. The body replacements are authored
+source, not an inferred proof of arbitrary builder equivalence.
+
+The full suite exposed a consumer which also wrote the derived path lookup:
+semantic-graph checkout rebasing. That operation now replaces only declaration
+paths. Its regression primes the old lookup and verifies that the new index
+derives target-checkout paths without changing the original cache.
+
+A 1,500-leaf synthetic graph retained all descendants. Warm compact-index build
+time changed from about 0.018 to 0.015 seconds; the syntax-backed builder remained
+about 2.35 seconds. This is a targeted construction probe, not an end-to-end
+speed claim. The remaining full-builder cost warrants a separate audit of its
+repeated module-binding snapshots rather than further graph micro-optimisation.
+
+Replay preparation exposed an open DSL boundary: `InsertBeforeTargetOperation`
+uses the class/function header line rather than the first decorator line. Adding
+the new type parameter before a decorated class was rejected by source
+validation because it separated the decorator from its declaration. The replay
+uses the existing after-previous-declaration operation; a following batch must
+fix the before-target boundary using shared declaration geometry, including
+native tests for decorator ownership rather than compilation alone.
+
+The completed replay applied all 24 stages to the previous source. Its class
+index and rebasing declarations match the working ASTs, and both native index
+forms returned identical name, location, child, ancestor and descendant views
+before and after on the diamond fixture. Validation passed 2,159 full-suite tests
+(13 skipped), 43 focused Python 3.14 tests and 12 ASCII-locale tests. The final
+touched-file audit ran all 81 detectors with no omissions or findings. The docs
+build retains the existing duplicate-description warnings noted above.

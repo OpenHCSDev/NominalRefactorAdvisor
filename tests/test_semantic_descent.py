@@ -6300,6 +6300,7 @@ def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
         parse_python_modules(source_root, use_parse_cache=False)
     )
 
+    original_locations = graph.class_index.symbols_by_file_and_qualname
     rebased_graph = rebase_semantic_descent_graph(
         graph,
         (str(source_root),),
@@ -6312,3 +6313,8 @@ def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
     )
 
     assert proof.file_path == str(target_module)
+    assert rebased_graph.class_index.symbols_by_file_and_qualname == {
+        (str(target_module), "Report"): "pkg.mod.Report"
+    }
+    assert graph.class_index.symbols_by_file_and_qualname is original_locations
+    assert all(str(source_root) in path for path, _name in original_locations)

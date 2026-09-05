@@ -19,7 +19,17 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from heapq import merge
-from typing import Callable, ClassVar, Iterable, NamedTuple, Self, TypeAlias, cast
+from typing import (
+    Callable,
+    ClassVar,
+    Generic,
+    Iterable,
+    NamedTuple,
+    Self,
+    TypeAlias,
+    TypeVar,
+    cast,
+)
 
 from .annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
@@ -51,6 +61,7 @@ from .lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .native_syntax import NativePythonSyntaxIndex
+from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
 from .source_identity import resolved_source_path_text
 
@@ -2056,16 +2067,88 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
         return membership if self.matches_exact_type_when_true else f"not {membership}"
 
 
-@dataclass(frozen=True)
-class CompactClassFamilyIndex:
-    """Repository inheritance graph reconstructed from compact declarations."""
+ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
 
-    classes_by_symbol: dict[str, CompactIndexedClass]
-    symbols_by_simple_name: dict[str, tuple[str, ...]]
-    symbols_by_file_and_qualname: dict[tuple[str, str], str]
-    children_by_symbol: dict[str, tuple[str, ...]]
-    ancestors_by_symbol: dict[str, tuple[str, ...]]
-    descendants_by_symbol: dict[str, tuple[str, ...]]
+
+@dataclass(frozen=True)
+class ClassDeclarationIndex(Generic[ClassDeclarationT]):
+    """One declaration map with lazily derived identity and inheritance views."""
+
+    classes_by_symbol: dict[str, ClassDeclarationT]
+
+    @cached_property
+    def known_symbols(self) -> frozenset[str]:
+        return frozenset(self.classes_by_symbol)
+
+    @cached_property
+    def symbols_by_simple_name(self) -> dict[str, tuple[str, ...]]:
+        symbols: dict[str, list[str]] = defaultdict(list)
+        for record in self.classes_by_symbol.values():
+            symbols[record.simple_name].append(record.symbol)
+        return {name: sorted_tuple(values) for name, values in symbols.items()}
+
+    @cached_property
+    def unique_symbols_by_name(self) -> dict[str, str]:
+        return {
+            name: symbols[0]
+            for name, symbols in self.symbols_by_simple_name.items()
+            if len(symbols) == 1
+        }
+
+    @cached_property
+    def symbols_by_file_and_qualname(self) -> dict[tuple[str, str], str]:
+        return {
+            (record.file_path, record.qualname): record.symbol
+            for record in self.classes_by_symbol.values()
+        }
+
+    @cached_property
+    def inheritance_graph(self) -> DirectedGraph[str]:
+        return DirectedGraph(
+            {
+                symbol: self.classes_by_symbol[symbol].resolved_base_symbols
+                for symbol in sorted(self.classes_by_symbol)
+            }
+        )
+
+    @cached_property
+    def children_by_symbol(self) -> dict[str, tuple[str, ...]]:
+        return {
+            symbol: children
+            for symbol, children in self.inheritance_graph.reversed.neighbors.items()
+            if children
+        }
+
+    @cached_property
+    def ancestors_by_symbol(self) -> dict[str, tuple[str, ...]]:
+        return self.inheritance_graph.nonempty_reachability_from(
+            self.inheritance_graph.neighbors
+        )
+
+    @cached_property
+    def descendants_by_symbol(self) -> dict[str, tuple[str, ...]]:
+        return self.inheritance_graph.reversed.nonempty_reachability_from(
+            self.inheritance_graph.neighbors
+        )
+
+    def class_for(self, symbol: str) -> ClassDeclarationT | None:
+        return self.classes_by_symbol.get(symbol)
+
+    def symbol_for(self, *, file_path: str, qualname: str) -> str | None:
+        return self.symbols_by_file_and_qualname.get((file_path, qualname))
+
+    def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
+        return self.inheritance_graph.reachable_from(class_symbol)
+
+    def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
+        if base_symbol not in self.classes_by_symbol:
+            return ()
+        return self.inheritance_graph.reversed.reachable_from(base_symbol)
+
+
+@dataclass(frozen=True)
+class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
+    """Repository inheritance graph reconstructed from compact declarations."""
 
     @cached_property
     def mro_authority(self) -> ClassMroAuthority:
@@ -2104,18 +2187,6 @@ class CompactClassFamilyIndex:
         if not isinstance(context, cls):
             raise TypeError("shared compact class index is unavailable")
         return context
-
-    def class_for(self, symbol: str) -> CompactIndexedClass | None:
-        return self.classes_by_symbol.get(symbol)
-
-    def symbol_for(self, *, file_path: str, qualname: str) -> str | None:
-        return self.symbols_by_file_and_qualname.get((file_path, qualname))
-
-    def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
-        return self.descendants_by_symbol.get(base_symbol, ())
-
-    def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
-        return self.ancestors_by_symbol.get(class_symbol, ())
 
     def assignments_repeated_from_ancestors(
         self,
@@ -2438,41 +2509,7 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
 
 
 @dataclass(frozen=True)
-class ClassFamilyIndex:
-    classes_by_symbol: dict[str, IndexedClass]
-    symbols_by_simple_name: dict[str, tuple[str, ...]]
-    symbols_by_file_and_qualname: dict[tuple[str, str], str]
-    children_by_symbol: dict[str, tuple[str, ...]]
-    ancestors_by_symbol: dict[str, tuple[str, ...]]
-    descendants_by_symbol: dict[str, tuple[str, ...]]
-
-    @cached_property
-    def known_symbols(self) -> frozenset[str]:
-        """Repository class symbols shared by every module resolver."""
-
-        return frozenset(self.classes_by_symbol)
-
-    @cached_property
-    def unique_symbols_by_name(self) -> dict[str, str]:
-        """Unambiguous simple-name projection shared across module resolvers."""
-
-        return {
-            simple_name: symbols[0]
-            for simple_name, symbols in self.symbols_by_simple_name.items()
-            if len(symbols) == 1
-        }
-
-    def class_for(self, symbol: str) -> IndexedClass | None:
-        return self.classes_by_symbol.get(symbol)
-
-    def symbol_for(self, *, file_path: str, qualname: str) -> str | None:
-        return self.symbols_by_file_and_qualname.get((file_path, qualname))
-
-    def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
-        return self.descendants_by_symbol.get(base_symbol, ())
-
-    def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
-        return self.ancestors_by_symbol.get(class_symbol, ())
+class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass]):
 
     def class_records_excluding_files(
         self,
@@ -6101,9 +6138,6 @@ class CompactClassFamilyIndexBuilder:
             ).values()
         )
         known_symbols = frozenset(record.symbol for record in records)
-        symbols_by_simple_name_lists: dict[str, list[str]] = defaultdict(list)
-        for record in records:
-            symbols_by_simple_name_lists[record.simple_name].append(record.symbol)
         unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         classes_by_symbol = {
             record.symbol: record.with_resolved_base_symbols(
@@ -6123,24 +6157,7 @@ class CompactClassFamilyIndexBuilder:
             )
             for record in records
         }
-        children_by_symbol = self._children_by_symbol(classes_by_symbol)
-        return CompactClassFamilyIndex(
-            classes_by_symbol=classes_by_symbol,
-            symbols_by_simple_name={
-                name: sorted_tuple(symbols)
-                for name, symbols in symbols_by_simple_name_lists.items()
-            },
-            symbols_by_file_and_qualname={
-                (record.file_path, record.qualname): record.symbol
-                for record in classes_by_symbol.values()
-            },
-            children_by_symbol=children_by_symbol,
-            ancestors_by_symbol=self._ancestors_by_symbol(classes_by_symbol),
-            descendants_by_symbol=self._descendants_by_symbol(
-                classes_by_symbol,
-                children_by_symbol,
-            ),
-        )
+        return CompactClassFamilyIndex(classes_by_symbol=classes_by_symbol)
 
     @staticmethod
     def _resolved_bound_symbol(
@@ -6195,61 +6212,6 @@ class CompactClassFamilyIndexBuilder:
         if allow_unique_unqualified and len(parts) == 1:
             return unique_symbols_by_name.get(parts[0])
         return None
-
-    @staticmethod
-    def _children_by_symbol(
-        classes_by_symbol: dict[str, CompactIndexedClass],
-    ) -> dict[str, tuple[str, ...]]:
-        children: dict[str, list[str]] = defaultdict(list)
-        for record in classes_by_symbol.values():
-            for base_symbol in record.resolved_base_symbols:
-                children[base_symbol].append(record.symbol)
-        return {
-            symbol: sorted_tuple(child_symbols)
-            for symbol, child_symbols in children.items()
-        }
-
-    @staticmethod
-    def _ancestors_by_symbol(
-        classes_by_symbol: dict[str, CompactIndexedClass],
-    ) -> dict[str, tuple[str, ...]]:
-        result: dict[str, tuple[str, ...]] = {}
-        for symbol in sorted(classes_by_symbol):
-            ancestors: list[str] = []
-            queue = list(classes_by_symbol[symbol].resolved_base_symbols)
-            seen: set[str] = set()
-            while queue:
-                current = queue.pop(0)
-                if current in seen:
-                    continue
-                seen.add(current)
-                ancestors.append(current)
-                if current in classes_by_symbol:
-                    queue.extend(classes_by_symbol[current].resolved_base_symbols)
-            if ancestors:
-                result[symbol] = tuple(ancestors)
-        return result
-
-    @staticmethod
-    def _descendants_by_symbol(
-        classes_by_symbol: dict[str, CompactIndexedClass],
-        children_by_symbol: dict[str, tuple[str, ...]],
-    ) -> dict[str, tuple[str, ...]]:
-        result: dict[str, tuple[str, ...]] = {}
-        for symbol in sorted(classes_by_symbol):
-            descendants: list[str] = []
-            queue = list(children_by_symbol.get(symbol, ()))
-            seen: set[str] = set()
-            while queue:
-                current = queue.pop(0)
-                if current in seen:
-                    continue
-                seen.add(current)
-                descendants.append(current)
-                queue.extend(children_by_symbol.get(current, ()))
-            if descendants:
-                result[symbol] = tuple(descendants)
-        return result
 
 
 def build_compact_class_family_index(
@@ -6520,39 +6482,18 @@ class ClassFamilyIndexBuilder:
     base_records: tuple[IndexedClass, ...] = ()
 
     def build(self) -> ClassFamilyIndex:
-        class_records = (*self.base_records, *self.module_class_records())
-        known_symbols = frozenset(record.symbol for record in class_records)
-        symbols_by_simple_name_multimap = self.symbols_by_simple_name_multimap(
-            class_records
+        class_records = tuple(
+            UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+                (*self.base_records, *self.module_class_records()),
+                lambda record: record.symbol,
+            ).values()
         )
+        known_symbols = frozenset(record.symbol for record in class_records)
         classes_by_symbol = {
-            record.symbol: self.resolved_record(
-                record,
-                known_symbols,
-            )
+            record.symbol: self.resolved_record(record, known_symbols)
             for record in class_records
         }
-        symbols_by_file_and_qualname = {
-            (record.file_path, record.qualname): record.symbol
-            for record in classes_by_symbol.values()
-        }
-        children_by_symbol = self.children_by_symbol(classes_by_symbol)
-        ancestors_by_symbol = self.ancestors_by_symbol(classes_by_symbol)
-        descendants_by_symbol = self.descendants_by_symbol(
-            classes_by_symbol,
-            children_by_symbol,
-        )
-        return ClassFamilyIndex(
-            classes_by_symbol=classes_by_symbol,
-            symbols_by_simple_name={
-                name: sorted_tuple(symbols)
-                for name, symbols in symbols_by_simple_name_multimap.items()
-            },
-            symbols_by_file_and_qualname=symbols_by_file_and_qualname,
-            children_by_symbol=children_by_symbol,
-            ancestors_by_symbol=ancestors_by_symbol,
-            descendants_by_symbol=descendants_by_symbol,
-        )
+        return ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
 
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         records: list[IndexedClass] = []
@@ -6575,15 +6516,6 @@ class ClassFamilyIndexBuilder:
                     )
                 )
         return tuple(records)
-
-    @staticmethod
-    def symbols_by_simple_name_multimap(
-        class_records: tuple[IndexedClass, ...],
-    ) -> dict[str, list[str]]:
-        symbols_by_simple_name_multimap: dict[str, list[str]] = defaultdict(list)
-        for record in class_records:
-            symbols_by_simple_name_multimap[record.simple_name].append(record.symbol)
-        return symbols_by_simple_name_multimap
 
     def resolved_record(
         self,
@@ -6630,65 +6562,6 @@ class ClassFamilyIndexBuilder:
                 if base_symbol in known_symbols
             )
         )
-
-    @staticmethod
-    def children_by_symbol(
-        classes_by_symbol: dict[str, IndexedClass],
-    ) -> dict[str, tuple[str, ...]]:
-        children_by_symbol_lists: dict[str, list[str]] = defaultdict(list)
-        for record in classes_by_symbol.values():
-            for base_symbol in record.resolved_base_symbols:
-                children_by_symbol_lists[base_symbol].append(record.symbol)
-        return {
-            symbol: sorted_tuple(children)
-            for symbol, children in children_by_symbol_lists.items()
-        }
-
-    @staticmethod
-    def ancestors_by_symbol(
-        classes_by_symbol: dict[str, IndexedClass],
-    ) -> dict[str, tuple[str, ...]]:
-        ancestors_by_symbol: dict[str, tuple[str, ...]] = {}
-        for symbol in sorted(classes_by_symbol):
-            ancestors: list[str] = []
-            queue = list(classes_by_symbol[symbol].resolved_base_symbols)
-            seen: set[str] = set()
-            while queue:
-                current = queue.pop(0)
-                if current in seen:
-                    continue
-                seen.add(current)
-                ancestors.append(current)
-                indexed_class = classes_by_symbol.get(current)
-                if indexed_class is not None:
-                    queue.extend(indexed_class.resolved_base_symbols)
-            if ancestors:
-                ancestors_by_symbol[symbol] = tuple(ancestors)
-        return ancestors_by_symbol
-
-    @staticmethod
-    def descendants_by_symbol(
-        classes_by_symbol: dict[str, IndexedClass],
-        children_by_symbol: dict[str, tuple[str, ...]],
-    ) -> dict[str, tuple[str, ...]]:
-        descendants_by_symbol: dict[str, tuple[str, ...]] = {}
-        for symbol in sorted(classes_by_symbol):
-            descendants: list[str] = []
-            queue = (
-                list(children_by_symbol[symbol]) if symbol in children_by_symbol else []
-            )
-            seen: set[str] = set()
-            while queue:
-                current = queue.pop(0)
-                if current in seen:
-                    continue
-                seen.add(current)
-                descendants.append(current)
-                if current in children_by_symbol:
-                    queue.extend(children_by_symbol[current])
-            if descendants:
-                descendants_by_symbol[symbol] = tuple(descendants)
-        return descendants_by_symbol
 
 
 def _resolved_module_path_texts(modules: tuple[ParsedModule, ...]) -> frozenset[str]:
