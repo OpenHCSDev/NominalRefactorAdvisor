@@ -267,3 +267,21 @@ undetected. The collector now retains one complete reference collection;
 Name sets and the editable direct-source view are derived from that collection.
 `docs/examples/lexical_reference_projection_refactor.py` records the applied
 eight-stage consolidation, including removal of an unused visitor forwarder.
+
+### Qualified Annotation Rename: Shared Phase Policy
+
+The reference-consumer audit found that qualified annotation renaming still
+used the source-position snapshot for a module alias under postponed
+annotations. Rebinding that alias after a function declaration caused the
+rename either to change an unrelated attribute or to miss the intended one.
+Both cases broke native `typing.get_type_hints` after an accepted CLI rewrite.
+The lookup now consumes `DeclarationDependencyUse.binding_phase`, the same
+policy used by declaration transfer, instead of introducing a renamer policy.
+
+`docs/examples/annotation_binding_phase_refactor.py` records the applied
+single-operation DSL plan. It selects the caller and the called declaration,
+requires exactly one resolved call, and supplies only the replacement arguments.
+Native before/after CLI tests cover function, async-function, class and module
+annotations, both alias orders, and explicit postponed versus interpreter-default
+evaluation on Python 3.11 and 3.14. This demonstrates a targeted authored change;
+the DSL does not infer that the evaluation policy is the desired one.

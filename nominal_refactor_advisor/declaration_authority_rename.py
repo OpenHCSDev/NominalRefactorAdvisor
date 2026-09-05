@@ -280,7 +280,10 @@ class DeclarationAuthorityModuleReferenceProof:
         proved = (
             self.binding_authority.qualified_name_at(
                 reference,
-                line=root_surface.binding_snapshot_line,
+                line=root_surface.use.binding_phase(
+                    root_surface.binding_phase,
+                    eager_annotations=self.annotation_mode.annotations_execute_at_declaration,
+                ).snapshot_line_for(root_surface.reference),
             )
             in self.binding_closure.renamed_symbols
         )

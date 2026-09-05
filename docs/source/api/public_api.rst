@@ -422,6 +422,13 @@ function, or async-function declaration and derives its direct imports,
 transitive same-name re-exports, preserved aliases, explicit public exports,
 and lexically resolved direct, qualified, or forward-annotation references
 across the repository.  Unrelated and shadowed bindings remain unchanged.
+Qualified annotation references use ``DeclarationDependencyUse`` to select
+their module binding snapshot. Eager annotations retain the alias at declaration
+time; postponed and lazy annotations use the final module alias. The recorded
+:download:`annotation binding phase refactor
+<../../examples/annotation_binding_phase_refactor.py>` updates that lookup with
+one declaration-resolved call-argument operation, without replacing its enclosing
+method.
 Nested imports, rebinding, affected star-import boundaries, unresolved export
 policy, reflective strings, comments, explicit global/nonlocal declarations,
 and binding collisions fail preflight.  Ordered plan stages can chain these

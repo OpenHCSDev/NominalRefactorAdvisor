@@ -537,6 +537,66 @@ def test_renames_repository_imports_aliases_and_annotations(tmp_path: Path) -> N
     assert completed.stdout.strip() == "3"
 
 
+@pytest.mark.parametrize("postponed", (False, True))
+@pytest.mark.parametrize("source_first", (False, True))
+@pytest.mark.parametrize(
+    ("declaration", "annotation_owner"),
+    (
+        ("def consume(value: selected.Legacy): pass\n", "consumer.consume"),
+        ("async def consume(value: selected.Legacy): pass\n", "consumer.consume"),
+        ("class Consumer:\n    value: selected.Legacy\n", "consumer.Consumer"),
+        ("value: selected.Legacy\n", "consumer"),
+    ),
+)
+def test_qualified_annotation_rename_uses_its_native_evaluation_phase(
+    tmp_path: Path,
+    postponed: bool,
+    source_first: bool,
+    declaration: str,
+    annotation_owner: str,
+) -> None:
+    _write_fixture(tmp_path)
+    _write_module(tmp_path, "pkg/other.py", "class Legacy: pass\n")
+    first, last = ("family", "other") if source_first else ("other", "family")
+    consumer_path = _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        ("from __future__ import annotations\n" if postponed else "")
+        + f"import pkg.{first} as selected\n"
+        + declaration
+        + f"import pkg.{last} as selected\n",
+    )
+    command = [
+        sys.executable,
+        "-c",
+        "from typing import get_type_hints; from pkg import consumer; "
+        f"print(get_type_hints({annotation_owner})['value'].__module__)",
+    ]
+    before = subprocess.check_output(command, cwd=tmp_path)
+    plan = CodemodPlanSequence.from_operations((_operation(tmp_path),))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+            "--json",
+        ],
+        input=json.dumps(json_report_object(plan)),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert subprocess.check_output(command, cwd=tmp_path) == before
+    renamed = before.strip() == b"pkg.family"
+    assert (
+        "value: selected.Canonical" in consumer_path.read_text(encoding="utf-8")
+    ) is renamed
+
+
 def test_rejects_rebound_repository_import(tmp_path: Path) -> None:
     _write_fixture(tmp_path)
     _write_module(
