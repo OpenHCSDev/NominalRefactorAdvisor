@@ -14503,6 +14503,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
+        "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
         '\nclass LocalCandidate:\n    pass\n\n\nclass ProjectDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "project"\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n',
     )
     findings = [
@@ -14607,6 +14608,7 @@ def test_declarative_detector_collapse_keeps_unrepresented_source(
     _write_module(
         tmp_path,
         "pkg/mod.py",
+        "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
         "class LocalCandidate:\n    pass\n\n"
         f"class LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]{header}):\n"
         f"{comment}    {spec} = LOCAL_FINDING_SPEC\n"
@@ -14696,6 +14698,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
+        "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
         '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    finding_spec = LOCAL_FINDING_SPEC\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            metrics=candidate.metrics,\n        )\n',
     )
     findings = [
@@ -14782,6 +14785,7 @@ def test_direct_build_finding_renderer_preserves_source_comments(tmp_path: Path)
     _write_module(
         tmp_path,
         "pkg/mod.py",
+        "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
         '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(  # explain the unusual evidence\n            candidate.summary,\n            (candidate.evidence,),\n        )\n',
     )
     findings = tuple(

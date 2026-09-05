@@ -93,6 +93,7 @@ if TYPE_CHECKING:
 
 from ..ast_tools import (
     AstExpressionProjection,
+    AstParentIndex,
     BuilderCallShape,
     BuilderCallShapeFamily,
     ClassFunctionStackNodeVisitor,
@@ -123,6 +124,7 @@ from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
     ClsRegistryMembership,
     ClassFamilyIndex,
+    ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactManualSubclassRegistrationSite,
@@ -133,6 +135,7 @@ from ..class_index import (
     IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
+    ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
     _module_import_aliases,
@@ -1654,10 +1657,62 @@ class ParameterizedBaseSource:
     def from_node(cls, node: ast.AST) -> "ParameterizedBaseSource | None":
         if not isinstance(node, ast.Subscript):
             return None
-        base_name = name_id(node.value)
+        base_name = ClassSymbolResolutionAuthority.declared_base_name(node.value)
         if base_name is None:
             return None
         return cls(base_name, ast.unparse(node.slice))
+
+
+@dataclass(frozen=True)
+class CandidateCollectorBaseReference:
+    """One source base spelling and its resolved nominal collector declaration."""
+
+    source_name: str
+    declaration: type[DerivedCandidateCollectorMixin] | None
+
+    @classmethod
+    def from_node(
+        cls, module: ParsedModule, node: ast.expr, *, line: int,
+    ) -> "CandidateCollectorBaseReference | None":
+        source_name = ClassSymbolResolutionAuthority.declared_base_name(node)
+        if source_name is None:
+            return None
+        qualified_name = ModuleNominalBindingAuthority(module).qualified_name_at(
+            node, line=line,
+        )
+        declaration = next(
+            (
+                base for base in DerivedCandidateCollectorMixin.registered_collector_base_types()
+                if qualified_name == f"{base.__module__}.{base.__qualname__}"
+            ),
+            None,
+        )
+        return cls(source_name, declaration)
+
+    @property
+    def is_candidate(self) -> bool:
+        """Retain familiar unresolved spellings as evidence, not rewrite authority."""
+
+        return (
+            self.declaration is not None
+            or self.source_name.rsplit(".", 1)[-1]
+            in DerivedCandidateCollectorMixin.collector_base_names()
+        )
+
+    @classmethod
+    def require_for_target(cls, module: ParsedModule, node: ast.AST) -> None:
+        owner = next(
+            (
+                ancestor for ancestor in (node, *AstParentIndex(module.module).ancestors(node))
+                if isinstance(ancestor, ast.ClassDef)
+            ),
+            None,
+        )
+        if owner is None or len(owner.bases) != 1:
+            raise ValueError("rewrite requires one nominal collector base")
+        reference = cls.from_node(module, owner.bases[0], line=owner.lineno)
+        if reference is None or reference.declaration is None:
+            raise ValueError("source does not prove a nominal collector base")
 
 
 class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
@@ -7500,7 +7555,9 @@ class ConcreteCandidateDetectorShape:
     base_name: str
 
     @classmethod
-    def from_class(cls, node: ast.ClassDef) -> "ConcreteCandidateDetectorShape | None":
+    def from_class(
+        cls, module: ParsedModule, node: ast.ClassDef,
+    ) -> "ConcreteCandidateDetectorShape | None":
         declares_detector_id = any(
             binding is not None
             and binding.name == DetectorDeclaration.detector_id_field_name
@@ -7510,16 +7567,12 @@ class ConcreteCandidateDetectorShape:
         if not declares_detector_id:
             return None
         base_names = tuple(
-            base_name
+            reference.source_name
             for base in node.bases
-            for base_name in (
-                name_id(base)
-                if isinstance(base, ast.Name)
-                else (
-                    name_id(base.value) if isinstance(base, ast.Subscript) else None
-                ),
+            for reference in (
+                CandidateCollectorBaseReference.from_node(module, base, line=node.lineno),
             )
-            if base_name in DerivedCandidateCollectorMixin.collector_base_names()
+            if reference is not None and reference.is_candidate
         )
         if len(base_names) != 1:
             return None
@@ -7564,7 +7617,7 @@ class DirectBuildFindingRendererCandidate(
         module: ParsedModule,
         node: ast.ClassDef,
     ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
-        shape = ConcreteCandidateDetectorShape.from_class(node)
+        shape = ConcreteCandidateDetectorShape.from_class(module, node)
         if shape is None:
             return ()
         return tuple(
@@ -7648,14 +7701,13 @@ class DeclarativeDetectorClassCandidate(ClassLineWitnessCandidate):
         if node.end_lineno is None or len(node.bases) != 1:
             return None
         base = ParameterizedBaseSource.from_node(node.bases[0])
-        if (
-            base is None
-            or base.base_name not in DerivedCandidateCollectorMixin.collector_base_names()
-            or not base.parameter_source.isidentifier()
-        ):
-            return None
         assignment_values = cls.assignment_values(node)
-        if assignment_values is None:
+        if base is None or not base.parameter_source.isidentifier() or assignment_values is None:
+            return None
+        reference = CandidateCollectorBaseReference.from_node(
+            module, node.bases[0], line=node.lineno,
+        )
+        if reference is None or not reference.is_candidate:
             return None
         return cls(
             file_path=module.file_path,

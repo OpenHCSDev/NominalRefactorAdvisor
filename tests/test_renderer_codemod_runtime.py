@@ -183,3 +183,138 @@ def test_detector_collapse_keeps_class_dependent_renderers(
         assert simulation.is_clean
         simulation.document_simulation.apply()
         assert _execute(module_path) == expected
+
+
+@pytest.mark.parametrize(
+    "detector_id, body",
+    (
+        (
+            "direct_build_finding_renderer",
+            "    def _finding_for_candidate(self, candidate):\n"
+            "        return self.build_finding('summary', ())\n",
+        ),
+        ("declarative_detector_class", "    finding_renderer = object()\n"),
+    ),
+)
+def test_detector_rewrites_require_nominal_base_identity(
+    tmp_path: Path, detector_id: str, body: str,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    module_path.write_text(
+        "import json\n"
+        "class ModuleCollectorCandidateDetector:\n"
+        "    def __class_getitem__(cls, item):\n        return cls\n"
+        "    def build_finding(self, summary, evidence):\n        return summary\n"
+        "class ProbeCandidate:\n    pass\n"
+        "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):\n"
+        "    detector_id = 'probe'\n"
+        "    finding_spec = object()\n" + body +
+        "print(json.dumps({'name': ProbeDetector.__name__}))\n"
+    )
+    assert _execute(module_path) == {"name": "ProbeDetector"}
+    findings = tuple(
+        finding for finding in analyze_path(tmp_path)
+        if finding.detector_id == detector_id
+    )
+    assert len(findings) == 1
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+    plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "nominal collector base" in plan.records[0].reason
+
+
+@pytest.mark.parametrize(
+    "import_source, base_source",
+    (
+        (
+            "from nominal_refactor_advisor.detectors._base import "
+            "ModuleCollectorCandidateDetector as Collector",
+            "Collector",
+        ),
+        (
+            "import nominal_refactor_advisor.detectors._base as detector_runtime",
+            "detector_runtime.ModuleCollectorCandidateDetector",
+        ),
+        (
+            "from nominal_refactor_advisor.detectors._base import "
+            "ModuleCollectorCandidateDetector\nCollector = ModuleCollectorCandidateDetector",
+            "Collector",
+        ),
+    ),
+    ids=("import-alias", "qualified-import", "assignment-alias"),
+)
+def test_detector_rewrites_follow_nominal_base_aliases(
+    tmp_path: Path, import_source: str, base_source: str,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    source = _RUNTIME_SOURCE.replace("PAYLOAD", "'summary', ()").replace(
+        "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector",
+        import_source,
+    ).replace(
+        "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):",
+        f"class ProbeDetector({base_source}[ProbeCandidate]):",
+    )
+    module_path.write_text(source)
+    expected = _execute(module_path)
+    for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
+        findings = tuple(
+            finding for finding in analyze_path(tmp_path)
+            if finding.detector_id == detector_id
+        )
+        assert len(findings) == 1
+        snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+        plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
+        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
+            plan.records[0].reason
+        )
+        simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        assert simulation.is_clean
+        simulation.document_simulation.apply()
+        assert _execute(module_path) == expected
+
+
+@pytest.mark.parametrize(
+    "prefix, suffix",
+    (
+        ("", ""),
+        ("from unrelated import ModuleCollectorCandidateDetector\n", ""),
+        (
+            "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
+            "ModuleCollectorCandidateDetector = replacement\n",
+            "",
+        ),
+        (
+            "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
+            "from unrelated import *\n",
+            "",
+        ),
+        (
+            "",
+            "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n",
+        ),
+        (
+            "from nominal_refactor_advisor.detectors._base import ModuleCollectorCandidateDetector\n"
+            "del ModuleCollectorCandidateDetector\n",
+            "",
+        ),
+    ),
+    ids=("missing", "unrelated", "rebound", "star-import", "late-import", "deleted"),
+)
+def test_detector_rewrite_retains_unresolved_binding_evidence(
+    tmp_path: Path, prefix: str, suffix: str,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    module_path.write_text(
+        prefix + "class ProbeCandidate:\n    pass\n"
+        "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):\n"
+        "    finding_spec = SPEC\n    finding_renderer = RENDERER\n" + suffix
+    )
+    findings = tuple(
+        finding for finding in analyze_path(tmp_path)
+        if finding.detector_id == "declarative_detector_class"
+    )
+    assert len(findings) == 1
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+    plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "nominal collector base" in plan.records[0].reason

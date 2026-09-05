@@ -3688,7 +3688,7 @@ def _typed_candidate_cast_boilerplate_candidates(
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        detector_shape = ConcreteCandidateDetectorShape.from_class(node)
+        detector_shape = ConcreteCandidateDetectorShape.from_class(module, node)
         if detector_shape is None:
             continue
         for statement in node.body:

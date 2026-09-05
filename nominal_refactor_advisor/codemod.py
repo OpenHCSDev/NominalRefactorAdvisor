@@ -543,6 +543,7 @@ from .declaration_dependencies import (
     ModuleLexicalDependencyProjection,
 )
 from .detectors._base import (
+    CandidateCollectorBaseReference,
     CandidateCollectorBoilerplateCandidate,
     CallableCandidateFindingRenderer,
     DeclarativeDetectorClassCandidate,
@@ -4998,6 +4999,7 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer(
         module: ParsedModule,
         context: CodemodSelectorContext,
     ) -> RefactorRecipe:
+        CandidateCollectorBaseReference.require_for_target(module, node)
         call = candidate.build_call(node)
         if call is None:
             raise ValueError("finding renderer call is no longer derivable")
@@ -5072,7 +5074,7 @@ class DeclarativeDetectorClassFindingRecipeSynthesizer(
         keywords.append(
             ast.keyword(
                 arg=DetectorDeclarationOptions.detector_base_field_name,
-                value=ast.Name(id=candidate.base_name, ctx=ast.Load()),
+                value=cast(ast.Subscript, node.bases[0]).value,
             )
         )
         if candidate.class_name != DetectorDeclaration.class_name_from_candidate_name(
@@ -5102,6 +5104,7 @@ class DeclarativeDetectorClassFindingRecipeSynthesizer(
         module: ParsedModule,
         context: CodemodSelectorContext,
     ) -> RefactorRecipe:
+        CandidateCollectorBaseReference.require_for_target(module, node)
         ModuleLexicalDependencyProjection.require_class_body_independence(node)
         source = context.sources_by_file_path[target.file_path]
         class_span = SourceTextSpan.from_offsets(
