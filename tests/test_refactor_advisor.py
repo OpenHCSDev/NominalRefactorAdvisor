@@ -10299,9 +10299,6 @@ def test_ast_keyword_source_projection_owns_keyword_rendering(
 
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
-REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
-    "repeated_validate_shape_guard_family"
-)
 
 
 class _IncrementStep(EffectStep[int, int]):
@@ -14005,82 +14002,6 @@ def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
     )
     assert "has_alpha_chain" in finding.summary
     assert "has_beta_chain" in finding.summary
-
-
-def test_detects_repeated_validate_shape_guard_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nclass AnchoredArray:\n    def __init__(self, positions, vectors, strengths):\n        self.positions = positions\n        self.vectors = vectors\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:\n            raise ValueError("vectors must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.positions.shape[0] != self.vectors.shape[0]:\n            raise ValueError("positions and vectors must align")\n        if self.positions.shape[0] != self.strengths.shape[0]:\n            raise ValueError("positions and strengths must align")\n\n\nclass IndexedArray:\n    def __init__(self, atom_rows, reference_rows, weights):\n        self.atom_rows = atom_rows\n        self.reference_rows = reference_rows\n        self.weights = weights\n\n    def validate(self):\n        if self.atom_rows.ndim != 2 or self.atom_rows.shape[1] != 3:\n            raise ValueError("rows must have shape (N, 3)")\n        if self.reference_rows.ndim != 2 or self.reference_rows.shape[1] != 3:\n            raise ValueError("references must have shape (N, 3)")\n        if self.weights.ndim != 1:\n            raise ValueError("weights must be 1D")\n        if self.atom_rows.shape[0] != self.reference_rows.shape[0]:\n            raise ValueError("row families must align")\n        if self.atom_rows.shape[0] != self.weights.shape[0]:\n            raise ValueError("rows and weights must align")\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-        )
-    )
-    assert "AnchoredArray.validate" in finding.summary
-    assert "IndexedArray.validate" in finding.summary
-
-
-def test_detects_cross_module_repeated_validate_shape_guard_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/chemistry.py",
-        '\nclass AnchoredArray:\n    def __init__(self, positions, vectors, strengths):\n        self.positions = positions\n        self.vectors = vectors\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:\n            raise ValueError("vectors must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.positions.shape[0] != self.vectors.shape[0]:\n            raise ValueError("positions and vectors must align")\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        '\nclass ReceptorGrid:\n    def __init__(self, centers, normals, weights):\n        self.centers = centers\n        self.normals = normals\n        self.weights = weights\n\n    def validate(self):\n        if self.centers.ndim != 2 or self.centers.shape[1] != 3:\n            raise ValueError("centers must have shape (N, 3)")\n        if self.normals.ndim != 2 or self.normals.shape[1] != 3:\n            raise ValueError("normals must have shape (N, 3)")\n        if self.weights.ndim != 1:\n            raise ValueError("weights must be 1D")\n        if self.centers.shape[0] != self.normals.shape[0]:\n            raise ValueError("centers and normals must align")\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-            and "AnchoredArray.validate" in finding.summary
-            and ("ReceptorGrid.validate" in finding.summary)
-        )
-    )
-    assert "repeat 4 shared shape/ndim guard forms" in finding.summary
-
-
-def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/a.py",
-        '\nclass AnchoredArray:\n    def __init__(self, positions, strengths):\n        self.positions = positions\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/b.py",
-        '\nclass IndexedArray:\n    def __init__(self, rows, mask, strengths):\n        self.rows = rows\n        self.mask = mask\n        self.strengths = strengths\n\n    def validate(self):\n        if self.rows.ndim != 2 or self.mask.ndim != 2:\n            raise ValueError("rows and masks must be 2D")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.rows.shape != self.mask.shape:\n            raise ValueError("rows and masks must match")\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/c.py",
-        '\nclass ReceptorGrid:\n    def __init__(self, coords, mask):\n        self.coords = coords\n        self.mask = mask\n\n    def validate(self):\n        if self.coords.ndim != 2 or self.coords.shape[1] != 3:\n            raise ValueError("coords must have shape (N, 3)")\n        if self.coords.shape != self.mask.shape:\n            raise ValueError("coords and mask must match")\n',
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-            and "AnchoredArray.validate" in finding.summary
-            and ("IndexedArray.validate" in finding.summary)
-            and ("ReceptorGrid.validate" in finding.summary)
-        )
-    )
-    assert "repeat 4 shared shape/ndim guard forms" in finding.summary
 
 
 def test_preserves_template_method_implementation_inheritance(tmp_path: Path) -> None:

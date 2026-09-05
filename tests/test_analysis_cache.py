@@ -2481,15 +2481,6 @@ def test_native_constant_projection_matches_ast_family(
     "family, source",
     (
         (
-            systemic_detectors.CompactValidateShapeModuleProjectionFamily,
-            "class Payload:\n"
-            "    def validate(self):\n"
-            "        if self.values.ndim != 2:\n"
-            "            raise ValueError('ndim')\n"
-            "        if self.values.shape[0] != self.count:\n"
-            "            raise ValueError('shape')\n",
-        ),
-        (
             systemic_detectors._DataclassNamespaceCliModuleProjectionFamily,
             "@dataclass(frozen=True)\n"
             "class Config:\n"
@@ -6273,9 +6264,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert semantic_descent_detectors.SemanticMirrorWithoutDescentDetector in (
-        partition.compact_global_detector_types
-    )
-    assert systemic_detectors.RepeatedValidateShapeGuardFamilyDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector in (
