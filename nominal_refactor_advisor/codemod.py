@@ -235,6 +235,7 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
+    RepositoryModuleBindingProof,
     declared_nominal_base_count,
 )
 from .codemod_architecture_guards import (
@@ -2905,9 +2906,15 @@ class CandidateCollectorMigration:
         )
 
     def source_edits(
-        self,
-        context: CodemodSelectorContext,
+        self, context: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
+        RepositoryModuleBindingProof(
+            context.parsed_modules
+        ).require_native_type_in_class(
+            context.parsed_module_for_source_path(self.target.file_path),
+            self.node,
+            self.candidate.collector_descriptor_type,
+        )
         ClassBodyReferenceCapture(
             context.parsed_module_for_source_path(self.target.file_path),
             self.node,

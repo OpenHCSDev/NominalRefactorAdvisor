@@ -50,6 +50,7 @@ from ..descriptor_algebra import (
     AliasProperty,
     ClassAliasProperty,
     CollectionAttributeProjection,
+    ConstantProperty,
 )
 from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
@@ -7404,6 +7405,8 @@ class CandidateCollectorBoilerplateCandidate(
     collector_scope: CandidateCollectorScope
     candidate_type_source: str
 
+    collector_descriptor_type = ConstantProperty[type[staticmethod]](staticmethod)
+
     @classmethod
     def from_module(
         cls,
@@ -7501,7 +7504,8 @@ class CandidateCollectorBoilerplateCandidate(
     @property
     def collector_declaration_source(self) -> str:
         return (
-            f"{self.collector_declaration_name} = staticmethod({self.collector_name})"
+            f"{self.collector_declaration_name} = "
+    f"{self.collector_descriptor_type.__name__}({self.collector_name})"
         )
 
     @property

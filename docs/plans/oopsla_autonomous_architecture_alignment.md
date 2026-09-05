@@ -536,3 +536,37 @@ Further collector work must establish the complete base-replacement relation
 and generated descriptor binding, beyond the forwarding and capture conditions
 checked here. This batch does not establish arbitrary class-replacement or
 annotation-introspection equivalence.
+
+### Generated Descriptor Binding
+
+Native counterexamples confirmed that module-level or class-local shadowing of
+`staticmethod` changes the generated collector behaviour. The candidate now
+owns its descriptor type through the existing `ConstantProperty`; both source
+rendering and validation derive from that value. A direct attribute containing
+the native `staticmethod` type exposed its `__isabstractmethod__` descriptor to
+ABC machinery, so a constant descriptor is necessary rather than a second type
+table or a special metaclass exception.
+
+`ModuleNominalBindingView.require_native_type_in_class` reuses its builtin and
+named-reference witnesses. Repository export evidence must also close wildcard
+imports. A positive legacy fixture now imports its base explicitly, while native
+CLI tests cover explicit builtin imports and wildcard imports with declared
+exports. Unknown wildcard exposure remains unproved.
+
+`docs/examples/collector_descriptor_refactor.py` records the six-stage migration
+after authoring the shared binding-view method. The API reference records the
+binding boundary separately from this runnable plan.
+
+The six-stage CLI replay against `226e13f` produced matching consumer declaration
+ASTs. The full suite passed 2,216 tests (13 skipped), Python 3.14 passed 64 focused
+checks and the ASCII-locale run passed 57. The touched-file audit ran all 81
+detectors without omissions or findings. The docs build retains the two existing
+duplicate-description warnings.
+
+A native base-selection probe confirmed the remaining relation gap. A source
+class named `CrossModuleCollectorCandidateDetector` retained the collection
+result but changed an inherited `marker` from `original` to `replacement`.
+Current selection accepted it. The next batch must prove the base-replacement
+relation rather than infer full class behaviour from a name and forwarding
+shape. The probe used an in-memory source snapshot and native execution before
+and after simulation; it did not modify repository source.

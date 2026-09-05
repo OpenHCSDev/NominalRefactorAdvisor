@@ -94,6 +94,24 @@ from nominal_refactor_advisor.json_reports import json_report_object
             "",
             "Owner()._candidate_items([], settings=None)",
         ),
+        (
+            "def collect(modules): return 'original'\n"
+            "def staticmethod(function): return lambda *args: 'wrong descriptor'\n",
+            "",
+            "self, modules, config",
+            "return collect(modules)",
+            "",
+            "Owner()._candidate_items([], None)",
+        ),
+        (
+            "def collect(modules): return 'original'\n",
+            "    staticmethod = lambda function: lambda *args: 'wrong descriptor'\n"
+            "    def _collect_findings(self): pass\n",
+            "self, modules, config",
+            "return collect(modules)",
+            "",
+            "Owner()._candidate_items([], None)",
+        ),
     ),
     ids=(
         "keyword",
@@ -105,6 +123,8 @@ from nominal_refactor_advisor.json_reports import json_report_object
         "default",
         "extra-delete",
         "parameter-rename",
+        "module-descriptor-shadow",
+        "class-descriptor-shadow",
     ),
 )
 def test_migration_preserves_native_outcome_or_refuses_without_writing(
@@ -157,11 +177,16 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
 
 
 @pytest.mark.parametrize("configured", (False, True))
+@pytest.mark.parametrize(
+    "descriptor_import",
+    ("", "from builtins import staticmethod\n", "from provider import *\n"),
+)
 def test_cli_preserves_stable_imported_collector_alias(
-    tmp_path: Path, configured: bool
+    tmp_path: Path, configured: bool, descriptor_import: str
 ) -> None:
     provider = tmp_path / "provider.py"
     provider.write_text(
+        "__all__ = ('collect',)\n"
         "def collect(modules, config=None): return (modules, config)\n",
         encoding="utf-8",
         newline="",
@@ -174,7 +199,7 @@ def test_cli_preserves_stable_imported_collector_alias(
     )
     arguments = "modules, config" if configured else "modules"
     source = (
-        "from typing import Generic, TypeVar\n"
+        descriptor_import + "from typing import Generic, TypeVar\n"
         "from provider import collect as acquire\n"
         "T = TypeVar('T')\n"
         "class CrossModuleCandidateDetector(Generic[T]): pass\n"

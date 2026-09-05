@@ -6083,7 +6083,7 @@ def test_derive_candidate_collector_collapses_existing_candidate_method(
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from ._base import *\n"
+        "from ._base import CrossModuleCandidateDetector\n"
         "\n\n"
         "class Candidate:\n"
         "    pass\n"
@@ -6131,7 +6131,12 @@ def test_derive_candidate_collector_collapses_existing_candidate_method(
     )
     assert "candidate_collector = staticmethod(_candidates)" in rewritten
     assert "def _candidate_items(" not in rewritten
-    assert rewritten.count("CrossModuleCollectorCandidateDetector") == 1
+    assert sum(
+        alias.name == "CrossModuleCollectorCandidateDetector"
+        for statement in ast.parse(rewritten).body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    ) == 1
 
 
 def test_refactor_recipe_replaces_module_assignment(

@@ -3041,6 +3041,40 @@ def nominal_reference_root_name(reference: ast.AST) -> str | None:
 class ModuleNominalBindingView(ABC):
     """Representation-independent nominal bindings at one module position."""
 
+    def require_native_type_in_class(
+        self,
+        module: ParsedModule,
+        owner: ast.ClassDef,
+        declaration: type,
+    ) -> None:
+        """Prove the native type emitted into a class resolves to its declaration."""
+
+        name = declaration.__name__
+        class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
+        if name in class_names:
+            raise ValueError(f"Class namespace shadows native type {name!r}")
+        witnesses = (
+            self.unshadowed_builtin_witness(
+                module,
+                name,
+                line=owner.lineno,
+                preceding_class_bound_names=class_names,
+            ),
+            self.reference_witness_at(
+                module,
+                ast.Name(id=name, ctx=ast.Load()),
+                line=owner.lineno,
+            ),
+        )
+        qualified_name = f"{declaration.__module__}.{declaration.__qualname__}"
+        if not any(
+            witness is not None and witness.qualified_name == qualified_name
+            for witness in witnesses
+        ):
+            raise ValueError(
+                f"Class creation does not prove native type binding {qualified_name!r}"
+            )
+
     @abstractmethod
     def unshadowed_builtin_witness(
         self,

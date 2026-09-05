@@ -608,6 +608,16 @@ collector implementations. Flattening is not a direct forwarding relation, even
 when its inherited method signature matches. Parameter spelling participates in
 the relation because callers may supply keyword arguments.
 
+The candidate's ``collector_descriptor_type`` owns the generated descriptor.
+Its constant property retains the native type without exposing the type's own
+``__isabstractmethod__`` descriptor to the candidate's ABC machinery. Rendering
+and validation derive from this same value.
+``ModuleNominalBindingView.require_native_type_in_class`` checks the generated
+name against that declaration at class creation. Module or class shadowing and
+unresolved wildcard exposure prevent the rewrite. Explicit builtin imports and
+wildcard imports whose export declarations exclude the name can establish the
+required binding.
+
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 
