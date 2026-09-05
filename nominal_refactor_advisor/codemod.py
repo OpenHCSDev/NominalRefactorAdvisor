@@ -29,6 +29,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .codemod_assignment_source import AssignmentDeletionSource
 from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
@@ -925,7 +926,7 @@ class RenameTopLevelBindingAuthorityOperation(
 
 @dataclass(frozen=True, kw_only=True)
 class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
-    """Source-proved deletion of one non-empty assignment-name set."""
+    """Explicit removal of selected assignments, including their evaluations."""
 
     assignment_names: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec()
@@ -940,31 +941,35 @@ class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
         if len(set(self.assignment_names)) != len(self.assignment_names):
             raise ValueError(f"{operation_key} requires unique assignment_names")
 
-    def selected_assignment_statements(
-        self,
-        statements: Iterable[ast.stmt],
-    ) -> tuple[ast.stmt, ...]:
-        requested_names = set(self.assignment_names)
-        pending_names = set(requested_names)
-        assignments: list[ast.stmt] = []
-        for statement in statements:
-            statement_names = set(AssignmentStatementNameProjection(statement).names)
-            matched_names = pending_names & statement_names
-            if not matched_names:
-                continue
-            unselected_names = statement_names - requested_names
-            if unselected_names:
-                raise ValueError(
-                    "Selected assignment statement also declares unselected names "
-                    f"{tuple(sorted(unselected_names))!r}"
-                )
-            pending_names -= matched_names
-            assignments.append(statement)
-        if pending_names:
-            raise ValueError(
-                f"No assignment statements found for {tuple(sorted(pending_names))!r}"
-            )
-        return tuple(assignments)
+    @abstractmethod
+    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
+        raise NotImplementedError
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        authority = self.source_authority(snapshot)
+        return authority.geometry.physical_edits(
+            file_path=authority.file_path,
+            replacements=authority.replacements(self.assignment_names),
+            rationale=self.rationale or f"Remove assignments {self.assignment_names!r} and their evaluations.",
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class NamedScopeAssignmentDeletionOperationABC(AssignmentDeletionOperationABC, ABC):
+    """Resolve a named scope using the leaf's existing AST-kind declaration."""
+
+    @property
+    @abstractmethod
+    def scope_kind(self) -> AstTargetNodeKind:
+        raise NotImplementedError
+
+    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
+        _identifier, target, node = self.target_node_from_context(snapshot)
+        if not self.scope_kind.accepts(node):
+            raise ValueError(f"Target {target.qualname!r} is not a {self.scope_kind.value} definition")
+        return AssignmentDeletionSource(node, snapshot.sources_by_file_path[target.file_path], target.file_path)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1626,26 +1631,17 @@ class CreateFileOperation(SourcePayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteClassAssignmentsOperation(AssignmentDeletionOperationABC):
-    """Delete a proven set of class-level assignment statements."""
+class DeleteClassAssignmentsOperation(NamedScopeAssignmentDeletionOperationABC):
+    """Explicitly delete complete class-level assignment statements."""
 
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        _target_identifier, target, node = self.target_node_from_context(snapshot)
-        if not isinstance(node, ast.ClassDef):
-            raise ValueError(f"Target {target.qualname!r} is not a class definition")
-        return tuple(
-            SourceSpanDeletion(
-                file_path=target.file_path,
-                start_line=assignment.lineno,
-                end_line=assignment.end_lineno or assignment.lineno,
-                rationale=self.rationale
-                or f"Delete class assignments {self.assignment_names!r}.",
-            )
-            for assignment in self.selected_assignment_statements(node.body)
-        )
+    scope_kind = AstTargetNodeKind.CLASS
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteFunctionAssignmentsOperation(NamedScopeAssignmentDeletionOperationABC):
+    """Explicitly delete direct function assignments and their evaluations."""
+
+    scope_kind = AstTargetNodeKind.FUNCTION
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1692,25 +1688,13 @@ class DeleteInheritedAutoRegisterConfigurationOperation(
 class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
     """Delete named module-level assignment statements."""
 
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
         source_path = self.required_source_path(
             snapshot,
             "delete_module_assignments",
         )
         module = snapshot.module_nodes_by_file_path[source_path]
-        return tuple(
-            SourceSpanDeletion(
-                file_path=source_path,
-                start_line=assignment.lineno,
-                end_line=assignment.end_lineno or assignment.lineno,
-                rationale=self.rationale
-                or f"Delete module assignments {self.assignment_names!r}.",
-            )
-            for assignment in self.selected_assignment_statements(module.body)
-        )
+        return AssignmentDeletionSource(module, snapshot.sources_by_file_path[source_path], source_path)
 
 
 @dataclass(frozen=True, kw_only=True)

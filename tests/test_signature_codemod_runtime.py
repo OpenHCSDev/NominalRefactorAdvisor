@@ -37,6 +37,7 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
     if with_witness:
         witness_plan = root / "docs/examples/renderer_witness_sequence.json"
+        assert "patch_target" not in witness_plan.read_text()
         sequence = CodemodPlanSequence.compose((
             sequence,
             CodemodPlanSequence.from_payload_fields(json.loads(witness_plan.read_text())),

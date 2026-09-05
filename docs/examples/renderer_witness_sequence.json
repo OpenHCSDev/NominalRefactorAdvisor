@@ -69,13 +69,10 @@
           "arguments_source": "witness",
           "selection_count": {"exact": 1}
         }, {
-          "operation": "patch_target",
+          "operation": "delete_function_assignments",
           "file_path": "nominal_refactor_advisor/codemod.py",
           "target_qualname": "run",
-          "replacements": [{
-            "old_source": "    candidate = witness.candidate\n    call = candidate.build_call(witness.node)\n",
-            "new_source": ""
-          }]
+          "assignment_names": ["candidate", "call"]
         }]
       }]
     }

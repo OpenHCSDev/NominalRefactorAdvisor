@@ -253,9 +253,19 @@ left alone. It rejects unresolved selections, argument unpacking, and edits that
 would discard argument comments.
 
 You choose the new expressions and their evaluation order. Signature binding is
-not a proof that those expressions preserve behaviour. One target-checked text
-patch remains in this example to remove the old assignments, including the call
-whose result is now derived inside the renderer.
+not a proof that those expressions preserve behaviour.
+
+Use ``delete_function_assignments`` to explicitly remove the old direct
+assignments by name. This removes their evaluations too, including any calls
+and attribute access. Choose this step only after reviewing those effects and
+the remaining uses of the names. Repeated assignments to the same name,
+partially selected chained bindings, and mixed attribute or subscript writes
+are rejected. The operation preserves neighbouring statements on the same line
+and supplies ``pass`` when the function would otherwise have an empty body.
+It also keeps an ordinary string expression from becoming a new docstring.
+
+The composed renderer example now uses declaration-selected operations
+throughout, with no exact-text patches.
 
 Converting a Detector to a Declaration
 --------------------------------------

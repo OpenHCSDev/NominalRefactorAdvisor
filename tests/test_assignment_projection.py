@@ -30,3 +30,18 @@ def test_assignment_statement_projection_includes_augmented_targets() -> None:
     statement = ast.parse("result += increment").body[0]
 
     assert AssignmentStatementNameProjection(statement).names == ("result",)
+
+
+@pytest.mark.parametrize("source,names,only_names", (
+    ("first, *rest = values", ("first", "rest"), True),
+    ("(first, [second, *rest]) = values", ("first", "second", "rest"), True),
+    ("first = obj.attr = value", ("first",), False),
+    ("first, obj[0] = values", ("first",), False),
+    ("obj.attr = value", (), False),
+))
+def test_assignment_names_and_write_completeness_share_target_leaves(
+    source: str, names: tuple[str, ...], only_names: bool,
+) -> None:
+    projection = AssignmentStatementNameProjection(ast.parse(source).body[0])
+    assert projection.names == names
+    assert projection.binds_only_names is only_names
