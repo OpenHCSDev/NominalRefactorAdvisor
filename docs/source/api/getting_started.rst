@@ -228,7 +228,7 @@ Then remove the old parameters and update the callers in the same batch.
 
 The :download:`renderer witness sequence <../../examples/renderer_witness_sequence.json>`
 extends the renderer extraction example above. Compose the two sequences with
-``CodemodPlanSequence.compose`` and simulate the resulting nine-stage batch.
+``CodemodPlanSequence.compose`` and simulate the combined batch.
 The regression test obtains its witness through NRA's actual source-reproof
 operation and executes the renderer helpers before and after applying the plan.
 
@@ -243,9 +243,19 @@ executable body. It preserves the docstring and existing statements, including
 nested decorators, and expands inline suites when needed. The witness example
 uses this operation to introduce the new call derivation.
 
-One target-checked text patch remains in this example: it updates the caller and
-removes the old local aliases. That step remains an explicit source edit in the
-saved plan.
+After changing the signature, use ``replace_declared_call_arguments`` in the
+next stage to update calls in a selected scope. Its ``callee`` selector names the
+declaring function or method, including calls through an inheriting class. Set
+``arguments_source`` to the new argument list and ``selection_count`` to the
+expected number of calls. The operation resolves the callee again and checks the
+new arguments against its current signature; unrelated same-named methods are
+left alone. It rejects unresolved selections, argument unpacking, and edits that
+would discard argument comments.
+
+You choose the new expressions and their evaluation order. Signature binding is
+not a proof that those expressions preserve behaviour. One target-checked text
+patch remains in this example to remove the old assignments, including the call
+whose result is now derived inside the renderer.
 
 Converting a Detector to a Declaration
 --------------------------------------

@@ -620,6 +620,7 @@ from .planner import (
     build_refactor_execution_plan_from_groups,
 )
 from .product_flow import LexicalValueReference
+from .codemod_call_source import DeclaredCallArgumentsRewrite
 from .projection_descent_codemod import (
     DescendEnumKeyedDerivedMapFacadeOperation as DescendEnumKeyedDerivedMapFacadeOperation,
     DescendTypeKeyedBehaviorProjectionOperation as DescendTypeKeyedBehaviorProjectionOperation,
@@ -4512,6 +4513,31 @@ class PrependFunctionBodyOperation(FunctionBodySourcePayload, FunctionMutationOp
     """Insert statements after a function's docstring, retaining its existing body."""
 
     source_authority = FunctionBodyPrefixSourceAuthority
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceDeclaredCallArgumentsOperation(SourceReprovedOperation):
+    """Replace arguments of declaration-resolved calls in one selected scope."""
+
+    callee: SourceRewriteTarget = codemod_payload_field(PayloadRecordValueCodec(SourceRewriteTarget))
+    arguments_source: str = codemod_payload_field(EmptyDefaultStringPayloadValueCodec(), default="")
+    selection_count: SelectionCountExpectation = codemod_payload_field(
+        SelectionCountPayloadValueCodec(), default_factory=SelectionCountExpectation,
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _identifier, caller = self.target_digest(snapshot)
+        callee_id = self.callee.required_target_id(snapshot.source_index)
+        authority = DeclaredCallArgumentsRewrite(
+            snapshot, caller, snapshot.source_index.target_by_id[callee_id],
+            self.arguments_source, self.selection_count,
+        )
+        return authority.geometry.physical_edits(
+            file_path=caller.file_path, replacements=authority.replacements(),
+            rationale=self.rationale or f"Replace declared call arguments in {caller.qualname!r}.",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

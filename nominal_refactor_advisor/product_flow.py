@@ -301,6 +301,11 @@ class CompactFunctionIdentity:
 class CompactValueExpression(ABC):
     """AST-free value shape used by signatures and call projections."""
 
+    @staticmethod
+    def project(expression: ast.expr) -> "CompactValueExpression":
+        reference = LexicalValueReference.from_expression(expression)
+        return OpaqueValueExpression() if reference is None else reference
+
     @property
     @abstractmethod
     def lexical_reference(self) -> "LexicalValueReference | None":
@@ -380,6 +385,39 @@ class CompactKeywordArgument:
     @property
     def is_unpacked(self) -> bool:
         return self.name is None
+
+
+@dataclass(frozen=True)
+class CompactCallArguments:
+    """One argument list, shared by collected calls and authored call edits."""
+
+    positional: tuple[CompactCallArgument, ...]
+    keywords: tuple[CompactKeywordArgument, ...]
+
+    @classmethod
+    def from_call(cls, node: ast.Call) -> Self:
+        return cls(
+            positional=tuple(
+                CompactCallArgument(
+                    CompactValueExpression.project(
+                        argument.value if isinstance(argument, ast.Starred) else argument
+                    ),
+                    is_unpacked=isinstance(argument, ast.Starred),
+                )
+                for argument in node.args
+            ),
+            keywords=tuple(
+                CompactKeywordArgument(keyword.arg, CompactValueExpression.project(keyword.value))
+                for keyword in node.keywords
+            ),
+        )
+
+    @property
+    def values(self) -> tuple[CompactValueExpression, ...]:
+        return tuple(argument.value for argument in (*self.positional, *self.keywords))
+
+    def bind_to(self, declaration: "CompactFunctionDeclaration") -> "CompactCallBinding":
+        return declaration.bind_call(self.positional, self.keywords)
 
 
 @dataclass(frozen=True)
@@ -977,8 +1015,7 @@ class CompactCallableReferenceUse:
 @dataclass(frozen=True)
 class CompactFunctionCall:
     target: CompactCallTargetReference
-    positional_arguments: tuple[CompactCallArgument, ...]
-    keyword_arguments: tuple[CompactKeywordArgument, ...]
+    arguments: CompactCallArguments
     result: CompactCallResult
     position: CompactFlowPosition
     source_span: SourceByteSpan
@@ -996,25 +1033,22 @@ class CompactFunctionCall:
         return self.result.binding
 
     def bind_to(self, declaration: "CompactFunctionDeclaration") -> CompactCallBinding:
-        return declaration.bind_call(
-            self.positional_arguments,
-            self.keyword_arguments,
-        )
+        return self.arguments.bind_to(declaration)
 
     def product_construction(self) -> "CompactProductConstruction | None":
         if (
             self.result.use is not CompactCallResultUse.BOUND
             or self.result.binding is None
-            or self.positional_arguments
-            or any(argument.is_unpacked for argument in self.keyword_arguments)
-            or len({argument.name for argument in self.keyword_arguments})
-            != len(self.keyword_arguments)
+            or self.arguments.positional
+            or any(argument.is_unpacked for argument in self.arguments.keywords)
+            or len({argument.name for argument in self.arguments.keywords})
+            != len(self.arguments.keywords)
         ):
             return None
         return CompactProductConstruction(
             target=self.target,
             result_binding=self.result.binding,
-            field_arguments=self.keyword_arguments,
+            field_arguments=self.arguments.keywords,
             position=self.position,
             line=self.line,
         )
@@ -1088,8 +1122,8 @@ class CompactLocalSignatureObserver(StrEnum):
             and reference.parts in self._accepted_reference_parts
             and (
                 not self._requires_no_arguments
-                or not call.positional_arguments
-                and not call.keyword_arguments
+                or not call.arguments.positional
+                and not call.arguments.keywords
             )
         )
 
@@ -1605,10 +1639,6 @@ class _CompactFlowCollector(ast.NodeVisitor):
             )
         return QualifiedCallTargetReference(reference)
 
-    def _project_value(self, expression: ast.expr) -> CompactValueExpression:
-        reference = LexicalValueReference.from_expression(expression)
-        return OpaqueValueExpression() if reference is None else reference
-
     def _is_potential_callable_reference(
         self,
         reference: LexicalValueReference,
@@ -1661,24 +1691,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.calls.append(
             CompactFunctionCall(
                 target=self._call_target(node.func),
-                positional_arguments=tuple(
-                    CompactCallArgument(
-                        self._project_value(
-                            argument.value
-                            if isinstance(argument, ast.Starred)
-                            else argument
-                        ),
-                        is_unpacked=isinstance(argument, ast.Starred),
-                    )
-                    for argument in node.args
-                ),
-                keyword_arguments=tuple(
-                    CompactKeywordArgument(
-                        keyword.arg,
-                        self._project_value(keyword.value),
-                    )
-                    for keyword in node.keywords
-                ),
+                arguments=CompactCallArguments.from_call(node),
                 result=result,
                 position=self._position(),
                 source_span=SourceByteSpan.require_node(node),

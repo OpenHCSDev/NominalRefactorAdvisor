@@ -56,7 +56,7 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean
-    assert simulation.stage_count == (9 if with_witness else 4)
+    assert simulation.stage_count == (10 if with_witness else 4)
     assert module_path.read_text() == source
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(module_path)], text=True) == expected

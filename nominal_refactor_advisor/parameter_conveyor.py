@@ -19,7 +19,6 @@ from .carrier_collapse import (
 )
 from .class_index import (
     CompactModuleClassProjection,
-    CompactModuleClassProjectionFamily,
 )
 from .product_flow import (
     CompactFlowPosition,
@@ -29,7 +28,6 @@ from .product_flow import (
     CompactValueOriginResolution,
     CompactProductFlowModuleProjection,
     LexicalValueReference,
-    compact_product_flow_projection,
 )
 from .product_flow_authority import (
     CompactCallableComponentAuthorityProof,
@@ -405,10 +403,7 @@ class ClosedParameterConveyorComponentBuilder:
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
         """Collect both proof families from one complete source snapshot."""
 
-        return cls.from_projections(
-            tuple(compact_product_flow_projection(module) for module in modules),
-            CompactModuleClassProjectionFamily.collect_modules(modules),
-        )
+        return cls(CompactProductFlowRepository.from_modules(modules))
 
     @cached_property
     def simple_bound_arguments_by_call(

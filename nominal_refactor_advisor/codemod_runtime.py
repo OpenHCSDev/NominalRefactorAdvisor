@@ -143,6 +143,8 @@ from .source_index import (
     build_source_index_artifacts,
 )
 
+from .product_flow_authority import CompactProductFlowRepository
+
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 
 
@@ -164,6 +166,10 @@ def _parsed_modules_from_source_mapping(
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
+
+    @cached_property
+    def product_flow_repository(self) -> CompactProductFlowRepository:
+        return CompactProductFlowRepository.from_modules(self.parsed_modules)
 
     @cached_property
     def exact_dataclass_field_authority_component_builder(

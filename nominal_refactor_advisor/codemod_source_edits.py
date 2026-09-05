@@ -7,6 +7,7 @@ import hashlib
 import io
 import sys
 import tokenize
+from bisect import bisect_left
 from abc import (
     ABC,
     abstractmethod,
@@ -953,14 +954,17 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def byte_span_offsets(self, span: SourceByteSpan) -> tuple[int, int]:
         return span.character_offsets(self.lines, self.line_offsets)
 
+    @cached_property
+    def token_start_offsets(self) -> tuple[int, ...]:
+        return tuple(self.token_position_offset(token.start) for token in self.tokens)
+
+    def tokens_in_span(self, span: SourceTextSpan) -> tuple[tokenize.TokenInfo, ...]:
+        start = bisect_left(self.token_start_offsets, span.start_offset)
+        end = bisect_left(self.token_start_offsets, span.end_offset)
+        return self.tokens[start:end]
+
     def span_contains_comment(self, span: SourceTextSpan) -> bool:
-        return any(
-            token.type == tokenize.COMMENT
-            and span.start_offset
-            <= self.token_position_offset(token.start)
-            < span.end_offset
-            for token in self.tokens
-        )
+        return any(token.type == tokenize.COMMENT for token in self.tokens_in_span(span))
 
     def indented_source(self, indentation: str) -> str:
         """Indent a Python block while preserving complete literal source spans."""
@@ -982,6 +986,22 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             else line
             for line_number, line in enumerate(self.lines, start=1)
         )
+
+    def call_argument_span(self, node: ast.Call) -> SourceTextSpan:
+        """Locate the final call parentheses, retaining a parenthesised callee."""
+
+        start, end = self.required_node_offsets(node)
+        depth = 0
+        for token in reversed(self.tokens_in_span(SourceTextSpan(start, end))):
+            if token.type != tokenize.OP:
+                continue
+            if token.string == ")":
+                depth += 1
+            elif token.string == "(":
+                depth -= 1
+                if depth == 0:
+                    return SourceTextSpan(self.token_position_offset(token.end), end - 1)
+        raise ValueError("Call argument parentheses are unavailable")
 
     def function_parameter_span(
         self,

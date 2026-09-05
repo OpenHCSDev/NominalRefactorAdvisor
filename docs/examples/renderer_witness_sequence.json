@@ -52,6 +52,22 @@
           "file_path": "nominal_refactor_advisor/codemod.py",
           "target_qualname": "RendererSourceAuthority.renderer_source",
           "signature_suffix": "(cls, witness: CurrentLineWitness[DirectBuildFindingRendererCandidate, ast.FunctionDef]) -> str:"
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "migrate-witness-caller",
+        "operations": [{
+          "operation": "replace_declared_call_arguments",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "run",
+          "callee": {
+            "file_path": "nominal_refactor_advisor/codemod.py",
+            "target_qualname": "RendererSourceAuthority.renderer_source"
+          },
+          "arguments_source": "witness",
+          "selection_count": {"exact": 1}
         }, {
           "operation": "patch_target",
           "file_path": "nominal_refactor_advisor/codemod.py",
@@ -59,9 +75,6 @@
           "replacements": [{
             "old_source": "    candidate = witness.candidate\n    call = candidate.build_call(witness.node)\n",
             "new_source": ""
-          }, {
-            "old_source": "        candidate, call,",
-            "new_source": "        witness,"
           }]
         }]
       }]

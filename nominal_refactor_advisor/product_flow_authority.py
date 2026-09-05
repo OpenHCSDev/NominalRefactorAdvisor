@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, Self, TypeAlias, cast
 
-from .ast_tools import CollectedFamily
+from .ast_tools import CollectedFamily, ParsedModule
 from .class_index import (
     CompactClassMemberDeclaration,
     CompactClassFamilyIndex,
@@ -39,6 +39,7 @@ from .product_flow import (
     CompactValueOriginResolution,
     CurrentClassMemberMethodReference,
     LexicalValueReference,
+    compact_product_flow_projection,
 )
 
 
@@ -145,10 +146,7 @@ class CompactFunctionCallResolution(ABC):
                 reference,
                 self.call.position,
             )
-            for value in (
-                *(argument.value for argument in self.call.positional_arguments),
-                *(argument.value for argument in self.call.keyword_arguments),
-            )
+            for value in self.call.arguments.values
             if (reference := value.lexical_reference) is not None
         )
 
@@ -330,6 +328,15 @@ class CompactProductFlowRepository:
     class_projections: tuple[CompactModuleClassProjection, ...]
 
     @classmethod
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
+        """Derive both joined fact families from the same source snapshot."""
+
+        return cls(
+            tuple(compact_product_flow_projection(module) for module in modules),
+            CompactModuleClassProjectionFamily.collect_modules(modules),
+        )
+
+    @classmethod
     def from_projection_groups(
         cls,
         projections_by_family: dict[
@@ -498,10 +505,7 @@ class CompactProductFlowRepository:
                         )
                     )
             for call in context.flow.calls:
-                for value in (
-                    *(argument.value for argument in call.positional_arguments),
-                    *(argument.value for argument in call.keyword_arguments),
-                ):
+                for value in call.arguments.values:
                     reference = value.lexical_reference
                     if reference is None:
                         continue
