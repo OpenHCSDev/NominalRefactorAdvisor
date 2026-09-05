@@ -288,6 +288,21 @@ would discard argument comments.
 You choose the new expressions and their evaluation order. Signature binding is
 not a proof that those expressions preserve behaviour.
 
+To replace a helper call with a shared method or an attribute access, use
+``replace_declared_call`` with the same ``target``, ``callee``, and
+``selection_count`` selectors. Set ``expression_source`` to the replacement,
+for example ``insertion_point.member_insertion_replacement(member_sources)``.
+The operation replaces each selected call as a complete expression, retaining
+the surrounding expression's precedence. Calls to unrelated declarations stay
+unchanged; unresolved selections and removal of existing comments are rejected.
+
+Choose this operation when the replacement changes the callee or removes the
+call altogether. Its checks establish the selected declaration and valid Python
+syntax, not equivalence of the authored expression or binding of a new callee.
+Review evaluation effects and run the relevant behavioural tests. Follow it
+with assignment deletion and import removal in the same sequence when those
+declarations become unused.
+
 Use ``delete_function_assignments`` to explicitly remove the old direct
 assignments by name. This removes their evaluations too, including any calls
 and attribute access. Choose this step only after reviewing those effects and

@@ -109,11 +109,13 @@ from .class_member_authority_codemod import (
     _class_base_source_names,
 )
 from .codemod_function_operations import (
+    DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
     FunctionBodySourcePayload as FunctionBodySourcePayload,
     FunctionMutationOperationABC as FunctionMutationOperationABC,
     PrependFunctionBodyOperation as PrependFunctionBodyOperation,
     ProjectFunctionParameterOperation as ProjectFunctionParameterOperation,
     ReplaceDeclaredCallArgumentsOperation as ReplaceDeclaredCallArgumentsOperation,
+    ReplaceDeclaredCallOperation as ReplaceDeclaredCallOperation,
     ReplaceFunctionBodyOperation as ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation as ReplaceFunctionSignatureOperation,
 )
