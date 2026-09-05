@@ -29,15 +29,14 @@ from .ast_tools import (
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
-    SourceInsertion,
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
-    SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
     _joined_rationales,
 )
+from .codemod_statement_source import StatementSource
 from .collection_algebra import sorted_tuple
 from .declaration_dependencies import FunctionParameterBinding
 from .product_flow import LexicalValueReference
@@ -392,20 +391,27 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
     def source_lines(self) -> list[str]:
         return self.source.splitlines(keepends=True)
 
+    @cached_property
+    def header_span(self) -> ClassHeaderSourceSpan:
+        return ClassHeaderSourceSpan(self.node, self.geometry.lines)
+
+    @property
+    def has_inline_suite(self) -> bool:
+        return self.node.body[0].lineno == self.header_span.end_line
+
     @property
     def indentation(self) -> str:
-        if self.node.body:
-            body_line = self.source_lines[self.node.body[0].lineno - 1]
-            indentation = body_line[: len(body_line) - len(body_line.lstrip())]
-            if indentation:
-                return indentation
-        return "    "
+        if self.has_inline_suite:
+            class_line = self.geometry.lines[self.node.lineno - 1]
+            return class_line[: len(class_line) - len(class_line.lstrip())] + "    "
+        body_line = self.geometry.lines[self.node.body[0].lineno - 1]
+        return body_line[: len(body_line) - len(body_line.lstrip())]
 
     @property
     def declaration_insert_line(self) -> int:
         if self.node.body and is_docstring_statement(self.node.body[0]):
             return self.node.body[0].end_lineno or self.node.body[0].lineno
-        return ClassHeaderSourceSpan(self.node, self.geometry.lines).end_line
+        return self.header_span.end_line
 
     @property
     def before_first_method_offset(self) -> int:
@@ -460,6 +466,39 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
             trailing_separator = "\n\n"
         body = "\n\n".join(member.rstrip("\r\n") for member in members)
         return f"{leading_separator}{body}{trailing_separator}"
+
+    def member_insertion_replacement(
+        self, members: tuple[str, ...]
+    ) -> SourceTextSpanReplacement:
+        """Insert members, expanding an inline suite through exact statement geometry."""
+
+        if self.has_inline_suite:
+            start = self.geometry.token_position_offset(self.header_span.end_position)
+            _, end = self.geometry.node_span_offsets(SourceNodeSpan(self.node))
+            existing = "".join(
+                StatementSource(source=self.source, node=statement).member_source(
+                    self.indentation
+                )
+                for statement in self.node.body
+            )
+            newline = (
+                "\r\n"
+                if self.geometry.lines[self.node.lineno - 1].endswith("\r\n")
+                else "\n"
+            )
+            return SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=newline
+                + existing
+                + newline.join(member.rstrip("\r\n") for member in members)
+                + newline,
+            )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=self.before_first_method_offset,
+            end_offset=self.before_first_method_offset,
+            replacement_source=self.member_source(members),
+        )
 
 
 @dataclass(frozen=True)
@@ -541,21 +580,17 @@ class ClassMemberInsertion(NominalSourceEdit):
             )
         source = context.sources_by_file_path[target.file_path]
         insertion_point = ClassBodySourceAuthority(node=node, source=source)
-        return (
-            SourceInsertion(
+        return tuple(
+            replace(edit, contributors=self.contributors, origins=self.origins)
+            for edit in insertion_point.geometry.physical_edits(
                 file_path=target.file_path,
-                insertion_line=SourceTextGeometry(source).line_number_for_offset(
-                    insertion_point.before_first_method_offset
-                ),
-                inserted_lines=SourceTargetEditor.source_lines(
-                    insertion_point.member_source(
+                replacements=(
+                    insertion_point.member_insertion_replacement(
                         tuple(member.source for member in self.members)
-                    )
+                    ),
                 ),
                 rationale=self.rationale,
-                contributors=self.contributors,
-                origins=self.origins,
-            ),
+            )
         )
 
 

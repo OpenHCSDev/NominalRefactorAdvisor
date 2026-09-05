@@ -45,18 +45,16 @@ from .codemod_selection_context import (
     ResolvedClassTarget,
 )
 from .codemod_selector_models import SourceRewriteTarget
+from .codemod_statement_source import StatementDeletionSource, StatementSource
 from .codemod_source_edits import (
     PhysicalSourceEdit,
     SourceInsertion,
-    SourceLineSpan,
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceSpanDeletion,
-    SourceSpanEdit,
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextGeometry,
-    SourceTextSpanReplacement,
 )
 from .exact_field_authority import ExactDataclassFieldAuthorityComponent
 from .exact_method_authority import (
@@ -594,42 +592,21 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
     ) -> tuple[PhysicalSourceEdit, ...]:
         replacements = []
         for class_target in targets.targets:
-            promoted_statements = self.promoted_statements(class_target.node)
-            if not promoted_statements:
-                continue
-            promoted_statement_ids = frozenset(
-                id(statement) for statement in promoted_statements
+            authority = StatementDeletionSource(
+                source=targets.source_for(class_target.file_path),
+                node=class_target.node,
+                file_path=class_target.file_path,
             )
-            retained_statements = tuple(
-                statement
-                for statement in class_target.node.body
-                if id(statement) not in promoted_statement_ids
-            )
-            class_would_be_empty = not retained_statements
-            class_retains_only_docstring = bool(retained_statements) and not (
-                statements_without_docstring(retained_statements)
-            )
-            source = targets.source_for(class_target.file_path)
-            for index, statement in enumerate(promoted_statements):
-                member_statement = self.statement_type(statement)
-                replacements.append(
-                    SourceSpanEdit.from_replacement_lines(
-                        file_path=class_target.file_path,
-                        start_line=member_statement.deletion_start_line(
-                            source,
-                            remove_leading_separator=(
-                                class_retains_only_docstring and index == 0
-                            ),
-                        ),
-                        end_line=member_statement.deletion_end_line(source),
-                        replacement_lines=self.replacement_lines_for_deleted_member(
-                            class_would_be_empty,
-                            index,
-                        ),
-                        rationale=self.rationale
-                        or (f"Delete promoted member from {class_target.qualname!r}."),
-                    )
+            replacements.extend(
+                authority.physical_edits(
+                    file_path=authority.file_path,
+                    replacements=authority.replacements_for_statements(
+                        self.promoted_statements(class_target.node)
+                    ),
+                    rationale=self.rationale
+                    or f"Delete promoted members from {class_target.qualname!r}.",
                 )
+            )
         return tuple(replacements)
 
     def promoted_statements(self, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
@@ -638,16 +615,6 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
             for statement in node.body
             if self.statement_type(statement).name in self.member_names
         )
-
-    @staticmethod
-    def replacement_lines_for_deleted_member(
-        class_would_be_empty: bool,
-        deletion_index: int,
-    ) -> tuple[str, ...]:
-        if class_would_be_empty and deletion_index == 0:
-            return ("    pass\n",)
-        return ()
-
 
 @dataclass(frozen=True)
 class ClassBaseAdditionReplacementPlan:
@@ -743,10 +710,7 @@ class ClassMemberSourceSelection(ClassMemberSetSpec):
     @cached_property
     def member_sources(self) -> tuple[str, ...]:
         members = tuple(
-            SourceNodeSpan(
-                statement,
-                SourceNodeDecoratorPolicy.INCLUDE,
-            ).line_span.source_from(self.source_text)
+            self.statement_type(statement).source_from(self.source_text)
             for statement in self.source_class.body
             if self.statement_type(statement).name in self.member_names
         )
@@ -819,13 +783,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
         )
         replacement_source = SourceTextGeometry(source).target_source_with_replacements(
             authority.target,
-            (
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_point.before_first_method_offset,
-                    end_offset=insertion_point.before_first_method_offset,
-                    replacement_source=insertion_point.member_source(member_sources),
-                ),
-            ),
+            (insertion_point.member_insertion_replacement(member_sources),),
         )
         return SourceSpanReplacement(
             file_path=authority.file_path,
@@ -1404,34 +1362,20 @@ class ClassMemberPromotionStatement(ABC):
 
     @property
     def start_line(self) -> int:
-        return self.statement.lineno
+        return SourceNodeSpan(
+            self.statement, SourceNodeDecoratorPolicy.INCLUDE
+        ).start_line
 
     @property
     def end_line(self) -> int:
         return self.statement.end_lineno or self.statement.lineno
 
-    def deletion_start_line(
-        self,
-        source: str,
-        *,
-        remove_leading_separator: bool,
-    ) -> int:
-        """Return the first source line removed with this member."""
-
-        if not remove_leading_separator or self.start_line <= 1:
-            return self.start_line
-        preceding_line = source.splitlines()[self.start_line - 2]
-        return self.start_line - 1 if not preceding_line.strip() else self.start_line
-
-    def deletion_end_line(self, _source: str) -> int:
-        """Return the complete source span removed with this member."""
-
-        return self.end_line
-
-    def source_from(self, source: str) -> str:
+    def source_from(self, source: str, *, indentation: str = "    ") -> str:
         """Return the complete member source selected by this declaration."""
 
-        return SourceLineSpan(self.start_line, self.end_line).source_from(source)
+        return StatementSource(source=source, node=self.statement).member_source(
+            indentation
+        )
 
     def require_safe_move(
         self,
@@ -1460,21 +1404,6 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
         ):
             return self.statement.target.id
         return None
-
-    def deletion_end_line(self, source: str) -> int:
-        source_lines = source.splitlines()
-        remaining_lines = source_lines[self.end_line :]
-        if not remaining_lines or remaining_lines[0].strip():
-            return self.end_line
-        next_content_line = next(
-            (line for line in remaining_lines[1:] if line.strip()),
-            None,
-        )
-        if next_content_line is not None:
-            indentation = len(next_content_line) - len(next_content_line.lstrip())
-            if indentation >= self.statement.col_offset:
-                return self.end_line + 1
-        return self.end_line
 
     def require_safe_move(
         self,
@@ -1511,27 +1440,6 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
         if isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return self.statement.name
         return None
-
-    @property
-    def start_line(self) -> int:
-        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return super().start_line
-        decorator_lines = tuple(
-            decorator.lineno for decorator in self.statement.decorator_list
-        )
-        if not decorator_lines:
-            return self.statement.lineno
-        return min((*decorator_lines, self.statement.lineno))
-
-    def source_from(self, source: str) -> str:
-        """Return the complete promoted source, including decorators and comments."""
-
-        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return ""
-        return SourceNodeSpan(
-            self.statement,
-            SourceNodeDecoratorPolicy.INCLUDE,
-        ).line_span.source_from(source)
 
     def require_safe_move(
         self,
@@ -1661,46 +1569,34 @@ class ClassMemberMoveSelection:
         source = self.context.source
         destination = self.context.destination_class
         body_authority = ClassBodySourceAuthority(destination.node, source)
-        insertion_line = SourceTextGeometry(source).line_number_for_offset(
-            body_authority.before_first_method_offset
+        deletion = StatementDeletionSource(
+            source=source,
+            node=self.context.source_class.node,
+            file_path=self.context.source_class.file_path,
         )
-        selected_statement_ids = {id(member.statement) for member in self.members}
-        retained_statements = tuple(
-            statement
-            for statement in self.context.source_class.node.body
-            if id(statement) not in selected_statement_ids
-        )
-        class_would_be_empty = not retained_statements
         return (
-            SourceInsertion(
+            *body_authority.geometry.physical_edits(
                 file_path=destination.file_path,
-                insertion_line=insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(
-                    body_authority.member_source(
-                        tuple(member.source_from(source) for member in self.members)
-                    )
+                replacements=(
+                    body_authority.member_insertion_replacement(
+                        tuple(
+                            member.source_from(
+                                source, indentation=body_authority.indentation
+                            )
+                            for member in self.members
+                        )
+                    ),
                 ),
                 rationale=rationale
                 or f"Promote class members into {destination.qualname!r}.",
             ),
-            *(
-                SourceSpanEdit.from_replacement_lines(
-                    file_path=self.context.source_class.file_path,
-                    start_line=member.deletion_start_line(
-                        source,
-                        remove_leading_separator=False,
-                    ),
-                    end_line=member.deletion_end_line(source),
-                    replacement_lines=(
-                        ("    pass\n",) if class_would_be_empty and index == 0 else ()
-                    ),
-                    rationale=rationale
-                    or (
-                        f"Remove promoted member {member.name!r} from "
-                        f"{self.context.source_class.qualname!r}."
-                    ),
-                )
-                for index, member in enumerate(self.members)
+            *deletion.physical_edits(
+                file_path=deletion.file_path,
+                replacements=deletion.replacements_for_statements(
+                    tuple(member.statement for member in self.members)
+                ),
+                rationale=rationale
+                or f"Remove promoted members from {self.context.source_class.qualname!r}.",
             ),
         )
 

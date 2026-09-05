@@ -885,13 +885,8 @@ class _TypeKeyedBehaviorSourceDerivation:
                 node=target_class.node,
                 source=target_source,
             )
-            insertion_offset = insertion_point.before_first_method_offset
             replacements_by_path[target_class.file_path].append(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_offset,
-                    end_offset=insertion_offset,
-                    replacement_source=insertion_point.member_source(member_sources),
-                )
+                insertion_point.member_insertion_replacement(member_sources)
             )
 
     def _consumer_replacements(

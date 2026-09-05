@@ -973,19 +973,24 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         module = ast.parse(self.source)
         if not module.body:
             raise ValueError("Replacement source block must contain a statement")
-        continuation_lines = frozenset(
-            line_number
-            for node in ast.walk(module)
-            if isinstance(node, self.literal_node_types)
-            for line_number in range(
-                node.lineno + 1, SourceByteSpan.require_node(node).end_line_index + 2
-            )
-        )
+        continuation_lines = self.literal_continuation_lines(module)
         return "".join(
             indentation + line
             if line_number not in continuation_lines and line.strip()
             else line
             for line_number, line in enumerate(self.lines, start=1)
+        )
+
+    def literal_continuation_lines(self, root: ast.AST) -> frozenset[int]:
+        """Lines whose source belongs to literals and must retain its indentation."""
+
+        return frozenset(
+            line_number
+            for node in ast.walk(root)
+            if isinstance(node, self.literal_node_types)
+            for line_number in range(
+                node.lineno + 1, SourceByteSpan.require_node(node).end_line_index + 2
+            )
         )
 
     def call_argument_span(self, node: ast.Call) -> SourceTextSpan:

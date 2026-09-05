@@ -183,6 +183,45 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     assert json.loads(completed.stdout) == ["shared", 3]
 
 
+@pytest.mark.parametrize(
+    "base_source",
+    ("class Base:\n    pass\n", "class Base: 'Base docs'; pass # base comment\n"),
+)
+@pytest.mark.parametrize(
+    "leaf_source",
+    (
+        "class Leaf(Base):\n    moved = 1; retained = 2\n    other = 3\n",
+        "class Leaf(Base):\n    retained = 2; moved = 1\n    other = 3\n",
+        "class Leaf(Base): moved = 1; retained = 2; other = 3\n",
+        "class Leaf(Base): retained = 2; other = 3; moved = 1\n",
+    ),
+)
+def test_promotion_preserves_neighbouring_assignment_owner(
+    tmp_path: Path, base_source: str, leaf_source: str
+) -> None:
+    path = _write_module(tmp_path, "family.py", base_source + leaf_source)
+    operation = PromoteClassMembersToAncestorOperation(
+        target=SourceRewriteTarget(file_path=path.as_posix(), qualname="Leaf"),
+        destination=SourceRewriteTarget(file_path=path.as_posix(), qualname="Base"),
+        member_names=("moved",),
+    )
+    result = CodemodPlanSequence.from_operations((operation,)).simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert result.is_clean
+    result.apply()
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "from family import Base, Leaf; assert 'retained' not in Base.__dict__; assert 'moved' not in Leaf.__dict__; print(Base.moved, Leaf.retained, Leaf.other)",
+        ],
+        cwd=tmp_path,
+        text=True,
+    )
+    assert output.strip() == "1 2 3"
+
+
 def test_rejects_intermediate_collapse_before_members_are_promoted(
     tmp_path: Path,
 ) -> None:

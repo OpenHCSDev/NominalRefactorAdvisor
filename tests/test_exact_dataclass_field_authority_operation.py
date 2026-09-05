@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -202,18 +203,27 @@ def test_operation_reproves_field_component_without_serializing_rosters(
     assert rewritten.count("file_path: str") == 1
     assert "class ProjectionIdentity:" in rewritten
     assert "    file_path: str\n\n\n@dataclass(frozen=True)" in rewritten
+    classes = {
+        node.name: node
+        for node in ast.parse(rewritten).body
+        if isinstance(node, ast.ClassDef)
+    }
+    delta = classes["DeltaProjection"]
     assert (
-        '    """Projection with behavior after the promoted fields."""\n\n'
-        "    def endpoint"
-    ) in rewritten
-    assert "class EpsilonProjection(ProjectionIdentity):\n    pass\n\n\n@dataclass" in (
-        rewritten
+        ast.get_docstring(delta)
+        == "Projection with behavior after the promoted fields."
     )
+    assert len(delta.body) == 2
+    assert isinstance(delta.body[1], ast.FunctionDef)
+    assert delta.body[1].name == "endpoint"
+    epsilon = classes["EpsilonProjection"]
+    assert len(epsilon.body) == 1
+    assert isinstance(epsilon.body[0], ast.Pass)
+    zeta = classes["ZetaProjection"]
     assert (
-        "class ZetaProjection(ProjectionIdentity):\n"
-        '    """Projection documented without additional behavior."""\n\n\n'
-        "@dataclass"
-    ) in rewritten
+        ast.get_docstring(zeta) == "Projection documented without additional behavior."
+    )
+    assert len(zeta.body) == 1
     assert all(
         f"class {class_name}(ProjectionIdentity):" in rewritten
         for class_name in (

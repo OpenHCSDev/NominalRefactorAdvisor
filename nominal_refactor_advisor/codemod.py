@@ -29,7 +29,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .codemod_assignment_source import AssignmentDeletionSource
+from .codemod_statement_source import AssignmentDeletionSource
 from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
@@ -954,10 +954,11 @@ class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
         self, snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         authority = self.source_authority(snapshot)
-        return authority.geometry.physical_edits(
+        return authority.physical_edits(
             file_path=authority.file_path,
             replacements=authority.replacements(self.assignment_names),
-            rationale=self.rationale or f"Remove assignments {self.assignment_names!r} and their evaluations.",
+            rationale=self.rationale
+            or f"Remove assignments {self.assignment_names!r} and their evaluations.",
         )
 
 
@@ -974,7 +975,11 @@ class NamedScopeAssignmentDeletionOperationABC(AssignmentDeletionOperationABC, A
         _identifier, target, node = self.target_node_from_context(snapshot)
         if not self.scope_kind.accepts(node):
             raise ValueError(f"Target {target.qualname!r} is not a {self.scope_kind.value} definition")
-        return AssignmentDeletionSource(node, snapshot.sources_by_file_path[target.file_path], target.file_path)
+        return AssignmentDeletionSource(
+            source=snapshot.sources_by_file_path[target.file_path],
+            node=node,
+            file_path=target.file_path,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1691,7 +1696,11 @@ class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
             "delete_module_assignments",
         )
         module = snapshot.module_nodes_by_file_path[source_path]
-        return AssignmentDeletionSource(module, snapshot.sources_by_file_path[source_path], source_path)
+        return AssignmentDeletionSource(
+            source=snapshot.sources_by_file_path[source_path],
+            node=module,
+            file_path=source_path,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -6642,13 +6651,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         insertion_point = ClassBodySourceAuthority(node=node, source=source)
         return SourceTextGeometry(source).target_source_with_replacements(
             target,
-            (
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_point.before_first_method_offset,
-                    end_offset=insertion_point.before_first_method_offset,
-                    replacement_source=insertion_point.member_source((method_source,)),
-                ),
-            ),
+            (insertion_point.member_insertion_replacement((method_source,)),),
         )
 
     @staticmethod
