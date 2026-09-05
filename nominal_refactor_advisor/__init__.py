@@ -24,7 +24,6 @@ from .codemod import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     ReplaceFieldsWithCarrierOperation,
-    ReplaceFunctionBodyOperation,
     ReplaceTargetOperation,
     codemod_class_plan_from_findings,
 )
@@ -40,6 +39,7 @@ from .codemod_architecture_guards import (
     ForbiddenDispatchArchitectureGuardConstraint,
     evaluate_architecture_guards,
 )
+from .codemod_function_operations import ReplaceFunctionBodyOperation
 from .codemod_operations import RefactorRecipeOperation
 from .codemod_runtime import (
     CodemodPlanDocument,

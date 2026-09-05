@@ -24,6 +24,7 @@ import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
 import nominal_refactor_advisor.cancelable_composition as cancelable_composition_module
 import nominal_refactor_advisor.codemod_declaration_source as codemod_declaration_source_module
+import nominal_refactor_advisor.codemod_function_operations as codemod_function_operations_module
 import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
 import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
 import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
@@ -26224,6 +26225,7 @@ def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
         cancelable_composition_module,
         codemod_architecture_guards_module,
         codemod_declaration_source_module,
+        codemod_function_operations_module,
         codemod_import_bindings_module,
         codemod_import_graph_module,
         codemod_import_scopes_module,
