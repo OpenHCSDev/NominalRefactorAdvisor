@@ -14399,7 +14399,10 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, settings):\n        del settings\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, settings):\n        return _configured_candidates(module, settings)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
+        "from ._base import CandidateFindingDetector\n"
+        "def _local_candidates(module): return ()\n"
+        "def _configured_candidates(module, config): return ()\n"
+        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
     )
     findings = [
         item

@@ -577,6 +577,7 @@ from .codemod_spacing import (
     SourceInsertionBoundary,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
+from .declaration_binding_transfer import ClassBodyReferenceCapture
 from .declaration_dependencies import ModuleLexicalDependencyProjection
 from .detectors._base import (
     CandidateCollectorBaseReference,
@@ -2907,6 +2908,12 @@ class CandidateCollectorMigration:
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
+        ClassBodyReferenceCapture(
+            context.parsed_module_for_source_path(self.target.file_path),
+            self.node,
+            self.candidate_method,
+            self.candidate.forwarding.callee,
+        ).require_preserved()
         if any(
             ClassDeclarationPromotionStatement(statement).name
             == self.candidate.collector_declaration_name
@@ -2999,7 +3006,8 @@ class CandidateCollectorMigration:
             or "Declare the detector candidate collector strategy.",
         )
 
-    def candidate_method_deletion(self) -> SourceSpanDeletion:
+    @cached_property
+    def candidate_method(self) -> ast.FunctionDef:
         method = next(
             (
                 statement
@@ -3013,8 +3021,11 @@ class CandidateCollectorMigration:
             raise ValueError(
                 f"{self.candidate.symbol!r} is no longer declared by the target class"
             )
+        return method
+
+    def candidate_method_deletion(self) -> SourceSpanDeletion:
         return NamedDeclarationSourceAuthority(
-            method,
+            self.candidate_method,
             self.source,
         ).declaration_line_span.line_deletion(
             file_path=self.target.file_path,

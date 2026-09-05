@@ -583,6 +583,31 @@ them, and are not published as compatibility aliases.
 .. automodule:: nominal_refactor_advisor.declaration_dependencies
    :members: DeclarationDependencyUse, DeclarationDependencyProjection, FunctionBindingProjection
 
+.. automodule:: nominal_refactor_advisor.declaration_binding_transfer
+   :members: DeclarationModuleBindingEnvironment, DeclarationModuleBindingTransfer, ClassBodyReferenceCapture
+
+.. automodule:: nominal_refactor_advisor.positional_forwarding
+   :members: PositionalForwardingCall
+
+``PositionalForwardingCall`` projects a function's complete callable expression,
+required positional-or-keyword parameters and forwarded parameter names. It
+accepts a return call with an optional preceding deletion of unused parameters.
+Keywords, unpacking, defaults and additional execution remain outside this
+projection. Source-backed native functions use the same projection as analysed
+source declarations.
+
+``ClassBodyReferenceCapture`` compares a bare module reference's runtime binding
+with its binding at class creation. It rejects class-local shadowing, unresolved
+or rebound module declarations, and references unavailable at class creation.
+Qualified and computed callable expressions remain intact in observations but
+are unproved for capture; their attribute and descriptor behaviour requires
+additional evidence. Imported bare aliases can retain their original spelling.
+
+Collector migration derives its direct-forwarding relation from the registered
+collector implementations. Flattening is not a direct forwarding relation, even
+when its inherited method signature matches. Parameter spelling participates in
+the relation because callers may supply keyword arguments.
+
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 

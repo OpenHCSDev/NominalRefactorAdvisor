@@ -121,6 +121,7 @@ from ..ast_tools import (
     _module_class_names,
 )
 from ..native_syntax import NativePythonSyntaxIndex
+from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
     ClsRegistryMembership,
     ClassFamilyIndex,
@@ -1606,23 +1607,21 @@ DetectorCollector: TypeAlias = (
 class CandidateCollectorScope(StrEnum):
     """Traversal scope and its collector-input contract."""
 
-    MODULE = ("module", "module")
-    FLATTENED_MODULE = ("flattened_module", "module")
-    CROSS_MODULE = ("cross_module", "modules")
+    MODULE = "module"
+    FLATTENED_MODULE = "flattened_module"
+    CROSS_MODULE = "cross_module"
 
-    def __new__(
-        cls,
-        value: str,
-        collector_argument_name: str,
-    ) -> "CandidateCollectorScope":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._collector_argument_name = collector_argument_name
-        return member
-
-    @property
-    def collector_argument_name(self) -> str:
-        return self._collector_argument_name
+    @cached_property
+    def direct_forwarding_calls(self) -> tuple[PositionalForwardingCall, ...]:
+        return tuple(
+            forwarding
+            for declaration in DerivedCandidateCollectorMixin.registered_collector_base_types()
+            if declaration.collector_scope is self
+            for forwarding in (
+                PositionalForwardingCall.from_callable(declaration._candidate_items),
+            )
+            if forwarding is not None
+        )
 
     @property
     def forwarding_detector_type(self) -> type[IssueDetector]:
@@ -2579,8 +2578,6 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         raise NotImplementedError
 
 
-
-
 ShapeT = TypeVar("ShapeT")
 GroupKeyT = TypeVar("GroupKeyT", bound=Hashable)
 
@@ -2834,8 +2831,6 @@ class ContextualGlobalFiberCollectedShapeIssueDetector(
 
 
 CollectedItemT = TypeVar("CollectedItemT")
-
-
 
 
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
@@ -3955,8 +3950,6 @@ def _manual_companion_dataclass_surface_candidates(
         candidates,
         key=lambda item: (item.file_path, item.line, item.companion_class_name),
     )
-
-
 
 
 def _selection_helper_shape(
@@ -7402,13 +7395,13 @@ class RepeatedResultAssemblyPipelineCandidate:
 
 @dataclass(frozen=True)
 class CandidateCollectorBoilerplateCandidate(
-    ClassMethodLineWitnessCandidate, ModuleCollectedLineWitnessCandidate,
+    ClassMethodLineWitnessCandidate,
+    ModuleCollectedLineWitnessCandidate,
 ):
     collector_declaration_name: ClassVar[str] = "candidate_collector"
 
-    collector_name: str
+    forwarding: PositionalForwardingCall
     collector_scope: CandidateCollectorScope
-    uses_config: bool
     candidate_type_source: str
 
     @classmethod
@@ -7445,36 +7438,26 @@ class CandidateCollectorBoilerplateCandidate(
         if method is None:
             return ()
         collector_calls = tuple(
-            (collector_scope, collector_call)
-            for collector_scope in CandidateCollectorScope.for_forwarding_base_name(
+            (scope, call)
+            for scope in CandidateCollectorScope.for_forwarding_base_name(
                 forwarding_base_name
             )
-            for collector_call in (cls.collector_call(method, collector_scope),)
-            if collector_call is not None
+            for call in (cls.collector_call(method, scope),)
+            if call is not None
         )
         if len(collector_calls) != 1:
             return ()
-        collector_scope, collector_call = collector_calls[0]
-        collector_name, uses_config = collector_call
-        collector_base_name = (
-            DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-                CandidateCollectorBaseShape(collector_scope, uses_config)
-            )
+        collector_scope, forwarding = collector_calls[0]
+        candidate = cls(
+            file_path=module.file_path,
+            line=method.lineno,
+            class_name=node.name,
+            method_name=method.name,
+            forwarding=forwarding,
+            collector_scope=collector_scope,
+            candidate_type_source=candidate_type_source,
         )
-        if collector_base_name == node.name:
-            return ()
-        return (
-            cls(
-                file_path=module.file_path,
-                line=method.lineno,
-                class_name=node.name,
-                method_name=method.name,
-                collector_name=collector_name,
-                collector_scope=collector_scope,
-                uses_config=uses_config,
-                candidate_type_source=candidate_type_source,
-            ),
-        )
+        return () if candidate.recommended_base_name == node.name else (candidate,)
 
     @staticmethod
     def detector_shape(
@@ -7492,42 +7475,28 @@ class CandidateCollectorBoilerplateCandidate(
 
     @staticmethod
     def collector_call(
-        method: ast.FunctionDef,
-        collector_scope: CandidateCollectorScope,
-    ) -> tuple[str, bool] | None:
-        if method.decorator_list:
+        method: ast.FunctionDef, collector_scope: CandidateCollectorScope
+    ) -> PositionalForwardingCall | None:
+        forwarding = PositionalForwardingCall.from_function(method)
+        if forwarding is None:
             return None
-        parameter_names = SUPPORT_PROJECTION_AUTHORITY.parameter_names(method)
-        if len(parameter_names) != 2:
-            return None
-        collector_argument_name, config_argument_name = parameter_names
-        if collector_argument_name != collector_scope.collector_argument_name:
-            return None
-        body = tuple(
-            statement
-            for statement in statements_without_docstring(method.body)
-            if not (
-                isinstance(statement, ast.Delete)
-                and any(
-                    name_id(target) == config_argument_name
-                    for target in statement.targets
-                )
+        return (
+            forwarding
+            if any(
+                forwarding.parameter_names[1:] == declared.parameter_names[1:]
+                and forwarding.argument_names == declared.argument_names
+                for declared in collector_scope.direct_forwarding_calls
             )
-        )
-        returned_call = return_call(single_item(body)) if len(body) == 1 else None
-        collector_name = (
-            AstExpressionProjection.terminal_name(returned_call.func)
-            if returned_call
             else None
         )
-        if collector_name is None:
-            return None
-        arg_names = tuple(name_id(argument) for argument in returned_call.args)
-        if arg_names == (collector_argument_name,):
-            return collector_name, False
-        if arg_names == (collector_argument_name, config_argument_name):
-            return collector_name, True
-        return None
+
+    @property
+    def collector_name(self) -> str:
+        return ast.unparse(self.forwarding.callee)
+
+    @property
+    def uses_config(self) -> bool:
+        return len(self.forwarding.argument_names) == 2
 
     @property
     def collector_declaration_source(self) -> str:

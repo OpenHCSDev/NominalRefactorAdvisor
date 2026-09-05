@@ -494,3 +494,45 @@ The next collector audit should establish qualified callee identity, binding
 phase, keyword forwarding and signature preservation. Current terminal-name
 recognition is an observation to investigate, not proof that a callable can move
 from a method body into a class-level strategy declaration.
+
+### Collector Forwarding: Signature and Capture Evidence
+
+Seven native probes demonstrated incorrect migrations: lost keywords and
+unpacking, truncated qualified callees, early capture of a later binding,
+capture before a function exists, removed defaults and deletion of a live
+parameter. A subsequent probe demonstrated that renaming `settings` to `config`
+breaks keyword callers. Class-namespace shadowing is also covered. These cases
+now retain native behaviour or refuse without writing.
+
+`PositionalForwardingCall` owns the shared function projection, retaining the
+complete callable expression. Candidate records derive their callable display
+and configuration usage from this record. `ClassBodyReferenceCapture` extends
+the existing module-binding transfer proof to compare different execution phases.
+Reference identity uses source spans, allowing independently parsed snapshots
+of the same source to participate in the proof.
+
+Collector scopes no longer repeat parameter names. Their direct-forwarding
+relations come from the actual registered leaf implementations, projected by
+the same function model used on candidate source. This distinguishes flattening
+from forwarding without a separate scope-dispatch table. Native implementation
+projections are cached per scope. Qualified/computed capture remains unproved;
+the full expression is retained rather than shortened to a terminal name.
+
+`docs/examples/collector_forwarding_refactor.py` consolidates the authored
+consumer migration and import management into 17 stages, after authoring the
+shared projection and capture-proof declarations. Native positive CLI tests
+exercise configured and unconfigured imported collector aliases. The prior
+positive synthesis fixture now declares its callables instead of treating
+undefined names as executable proof.
+
+The 17-stage CLI replay against `e3181ea` produced matching consumer declaration
+ASTs. The full suite passed 2,210 tests (13 skipped); Python 3.14 passed 58 focused
+checks, and the ASCII-locale run passed 51. The touched-file audit ran all 81
+detectors without omissions or findings.
+The documentation build retains the two previously recorded duplicate-description
+warnings. Windows CI for `e3181ea` also passed, verifying its path-assertion fix.
+
+Further collector work must establish the complete base-replacement relation
+and generated descriptor binding, beyond the forwarding and capture conditions
+checked here. This batch does not establish arbitrary class-replacement or
+annotation-introspection equivalence.
