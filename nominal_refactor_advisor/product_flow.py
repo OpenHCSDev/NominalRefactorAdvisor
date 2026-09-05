@@ -1534,11 +1534,10 @@ class _DeclarationCollector(ast.NodeVisitor):
             elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
                 self.generic_visit(child)
 
-    def visit_Import(self, node: ast.Import) -> None:
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         self.imported_binding_names.update(ImportBoundNameProjection(node).names())
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.imported_binding_names.update(ImportBoundNameProjection(node).names())
+    visit_ImportFrom = visit_Import
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = ".".join((*self.scope_names, node.name))

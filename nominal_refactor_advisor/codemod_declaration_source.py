@@ -642,6 +642,33 @@ class FunctionRegionSourceAuthority(FunctionSourceAuthority, ABC):
 
 
 @dataclass(frozen=True)
+class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
+    """Replace a complete function declaration with a same-scope alias."""
+
+    def replacement(self, implementation_name: str, /) -> SourceTextSpanReplacement:
+        reference = LexicalValueReference.from_expression(
+            ast.parse(implementation_name, mode="eval").body
+        )
+        if reference is None or reference.attribute_path:
+            raise ValueError("Function alias requires one implementation name")
+        node_span = SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+        span = SourceTextSpan(*self.geometry.node_span_offsets(node_span))
+        if self.geometry.span_contains_comment(span):
+            raise ValueError("Function alias would discard comments")
+        first = _SingleLogicalLineSource.parse(
+            self.geometry.lines[node_span.start_line - 1], "Function alias"
+        )
+        last = _SingleLogicalLineSource.parse(
+            self.geometry.lines[node_span.end_line - 1], "Function alias"
+        )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source=f"{first.indent}{self.node.name} = {reference.root_name}{last.newline}",
+        )
+
+
+@dataclass(frozen=True)
 class FunctionSignatureSourceAuthority(FunctionRegionSourceAuthority):
     """Replace a function signature without rewriting its identity or suite."""
 

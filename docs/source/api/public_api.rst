@@ -62,6 +62,10 @@ authorise edits to an older declaration; cyclic re-exports carry
 ``CYCLIC_BINDING`` rather than selecting an arbitrary declaration.
 
 The codemod surface models source-anchored candidate rewrites and simulations.
+Simulation applies planned replacement source verbatim, including its final
+newline. Operation-specific renderers supply any required separators before
+handing source to simulation; exact offset edits retain their requested bytes
+through physical edit conversion.
 A clean current-snapshot simulation is not an application recommendation;
 export and application require a proof across reachable refactor trajectories.
 Closed execution axes are declared in ``codemod_semantics``.  Their enum

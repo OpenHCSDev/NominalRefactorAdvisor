@@ -15,6 +15,7 @@ from .codemod_call_source import (
 )
 from .codemod_declaration_source import (
     FunctionBindingProjectionSourceAuthority,
+    FunctionAliasSourceAuthority,
     FunctionBodyPrefixSourceAuthority,
     FunctionBodySourceAuthority,
     FunctionLocalProjectionSourceAuthority,
@@ -40,8 +41,7 @@ from .codemod_selector_models import (
 )
 from .codemod_source_edits import PhysicalSourceEdit
 from .descriptor_algebra import AliasProperty
-from .product_flow import LexicalValueReference
-
+from .product_flow import BareCallTargetReference, LexicalValueReference
 
 @dataclass(frozen=True, kw_only=True)
 class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
@@ -70,6 +70,68 @@ class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
             replacements=(authority.replacement(self.replacement_source),),
             rationale=self.rationale
             or f"{self.operation_key()} on {target.qualname!r}.",
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AliasFunctionOperation(RepositorySourceReprovedOperation):
+    """Replace a function with an alias to a source-proved same-scope implementation."""
+
+    implementation: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _, target, node = self.target_node_from_context(snapshot)
+        implementation_id = self.implementation.required_target_id(
+            snapshot.source_index
+        )
+        implementation = snapshot.source_index.target_by_id[implementation_id]
+        implementation_node = snapshot.ast_target_nodes_by_id[implementation_id]
+        authority = FunctionAliasSourceAuthority(
+            node=node,
+            source=snapshot.sources_by_file_path[target.file_path],
+        )
+        if not isinstance(implementation_node, ast.FunctionDef | ast.AsyncFunctionDef):
+            raise ValueError("Alias implementation must be a function declaration")
+        if (target.file_path, target.qualname.rpartition(".")[0]) != (
+            implementation.file_path,
+            implementation.qualname.rpartition(".")[0],
+        ):
+            raise ValueError("Function alias declarations must share a lexical scope")
+        target_symbol = snapshot.source_index.symbol_for_target(target)
+        scope_symbol = target_symbol.rpartition(".")[0]
+        repository = snapshot.product_flow_repository
+        context = repository.flow_contexts_by_owner_symbol.get(scope_symbol)
+        if context is None:
+            raise ValueError("Function alias has no unique enclosing flow authority")
+        target_mutations = tuple(
+            mutation
+            for mutation in context.flow.mutations_by_root_name.get(node.name, ())
+            if mutation.line == node.lineno and mutation.kind.is_definition_binding
+        )
+        if len(target_mutations) != 1:
+            raise ValueError("Function alias target has no unique definition binding")
+        declaration = repository.resolve_function_target(
+            context,
+            BareCallTargetReference(implementation_node.name),
+            target_mutations[0].position,
+        ).declaration
+        if (
+            declaration is None
+            or declaration.identity.symbol
+            != snapshot.source_index.symbol_for_target(implementation)
+        ):
+            raise ValueError(
+                "Alias implementation is not the selected preceding definition"
+            )
+        return authority.geometry.physical_edits(
+            file_path=target.file_path,
+            replacements=(authority.replacement(implementation_node.name),),
+            rationale=self.rationale
+            or f"Alias {target.qualname!r} to {implementation.qualname!r}.",
         )
 
 

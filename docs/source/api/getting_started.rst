@@ -318,6 +318,24 @@ throughout, with no exact-text patches.
 Reusing an Existing Authority
 -----------------------------
 
+To share an existing function implementation, use ``alias_function`` with a
+``target`` and an ``implementation`` selector. Both declarations must be in the
+same lexical scope, and the selected implementation must be bound before the
+target. The operation replaces the target declaration with a named assignment
+and rejects edits that would discard comments.
+
+This plan consolidates NRA's import visitors, widening the shared signature
+before introducing the alias:
+
+.. literalinclude:: ../../examples/import_visitor_refactor.py
+   :language: python
+
+Aliasing shares the implementation's function object, including its name,
+annotations, defaults and descriptor binding. It removes evaluation of the old
+definition's decorators, defaults and annotations. Review those effects and
+behavioural equivalence before applying the plan; its checks establish binding
+availability and source ownership, not equivalent behaviour.
+
 Use ``project_function_local`` to replace reads of a single-assignment local
 with an existing parameter's access path, such as ``self.geometry``. Set
 ``local_name`` to the local binding and ``projection_source`` to the access

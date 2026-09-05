@@ -1198,8 +1198,8 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                     SourceInsertion(
                         file_path=file_path,
                         insertion_line=insertion_line,
-                        inserted_lines=SourceTargetEditor.source_lines(
-                            replacement.replacement_source
+                        inserted_lines=tuple(
+                            replacement.replacement_source.splitlines(keepends=True)
                         ),
                         rationale=rationale,
                     )
@@ -1224,11 +1224,11 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 file_path=file_path,
                 start_line=start_line,
                 end_line=end_line,
-                replacement_lines=SourceTargetEditor.source_lines(
+                replacement_lines=tuple(
                     self.source_with_replacements_in_span(
                         *self._line_span_offsets(start_line, end_line),
                         window_replacements,
-                    )
+                    ).splitlines(keepends=True)
                 ),
                 rationale=rationale,
             )

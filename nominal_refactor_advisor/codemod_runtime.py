@@ -3566,7 +3566,7 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
         if start_index < 0 or end_index > len(lines):
             raise ValueError(f"Target {target.target_id!r} span is outside source")
         original_source = "".join(lines[start_index:end_index])
-        replacement_lines = self.replacement_lines(rewrite.replacement_source)
+        replacement_lines = rewrite.replacement_source.splitlines(keepends=True)
         lines[start_index:end_index] = replacement_lines
         return SimulatedSourceRewrite(
             target_id=target.target_id,
@@ -3579,12 +3579,6 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
             rationale=rewrite.rationale,
             contributors=rewrite.contributors,
         )
-
-    def replacement_lines(self, replacement_source: str) -> list[str]:
-        if replacement_source and not replacement_source.endswith(("\n", "\r")):
-            replacement_source = f"{replacement_source}\n"
-        return replacement_source.splitlines(keepends=True)
-
 
 def simulate_planned_rewrites(
     source_index: SourceIndex,

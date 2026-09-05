@@ -109,6 +109,7 @@ from .class_member_authority_codemod import (
     _class_base_source_names,
 )
 from .codemod_function_operations import (
+    AliasFunctionOperation as AliasFunctionOperation,
     DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
     FunctionBindingProjectionOperationABC as FunctionBindingProjectionOperationABC,
     FunctionBodySourcePayload as FunctionBodySourcePayload,
@@ -279,6 +280,7 @@ from .codemod_architecture_guards import (
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
 from .codemod_declaration_source import (
+    FunctionAliasSourceAuthority as FunctionAliasSourceAuthority,
     ClassBodySourceAuthority as ClassBodySourceAuthority,
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,

@@ -38,6 +38,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanDeletion,
     SourceSpanEdit,
     SourceSpanReplacement,
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_spacing import (
     DestinationInsertionSpacing,
@@ -52,6 +54,39 @@ def _snapshot(tmp_path: Path, source: str) -> tuple[Path, CodemodSourceSnapshot]
     return module_path, CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
     )
+
+
+@pytest.mark.parametrize(
+    "source,start,end,replacement",
+    (
+        ("value = 1", 8, 9, "2"),
+        ("value = 1\n", 8, 9, "2"),
+        ("value = 1\r\n", 8, 9, "2"),
+        ("value = 1", 9, 9, "\nother = 2"),
+        ("value = 1\n", 10, 10, "other = 2"),
+        ("value = 1", 0, 0, "# heading\n"),
+    ),
+)
+def test_exact_offset_edits_survive_line_projection_and_simulation(
+    tmp_path: Path, source: str, start: int, end: int, replacement: str
+) -> None:
+    path, snapshot = _snapshot(tmp_path, source)
+    geometry = SourceTextGeometry(source)
+    replacements = (
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=start,
+            end_offset=end,
+            replacement_source=replacement,
+        ),
+    )
+    expected = geometry.source_with_replacements_in_span(0, len(source), replacements)
+    edits = geometry.physical_edits(
+        file_path=path.as_posix(), replacements=replacements
+    )
+    compiler = RefactorRecipeOperationCompiler.from_context(snapshot)
+    rewrites = compiler._planned_rewrites_from_physical_edits(edits)
+    simulation = snapshot.simulate_rewrites(rewrites)
+    assert simulation.rewritten_sources[path.as_posix()] == expected
 
 
 def test_source_path_resolution_mro_preserves_stronger_matches(
