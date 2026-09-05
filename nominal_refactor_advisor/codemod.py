@@ -270,6 +270,8 @@ from .codemod_declaration_source import (
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
+    FunctionParameterProjectionSourceAuthority as FunctionParameterProjectionSourceAuthority,
+    FunctionRegionSourceAuthority as FunctionRegionSourceAuthority,
     FunctionSourceAuthority as FunctionSourceAuthority,
 )
 from .codemod_declaration_source import (
@@ -1446,9 +1448,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         rewritten.keywords.append(
             ast.keyword(
                 arg=self.carrier_parameter_names[edge.callee_symbol],
-                value=self._reference_expression(
-                    edge.carrier_value_reference(self.carrier_parameter_names)
-                ),
+                value=edge.carrier_value_reference(self.carrier_parameter_names).as_expression(),
             )
         )
         return SourceTextSpanReplacement.from_offsets(
@@ -1504,19 +1504,6 @@ class _ClosedCarrierCollapseSourceRewrite:
                 )
             )
         return tuple(replacements)
-
-    @staticmethod
-    def _reference_expression(reference: LexicalValueReference) -> ast.expr:
-        parts = reference.parts
-        expression: ast.expr = ast.Name(id=parts[0], ctx=ast.Load())
-        for attribute_name in parts[1:]:
-            expression = ast.Attribute(
-                value=expression,
-                attr=attribute_name,
-                ctx=ast.Load(),
-            )
-        return expression
-
 
 @dataclass(frozen=True, kw_only=True)
 class CarrierCollapseOperationABC(RepositorySourceReprovedOperation, ABC):
@@ -4468,7 +4455,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
 class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
     """Source-proved mutation of one function declaration."""
 
-    source_authority: ClassVar[type[FunctionSourceAuthority]]
+    source_authority: ClassVar[type[FunctionRegionSourceAuthority]]
 
     @property
     @abstractmethod
@@ -4482,8 +4469,6 @@ class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         _target_identifier, target, node = self.target_node_from_context(snapshot)
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            raise ValueError(f"Target {target.qualname!r} is not a function")
         authority = type(self).source_authority(
             node=node, source=snapshot.sources_by_file_path[target.file_path],
         )
@@ -4512,6 +4497,31 @@ class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
 
     source_authority = FunctionBodySourceAuthority
     replacement_source = AliasProperty[str]("body_source")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProjectFunctionParameterOperation(SourceReprovedOperation):
+    """Rewrite bound reads only; signature and caller migrations remain explicit."""
+
+    parameter_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    projection_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        _identifier, target, node = self.target_node_from_context(snapshot)
+        authority = FunctionParameterProjectionSourceAuthority(
+            node=node, source=snapshot.sources_by_file_path[target.file_path],
+        )
+        expression = ast.parse(self.projection_source, mode="eval").body
+        reference = LexicalValueReference.from_expression(expression)
+        if reference is None:
+            raise ValueError("Parameter projection requires a Name/Attribute access path")
+        return authority.geometry.physical_edits(
+            file_path=target.file_path,
+            replacements=authority.replacements_for(self.parameter_name, reference),
+            rationale=self.rationale or f"Project parameter {self.parameter_name!r} in {target.qualname!r}.",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

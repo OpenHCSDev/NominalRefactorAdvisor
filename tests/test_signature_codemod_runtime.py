@@ -20,10 +20,12 @@ from nominal_refactor_advisor.codemod_declaration_source import (
     FunctionSignatureSourceAuthority,
 )
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+from nominal_refactor_advisor.json_reports import json_report_object
 
 
+@pytest.mark.parametrize("with_witness", (False, True), ids=("extract", "extract-and-witness"))
 def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
-    tmp_path: Path,
+    tmp_path: Path, with_witness: bool,
 ) -> None:
     root = Path(__file__).parents[1]
     source = (root / "tests/fixtures/renderer_helper_before.py").read_text()
@@ -32,22 +34,29 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     module_path.write_text(source)
     expected = subprocess.check_output([sys.executable, str(module_path)], text=True)
     plan_path = root / "docs/examples/renderer_extraction_sequence.json"
+    sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
+    if with_witness:
+        witness_plan = root / "docs/examples/renderer_witness_sequence.json"
+        sequence = CodemodPlanSequence.compose((
+            sequence,
+            CodemodPlanSequence.from_payload_fields(json.loads(witness_plan.read_text())),
+        ))
     cli_result = subprocess.run(
         [
             sys.executable, "-m", "nominal_refactor_advisor", str(tmp_path),
-            "--codemod-plan", str(plan_path), "--codemod-simulate", "--json",
+            "--codemod-plan", "-", "--codemod-simulate", "--json",
         ],
         cwd=root, capture_output=True, text=True, check=True,
+        input=json.dumps(json_report_object(sequence)),
     )
     cli_report = json.loads(cli_result.stdout)
     assert cli_report["plan_sequence_simulation"]["is_clean"]
     assert cli_report["applied"] is False
     assert module_path.read_text() == source
-    sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean
-    assert simulation.stage_count == 4
+    assert simulation.stage_count == (9 if with_witness else 4)
     assert module_path.read_text() == source
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(module_path)], text=True) == expected
@@ -60,6 +69,9 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     ]
     assert not any(isinstance(node, ast.FunctionDef) for node in child.body)
     assert [ast.unparse(base) for base in child.bases] == ["RendererSourceAuthority"]
+    if with_witness:
+        assert "cls, witness: CurrentLineWitness" in module_path.read_text()
+        assert "witness.candidate.parameter_name" in module_path.read_text()
 
 
 @pytest.mark.parametrize(

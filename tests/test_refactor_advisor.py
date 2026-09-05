@@ -3430,7 +3430,7 @@ def test_function_mutations_reprove_the_target_kind(tmp_path: Path) -> None:
     for operation in operations:
         with pytest.raises(
             CodemodOperationPreflightError,
-            match="Target 'Worker' is not a function",
+            match="requires a function declaration",
         ) as error:
             operation.source_edits(snapshot)
         assert error.value.report.operation == operation.operation_key()

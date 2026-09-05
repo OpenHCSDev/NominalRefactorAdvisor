@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import sys
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -282,6 +283,48 @@ class FunctionBindingProjection:
             global_names=frozenset(collector.global_names),
             nonlocal_names=frozenset(collector.nonlocal_names),
         )
+
+
+@dataclass(frozen=True)
+class FunctionParameterBinding:
+    """Recover reads owned by one unmodified function-parameter binding."""
+
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    parameter_name: str
+
+    def required_references(self) -> tuple[ast.Name, ...]:
+        if self.parameter_name not in _argument_names(self.node.args):
+            raise ValueError(f"No parameter {self.parameter_name!r} on {self.node.name!r}")
+        arguments = copy.copy(self.node.args)
+        for field_name, value in ast.iter_fields(arguments):
+            if isinstance(value, list):
+                setattr(arguments, field_name, [
+                    item for item in value
+                    if not isinstance(item, ast.arg) or item.arg != self.parameter_name
+                ])
+            elif isinstance(value, ast.arg) and value.arg == self.parameter_name:
+                setattr(arguments, field_name, None)
+        without_binding = copy.copy(self.node)
+        without_binding.args = arguments
+        if self.parameter_name in FunctionBindingProjection.from_function(
+            without_binding,
+        ).local_names or any(
+            isinstance(child, ast.Nonlocal) and self.parameter_name in child.names
+            for child in ast.walk(self.node)
+        ):
+            raise ValueError(f"Parameter {self.parameter_name!r} has additional bindings")
+        original_external = frozenset(self.external_references(self.node))
+        return tuple(
+            reference for reference in self.external_references(without_binding)
+            if reference not in original_external
+        )
+
+    def external_references(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[ast.Name, ...]:
+        return ModuleLexicalDependencyProjection.from_module(
+            ast.Module(body=[node], type_ignores=[]),
+        ).external_references_named(self.parameter_name)
 
 
 @dataclass

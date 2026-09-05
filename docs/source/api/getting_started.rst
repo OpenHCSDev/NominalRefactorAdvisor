@@ -217,6 +217,31 @@ replaced span. Comments inside that span require an explicit edit before
 replacement. Changes to parameter names or calling conventions need their own
 body and caller edits in the plan.
 
+Passing Source Evidence Through a Witness
+-----------------------------------------
+
+Once you have chosen a context object for a function, add its parameter with
+``replace_function_signature``. Use ``project_function_parameter`` to redirect
+reads of an existing parameter to an access path such as ``witness.candidate``.
+Both the original parameter and the access path's root must exist at this stage.
+Then remove the old parameters and update the callers in the same batch.
+
+The :download:`renderer witness sequence <../../examples/renderer_witness_sequence.json>`
+extends the renderer extraction example above. Compose the two sequences with
+``CodemodPlanSequence.compose`` and simulate the resulting nine-stage batch.
+The regression test obtains its witness through NRA's actual source-reproof
+operation and executes the renderer helpers before and after applying the plan.
+
+Parameter projection checks lexical ownership. It preserves shadowed bindings,
+ordinary string literals, and comments, and rejects rebinding or capture of the
+projection root. The author chooses the field relationship; the operation does
+not infer it or change signatures and callers automatically. Review reflected
+parameter names and debug/template-string expression labels when changing an API.
+
+This example still uses two target-checked text patches: one introduces the new
+call derivation, and one updates the caller. Those steps remain explicit source
+edits in the saved plan.
+
 Converting a Detector to a Declaration
 --------------------------------------
 

@@ -337,6 +337,14 @@ class LexicalValueReference(CompactValueExpression):
     def parts(self) -> tuple[str, ...]:
         return (self.root_name, *self.attribute_path)
 
+    def as_expression(self) -> ast.expr:
+        expression: ast.expr = ast.Name(id=self.root_name, ctx=ast.Load())
+        for attribute_name in self.attribute_path:
+            expression = ast.Attribute(
+                value=expression, attr=attribute_name, ctx=ast.Load(),
+            )
+        return expression
+
 
 @dataclass(frozen=True)
 class OpaqueValueExpression(CompactValueExpression):

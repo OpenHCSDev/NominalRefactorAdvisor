@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -21,6 +22,7 @@ from typing import (
 
 from .ast_tools import (
     AstKeywordSourceProjection,
+    FunctionDefinitionNode,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     is_docstring_statement,
 )
@@ -38,6 +40,8 @@ from .codemod_source_edits import (
     _joined_rationales,
 )
 from .collection_algebra import sorted_tuple
+from .declaration_dependencies import FunctionParameterBinding
+from .product_flow import LexicalValueReference
 from .source_geometry import SourceLineSegmentAuthority
 
 if TYPE_CHECKING:
@@ -532,10 +536,19 @@ class _SingleLogicalLineSource:
 
 
 @dataclass(frozen=True)
-class FunctionSourceAuthority(NamedDeclarationSourceAuthority, ABC):
+class FunctionSourceAuthority(NamedDeclarationSourceAuthority):
     """Source ownership shared by function header and suite rewrites."""
 
-    node: ast.FunctionDef | ast.AsyncFunctionDef
+    node: FunctionDefinitionNode
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node, FunctionDefinitionNode):
+            raise ValueError("Function source authority requires a function declaration")
+
+
+@dataclass(frozen=True)
+class FunctionRegionSourceAuthority(FunctionSourceAuthority, ABC):
+    """A function-owned region replaced by an authored source fragment."""
 
     @abstractmethod
     def replacement(self, source: str, /) -> SourceTextSpanReplacement:
@@ -545,7 +558,7 @@ class FunctionSourceAuthority(NamedDeclarationSourceAuthority, ABC):
 
 
 @dataclass(frozen=True)
-class FunctionSignatureSourceAuthority(FunctionSourceAuthority):
+class FunctionSignatureSourceAuthority(FunctionRegionSourceAuthority):
     """Replace a function signature without rewriting its identity or suite."""
 
     def replacement(self, signature_suffix: str, /) -> SourceTextSpanReplacement:
@@ -577,7 +590,7 @@ class FunctionSignatureSourceAuthority(FunctionSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionBodySourceAuthority(FunctionSourceAuthority):
+class FunctionBodySourceAuthority(FunctionRegionSourceAuthority):
     """Own the function suite, including its first nested declaration's decorators."""
 
     def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
@@ -604,4 +617,41 @@ class FunctionBodySourceAuthority(FunctionSourceAuthority):
             start_offset=start_offset,
             end_offset=self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
             replacement_source=prefix + body,
+        )
+
+
+@dataclass(frozen=True)
+class FunctionParameterProjectionSourceAuthority(FunctionSourceAuthority):
+    """Project reads of an existing parameter onto another parameter's access path."""
+
+    def replacements_for(
+        self, parameter_name: str, reference: LexicalValueReference,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        reads = FunctionParameterBinding(self.node, parameter_name).required_references()
+        if not reads:
+            raise ValueError(f"Parameter {parameter_name!r} has no owned reads to project")
+        expressions = tuple(
+            ast.fix_missing_locations(ast.copy_location(reference.as_expression(), read))
+            for read in reads
+        )
+        projected_function = copy.deepcopy(
+            self.node, {id(read): expression for read, expression in zip(reads, expressions)},
+        )
+        carrier_reads = frozenset(FunctionParameterBinding(
+            projected_function, reference.root_name,
+        ).required_references())
+        projected_roots = tuple(
+            node for expression in expressions for node in ast.walk(expression)
+            if isinstance(node, ast.Name)
+        )
+        if not all(root in carrier_reads for root in projected_roots):
+            raise ValueError(f"Projection root {reference.root_name!r} is captured by another scope")
+        replacement_source = ast.unparse(reference.as_expression())
+        return tuple(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=span.start_offset, end_offset=span.end_offset,
+                replacement_source=replacement_source,
+            )
+            for read in reads
+            for span in (SourceTextSpan.from_offsets(self.geometry.required_node_offsets(read)),)
         )

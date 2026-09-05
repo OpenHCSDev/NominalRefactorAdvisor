@@ -1,0 +1,73 @@
+{
+  "stages": [
+    {
+      "recipes": [{
+        "recipe_id": "reference-witness-authority",
+        "operations": [{
+          "operation": "ensure_import",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "import_source": "from nominal_refactor_advisor.codemod import CurrentLineWitness"
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "introduce-witness-parameter",
+        "operations": [{
+          "operation": "replace_function_signature",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "RendererSourceAuthority.renderer_source",
+          "signature_suffix": "(cls, candidate, call, *, witness: CurrentLineWitness[DirectBuildFindingRendererCandidate, ast.FunctionDef]) -> str:"
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "project-candidate-through-witness",
+        "operations": [{
+          "operation": "project_function_parameter",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "RendererSourceAuthority.renderer_source",
+          "parameter_name": "candidate",
+          "projection_source": "witness.candidate"
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "derive-call-at-renderer",
+        "operations": [{
+          "operation": "patch_target",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "RendererSourceAuthority.renderer_source",
+          "replacements": [{
+            "old_source": "        assignment = ast.Assign(",
+            "new_source": "        call = witness.candidate.build_call(witness.node)\n        if call is None:\n            raise ValueError(\"finding renderer call is no longer derivable\")\n        assignment = ast.Assign("
+          }]
+        }]
+      }]
+    },
+    {
+      "recipes": [{
+        "recipe_id": "finish-witness-boundary",
+        "operations": [{
+          "operation": "replace_function_signature",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "RendererSourceAuthority.renderer_source",
+          "signature_suffix": "(cls, witness: CurrentLineWitness[DirectBuildFindingRendererCandidate, ast.FunctionDef]) -> str:"
+        }, {
+          "operation": "patch_target",
+          "file_path": "nominal_refactor_advisor/codemod.py",
+          "target_qualname": "run",
+          "replacements": [{
+            "old_source": "    candidate = witness.candidate\n    call = candidate.build_call(witness.node)\n",
+            "new_source": ""
+          }, {
+            "old_source": "        candidate, call,",
+            "new_source": "        witness,"
+          }]
+        }]
+      }]
+    }
+  ]
+}
