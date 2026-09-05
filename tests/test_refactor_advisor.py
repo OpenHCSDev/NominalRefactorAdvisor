@@ -14819,21 +14819,6 @@ def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     assert all(not hasattr(helper_detectors, name) for name in removed_names)
 
 
-def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nimport ast\n\n\ndef collect(tree):\n    class Visitor(ast.NodeVisitor):\n        def __init__(self) -> None:\n            self.class_stack: list[str] = []\n            self.function_stack: list[str] = []\n\n        def visit_ClassDef(self, node: ast.ClassDef) -> None:\n            self.class_stack.append(node.name)\n            self.generic_visit(node)\n            self.class_stack.pop()\n\n        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:\n            self.function_stack.append(node.name)\n            self.generic_visit(node)\n            self.function_stack.pop()\n\n    Visitor().visit(tree)\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "node_visitor_stack_boilerplate"
-    ]
-    assert len(findings) == 1
-    assert "collect.Visitor" in findings[0].summary
-
-
 def test_optional_parameter_default_is_not_nominal_variant_evidence(
     tmp_path: Path,
 ) -> None:
@@ -25389,29 +25374,6 @@ def test_ignores_pass_through_composition_facade(tmp_path: Path) -> None:
     )
 
 
-def test_detects_inline_ast_predicate_grammar_in_authority_method(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nimport ast\n\n\nclass TraversalProfileAuthority:\n    def filter_names(self, node, current_name):\n        names = set()\n        for current in _walk_nodes(node):\n            if not isinstance(current, ast.Call):\n                continue\n            if isinstance(current.func, ast.Name) and any(\n                isinstance(subnode, ast.Name) and subnode.id == current_name\n                for subnode in current.args\n            ):\n                names.add(current.func.id)\n                continue\n            if (\n                isinstance(current.func, ast.Attribute)\n                and current.func.attr == 'get'\n                and isinstance(current.func.value, ast.Attribute)\n                and current.func.value.attr == '__dict__'\n                and isinstance(current.func.value.value, ast.Name)\n                and current.func.value.value.id == current_name\n            ):\n                names.add(current.func.attr)\n        return tuple(names)\n",
-    )
-
-    finding = next(
-        (
-            item
-            for item in analyze_path(tmp_path)
-            if item.detector_id == "inline_ast_predicate_grammar"
-        )
-    )
-
-    assert "TraversalProfileAuthority.filter_names" in finding.summary
-    assert "matcher grammar" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
 def test_detects_projection_property_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -26943,46 +26905,6 @@ def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) 
 
     assert "3 one-class modules" in finding.summary
     assert "support" in finding.summary
-
-
-def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/conversions.py",
-        "\n\ndef cpu_to_gpu(value):\n    return to_gpu(value)\n\n\ndef gpu_to_cpu(value):\n    return to_cpu(value)\n\n\ndef cpu_to_numpy(value):\n    return to_numpy(value)\n\n\ndef numpy_to_cpu(value):\n    return from_numpy(value)\n",
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "closed_axis_conversion_matrix"
-        )
-    )
-    assert "cpu_to_gpu" in finding.summary
-    assert "sources" in finding.summary
-    assert "targets" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_detects_repeated_array_protocol_probe_bridge(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/arrays.py",
-        '\n\ndef normalize(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return shape, dtype, device\n\n\ndef transfer(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return copy_to(value, device, dtype, shape)\n\n\ndef summarize(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return str((shape, dtype, device))\n',
-    )
-    finding = next(
-        (
-            finding
-            for finding in analyze_path(tmp_path)
-            if finding.detector_id == "array_protocol_probe_bridge"
-        )
-    )
-    assert "normalize" in finding.summary
-    assert "transfer" in finding.summary
-    assert "dtype" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(

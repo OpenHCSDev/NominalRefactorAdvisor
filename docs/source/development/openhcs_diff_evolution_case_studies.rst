@@ -135,14 +135,12 @@ PR #38 is the best closed-axis example:
 - ``openhcs/core/memory/wrapper.py``: ``0+ / 401-``
 - ``openhcs/core/memory/decorators.py``: ``221+ / 1792-``
 
-The deleted material is exactly the kind of matrix boilerplate a detector
-should flag.  The replacement axis is an enum-driven conversion model rather
-than many pairwise conversion declarations.
-
-A bounded scan of the parent of PR #38 now finds this shape directly in
-``openhcs/core/memory/conversion_functions.py`` as a
-``closed_axis_conversion_matrix`` finding over functions such as
-``_numpy_to_cupy`` and ``_pyclesperanto_to_numpy``.
+The deleted material demonstrates matrix boilerplate whose replacement axis is
+an enum-driven conversion model rather than many pairwise conversion
+declarations.  Function names alone, however, do not prove that two conversion
+families share behavior or that a product-axis dispatcher is the correct
+authority.  The earlier syntax-only detector was therefore retired; a future
+detector would need source evidence for the shared conversion relation.
 
 Infrastructure Events
 ---------------------

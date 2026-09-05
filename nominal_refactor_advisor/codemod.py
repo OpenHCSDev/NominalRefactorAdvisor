@@ -111,6 +111,11 @@ from .codemod_operations import (
     RefactorRecipeOperation as RefactorRecipeOperation,
     SourcePayloadOperation as SourcePayloadOperation,
 )
+from .codemod_call_declarations import (
+    DeleteModuleCallDeclarationsOperation as DeleteModuleCallDeclarationsOperation,
+    ModuleCallDeclaration as ModuleCallDeclaration,
+    ModuleCallDeclarationSelector as ModuleCallDeclarationSelector,
+)
 from .codemod_reproof import (
     RepositorySourceReprovedOperation as RepositorySourceReprovedOperation,
     SourceReproofValueT as SourceReproofValueT,

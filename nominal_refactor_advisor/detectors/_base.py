@@ -3901,127 +3901,6 @@ def _manual_companion_dataclass_surface_candidates(
     )
 
 
-_ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES = frozenset(
-    {
-        "__array_interface__",
-        "__array_namespace__",
-        "__cuda_array_interface__",
-        "device",
-        "dtype",
-        "ndim",
-        "shape",
-        "size",
-    }
-)
-_ARRAY_PROTOCOL_PROBE_CALL_NAMES = frozenset({"getattr", "hasattr"})
-
-
-def _array_protocol_probe_calls(
-    module: ParsedModule,
-) -> tuple[tuple[int, str], ...]:
-    probes: list[tuple[int, str]] = []
-    for call in _typed_ast_nodes(module.module, ast.Call):
-        if (
-            AstExpressionProjection.terminal_name(call.func)
-            not in _ARRAY_PROTOCOL_PROBE_CALL_NAMES
-        ):
-            continue
-        if len(call.args) < 2:
-            continue
-        attribute_arg = call.args[1]
-        if not isinstance(attribute_arg, ast.Constant) or not isinstance(
-            attribute_arg.value, str
-        ):
-            continue
-        if attribute_arg.value in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES:
-            probes.append((call.lineno, attribute_arg.value))
-    return tuple(probes)
-
-
-def _array_protocol_probe_bridge_certificate(
-    *,
-    function_count: int,
-    attribute_names: tuple[str, ...],
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=function_count * len(attribute_names),
-        replacement_shape=ObjectFamilyShape.from_roles(
-            ("array_bridge_abc",),
-            axis=("capability_property",),
-            source=("operation_hook",),
-        ),
-        semantic_axes=(("array_protocol_attrs", attribute_names),),
-    )
-
-
-def _array_protocol_probe_bridge_candidates(
-    module: ParsedModule,
-) -> tuple["ArrayProtocolProbeBridgeCandidate", ...]:
-    if not any(
-        (attribute_name in module.source)
-        for attribute_name in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES
-    ):
-        return ()
-    probe_calls = _array_protocol_probe_calls(module)
-    if not probe_calls:
-        return ()
-    probes_by_symbol: dict[str, list[str]] = defaultdict(list)
-    probe_lines_by_symbol: dict[str, list[int]] = defaultdict(list)
-    function_ranges = tuple(
-        (
-            qualname,
-            function.lineno,
-            function.end_lineno or function.lineno,
-        )
-        for qualname, function in _iter_named_functions(module)
-    )
-    for line, observed_attribute in probe_calls:
-        owner_symbol = next(
-            (
-                qualname
-                for qualname, start_line, end_line in function_ranges
-                if start_line <= line <= end_line
-            ),
-            f"<module>:{line}",
-        )
-        probes_by_symbol[owner_symbol].append(observed_attribute)
-        probe_lines_by_symbol[owner_symbol].append(line)
-    operation_symbols = tuple(
-        symbol
-        for symbol, attrs in sorted(probes_by_symbol.items())
-        if len(set(attrs)) >= 2
-    )
-    if len(operation_symbols) < 3:
-        return ()
-    shared_attributes = sorted_tuple(
-        set.intersection(
-            *((set(probes_by_symbol[symbol])) for symbol in operation_symbols)
-        )
-    )
-    if len(shared_attributes) < 2:
-        return ()
-    line_numbers = tuple(
-        min(probe_lines_by_symbol[symbol]) for symbol in operation_symbols
-    )
-    certificate = _array_protocol_probe_bridge_certificate(
-        function_count=len(operation_symbols),
-        attribute_names=shared_attributes,
-    )
-    if not certificate.pays_rent:
-        return ()
-    return (
-        ArrayProtocolProbeBridgeCandidate(
-            file_path=module.file_path,
-            line=line_numbers[0],
-            function_names=operation_symbols,
-            attribute_names=shared_attributes,
-            line_numbers=line_numbers,
-            probe_count=sum(
-                (len(probes_by_symbol[symbol]) for symbol in operation_symbols)
-            ),
-            compression_certificate=certificate,
-        ),
-    )
 
 
 def _selection_helper_shape(
@@ -8442,14 +8321,6 @@ class StaticTypedObservationDetectorCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class InlineAstPredicateGrammarCandidate(ClassMethodLineWitnessCandidate):
-    ast_type_names: tuple[str, ...]
-    predicate_count: int
-    traversal_count: int
-    line_count: int
-
-
-@dataclass(frozen=True)
 class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
@@ -8536,13 +8407,6 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class NodeVisitorStackBoilerplateCandidate(QualnameLineWitnessCandidate):
-    stack_names: tuple[str, ...]
-    transition_method_names: tuple[str, ...]
-    line_count: int
-
-
-@dataclass(frozen=True)
 class EnumMetadataTableCandidate(ClassLineWitnessCandidate):
     table_name: str
     property_names: tuple[str, ...]
@@ -8592,14 +8456,6 @@ class FunctionFamilyCompressionSurface(FunctionFamilyLineSurface):
 
 
 @dataclass(frozen=True)
-class ClosedAxisConversionMatrixCandidate(
-    FunctionFamilyLineSurface, LineWitnessCandidate
-):
-    source_axis_values: tuple[str, ...]
-    target_axis_values: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class FieldFamilyLineSurface:
     field_names: tuple[str, ...]
     line_count: int
@@ -8622,14 +8478,6 @@ class SchemaAccessorFamilyCandidate(
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
-
-
-@dataclass(frozen=True)
-class ArrayProtocolProbeBridgeCandidate(
-    FunctionFamilyEvidenceCompressionSurface, LineWitnessCandidate
-):
-    attribute_names: tuple[str, ...]
-    probe_count: int
 
 
 @dataclass(frozen=True)

@@ -167,6 +167,23 @@ repository.  Its residual-use guard is part of the registered operation and is
 therefore available in JSON plans and ordered sequences; it is not a separate
 Python-only cleanup helper.
 
+Use ``delete_module_call_declarations`` for module-level declarations produced
+by a factory call rather than a class or function statement.  The operation
+selects calls by their qualified callee and a positional-argument name prefix,
+requires an explicit cardinality when ambiguity matters, and derives deletion
+geometry from the current parsed module.  The plan names the semantic factory
+relation without copying source spans or resorting to a textual patch.
+
+.. code-block:: json
+
+   {
+     "operation": "delete_module_call_declarations",
+     "file_path": "package/rules.py",
+     "callee_qualname": "declare_rule",
+     "positional_argument_prefix": ["LegacyRuleCandidate"],
+     "selection_count": {"exact": 1}
+   }
+
 Renaming a Top-Level Binding Authority
 --------------------------------------
 

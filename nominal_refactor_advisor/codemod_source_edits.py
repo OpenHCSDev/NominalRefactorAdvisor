@@ -515,14 +515,53 @@ class SourceSpanDeletion(SourceSpanEdit):
     ) -> Self:
         """Delete one complete target and the separator owned by its statement."""
 
-        deletion_span = SourceTextGeometry(
-            context.sources_by_file_path[target_digest.file_path]
-        ).statement_deletion_span(cls.target_span(context, target_digest))
-        return cls(
+        return cls.for_statement_span(
             file_path=target_digest.file_path,
+            source=context.sources_by_file_path[target_digest.file_path],
+            statement_span=cls.target_span(context, target_digest),
+            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
+    @classmethod
+    def for_statement_node(
+        cls,
+        *,
+        file_path: str,
+        source: str,
+        statement: ast.stmt,
+        rationale: str = "",
+    ) -> Self:
+        """Delete one parsed statement and the separator that it owns."""
+
+        return cls.for_statement_span(
+            file_path=file_path,
+            source=source,
+            statement_span=SourceNodeSpan(
+                statement,
+                SourceNodeDecoratorPolicy.INCLUDE,
+            ).line_span,
+            rationale=rationale,
+        )
+
+    @classmethod
+    def for_statement_span(
+        cls,
+        *,
+        file_path: str,
+        source: str,
+        statement_span: SourceLineSpan,
+        rationale: str = "",
+    ) -> Self:
+        """Delete one statement span and its source-owned separator."""
+
+        deletion_span = SourceTextGeometry(source).statement_deletion_span(
+            statement_span
+        )
+        return cls(
+            file_path=file_path,
             start_line=deletion_span.start_line,
             end_line=deletion_span.end_line,
-            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+            rationale=rationale,
         )
 
     def coalesced_with_peers(
