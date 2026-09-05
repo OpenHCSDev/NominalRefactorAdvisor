@@ -109,6 +109,7 @@ from .codemod_workflow import (
     CodemodWorkflowScan,
 )
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
+from .detector_capabilities import DetectorRefactorCapabilityReport
 from .detectors import DetectorCacheGranularity, DetectorConfig
 from .economics import (
     EconomicsProofReport,
@@ -372,6 +373,14 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--predict-scan",),
             action="store_true",
             help="Predict scan impact from Python files changed relative to --compare-ref.",
+        ),
+        CliArgumentSpec(
+            flags=("--detector-capabilities",),
+            action="store_true",
+            help=(
+                "Emit the declaration-derived detector required-relation, MRO, "
+                "and recipe capability inventory as JSON without scanning."
+            ),
         ),
         CliArgumentSpec(
             flags=("--fail-on-proof-regression",),
@@ -2089,6 +2098,27 @@ class CliEarlyExitCommand(CliCommand, ABC):
         args: argparse.Namespace,
     ) -> int | None:
         return cls(parser, args).run()
+
+
+class DetectorCapabilitiesCliCommand(CliEarlyExitCommand):
+    """Emit the registered detector family's source-derived capability proof."""
+
+    command_id = "detector_capabilities"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.detector_capabilities
+
+    def run(self) -> int:
+        print(
+            json.dumps(
+                json_report_object(
+                    DetectorRefactorCapabilityReport.from_registered_detectors()
+                ),
+                indent=2,
+            )
+        )
+        return 0
 
 
 class CodemodPlanProducingCliCommand(ABC):

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 
 from nominal_refactor_advisor.detector_capabilities import (
+    DetectorContributionRole,
     DetectorRefactorCapability,
     DetectorRefactorCapabilityReport,
 )
@@ -98,14 +99,23 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "``nominal_refactor_advisor.detectors.IssueDetector``. The registry order is the",
         "authoritative source for what the tool ships.",
         "",
+        "Contribution roles",
+        "------------------",
+        "",
+        *(
+            f"- ``{role.value}``: {role.description}"
+            for role in DetectorContributionRole
+        ),
+        "",
         "Summary",
         "-------",
         "",
         f"- Total detectors: ``{len(detector_types)}``",
-        f"- Authority-boundary detectors: ``{capability_report.authority_boundary_count}``",
-        f"- Semantic-mirror detectors: ``{capability_report.semantic_mirror_count}``",
-        f"- Direct recipe evaluators: ``{capability_report.direct_recipe_evaluator_count}``",
-        f"- Direct executable refactors: ``{capability_report.direct_executable_refactor_count}``",
+        *(
+            f"- {_contribution_label(role)}: "
+            f"``{capability_report.contribution_count(role)}``"
+            for role in DetectorContributionRole
+        ),
         "",
         ".. list-table::",
         "   :header-rows: 1",
@@ -113,25 +123,19 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         "   * - Detector ID",
         "     - Pattern",
         "     - Required-relation owner",
-        "     - Authority contract",
-        "     - Direct recipe evaluation",
-        "     - Direct executable concept",
+        "     - Contributions",
+        "     - Recipe synthesis concept",
     ]
     for capability in capability_report.capabilities:
         detector_type = capability.detector_type
         finding_spec = detector_type.required_relation_finding_spec()
-        authority_contract = (
-            capability.semantic_mirror_contract
-            or capability.ssot_authority_boundary
-        )
         lines.extend(
             [
                 f"   * - ``{detector_type.detector_id}``",
                 f"     - ``{finding_spec.pattern_id.value}``",
                 f"     - ``{capability.required_relation.qualname}``",
-                f"     - {_declaration_reference(authority_contract)}",
-                f"     - {_declaration_reference(capability.direct_recipe_evaluator)}",
-                f"     - {_declaration_reference(capability.direct_refactor_concept)}",
+                f"     - {_contribution_list(capability)}",
+                f"     - {_declaration_reference(capability.recipe_synthesis_concept)}",
             ]
         )
     lines.extend(["", "Detectors", "---------", ""])
@@ -150,11 +154,8 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
                 f":Reference: :doc:`detector_reference/{detector_type.detector_id}`",
                 f":Summary: {_detector_summary(detector_type)}",
                 f":Required-relation owner: ``{capability.required_relation.qualname}``",
-                f":SSOT authority boundary: {_declaration_reference(capability.ssot_authority_boundary)}",
-                f":Semantic-mirror contract: {_declaration_reference(capability.semantic_mirror_contract)}",
-                f":Direct recipe evaluator: {_declaration_reference(capability.direct_recipe_evaluator)}",
-                f":Direct executable refactor: {_declaration_reference(capability.direct_executable_refactor)}",
-                f":Direct refactor concept: {_declaration_reference(capability.direct_refactor_concept)}",
+                f":Contributions: {_contribution_list(capability)}",
+                f":Recipe synthesis concept: {_declaration_reference(capability.recipe_synthesis_concept)}",
                 "",
             ]
         )
@@ -207,13 +208,11 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
         "---------------------------------",
         "",
         f":Required-relation owner: ``{capability.required_relation.qualname}``",
-        f":SSOT authority boundary: {_declaration_reference(capability.ssot_authority_boundary)}",
-        f":Semantic-mirror contract: {_declaration_reference(capability.semantic_mirror_contract)}",
-        f":Direct recipe evaluator: {_declaration_reference(capability.direct_recipe_evaluator)}",
-        f":Direct executable refactor: {_declaration_reference(capability.direct_executable_refactor)}",
-        f":Direct refactor concept: {_declaration_reference(capability.direct_refactor_concept)}",
+        f":Contributions: {_contribution_list(capability)}",
+        f":Recipe synthesis concept: {_declaration_reference(capability.recipe_synthesis_concept)}",
         "",
     ]
+    lines.extend(_render_contract_fulfillment(capability))
     lines.extend(
         [
             "Default Finding Semantics",
@@ -275,6 +274,52 @@ def _declaration_reference(
     identity: NominalDeclarationIdentity | None,
 ) -> str:
     return "None" if identity is None else f"``{identity.qualname}``"
+
+
+def _contribution_label(role: DetectorContributionRole) -> str:
+    return role.value.replace("_", " ").capitalize()
+
+
+def _contribution_list(capability: DetectorRefactorCapability) -> str:
+    return ", ".join(
+        f"``{contribution.role.value}``" for contribution in capability.contributions
+    )
+
+
+def _render_contract_fulfillment(
+    capability: DetectorRefactorCapability,
+) -> list[str]:
+    lines = [
+        "Contract Fulfillment",
+        "--------------------",
+        "",
+        ".. list-table::",
+        "   :header-rows: 1",
+        "",
+        "   * - Contribution",
+        "     - Contract",
+        "     - MRO resolution path",
+        "     - Contract member implementations",
+    ]
+    for contribution in capability.contributions:
+        mro_path = " -> ".join(
+            f"``{declaration.qualname}``"
+            for declaration in contribution.mro_resolution_path
+        )
+        member_implementations = ", ".join(
+            f"``{member.member_name}`` by ``{member.implementation.qualname}``"
+            for member in contribution.member_evidence
+        )
+        lines.extend(
+            [
+                f"   * - ``{contribution.role.value}``",
+                f"     - ``{contribution.contract.qualname}``",
+                f"     - {mro_path}",
+                f"     - {member_implementations or 'Nominal membership only'}",
+            ]
+        )
+    lines.append("")
+    return lines
 
 
 def _enum_name_list(values: Iterable[object]) -> str:

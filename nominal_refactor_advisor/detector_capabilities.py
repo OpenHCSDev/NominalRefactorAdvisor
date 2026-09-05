@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
+import inspect
 
 from .codemod import FindingRecipeSynthesizer
 from .codemod_runtime import FindingRecipeEvaluator
@@ -14,6 +16,7 @@ from .detectors import (
 )
 from .json_reports import (
     DataclassJsonReport,
+    json_report_cached_property,
     json_report_field,
     json_report_property,
 )
@@ -25,48 +28,176 @@ from .refactor_concepts import RefactorConcept
 class DetectorContributionRole(StrEnum):
     """Closed detector contributions derived from nominal execution contracts."""
 
-    REQUIRED_RELATION_OBSERVATION = ("required_relation_observation", IssueDetector)
+    REQUIRED_RELATION_OBSERVATION = (
+        "required_relation_observation",
+        IssueDetector,
+        "Executes one declaration-owned required-relation observation.",
+    )
     AUTHORITY_BOUNDARY_EVIDENCE = (
         "authority_boundary_evidence",
         SsotAuthorityBoundaryDetector,
+        "Requires projection evidence at an SSOT boundary; authority may remain unknown.",
     )
     SEMANTIC_MIRROR_EVIDENCE = (
         "semantic_mirror_evidence",
         SemanticMirrorIssueDetector,
+        "Identifies a semantic mirror while preserving unknown authority.",
     )
-    RECIPE_EVALUATION = ("recipe_evaluation", FindingRecipeEvaluator)
-    EXECUTABLE_REFACTOR = ("executable_refactor", FindingRecipeSynthesizer)
+    RECIPE_EVALUATION_CAPABILITY = (
+        "recipe_evaluation_capability",
+        FindingRecipeEvaluator,
+        "Can prove or reject a finding-backed recipe from current evidence.",
+    )
+    RECIPE_SYNTHESIS_CAPABILITY = (
+        "recipe_synthesis_capability",
+        FindingRecipeSynthesizer,
+        "Can produce an executable recipe after runtime proof succeeds; membership alone is not success evidence.",
+    )
 
     def __new__(
         cls,
         value: str,
         contract_type: type[object],
+        description: str,
     ) -> "DetectorContributionRole":
         member = str.__new__(cls, value)
         member._value_ = value
         member._contract_type = contract_type
+        member._description = description
         return member
 
     @property
     def contract_type(self) -> type[object]:
         return self._contract_type
 
+    @property
+    def description(self) -> str:
+        return self._description
+
     def applies_to(self, detector_type: type[IssueDetector]) -> bool:
         return issubclass(detector_type, self.contract_type)
 
+    def evidence_for(
+        self,
+        detector_type: type[IssueDetector],
+    ) -> "DetectorContributionEvidence | None":
+        """Recover this contribution and every abstract slot it fulfills."""
 
-def _inherited_declaration_identity(
-    detector_type: type[IssueDetector],
-    contract_type: type[object],
+        if not self.applies_to(detector_type):
+            return None
+        abstract_member_names = tuple(
+            member_name
+            for member_name, member in vars(self.contract_type).items()
+            if getattr(member, "__isabstractmethod__", False)
+        )
+        return DetectorContributionEvidence(
+            role=self,
+            contract=NominalDeclarationIdentity.from_declaration(self.contract_type),
+            mro_resolution_path=tuple(
+                NominalDeclarationIdentity.from_declaration(candidate)
+                for candidate in detector_type.__mro__[
+                    : detector_type.__mro__.index(self.contract_type) + 1
+                ]
+            ),
+            member_evidence=tuple(
+                NominalContractMemberEvidence.from_mro(
+                    detector_type,
+                    self.contract_type,
+                    member_name,
+                )
+                for member_name in sorted(abstract_member_names)
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class NominalContractMemberEvidence(DataclassJsonReport):
+    """MRO proof that one nominal contract slot has an implementation owner."""
+
+    member_name: str
+    requirement: NominalDeclarationIdentity
+    implementation: NominalDeclarationIdentity
+    implementation_source: SourceLocation
+
+    @classmethod
+    def from_mro(
+        cls,
+        declaration_type: type[object],
+        requirement_type: type[object],
+        member_name: str,
+    ) -> "NominalContractMemberEvidence":
+        implementation_type = next(
+            (
+                candidate
+                for candidate in declaration_type.__mro__
+                if member_name in vars(candidate)
+                and not getattr(
+                    vars(candidate)[member_name],
+                    "__isabstractmethod__",
+                    False,
+                )
+            ),
+            None,
+        )
+        if implementation_type is None:
+            raise TypeError(
+                f"{declaration_type.__qualname__} does not fulfill abstract "
+                f"member {member_name!r} through its MRO"
+            )
+        return cls(
+            member_name=member_name,
+            requirement=NominalDeclarationIdentity.from_declaration(requirement_type),
+            implementation=NominalDeclarationIdentity.from_declaration(
+                implementation_type
+            ),
+            implementation_source=_declaration_member_source(
+                implementation_type,
+                member_name,
+            ),
+        )
+
+
+@cache
+def _declaration_member_source(
     declaration_type: type[object],
-) -> NominalDeclarationIdentity | None:
-    """Project one declared MRO relation without storing a capability mirror."""
+    member_name: str,
+) -> SourceLocation:
+    """Recover one physical member source once for every composed leaf."""
 
-    return (
-        NominalDeclarationIdentity.from_declaration(declaration_type)
-        if issubclass(detector_type, contract_type)
-        else None
+    member = vars(declaration_type)[member_name]
+    if isinstance(member, (classmethod, staticmethod)):
+        member = member.__func__
+    source_path = inspect.getsourcefile(member)
+    if source_path is None:
+        raise TypeError(
+            f"Cannot recover source for {declaration_type.__qualname__}.{member_name}"
+        )
+    _source_lines, first_line = inspect.getsourcelines(member)
+    return SourceLocation(
+        source_path,
+        first_line,
+        f"{declaration_type.__qualname__}.{member_name}",
     )
+
+
+@dataclass(frozen=True)
+class DetectorContributionEvidence(DataclassJsonReport):
+    """One MRO-derived detector contribution and its contract fulfillment."""
+
+    role: DetectorContributionRole
+    contract: NominalDeclarationIdentity
+    mro_resolution_path: tuple[NominalDeclarationIdentity, ...]
+    member_evidence: tuple[NominalContractMemberEvidence, ...]
+
+
+@dataclass(frozen=True)
+class DetectorContributionSummary(DataclassJsonReport):
+    """One role declaration and its derived detector population."""
+
+    role: DetectorContributionRole
+    description: str
+    contract: NominalDeclarationIdentity
+    detector_count: int
 
 
 @dataclass(frozen=True)
@@ -101,47 +232,33 @@ class DetectorRefactorCapability(DataclassJsonReport):
     def required_relation_pattern(self) -> PatternId:
         return self.detector_type.required_relation_pattern_id()
 
-    @json_report_property()
-    def contribution_roles(self) -> tuple[DetectorContributionRole, ...]:
+    @json_report_cached_property()
+    def contributions(self) -> tuple[DetectorContributionEvidence, ...]:
         return tuple(
-            role for role in DetectorContributionRole if role.applies_to(self.detector_type)
+            evidence
+            for role in DetectorContributionRole
+            for evidence in (role.evidence_for(self.detector_type),)
+            if evidence is not None
+        )
+
+    def contribution_for(
+        self,
+        role: DetectorContributionRole,
+    ) -> DetectorContributionEvidence | None:
+        return next(
+            (
+                contribution
+                for contribution in self.contributions
+                if contribution.role is role
+            ),
+            None,
         )
 
     @json_report_property(omit_none=True)
-    def ssot_authority_boundary(self) -> NominalDeclarationIdentity | None:
-        return _inherited_declaration_identity(
-            self.detector_type,
-            SsotAuthorityBoundaryDetector,
-            SsotAuthorityBoundaryDetector,
-        )
-
-    @json_report_property(omit_none=True)
-    def semantic_mirror_contract(self) -> NominalDeclarationIdentity | None:
-        return _inherited_declaration_identity(
-            self.detector_type,
-            SemanticMirrorIssueDetector,
-            SemanticMirrorIssueDetector,
-        )
-
-    @json_report_property(omit_none=True)
-    def direct_recipe_evaluator(self) -> NominalDeclarationIdentity | None:
-        return _inherited_declaration_identity(
-            self.detector_type,
-            FindingRecipeEvaluator,
-            self.detector_type,
-        )
-
-    @json_report_property(omit_none=True)
-    def direct_executable_refactor(self) -> NominalDeclarationIdentity | None:
-        return _inherited_declaration_identity(
-            self.detector_type,
-            FindingRecipeSynthesizer,
-            self.detector_type,
-        )
-
-    @json_report_property(omit_none=True)
-    def direct_refactor_concept(self) -> NominalDeclarationIdentity | None:
-        if self.direct_executable_refactor is None:
+    def recipe_synthesis_concept(self) -> NominalDeclarationIdentity | None:
+        if not DetectorContributionRole.RECIPE_SYNTHESIS_CAPABILITY.applies_to(
+            self.detector_type
+        ):
             return None
         declaration = RefactorConcept.leaf_concept_for_declaration(self.detector_type)
         return NominalDeclarationIdentity.from_declaration(declaration)
@@ -162,29 +279,22 @@ class DetectorRefactorCapabilityReport(DataclassJsonReport):
             )
         )
 
-    @json_report_property()
-    def required_relation_count(self) -> int:
-        return len(self.capabilities)
-
     def contribution_count(self, role: DetectorContributionRole) -> int:
-        return sum(role in capability.contribution_roles for capability in self.capabilities)
-
-    @json_report_property()
-    def authority_boundary_count(self) -> int:
-        return self.contribution_count(
-            DetectorContributionRole.AUTHORITY_BOUNDARY_EVIDENCE
+        return sum(
+            capability.contribution_for(role) is not None
+            for capability in self.capabilities
         )
 
-    @json_report_property()
-    def semantic_mirror_count(self) -> int:
-        return self.contribution_count(
-            DetectorContributionRole.SEMANTIC_MIRROR_EVIDENCE
+    @json_report_cached_property()
+    def contribution_summary(self) -> tuple[DetectorContributionSummary, ...]:
+        return tuple(
+            DetectorContributionSummary(
+                role=role,
+                description=role.description,
+                contract=NominalDeclarationIdentity.from_declaration(
+                    role.contract_type
+                ),
+                detector_count=self.contribution_count(role),
+            )
+            for role in DetectorContributionRole
         )
-
-    @json_report_property()
-    def direct_recipe_evaluator_count(self) -> int:
-        return self.contribution_count(DetectorContributionRole.RECIPE_EVALUATION)
-
-    @json_report_property()
-    def direct_executable_refactor_count(self) -> int:
-        return self.contribution_count(DetectorContributionRole.EXECUTABLE_REFACTOR)

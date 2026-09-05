@@ -21,13 +21,17 @@ evaluator, while the finding's nominal metric type selects the strategy or
 builder that owns any executable refactor concept.
 
 The generated :doc:`detector_catalog` derives each detector's required-relation
-owner, authority-boundary contract, evaluation capability, executable
-capability, and refactor concept directly from those declarations. This is a
-capability inventory, not evidence that a detector contributed a valid refactor
-for a particular repository. Source-specific authority evidence belongs to the
+owner, contribution contracts, C3 resolution paths, recipe-evaluation
+capability, recipe-synthesis capability, and refactor concept directly from
+those declarations. Authority-boundary evidence identifies the boundary and
+does not imply that its authority was recovered. Likewise, recipe-synthesis
+capability is not evidence that a detector contributed a valid refactor for a
+particular repository. Source-specific authority evidence belongs to the
 semantic refactor gate, while evaluation, proof obstacles, executable recipes,
 and planning horizon belong to finding recipe synthesis. Finding metrics supply
 typed evidence to a declared evaluator; they do not grant recipe capability.
+Run ``nominal-refactor-advisor --detector-capabilities`` to emit the same
+declaration-derived inventory as JSON without performing a source scan.
 
 An authority-producing detector emits its exact source witness through
 ``RefactorFinding.authority_evidence``.  The witness must also belong to the

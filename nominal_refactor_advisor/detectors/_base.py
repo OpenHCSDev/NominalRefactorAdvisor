@@ -561,6 +561,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         return None
 
     @classmethod
+    @lru_cache(maxsize=None)
     def required_relation_source(cls) -> SourceLocation:
         """Recover the source declaration that owns the executed relation."""
 

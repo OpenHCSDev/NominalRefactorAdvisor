@@ -1,6 +1,6 @@
 # OOPSLA Brainstorming Note: Autonomous Architectural Alignment
 
-Status: seed note awaiting the related OOPSLA paper
+Status: aligned with the current OOPSLA paper; empirical evaluation remains open
 
 ## Observation
 
@@ -81,6 +81,38 @@ The important mechanism may not be imitation of repository style. It may be the
 construction of a project-local decision procedure that narrows the agent's
 search space before code is written.
 
+## Paper Alignment
+
+The paper sharpens the working explanation into a source-fidelity obligation.
+For a fixed maintenance task, the implementation must represent every required
+answer in the relation over questions and cases, derive those answers from one
+logical authority, and retain enough evidence to recover the source judgment
+that execution selected. Agreement among duplicated answers is not source
+recovery, and an unproved answer remains an assurance gap.
+
+Applied to NRA:
+
+- ``PatternId`` supplies a descriptive pattern vocabulary, while each detector's
+  nominal required-relation declaration owns the executable finding semantics.
+- ``IssueDetector.required_relation_source`` recovers the selected declaration's
+  source rather than inferring ownership from a matching label.
+- ``DetectorRefactorCapabilityReport`` derives the loaded detector family's
+  contribution contracts, exact C3 resolution paths, and contract-method
+  implementation sources. It is static capability evidence, not proof that a
+  finding has a valid executable refactor.
+- Finding-recipe evaluation, authority claims, source-index preflight,
+  simulation, architecture guards, and before/after obligation projection carry
+  the repository-specific proof. A missing or ambiguous authority remains an
+  explicit failed-closed result.
+- The refactoring DSL should remove deterministic syntax work only after its
+  selectors and operations retain the source evidence needed to re-prove every
+  affected relation in the projected state.
+
+The autonomous-maintenance hypothesis is therefore stronger than style
+imitation: a compact local decision procedure is useful only when its internal
+representation is semantically complete for the decisions being delegated and
+its outputs retain their derivation source.
+
 ## Operational Decision Procedure
 
 Before introducing a semantic change, ask:
@@ -143,7 +175,11 @@ follow-up changes.
 
 ## Next Step
 
-When the OOPSLA paper is available, map its terminology and claims onto this
-observation, distinguish anecdotal evidence from testable hypotheses, and decide
-whether OpenHCS and NRA can support a controlled empirical study or a detailed
-experience report.
+Use ``nominal-refactor-advisor --detector-capabilities`` together with
+finding-specific synthesis and projected-state reports to classify the current
+detector inventory. For each detector, establish whether it only observes a
+required relation, recovers authority evidence, rejects an under-proved recipe,
+or reaches a clean source-reproved refactor. That evidence can distinguish
+useful assurance-gap detectors from machinery that does not improve correct
+maintenance, then support a controlled empirical study or detailed experience
+report.

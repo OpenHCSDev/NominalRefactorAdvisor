@@ -112,6 +112,7 @@ from nominal_refactor_advisor.cli import CodemodRefactorGoalCliCommand
 from nominal_refactor_advisor.cli import CodemodSourceIndexCliCommand
 from nominal_refactor_advisor.cli import CodemodSynthesizePlanCliCommand
 from nominal_refactor_advisor.cli import CodemodValidatePlanCliCommand
+from nominal_refactor_advisor.cli import DetectorCapabilitiesCliCommand
 from nominal_refactor_advisor.cli import FastPreparseSemanticDescentSourceAuthority
 from nominal_refactor_advisor.cli import FocusedLoopColdAnalysisPolicy
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
@@ -16373,16 +16374,65 @@ def test_cli_command_selection_returns_declaration_owner() -> None:
         parser,
         parser.parse_args(["--codemod-refactor-goal", "example"]),
     )
+    detector_capabilities_type = CliCommand.selected_type(
+        parser,
+        parser.parse_args(["--detector-capabilities"]),
+    )
 
     assert source_index_type is CodemodSourceIndexCliCommand
     assert source_index_type.requires_analysis() is False
     assert synthesis_type is CodemodSynthesizePlanCliCommand
     assert synthesis_type.requires_analysis() is True
     assert validation_type is CodemodValidatePlanCliCommand
+    assert detector_capabilities_type is DetectorCapabilitiesCliCommand
     assert goal_type is CodemodRefactorGoalCliCommand
     assert goal_type.requires_parsed_modules() is True
     assert goal_type.requires_source_snapshot() is False
     assert "codemod_execution" not in CliCommand.__registry__
+
+
+def test_module_cli_emits_declaration_derived_detector_capabilities() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--detector-capabilities",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    numeric_dispatch = next(
+        capability
+        for capability in payload["capabilities"]
+        if capability["detector_id"] == "numeric_literal_dispatch"
+    )
+    recipe_evaluation = next(
+        contribution
+        for contribution in numeric_dispatch["contributions"]
+        if contribution["role"] == "recipe_evaluation_capability"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert payload["contribution_summary"][0] == {
+        "role": "required_relation_observation",
+        "description": (
+            "Executes one declaration-owned required-relation observation."
+        ),
+        "contract": {
+            "module_name": "nominal_refactor_advisor.detectors._base",
+            "qualname": "IssueDetector",
+        },
+        "detector_count": len(payload["capabilities"]),
+    }
+    assert recipe_evaluation["member_evidence"][0]["implementation"][
+        "qualname"
+    ] == "LiteralDispatchFindingRecipeSynthesizer"
 
 
 @pytest.mark.parametrize(

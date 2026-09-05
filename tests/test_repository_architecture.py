@@ -4,10 +4,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
-from nominal_refactor_advisor.codemod import (
-    FindingRecipeEvaluator,
-    FindingRecipeSynthesizer,
-)
+from nominal_refactor_advisor.codemod import LiteralDispatchFindingRecipeSynthesizer
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     DetectorRefactorCapabilityReport,
@@ -16,14 +13,15 @@ from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     ExternalEnumCaseRecoveryDetector,
     IssueDetector,
-    SemanticMirrorIssueDetector,
-    SsotAuthorityBoundaryDetector,
 )
 from nominal_refactor_advisor.detectors._base import DerivedCandidateCollectorMixin
 from nominal_refactor_advisor.detectors._runtime import (
     RepeatedBuilderCallShapeProjectionFamily,
 )
-from nominal_refactor_advisor.models import FindingObligationClass
+from nominal_refactor_advisor.models import (
+    FindingObligationClass,
+    NominalDeclarationIdentity,
+)
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
@@ -156,25 +154,9 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
     detector_types = IssueDetector.registered_detector_types()
     report = DetectorRefactorCapabilityReport.from_registered_detectors()
 
-    assert tuple(
-        capability.detector_type for capability in report.capabilities
-    ) == detector_types
-    assert report.required_relation_count == len(detector_types)
-    assert report.authority_boundary_count == sum(
-        issubclass(detector_type, SsotAuthorityBoundaryDetector)
-        for detector_type in detector_types
-    )
-    assert report.semantic_mirror_count == sum(
-        issubclass(detector_type, SemanticMirrorIssueDetector)
-        for detector_type in detector_types
-    )
-    assert report.direct_recipe_evaluator_count == sum(
-        issubclass(detector_type, FindingRecipeEvaluator)
-        for detector_type in detector_types
-    )
-    assert report.direct_executable_refactor_count == sum(
-        issubclass(detector_type, FindingRecipeSynthesizer)
-        for detector_type in detector_types
+    assert (
+        tuple(capability.detector_type for capability in report.capabilities)
+        == detector_types
     )
     assert all(
         capability.required_relation
@@ -187,7 +169,7 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
         for capability in report.capabilities
     )
     assert all(
-        capability.contribution_roles
+        tuple(contribution.role for contribution in capability.contributions)
         == tuple(
             role
             for role in DetectorContributionRole
@@ -196,8 +178,10 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
         for capability in report.capabilities
     )
     assert all(
-        DetectorContributionRole.REQUIRED_RELATION_OBSERVATION
-        in capability.contribution_roles
+        capability.contribution_for(
+            DetectorContributionRole.REQUIRED_RELATION_OBSERVATION
+        )
+        is not None
         for capability in report.capabilities
     )
     assert all(
@@ -206,14 +190,102 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
         for role in DetectorContributionRole
     )
     assert all(
-        capability.direct_recipe_evaluator is not None
+        capability.contribution_for(
+            DetectorContributionRole.RECIPE_EVALUATION_CAPABILITY
+        )
+        is not None
         for capability in report.capabilities
-        if capability.direct_executable_refactor is not None
+        if capability.contribution_for(
+            DetectorContributionRole.RECIPE_SYNTHESIS_CAPABILITY
+        )
+        is not None
     )
     assert all(
-        capability.direct_refactor_concept is not None
+        capability.recipe_synthesis_concept is not None
         for capability in report.capabilities
-        if capability.direct_executable_refactor is not None
+        if capability.contribution_for(
+            DetectorContributionRole.RECIPE_SYNTHESIS_CAPABILITY
+        )
+        is not None
+    )
+    assert tuple(summary.role for summary in report.contribution_summary) == tuple(
+        DetectorContributionRole
+    )
+    assert tuple(
+        summary.detector_count for summary in report.contribution_summary
+    ) == tuple(report.contribution_count(role) for role in DetectorContributionRole)
+    assert all(
+        summary.description == summary.role.description
+        and summary.contract
+        == NominalDeclarationIdentity.from_declaration(summary.role.contract_type)
+        for summary in report.contribution_summary
+    )
+
+    for capability in report.capabilities:
+        for contribution in capability.contributions:
+            assert contribution.contract == NominalDeclarationIdentity.from_declaration(
+                contribution.role.contract_type
+            )
+            assert contribution.mro_resolution_path[0] == capability.detector
+            assert contribution.mro_resolution_path[-1] == contribution.contract
+            assert contribution.mro_resolution_path == tuple(
+                NominalDeclarationIdentity.from_declaration(candidate)
+                for candidate in capability.detector_type.__mro__[
+                    : capability.detector_type.__mro__.index(
+                        contribution.role.contract_type
+                    )
+                    + 1
+                ]
+            )
+            for member in contribution.member_evidence:
+                requirement_type = next(
+                    candidate
+                    for candidate in capability.detector_type.__mro__
+                    if candidate.__module__ == member.requirement.module_name
+                    and candidate.__qualname__ == member.requirement.qualname
+                )
+                implementation_type = next(
+                    candidate
+                    for candidate in capability.detector_type.__mro__
+                    if candidate.__module__ == member.implementation.module_name
+                    and candidate.__qualname__ == member.implementation.qualname
+                )
+                assert getattr(
+                    vars(requirement_type)[member.member_name],
+                    "__isabstractmethod__",
+                    False,
+                )
+                assert not getattr(
+                    vars(implementation_type)[member.member_name],
+                    "__isabstractmethod__",
+                    False,
+                )
+                assert implementation_type is next(
+                    candidate
+                    for candidate in capability.detector_type.__mro__
+                    if member.member_name in vars(candidate)
+                    and not getattr(
+                        vars(candidate)[member.member_name],
+                        "__isabstractmethod__",
+                        False,
+                    )
+                )
+
+    numeric_dispatch = next(
+        capability
+        for capability in report.capabilities
+        if capability.detector_id == "numeric_literal_dispatch"
+    )
+    synthesis = numeric_dispatch.contribution_for(
+        DetectorContributionRole.RECIPE_SYNTHESIS_CAPABILITY
+    )
+    assert synthesis is not None
+    recipe_evaluation = numeric_dispatch.contribution_for(
+        DetectorContributionRole.RECIPE_EVALUATION_CAPABILITY
+    )
+    assert recipe_evaluation is not None
+    assert recipe_evaluation.member_evidence[0].implementation.qualname == (
+        LiteralDispatchFindingRecipeSynthesizer.__qualname__
     )
 
     payload = json_report_object(report)
@@ -223,8 +295,13 @@ def test_detector_refactor_capabilities_are_derived_from_nominal_mro() -> None:
             "required_relation",
             "required_relation_pattern",
             "required_relation_source",
-            "contribution_roles",
+            "contributions",
         }
         <= capability.keys()
+        for capability in payload["capabilities"]
+    )
+    assert all(
+        "direct_recipe_evaluator" not in capability
+        and "direct_executable_refactor" not in capability
         for capability in payload["capabilities"]
     )
