@@ -272,6 +272,8 @@ from .codemod_declaration_source import (
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
     FunctionParameterProjectionSourceAuthority as FunctionParameterProjectionSourceAuthority,
     FunctionRegionSourceAuthority as FunctionRegionSourceAuthority,
+    FunctionSuiteLayout as FunctionSuiteLayout,
+    FunctionSuiteSourceAuthority as FunctionSuiteSourceAuthority,
     FunctionSourceAuthority as FunctionSourceAuthority,
 )
 from .codemod_declaration_source import (
@@ -285,6 +287,7 @@ from .codemod_declaration_source import (
 )
 from .codemod_declaration_source import (
     FunctionBodySourceAuthority as FunctionBodySourceAuthority,
+    FunctionBodyPrefixSourceAuthority as FunctionBodyPrefixSourceAuthority,
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
 )
 from .codemod_declaration_source import (
@@ -4490,13 +4493,25 @@ class ReplaceFunctionSignatureOperation(FunctionMutationOperationABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionBodyOperation(FunctionMutationOperationABC):
-    """Replace a function or method body while preserving its signature."""
+class FunctionBodySourcePayload:
+    """Authored statements shared by function-suite mutation operations."""
 
     body_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    replacement_source = AliasProperty[str]("body_source")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionBodyOperation(FunctionBodySourcePayload, FunctionMutationOperationABC):
+    """Replace a function or method body while preserving its signature."""
 
     source_authority = FunctionBodySourceAuthority
-    replacement_source = AliasProperty[str]("body_source")
+
+
+@dataclass(frozen=True, kw_only=True)
+class PrependFunctionBodyOperation(FunctionBodySourcePayload, FunctionMutationOperationABC):
+    """Insert statements after a function's docstring, retaining its existing body."""
+
+    source_authority = FunctionBodyPrefixSourceAuthority
 
 
 @dataclass(frozen=True, kw_only=True)

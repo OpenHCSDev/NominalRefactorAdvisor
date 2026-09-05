@@ -37,13 +37,10 @@
       "recipes": [{
         "recipe_id": "derive-call-at-renderer",
         "operations": [{
-          "operation": "patch_target",
+          "operation": "prepend_function_body",
           "file_path": "nominal_refactor_advisor/codemod.py",
           "target_qualname": "RendererSourceAuthority.renderer_source",
-          "replacements": [{
-            "old_source": "        assignment = ast.Assign(",
-            "new_source": "        call = witness.candidate.build_call(witness.node)\n        if call is None:\n            raise ValueError(\"finding renderer call is no longer derivable\")\n        assignment = ast.Assign("
-          }]
+          "body_source": "call = witness.candidate.build_call(witness.node)\nif call is None:\n    raise ValueError(\"finding renderer call is no longer derivable\")"
         }]
       }]
     },

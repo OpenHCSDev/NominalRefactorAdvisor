@@ -238,9 +238,14 @@ projection root. The author chooses the field relationship; the operation does
 not infer it or change signatures and callers automatically. Review reflected
 parameter names and debug/template-string expression labels when changing an API.
 
-This example still uses two target-checked text patches: one introduces the new
-call derivation, and one updates the caller. Those steps remain explicit source
-edits in the saved plan.
+Use ``prepend_function_body`` to introduce statements before the existing
+executable body. It preserves the docstring and existing statements, including
+nested decorators, and expands inline suites when needed. The witness example
+uses this operation to introduce the new call derivation.
+
+One target-checked text patch remains in this example: it updates the caller and
+removes the old local aliases. That step remains an explicit source edit in the
+saved plan.
 
 Converting a Detector to a Declaration
 --------------------------------------

@@ -590,10 +590,25 @@ class FunctionSignatureSourceAuthority(FunctionRegionSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionBodySourceAuthority(FunctionRegionSourceAuthority):
-    """Own the function suite, including its first nested declaration's decorators."""
+class FunctionSuiteLayout:
+    """Source-derived extent and formatting of one function suite."""
 
-    def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
+    span: SourceTextSpan
+    indentation: str
+    newline: str
+    is_inline: bool
+
+    def render(self, source: str) -> str:
+        body = SourceTextGeometry(source).indented_source(self.indentation)
+        return body if body.endswith(("\n", "\r")) else body + self.newline
+
+
+@dataclass(frozen=True)
+class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
+    """Shared suite geometry for replacing or inserting function statements."""
+
+    @cached_property
+    def layout(self) -> FunctionSuiteLayout:
         signature_end = self.geometry.function_signature_suffix_span(self.node).end_offset
         header_line = self.geometry.line_number_for_offset(signature_end - 1)
         first_statement_line = SourceNodeSpan(
@@ -601,22 +616,79 @@ class FunctionBodySourceAuthority(FunctionRegionSourceAuthority):
         ).start_line
         header_source = self.geometry.lines[header_line - 1]
         newline = "\r\n" if header_source.endswith("\r\n") else "\n"
-        if first_statement_line == header_line:
+        is_inline = first_statement_line == header_line
+        if is_inline:
             start_offset = signature_end
             indentation = self.geometry.line_indent(signature_end) + "    "
-            prefix = newline
         else:
             start_offset = self.geometry.line_offsets[header_line]
             first_statement_offset = self.geometry.line_offsets[first_statement_line - 1]
             indentation = self.geometry.line_indent(first_statement_offset)
-            prefix = ""
-        body = SourceTextGeometry(body_source).indented_source(indentation)
-        if not body.endswith(("\n", "\r")):
-            body += newline
+        return FunctionSuiteLayout(
+            span=SourceTextSpan(
+                start_offset,
+                self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
+            ),
+            indentation=indentation, newline=newline, is_inline=is_inline,
+        )
+
+
+@dataclass(frozen=True)
+class FunctionBodySourceAuthority(FunctionSuiteSourceAuthority):
+    """Own the function suite, including its first nested declaration's decorators."""
+
+    def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
         return SourceTextSpanReplacement.from_offsets(
-            start_offset=start_offset,
-            end_offset=self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
-            replacement_source=prefix + body,
+            start_offset=self.layout.span.start_offset,
+            end_offset=self.layout.span.end_offset,
+            replacement_source=(self.layout.newline if self.layout.is_inline else "")
+            + self.layout.render(body_source),
+        )
+
+
+@dataclass(frozen=True)
+class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
+    """Insert statements after the docstring and before existing executable code."""
+
+    def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
+        layout = self.layout
+        docstring = self.node.body[0] if is_docstring_statement(self.node.body[0]) else None
+        remaining = self.node.body[1:] if docstring is not None else self.node.body
+        body = layout.render(body_source)
+        if layout.is_inline:
+            end = (
+                self.geometry.required_node_offsets(remaining[0])[0]
+                if remaining else layout.span.end_offset
+            )
+            retained_docstring = ""
+            if docstring is not None:
+                doc_start, doc_end = self.geometry.required_node_offsets(docstring)
+                retained_docstring = layout.render(self.source[
+                    doc_start : doc_end if remaining else layout.span.end_offset
+                ])
+            return SourceTextSpanReplacement.from_offsets(
+                start_offset=layout.span.start_offset, end_offset=end,
+                replacement_source=layout.newline + retained_docstring + body
+                + (layout.indentation if remaining else ""),
+            )
+        if docstring is not None:
+            doc_end = self.geometry.required_node_offsets(docstring)[1]
+            if remaining and docstring.end_lineno == remaining[0].lineno:
+                return SourceTextSpanReplacement.from_offsets(
+                    start_offset=doc_end,
+                    end_offset=self.geometry.required_node_offsets(remaining[0])[0],
+                    replacement_source=layout.newline + body + layout.indentation,
+                )
+            insertion = self.geometry.node_span_offsets(SourceNodeSpan(docstring))[1]
+        else:
+            first_statement_line = SourceNodeSpan(
+                self.node.body[0], SourceNodeDecoratorPolicy.INCLUDE,
+            ).start_line
+            insertion = self.geometry.line_offsets[first_statement_line - 1]
+        separator = "" if self.source[:insertion].endswith(("\n", "\r")) else layout.newline
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=insertion, end_offset=insertion,
+            replacement_source=separator + body,
         )
 
 
