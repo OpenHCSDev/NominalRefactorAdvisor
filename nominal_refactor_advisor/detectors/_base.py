@@ -2715,94 +2715,6 @@ class ContextualGlobalFiberCollectedShapeIssueDetector(
 CollectedItemT = TypeVar("CollectedItemT")
 
 
-_SUFFIX_AXIS_METHOD_RE = re.compile(
-    r"^(?P<operation>.+)_for_(?P<axis>[A-Za-z][A-Za-z0-9_]*)$"
-)
-
-
-def _suffix_axis_surface_methods(
-    module: ParsedModule,
-) -> tuple[SuffixAxisSurfaceMethod, ...]:
-    methods: list[SuffixAxisSurfaceMethod] = []
-    for qualname, function in _iter_named_functions(module):
-        method_name = qualname.rsplit(".", 1)[-1]
-        match = _SUFFIX_AXIS_METHOD_RE.match(method_name)
-        if match is None:
-            continue
-        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
-        methods.append(
-            SuffixAxisSurfaceMethod(
-                file_path=module.file_path,
-                qualname=qualname,
-                line=function.lineno,
-                owner_name=owner_name,
-                operation_name=match.group("operation"),
-                axis_name=match.group("axis"),
-                parameter_names=SUPPORT_PROJECTION_AUTHORITY.parameter_names(function),
-                statement_count=len(statements_without_docstring(function.body)),
-            )
-        )
-    return sorted_tuple(
-        methods, key=lambda item: (item.file_path, item.line, item.qualname)
-    )
-
-
-def _suffix_axis_surface_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[SuffixAxisSurfaceCandidate, ...]:
-    min_operation_count = max(2, config.min_registration_sites)
-    grouped_by_operation: dict[tuple[str, str], list[SuffixAxisSurfaceMethod]] = (
-        defaultdict(list)
-    )
-    for method in _suffix_axis_surface_methods(module):
-        grouped_by_operation[method.owner_name, method.operation_name].append(method)
-
-    grouped_by_axis_set: dict[
-        tuple[str, tuple[str, ...]],
-        list[tuple[str, tuple[SuffixAxisSurfaceMethod, ...]]],
-    ] = defaultdict(list)
-    for (owner_name, operation_name), operation_methods in grouped_by_operation.items():
-        axis_names = sorted_tuple({method.axis_name for method in operation_methods})
-        if len(axis_names) < 2:
-            continue
-        methods_by_axis = {
-            method.axis_name: method
-            for method in sorted(operation_methods, key=lambda item: item.line)
-        }
-        paired_methods = tuple(methods_by_axis[axis_name] for axis_name in axis_names)
-        grouped_by_axis_set[owner_name, axis_names].append(
-            (operation_name, paired_methods)
-        )
-
-    candidates: list[SuffixAxisSurfaceCandidate] = []
-    for (owner_name, axis_names), operation_groups in grouped_by_axis_set.items():
-        if len(operation_groups) < min_operation_count:
-            continue
-        ordered_groups = sorted_tuple(operation_groups, key=lambda item: item[0])
-        methods = tuple(
-            method for _, group_methods in ordered_groups for method in group_methods
-        )
-        candidates.append(
-            SuffixAxisSurfaceCandidate(
-                file_path=module.file_path,
-                owner_name=owner_name,
-                axis_names=axis_names,
-                operation_names=tuple(
-                    (operation_name for operation_name, _ in ordered_groups)
-                ),
-                methods=methods,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.owner_name,
-            item.axis_names,
-            item.operation_names,
-        ),
-    )
 
 
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
@@ -3492,29 +3404,6 @@ class _LineCaseSpec(ABC):
 
 
 @dataclass(frozen=True)
-class _GuardedReturnCase:
-    guard_expression: str | None
-    return_value: ast.AST
-    line: int
-
-    @classmethod
-    def from_returned(
-        cls, guard_expression: str | None, returned: tuple[ast.AST, int]
-    ) -> "_GuardedReturnCase":
-        return_value, line = returned
-        return cls(
-            guard_expression=guard_expression, return_value=return_value, line=line
-        )
-
-
-@dataclass(frozen=True)
-class _SelectedConstantReturnShape:
-    constant_name: str
-    wrapper_name: str | None
-    template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]
-
-
-@dataclass(frozen=True)
 class _ModuleConstantBinding:
     line: int
     constructor_name: str | None
@@ -3626,198 +3515,6 @@ def _registered_catalog_projection_candidates_for_function(
             for keyword_item in returned.keywords
             if keyword_item.arg is not None
         ),
-    )
-
-
-def _guarded_return_cases_from_if(
-    node: ast.If,
-) -> tuple[_GuardedReturnCase, ...] | None:
-    cases: list[_GuardedReturnCase] = []
-    current: ast.If | None = node
-    while current is not None:
-        returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(current.body)
-        if returned is None:
-            return None
-        cases.append(
-            _GuardedReturnCase.from_returned(ast.unparse(current.test), returned)
-        )
-        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-            current = current.orelse[0]
-            continue
-        if current.orelse:
-            fallback = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(current.orelse)
-            if fallback is None:
-                return None
-            cases.append(_GuardedReturnCase.from_returned(None, fallback))
-        current = None
-    return tuple(cases) if len(cases) >= 2 else None
-
-
-def _guarded_return_cases(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[_GuardedReturnCase, ...]:
-    body = statements_without_docstring(function.body)
-    if not body:
-        return ()
-    if len(body) == 1 and isinstance(body[0], ast.If):
-        return _guarded_return_cases_from_if(body[0]) or ()
-
-    cases: list[_GuardedReturnCase] = []
-    for index, statement in enumerate(body):
-        if isinstance(statement, ast.If):
-            if statement.orelse:
-                return ()
-            returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(statement.body)
-            if returned is None:
-                return ()
-            cases.append(
-                _GuardedReturnCase.from_returned(ast.unparse(statement.test), returned)
-            )
-            continue
-        if (
-            isinstance(statement, ast.Return)
-            and statement.value is not None
-            and index == len(body) - 1
-            and cases
-        ):
-            cases.append(
-                _GuardedReturnCase.from_returned(
-                    None, (statement.value, statement.lineno)
-                )
-            )
-            return tuple(cases)
-        return ()
-    return ()
-
-
-def _selected_constant_return_shape(
-    node: ast.AST,
-) -> _SelectedConstantReturnShape | None:
-    if isinstance(node, ast.Name) and _is_upper_snake_identifier(node.id):
-        return _SelectedConstantReturnShape(
-            constant_name=node.id,
-            wrapper_name=None,
-            template_key=("<direct>", ("__SELECTED__",), ()),
-        )
-    if not isinstance(node, ast.Call):
-        return None
-
-    positional_template: list[str] = []
-    keyword_template: list[tuple[str, str]] = []
-    constant_name: str | None = None
-    constant_slot_count = 0
-
-    for argument in node.args:
-        if isinstance(argument, ast.Name) and _is_upper_snake_identifier(argument.id):
-            constant_name = argument.id
-            constant_slot_count += 1
-            positional_template.append("__SELECTED__")
-            continue
-        positional_template.append(ast.unparse(argument))
-
-    for keyword in node.keywords:
-        if keyword.arg is None:
-            return None
-        if isinstance(keyword.value, ast.Name) and _is_upper_snake_identifier(
-            keyword.value.id
-        ):
-            constant_name = keyword.value.id
-            constant_slot_count += 1
-            keyword_template.append((keyword.arg, "__SELECTED__"))
-            continue
-        keyword_template.append((keyword.arg, ast.unparse(keyword.value)))
-
-    if constant_slot_count != 1 or constant_name is None:
-        return None
-    return _SelectedConstantReturnShape(
-        constant_name=constant_name,
-        wrapper_name=ast.unparse(node.func),
-        template_key=(
-            ast.unparse(node.func),
-            tuple(positional_template),
-            tuple(keyword_template),
-        ),
-    )
-
-
-def _shared_constant_suffix(names: tuple[str, ...]) -> str | None:
-    if len(names) < 2:
-        return None
-    suffix = SUPPORT_PROJECTION_AUTHORITY.shared_reversed_token_suffix(
-        tuple(tuple(name.split("_")) for name in names)
-    )
-    if not suffix:
-        return None
-    return "_".join(suffix)
-
-
-def _closed_constant_selector_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-    constant_bindings: dict[str, _ModuleConstantBinding],
-) -> Iterable[ClosedConstantSelectorCandidate]:
-    guarded_cases = _guarded_return_cases(function)
-    if len(guarded_cases) < 2:
-        return
-    return_shapes = tuple(
-        _selected_constant_return_shape(case.return_value) for case in guarded_cases
-    )
-    if any((shape is None for shape in return_shapes)):
-        return
-    concrete_shapes = cast(tuple[_SelectedConstantReturnShape, ...], return_shapes)
-    constant_names = tuple(shape.constant_name for shape in concrete_shapes)
-    if len(set(constant_names)) < 2:
-        return
-    template_keys = {shape.template_key for shape in concrete_shapes}
-    if len(template_keys) != 1:
-        return
-    family_suffix = _shared_constant_suffix(constant_names)
-    constructor_names = {
-        binding.constructor_name
-        for name in constant_names
-        if (binding := constant_bindings.get(name)) is not None
-        and binding.constructor_name is not None
-    }
-    common_constructor_name = (
-        next(iter(constructor_names)) if len(constructor_names) == 1 else None
-    )
-    if family_suffix is None and common_constructor_name is None:
-        return
-    evidence: list[SourceLocation] = [
-        SourceLocation(module.file_path, function.lineno, qualname)
-    ]
-    for constant_name in constant_names:
-        binding = constant_bindings.get(constant_name)
-        if binding is None:
-            continue
-        evidence.append(SourceLocation(module.file_path, binding.line, constant_name))
-    yield ClosedConstantSelectorCandidate(
-        file_path=module.file_path,
-        qualname=qualname,
-        line=function.lineno,
-        guard_expressions=tuple(
-            case.guard_expression
-            for case in guarded_cases
-            if case.guard_expression is not None
-        ),
-        constant_names=tuple(dict.fromkeys(constant_names)),
-        wrapper_name=concrete_shapes[0].wrapper_name,
-        family_suffix=family_suffix,
-        common_constructor_name=common_constructor_name,
-        evidence_locations=tuple(evidence[:6]),
-    )
-
-
-def _closed_constant_selector_candidates(
-    module: ParsedModule,
-) -> tuple[ClosedConstantSelectorCandidate, ...]:
-    constant_bindings = SUPPORT_PROJECTION_AUTHORITY.module_constant_bindings(module)
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _closed_constant_selector_candidates_for_function,
-        constant_bindings,
-        sort_key=lambda item: (item.file_path, item.line, item.qualname),
     )
 
 
@@ -7895,28 +7592,6 @@ class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidat
 
 
 @dataclass(frozen=True)
-class SuffixAxisSurfaceMethod(QualnameLineWitnessCandidate):
-    owner_name: str
-    operation_name: str
-    axis_name: str
-    parameter_names: tuple[str, ...]
-    statement_count: int
-
-
-@dataclass(frozen=True)
-class SuffixAxisSurfaceCandidate:
-    file_path: str
-    owner_name: str
-    axis_names: tuple[str, ...]
-    operation_names: tuple[str, ...]
-    methods: tuple[SuffixAxisSurfaceMethod, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((method.evidence for method in self.methods[:8]))
-
-
-@dataclass(frozen=True)
 class EnumProjectionTableCandidate(EnumCaseFamilyMixin, LineWitnessCandidate):
     table_name: str
     value_summaries: tuple[str, ...]
@@ -7941,17 +7616,6 @@ class ResidualClosedAxisIndirectionCandidate(
             SourceLocation(self.file_path, self.table_line, self.table_name),
             SourceLocation(self.file_path, self.line, self.qualname),
         )
-
-
-@dataclass(frozen=True)
-class ClosedConstantSelectorCandidate(EvidenceLocationsWitnessCandidate):
-    qualname: str
-    guard_expressions: tuple[str, ...]
-    constant_names: tuple[str, ...]
-    wrapper_name: str | None
-    family_suffix: str | None
-    common_constructor_name: str | None
-    witness_name = AliasProperty[str]("qualname")
 
 
 @dataclass(frozen=True)
@@ -8958,14 +8622,6 @@ class SchemaAccessorFamilyCandidate(
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
-
-
-@dataclass(frozen=True)
-class AllMissingAxisPredicateCandidate(FunctionLineWitnessCandidate):
-    predicate_names: tuple[str, ...]
-    append_target_name: str
-    signal_name: str
-    line_count: int
 
 
 @dataclass(frozen=True)

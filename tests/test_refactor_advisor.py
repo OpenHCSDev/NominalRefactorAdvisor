@@ -13210,26 +13210,6 @@ def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> 
     assert [module.module_name for module in modules] == ["pkg.mod"]
 
 
-def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass Compiler:\n    @staticmethod\n    def declare_for_context(context, steps, runner):\n        names = [step.name for step in steps]\n        return declare(context, steps, runner, names)\n\n    @staticmethod\n    def declare_for_session(session):\n        return declare(session.context, session.steps, session.runner, session.names)\n\n    @staticmethod\n    def validate_for_context(context, steps, runner):\n        names = [step.name for step in steps]\n        return validate(context, steps, runner, names)\n\n    @staticmethod\n    def validate_for_session(session):\n        return validate(session.context, session.steps, session.runner, session.names)\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "suffix_axis_compatibility_surface"
-        )
-    )
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
-    assert "context / session" in finding.summary
-    assert "declare" in finding.summary
-    assert "validate" in finding.summary
-
-
 def test_single_enum_subset_does_not_claim_factoring_authority(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -13358,24 +13338,6 @@ def orchestrate(request):
     )
     findings = analyze_path(tmp_path)
     assert findings == []
-
-
-def test_detects_closed_constant_selector(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass Mode(Enum):\n    DIRECT = "direct"\n    FALLBACK = "fallback"\n\n\nclass Plan:\n    def __init__(self, *, mode_name):\n        self.mode_name = mode_name\n\n\nclass Runner:\n    def __init__(self, plan):\n        self.plan = plan\n\n\nPRIMARY_PLAN = Plan(mode_name="primary")\nFALLBACK_PLAN = Plan(mode_name="fallback")\nSAFE_PLAN = Plan(mode_name="safe")\n\nDIRECT_CONTRACT = "direct"\nFALLBACK_CONTRACT = "fallback"\n\n\ndef build_runner(mode: Mode, *, enabled: bool):\n    if mode == Mode.DIRECT and enabled:\n        return Runner(PRIMARY_PLAN)\n    if enabled:\n        return Runner(FALLBACK_PLAN)\n    return Runner(SAFE_PLAN)\n\n\ndef active_contract(mode: Mode):\n    if mode == Mode.DIRECT:\n        return DIRECT_CONTRACT\n    return FALLBACK_CONTRACT\n',
-    )
-    findings = analyze_path(tmp_path)
-    selector_findings = [
-        finding
-        for finding in findings
-        if finding.detector_id == "closed_constant_selector"
-    ]
-    assert len(selector_findings) == 2
-    assert any(("build_runner" in finding.summary for finding in selector_findings))
-    assert any(("Runner(...)" in finding.summary for finding in selector_findings))
-    assert any(("active_contract" in finding.summary for finding in selector_findings))
 
 
 def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
@@ -13901,25 +13863,6 @@ def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
     assert "Mode" in finding.summary
     assert "MODE_CONFIGS" in finding.summary
     assert "ModeRunner" in finding.summary
-
-
-def test_detects_callable_method_axis_registry_as_strategy_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom enum import Enum\n\n\nclass MethodOperationRegistry:\n    @classmethod\n    def from_member_names(cls, axis, **operations):\n        return cls()\n\n\nclass SpatialBinMethod(Enum):\n    MEAN = "mean"\n    SUM = "sum"\n    MAX = "max"\n\n\ndef mean(values):\n    return values\n\n\ndef sum_values(values):\n    return values\n\n\ndef max_values(values):\n    return values\n\n\nSPATIAL_BIN_OPERATIONS = MethodOperationRegistry.from_member_names(\n    SpatialBinMethod,\n    mean=mean,\n    sum=sum_values,\n    max=max_values,\n)\n',
-    )
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "callable_method_axis_registry"
-    )
-    assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
-    assert "SPATIAL_BIN_OPERATIONS" in finding.summary
-    assert "SpatialBinMethod" in finding.summary
-    assert "hardcoded strategy family" in finding.summary
 
 
 def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
@@ -22792,41 +22735,6 @@ def test_ignores_autoregister_meta_family_with_dynamic_factory_rent_proof(
         finding.detector_id == "autoregister_meta_under_rented"
         for finding in analyze_path(tmp_path)
     )
-
-
-def test_detects_all_missing_axis_predicate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\n\ndef missing_signals(behavior_axis, abstract_axis, projection_axis, consumer_axis):\n    missing = []\n    if (\n        not behavior_axis\n        and not abstract_axis\n        and not projection_axis\n        and not consumer_axis\n    ):\n        missing.append("projection_or_consumer")\n    return tuple(missing)\n',
-    )
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "all_missing_axis_predicate"
-    )
-    assert "missing_signals" in finding.summary
-    assert "behavior_axis" in finding.summary
-    assert "projection_or_consumer" in finding.summary
-
-
-def test_all_missing_axis_predicate_does_not_attribute_nested_function_body(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\n\ndef outer():\n    def inner(first_axis, second_axis, third_axis):\n        missing = []\n        if not first_axis and not second_axis and not third_axis:\n            missing.append("axis_bundle")\n        return tuple(missing)\n\n    return inner\n',
-    )
-
-    findings = [
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "all_missing_axis_predicate"
-    ]
-
-    assert len(findings) == 1
-    assert "`inner`" in findings[0].summary
 
 
 def test_detects_manual_concrete_subclass_roster_across_modules(tmp_path: Path) -> None:

@@ -12,7 +12,6 @@ from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Generic, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
@@ -1192,48 +1191,6 @@ declare_candidate_rule_detector(
 )
 
 
-class SuffixAxisCompatibilitySurfaceDetector(
-    ConfiguredModuleCollectorCandidateDetector[SuffixAxisSurfaceCandidate]
-):
-    candidate_collector = _suffix_axis_surface_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_CONTEXT,
-        "Mirrored suffix-axis APIs should collapse to one authoritative context",
-        "Several operations are exposed once per suffix-named axis, such as `*_for_context` and `*_for_session`. When the same axis split repeats across an owner, the code is usually maintaining adapter surfaces instead of choosing one authoritative request/context record and deriving any compatibility projection at the boundary.",
-        "single authoritative context/request record instead of repeated suffix-axis adapter surfaces",
-        "same owner repeats an operation family across the same suffix-named axes",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, surface_candidate: SuffixAxisSurfaceCandidate
-    ) -> RefactorFinding:
-        axis_summary = " / ".join(surface_candidate.axis_names)
-        operation_summary = ", ".join(surface_candidate.operation_names[:5])
-        method_names = tuple(method.qualname for method in surface_candidate.methods)
-        return self.build_finding(
-            (
-                f"`{surface_candidate.owner_name}` repeats suffix-axis APIs for axes {axis_summary} "
-                f"across operations {operation_summary}."
-            ),
-            surface_candidate.evidence,
-            metrics=ParameterThreadMetrics(
-                function_count=len(surface_candidate.operation_names),
-                shared_parameter_count=len(surface_candidate.axis_names),
-                shared_parameter_names=surface_candidate.axis_names,
-            ),
-        )
-
-
 class ResidualClosedAxisIndirectionDetector(
     ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]
 ):
@@ -1272,64 +1229,6 @@ class ResidualClosedAxisIndirectionDetector(
             metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=axis_candidate.enum_name,
                 literal_cases=axis_candidate.table_case_names,
-            ),
-        )
-
-
-class ClosedConstantSelectorDetector(
-    ModuleCollectorCandidateDetector[ClosedConstantSelectorCandidate]
-):
-    candidate_collector = staticmethod(_closed_constant_selector_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Closed selector over sibling constants should derive from one selector table",
-        "The docs treat branch ladders that choose among sibling specs, plans, contracts, or other immutable constants as duplicated selector logic once the constant family already exists. The selector should collapse into one authoritative keyed table or selector record so wrappers and downstream views are derived.",
-        "single authoritative selector table for a closed constant family",
-        "one function branches over a small predicate family and returns sibling constants or one shared wrapper around them",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PREDICATE_CHAIN,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, selector_candidate: ClosedConstantSelectorCandidate
-    ) -> RefactorFinding:
-        constants_preview = ", ".join(selector_candidate.constant_names[:4])
-        guard_preview = ", ".join(selector_candidate.guard_expressions[:2])
-        family_label = (
-            selector_candidate.common_constructor_name
-            or selector_candidate.family_suffix
-            or "selected constant family"
-        )
-        wrapper_summary = (
-            f"`{selector_candidate.wrapper_name}(...)` around "
-            if selector_candidate.wrapper_name is not None
-            else ""
-        )
-        guard_summary = (
-            f"guards `{guard_preview}` and default fallback"
-            if selector_candidate.guard_expressions
-            else "a closed fallback ladder"
-        )
-        return self.build_finding(
-            (
-                f"`{selector_candidate.qualname}` branches over {guard_summary}, returning {wrapper_summary}"
-                f"sibling constants {constants_preview} from `{family_label}`."
-            ),
-            selector_candidate.evidence,
-            metrics=MappingMetrics(
-                mapping_site_count=len(selector_candidate.constant_names),
-                field_count=max(len(selector_candidate.guard_expressions), 1),
-                mapping_name=selector_candidate.wrapper_name or family_label,
-                field_names=selector_candidate.constant_names,
-                source_name=selector_candidate.qualname,
             ),
         )
 
@@ -1934,96 +1833,6 @@ class ParallelKeyedTableAndFamilyDetector(
                 table_candidate.key_type_name,
             ),
         )
-
-
-class CallableMethodAxisRegistryDetector(PerModuleIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Callable method-axis registry should become an auto-registered strategy family",
-        "A builder call that maps method-axis member names to callable behavior is a hardcoded strategy family in registry-table form. The canonical shape is an ABC plus `AutoRegisterMeta`, with each method implementation declared as a subclass and dispatch routed through `Family.__registry__[method].run(...)`.",
-        "AutoRegisterMeta-backed strategy family instead of callable method-axis registry",
-        "module-level registry builder maps closed method-axis cases to callable behavior",
-        (
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        (
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
-    )
-
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        del config
-        findings: list[RefactorFinding] = []
-        for statement in module.module.body:
-            assignment = self._assignment_target_name(statement)
-            value = self._assignment_value(statement)
-            if assignment is None or not isinstance(value, ast.Call):
-                continue
-            if not self._is_method_axis_registry_call(value):
-                continue
-            axis_name = ast.unparse(value.args[0]) if value.args else "Axis"
-            operation_names = tuple(
-                keyword.arg
-                for keyword in value.keywords
-                if keyword.arg is not None
-                and isinstance(keyword.value, (ast.Name, ast.Attribute))
-            )
-            if len(operation_names) < 2:
-                continue
-            operations = ", ".join(operation_names[:4])
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{assignment}` maps `{axis_name}` member names to callable operations "
-                        f"{operations}; this is a hardcoded strategy family."
-                    ),
-                    (SourceLocation(module.file_path, statement.lineno, assignment),),
-                    metrics=DispatchCountMetrics.from_literal_family(
-                        dispatch_axis=axis_name,
-                        literal_cases=operation_names,
-                    ),
-                )
-            )
-        return findings
-
-    @staticmethod
-    def _is_method_axis_registry_call(call: ast.Call) -> bool:
-        if len(call.args) != 1 or len(call.keywords) < 2:
-            return False
-        func_name = ast.unparse(call.func)
-        if not (
-            func_name.endswith(".from_member_names")
-            or func_name.endswith("from_member_names")
-        ):
-            return False
-        axis_name = ast.unparse(call.args[0])
-        return axis_name.endswith("Method") or axis_name.endswith("Axis")
-
-    @staticmethod
-    def _assignment_target_name(statement: ast.stmt) -> str | None:
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                return target.id
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            return statement.target.id
-        return None
-
-    @staticmethod
-    def _assignment_value(statement: ast.stmt) -> ast.AST | None:
-        if isinstance(statement, ast.Assign):
-            return statement.value
-        if isinstance(statement, ast.AnnAssign):
-            return statement.value
-        return None
 
 
 class InheritedAutoRegisterConfigBoilerplateDetector(
@@ -3703,36 +3512,6 @@ class RepeatedGuardValidatorFamilyDetector(
                 f"with the same fail-fast attribute checks over {shared_attrs}.{helper_summary}"
             ),
             family_candidate.evidence,
-        )
-
-
-class AllMissingAxisPredicateDetector(
-    ConfiguredModuleCollectorCandidateDetector[AllMissingAxisPredicateCandidate]
-):
-    candidate_collector = staticmethod(_all_missing_axis_predicate_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_CONTEXT,
-        "All-missing axis predicates should be named axis authorities",
-        "A raw conjunction of several `not axis` clauses is a derived predicate over a semantic axis bundle. Spelling that bundle inline makes the relation easy to fork and hard to audit. The normal form is a named tuple, policy, or context method that owns the axis set and lets the branch ask the derived question once.",
-        "one named axis bundle or policy predicate deriving the all-missing condition",
-        "three or more sibling axes are checked through an inline all-negative boolean conjunction before appending a missing signal",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, predicate_candidate: AllMissingAxisPredicateCandidate
-    ) -> RefactorFinding:
-        axis_names = ", ".join(predicate_candidate.predicate_names)
-        return self.build_finding(
-            (
-                f"`{predicate_candidate.function_name}` checks all-missing axes "
-                f"{axis_names} inline before appending `{predicate_candidate.signal_name}`."
-            ),
-            (predicate_candidate.evidence,),
         )
 
 
