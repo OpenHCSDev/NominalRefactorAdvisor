@@ -60,11 +60,13 @@ def test_parameter_projection_preserves_runtime_and_shadowed_bindings(
     )
     path.write_text(source)
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    original_ast = ast.dump(snapshot.module_nodes_by_file_path[str(path)], include_attributes=True)
+    modules = parse_python_modules(tmp_path)
+    (module,) = modules
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    original_ast = ast.dump(snapshot.module_nodes_by_file_path[module.file_path], include_attributes=True)
     simulation = _document(path).simulate(snapshot)
     assert simulation.is_clean
-    assert ast.dump(snapshot.module_nodes_by_file_path[str(path)], include_attributes=True) == original_ast
+    assert ast.dump(snapshot.module_nodes_by_file_path[module.file_path], include_attributes=True) == original_ast
     assert path.read_text() == source
     simulation.apply()
     assert "witness.candidate" in path.read_text()
