@@ -48,6 +48,12 @@ write; deferred module and class namespace lookup uses the final write.
 Deferred closure lookup with multiple writes remains unresolved. Conditional
 writes also remain unresolved.
 
+The ``call_binding`` module owns Python signature and argument-binding
+declarations. ``value_expression`` owns the shared exact-reference and opaque
+value model. Neither depends on product-flow collection. ``product_flow``
+re-exports their public declarations as the same objects; repository consumers
+import from the owning modules.
+
 Method selection checks the selected binding against its source declaration.
 Exact aliases retain the captured declaration; other reassignments and deletions
 cannot authorise edits to an older method. A later method definition can

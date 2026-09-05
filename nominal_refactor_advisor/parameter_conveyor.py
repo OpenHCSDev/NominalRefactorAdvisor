@@ -27,7 +27,6 @@ from .product_flow import (
     CompactMutationKind,
     CompactValueOriginResolution,
     CompactProductFlowModuleProjection,
-    LexicalValueReference,
 )
 from .product_flow_authority import (
     CompactCallableComponentAuthorityProof,
@@ -39,7 +38,7 @@ from .product_flow_authority import (
     CompactResolvedFunctionCall,
     CompactResolvedProductConstruction,
 )
-
+from .value_expression import LexicalValueReference
 
 class ParameterConveyorCallEdge(CarrierCollapseCallEdge, ABC):
     """Carrier-collapse edge descending from an explicit product construction."""

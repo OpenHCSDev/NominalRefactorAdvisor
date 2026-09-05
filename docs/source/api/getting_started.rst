@@ -444,6 +444,18 @@ on a broader authority boundary.  Closure moves require an explicit
 ``maximum_moved_symbol_count`` and fail preflight if the derived selection
 exceeds that bound.
 
+For a multi-step extraction, the next operation can select a module created by
+the preceding one. This recorded NRA refactor first extracts signature binding,
+then separates its value-expression dependencies:
+
+.. literalinclude:: ../../examples/call_binding_extraction.py
+   :language: python
+
+The plan names two semantic roots. It derives the remaining declarations and
+updates consumers after each stage; no declaration bodies or consumer lists are
+copied into the plan. This extraction is already applied in NRA. Its CLI
+regression exercises the recorded plan against a pre-extraction fixture.
+
 Runtime imports remain runtime imports.  Imports declared under a recognised
 ``typing.TYPE_CHECKING`` guard retain that scope when the dependency is used
 only by deferred annotations.  NRA also rewrites guarded imports in repository

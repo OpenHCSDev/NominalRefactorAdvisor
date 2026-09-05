@@ -8,6 +8,7 @@ from abc import (
 from dataclasses import dataclass
 from typing import ClassVar
 
+
 from .codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
@@ -41,7 +42,8 @@ from .codemod_selector_models import (
 )
 from .codemod_source_edits import PhysicalSourceEdit
 from .descriptor_algebra import AliasProperty
-from .product_flow import BareCallTargetReference, LexicalValueReference
+from .product_flow import BareCallTargetReference
+from .value_expression import LexicalValueReference
 
 @dataclass(frozen=True, kw_only=True)
 class FunctionMutationOperationABC(SourceReprovedOperation, ABC):

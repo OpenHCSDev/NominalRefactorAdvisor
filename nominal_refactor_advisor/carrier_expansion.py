@@ -24,7 +24,6 @@ from .class_index import (
 from .product_flow import (
     CompactFlowPosition,
     CompactProductFlowModuleProjection,
-    LexicalValueReference,
     compact_product_flow_projection,
 )
 from .product_flow_authority import (
@@ -33,6 +32,8 @@ from .product_flow_authority import (
     CompactProductFlowRepository,
     CompactResolvedFunctionCall,
 )
+from .value_expression import LexicalValueReference
+
 @dataclass(frozen=True)
 class DeclaredCarrierExpansion(CarrierCollapseCallEdge):
     """One call that expands fields from a declaration-typed carrier value."""

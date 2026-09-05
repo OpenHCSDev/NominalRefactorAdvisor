@@ -41,9 +41,9 @@ from .product_flow import (
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
     CurrentClassMemberMethodReference,
-    LexicalValueReference,
     compact_product_flow_projection,
 )
+from .value_expression import LexicalValueReference
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 

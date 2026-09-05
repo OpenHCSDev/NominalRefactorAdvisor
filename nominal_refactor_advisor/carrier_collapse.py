@@ -6,14 +6,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+
 from .class_index import CompactProductAuthority
-from .product_flow import CompactFunctionDeclaration, LexicalValueReference
+from .product_flow import CompactFunctionDeclaration
 from .product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactProductFlowContext,
     CompactResolvedFunctionCall,
 )
-
+from .value_expression import LexicalValueReference
 
 @dataclass(frozen=True)
 class CarrierCollapseFieldBinding:

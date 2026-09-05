@@ -43,11 +43,11 @@ from .declaration_dependencies import (
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
-from .product_flow import LexicalValueReference
 from .source_geometry import (
     ClassHeaderSourceSpan,
     SourceLineSegmentAuthority,
 )
+from .value_expression import LexicalValueReference
 
 if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
