@@ -579,22 +579,6 @@ declare_candidate_rule_detector(
 )
 
 
-def _concrete_type_union_contract_patch(
-    candidate: ConcreteTypeUnionContractCandidate,
-) -> str:
-    base_action = (
-        f"`{candidate.suggested_contract_name}` already declares the observed contract; use it directly."
-        if candidate.common_base_names
-        else f"Introduce `{candidate.suggested_contract_name}` as the shared constructor contract and make {candidate.member_type_names} inherit it."
-    )
-    return (
-        f"# Replace the concrete class-object union on `{candidate.function_name}.{candidate.parameter_name}` "
-        f"with `type[{candidate.suggested_contract_name}]` or a TypeVar bound to `{candidate.suggested_contract_name}`.\n"
-        f"# {base_action}\n"
-        "# Do not hide this behind a TypeAlias for the same concrete union; the consumer is depending on the shared nominal behavior."
-    )
-
-
 declare_candidate_rule_detector(
     ConcreteTypeUnionContractCandidate,
     high_confidence_spec(

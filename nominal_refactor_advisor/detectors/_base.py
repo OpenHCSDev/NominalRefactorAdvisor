@@ -6730,18 +6730,6 @@ def _witness_role_mixin_name(role_name: str) -> str:
     return WitnessMixinRole(role_name).mixin_name
 
 
-def _witness_mixin_enforcement_patch(
-    candidate: WitnessMixinEnforcementCandidate,
-) -> str:
-    role_summary = "; ".join(
-        (
-            f"{_witness_role_mixin_name(role_name)} <- {field_names}"
-            for role_name, field_names in candidate.role_field_names
-        )
-    )
-    return f"# Collapse renamed semantic role slices {role_summary} into reusable mixins.\n# Normalize the leaf carriers onto the shared semantic base plus those mixins.\n# Use multiple inheritance when one carrier needs several orthogonal witness roles."
-
-
 def _as_builder_shape(shape: object) -> BuilderCallShape:
     if not isinstance(shape, BuilderCallShape):
         raise TypeError(f"Expected BuilderCallShape, got {type(shape)!r}")
