@@ -30,8 +30,10 @@ def _operation(
     callee: str = "render",
 ) -> ReplaceDeclaredCallOperation:
     return ReplaceDeclaredCallOperation(
-        target=SourceRewriteTarget(file_path=str(path), qualname="run"),
-        callee=SourceRewriteTarget(file_path=str(callee_path or path), qualname=callee),
+        target=SourceRewriteTarget(file_path=path.as_posix(), qualname="run"),
+        callee=SourceRewriteTarget(
+            file_path=(callee_path or path).as_posix(), qualname=callee
+        ),
         expression_source=expression,
         selection_count=SelectionCountExpectation(exact=1),
     )
@@ -59,7 +61,7 @@ def test_call_replacement_preserves_precedence_and_literal_values(
         "    return café, render(value) * 2, other(value), café # retain\n"
         "print(run())\n"
     ).replace("\n", newline)
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     operation = _operation(path, expression.replace("\n", newline))
     sequence = CodemodPlanSequence.from_operations((operation,))
@@ -91,25 +93,25 @@ def test_call_replacement_rejects_unproved_selection_without_writes(
 ) -> None:
     path = tmp_path / "probe.py"
     source = f"def render(value): return value\ndef other(value): return value\ndef run(): return {call_source}\n"
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(ValueError, match=error):
         CodemodPlanSequence.from_operations((_operation(path, "42"),)).simulate(
             CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
-    assert path.read_text() == source
+    assert path.read_text(encoding="utf-8") == source
 
 
 def test_saved_call_replacement_rejects_shadowed_declaration(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     sequence = CodemodPlanSequence.from_operations((_operation(path, "1"),))
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     assert sequence.simulate(snapshot).is_clean
     with pytest.raises(ValueError, match="resolved calls|unresolved"):
         sequence.simulate(
             snapshot.with_virtual_sources(
-                {str(path): source.replace("def run():", "def run(render):")}
+                {path.as_posix(): source.replace("def run():", "def run(render):")}
             )
         )
 
@@ -118,12 +120,12 @@ def test_saved_call_replacement_rejects_shadowed_declaration(tmp_path: Path) -> 
 def test_replacement_requires_one_expression(tmp_path: Path, expression: str) -> None:
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(SyntaxError):
         CodemodPlanSequence.from_operations((_operation(path, expression),)).simulate(
             CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
-    assert path.read_text() == source
+    assert path.read_text(encoding="utf-8") == source
 
 
 def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
@@ -133,6 +135,7 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
     library.write_text(
         "class Base:\n    @classmethod\n    def render(cls, value): return value + 1\n",
         newline="",
+        encoding="utf-8",
     )
     path = tmp_path / "probe.py"
     source = (
@@ -142,7 +145,7 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
         "def run(value=3): return Child.render(value), Other.render(value)\n"
         "print(run())\n"
     )
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     sequence = CodemodPlanSequence.from_operations(
         (_operation(path, "value + 1", callee_path=library, callee="Base.render"),)
@@ -170,18 +173,18 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
     report = json.loads(cli.stdout)
     assert report["applied"]
     assert {entry["file_path"] for entry in report["base_revisions"]} >= {
-        str(path),
-        str(library),
+        path.as_posix(),
+        library.as_posix(),
     }
-    assert "Child.render(value)" not in path.read_text()
-    assert "Other.render(value)" in path.read_text()
+    assert "Child.render(value)" not in path.read_text(encoding="utf-8")
+    assert "Other.render(value)" in path.read_text(encoding="utf-8")
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
 def test_nested_selected_calls_require_separate_stages(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(render(1))\n"
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     operation = ReplaceDeclaredCallOperation(
         target=SourceRewriteTarget(file_path=str(path), qualname="run"),
         callee=SourceRewriteTarget(file_path=str(path), qualname="render"),
@@ -192,7 +195,7 @@ def test_nested_selected_calls_require_separate_stages(tmp_path: Path) -> None:
         CodemodPlanSequence.from_operations((operation,)).simulate(
             CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
-    assert path.read_text() == source
+    assert path.read_text(encoding="utf-8") == source
 
 
 def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
@@ -215,7 +218,7 @@ def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
         "source = 'class Base:\\n    pass\\n'\n"
         "print(run(ast.parse(source).body[0], source, ('    moved = 1\\n',)))\n"
     )
-    path.write_text(source, newline="")
+    path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     target = SourceRewriteTarget(file_path=str(path), qualname="run")
     operation = _operation(
@@ -246,9 +249,9 @@ def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean
     assert simulation.stage_count == 3
-    assert simulation.simulation.changed_file_paths == (str(path),)
+    assert simulation.simulation.changed_file_paths == (path.as_posix(),)
     simulation.apply()
-    rewritten = path.read_text()
+    rewritten = path.read_text(encoding="utf-8")
     assert "SourceTextSpanReplacement" not in rewritten
     assert "insertion_offset" not in rewritten
     assert "member_insertion_replacement(member_sources)" in rewritten

@@ -5,10 +5,12 @@ from __future__ import annotations
 import ast
 import copy
 import sys
+from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 from typing import Callable, TypeAlias
 
 from .annotation_semantics import (
@@ -16,6 +18,11 @@ from .annotation_semantics import (
     StringizedAnnotationSurface,
 )
 from .ast_tools import ImportBoundNameProjection
+from .assignment_projection import (
+    NamedAssignmentSelection,
+    SingleAssignmentAndValueNameProjection,
+)
+from .source_geometry import SourceByteSpan
 
 MovableDeclaration: TypeAlias = (
     ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign | ast.AnnAssign
@@ -286,33 +293,27 @@ class FunctionBindingProjection:
 
 
 @dataclass(frozen=True)
-class FunctionParameterBinding:
-    """Recover reads owned by one unmodified function-parameter binding."""
+class FunctionBindingABC(ABC):
+    """Recover owned reads by removing exactly one declared lexical binding."""
 
     node: ast.FunctionDef | ast.AsyncFunctionDef
-    parameter_name: str
+    binding_name: str
+
+    @abstractmethod
+    def without_binding(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        """Project the function without this binding, retaining reference identities."""
+        raise NotImplementedError
 
     def required_references(self) -> tuple[ast.Name, ...]:
-        if self.parameter_name not in _argument_names(self.node.args):
-            raise ValueError(f"No parameter {self.parameter_name!r} on {self.node.name!r}")
-        arguments = copy.copy(self.node.args)
-        for field_name, value in ast.iter_fields(arguments):
-            if isinstance(value, list):
-                setattr(arguments, field_name, [
-                    item for item in value
-                    if not isinstance(item, ast.arg) or item.arg != self.parameter_name
-                ])
-            elif isinstance(value, ast.arg) and value.arg == self.parameter_name:
-                setattr(arguments, field_name, None)
-        without_binding = copy.copy(self.node)
-        without_binding.args = arguments
-        if self.parameter_name in FunctionBindingProjection.from_function(
-            without_binding,
-        ).local_names or any(
-            isinstance(child, ast.Nonlocal) and self.parameter_name in child.names
+        without_binding = self.without_binding()
+        bindings = FunctionBindingProjection.from_function(without_binding)
+        if self.binding_name in (
+            bindings.local_names | bindings.global_names | bindings.nonlocal_names
+        ) or any(
+            isinstance(child, ast.Nonlocal) and self.binding_name in child.names
             for child in ast.walk(self.node)
         ):
-            raise ValueError(f"Parameter {self.parameter_name!r} has additional bindings")
+            raise ValueError(f"Binding {self.binding_name!r} has additional bindings")
         original_external = frozenset(self.external_references(self.node))
         return tuple(
             reference for reference in self.external_references(without_binding)
@@ -324,7 +325,73 @@ class FunctionParameterBinding:
     ) -> tuple[ast.Name, ...]:
         return ModuleLexicalDependencyProjection.from_module(
             ast.Module(body=[node], type_ignores=[]),
-        ).external_references_named(self.parameter_name)
+        ).external_references_named(self.binding_name)
+
+
+@dataclass(frozen=True)
+class FunctionParameterBinding(FunctionBindingABC):
+    """One unmodified function-parameter binding."""
+
+    def without_binding(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        if self.binding_name not in _argument_names(self.node.args):
+            raise ValueError(
+                f"No parameter {self.binding_name!r} on {self.node.name!r}"
+            )
+        arguments = copy.copy(self.node.args)
+        for field_name, value in ast.iter_fields(arguments):
+            if isinstance(value, list):
+                setattr(
+                    arguments,
+                    field_name,
+                    [
+                        item
+                        for item in value
+                        if not isinstance(item, ast.arg)
+                        or item.arg != self.binding_name
+                    ],
+                )
+            elif isinstance(value, ast.arg) and value.arg == self.binding_name:
+                setattr(arguments, field_name, None)
+        without_binding = copy.copy(self.node)
+        without_binding.args = arguments
+        return without_binding
+
+
+@dataclass(frozen=True)
+class FunctionLocalBinding(FunctionBindingABC):
+    """One direct, single-name assignment with no other writes to its binding."""
+
+    @cached_property
+    def assignment(self) -> ast.stmt:
+        (statement,) = NamedAssignmentSelection((self.binding_name,)).statements(
+            self.node.body
+        )
+        return statement
+
+    def without_binding(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        value = SingleAssignmentAndValueNameProjection(self.assignment).value
+        if value is None:
+            raise ValueError(
+                "Local projection requires a single-name assignment with a value"
+            )
+        without_binding = copy.copy(self.node)
+        without_binding.body = [
+            ast.Expr(value=value) if statement is self.assignment else statement
+            for statement in self.node.body
+        ]
+        return without_binding
+
+    def required_references(self) -> tuple[ast.Name, ...]:
+        references = super().required_references()
+        span = SourceByteSpan.require_node(self.assignment)
+        if any(
+            (read.lineno - 1, read.col_offset) < (span.end_line_index, span.end_byte)
+            for read in references
+        ):
+            raise ValueError(
+                f"Local binding {self.binding_name!r} is read before its initializer completes"
+            )
+        return references
 
 
 @dataclass

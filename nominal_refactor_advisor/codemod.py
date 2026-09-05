@@ -110,9 +110,11 @@ from .class_member_authority_codemod import (
 )
 from .codemod_function_operations import (
     DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
+    FunctionBindingProjectionOperationABC as FunctionBindingProjectionOperationABC,
     FunctionBodySourcePayload as FunctionBodySourcePayload,
     FunctionMutationOperationABC as FunctionMutationOperationABC,
     PrependFunctionBodyOperation as PrependFunctionBodyOperation,
+    ProjectFunctionLocalOperation as ProjectFunctionLocalOperation,
     ProjectFunctionParameterOperation as ProjectFunctionParameterOperation,
     ReplaceDeclaredCallArgumentsOperation as ReplaceDeclaredCallArgumentsOperation,
     ReplaceDeclaredCallOperation as ReplaceDeclaredCallOperation,
@@ -281,6 +283,8 @@ from .codemod_declaration_source import (
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
+    FunctionBindingProjectionSourceAuthority as FunctionBindingProjectionSourceAuthority,
+    FunctionLocalProjectionSourceAuthority as FunctionLocalProjectionSourceAuthority,
     FunctionParameterProjectionSourceAuthority as FunctionParameterProjectionSourceAuthority,
     FunctionRegionSourceAuthority as FunctionRegionSourceAuthority,
     FunctionSuiteLayout as FunctionSuiteLayout,

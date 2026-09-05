@@ -315,6 +315,31 @@ It also keeps an ordinary string expression from becoming a new docstring.
 The composed renderer example now uses declaration-selected operations
 throughout, with no exact-text patches.
 
+Reusing an Existing Authority
+-----------------------------
+
+Use ``project_function_local`` to replace reads of a single-assignment local
+with an existing parameter's access path, such as ``self.geometry``. Set
+``local_name`` to the local binding and ``projection_source`` to the access
+path. The operation retains the initialiser and its effects; remove it with
+``delete_function_assignments`` in the next stage when it is no longer needed.
+
+This executable plan records NRA's own migration to its existing geometry
+authority:
+
+.. literalinclude:: ../../examples/source_geometry_refactor.py
+   :language: python
+
+Local projection uses the same lexical ownership and capture checks as
+parameter projection. It requires one direct, single-name assignment with a
+value, rejects other writes to that binding, and rejects reads appearing before
+the initialiser completes. Shadowed names in nested scopes remain unchanged.
+
+The author chooses the value relationship. Accessing a property repeatedly can
+differ from retaining a local snapshot, so review its lifetime and side effects
+before making this change. In the geometry example, the destination is an
+existing cached property over the same immutable source buffer.
+
 Converting a Detector to a Declaration
 --------------------------------------
 

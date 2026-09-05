@@ -117,7 +117,7 @@ class SingleAssignmentAndValueNameProjection:
     statement: ast.stmt
 
     @property
-    def pair(self) -> tuple[str, ast.AST] | None:
+    def pair(self) -> tuple[str, ast.expr] | None:
         if isinstance(self.statement, ast.Assign) and len(self.statement.targets) == 1:
             name = AssignmentTargetNameProjection(self.statement.targets[0]).direct_name
             if name is not None:
@@ -148,7 +148,7 @@ class SingleAssignmentAndValueNameProjection:
         return name
 
     @property
-    def value(self) -> ast.AST | None:
+    def value(self) -> ast.expr | None:
         pair = self.pair
         if pair is None:
             return None

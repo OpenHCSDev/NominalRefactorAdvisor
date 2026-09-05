@@ -38,7 +38,11 @@ from .codemod_source_edits import (
 )
 from .codemod_statement_source import StatementSource
 from .collection_algebra import sorted_tuple
-from .declaration_dependencies import FunctionParameterBinding
+from .declaration_dependencies import (
+    FunctionBindingABC,
+    FunctionLocalBinding,
+    FunctionParameterBinding,
+)
 from .product_flow import LexicalValueReference
 from .source_geometry import (
     ClassHeaderSourceSpan,
@@ -417,7 +421,6 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
     def before_first_method_offset(self) -> int:
         """Return the insertion offset without stealing attached comments."""
 
-        geometry = SourceTextGeometry(self.source)
         first_method = next(
             (
                 statement
@@ -428,13 +431,13 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         )
         if first_method is None:
             return (
-                geometry.line_offsets[self.node.end_lineno]
+                self.geometry.line_offsets[self.node.end_lineno]
                 if self.node.end_lineno is not None
-                and self.node.end_lineno < len(geometry.line_offsets)
-                else geometry.end_offset
+                and self.node.end_lineno < len(self.geometry.line_offsets)
+                else self.geometry.end_offset
             )
         insertion_line = ClassHeaderSourceSpan.statement_start_line(first_method)
-        source_lines = geometry.lines
+        source_lines = self.geometry.lines
         method_indent = " " * first_method.col_offset
         while insertion_line > self.node.lineno + 1:
             preceding_line = source_lines[insertion_line - 2]
@@ -444,7 +447,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
             ):
                 break
             insertion_line -= 1
-        return geometry.line_offsets[insertion_line - 1]
+        return self.geometry.line_offsets[insertion_line - 1]
 
     def member_source(self, members: tuple[str, ...]) -> str:
         """Render class members at this point with stable class-body spacing."""
@@ -774,15 +777,23 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionParameterProjectionSourceAuthority(FunctionSourceAuthority):
-    """Project reads of an existing parameter onto another parameter's access path."""
+class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority, ABC):
+    """Project owned binding reads onto an existing parameter's access path."""
+
+    @property
+    @abstractmethod
+    def binding_type(self) -> type[FunctionBindingABC]:
+        """Nominal binding declaration selected by this projection."""
+        raise NotImplementedError
 
     def replacements_for(
-        self, parameter_name: str, reference: LexicalValueReference,
+        self,
+        binding_name: str,
+        reference: LexicalValueReference,
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        reads = FunctionParameterBinding(self.node, parameter_name).required_references()
+        reads = self.binding_type(self.node, binding_name).required_references()
         if not reads:
-            raise ValueError(f"Parameter {parameter_name!r} has no owned reads to project")
+            raise ValueError(f"Binding {binding_name!r} has no owned reads to project")
         expressions = tuple(
             ast.fix_missing_locations(ast.copy_location(reference.as_expression(), read))
             for read in reads
@@ -808,3 +819,19 @@ class FunctionParameterProjectionSourceAuthority(FunctionSourceAuthority):
             for read in reads
             for span in (SourceTextSpan.from_offsets(self.geometry.required_node_offsets(read)),)
         )
+
+
+@dataclass(frozen=True)
+class FunctionParameterProjectionSourceAuthority(
+    FunctionBindingProjectionSourceAuthority
+):
+    """Project an unchanged parameter's reads; its signature remains author-owned."""
+
+    binding_type = FunctionParameterBinding
+
+
+@dataclass(frozen=True)
+class FunctionLocalProjectionSourceAuthority(FunctionBindingProjectionSourceAuthority):
+    """Project a single-assignment local's reads; initializer removal stays explicit."""
+
+    binding_type = FunctionLocalBinding
