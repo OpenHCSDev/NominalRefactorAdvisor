@@ -70,8 +70,6 @@ from nominal_refactor_advisor.ast_tools import (
     ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
-    ScopedShapeWrapperFunctionFamily,
-    ScopedShapeWrapperSpecFamily,
     SentinelTypeObservationFamily,
     StringLiteralDispatchObservationFamily,
     ParsedModule,
@@ -23455,23 +23453,6 @@ def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
         )
     )
     assert "polymorphic family" in finding.title
-
-
-def test_collects_scoped_shape_wrapper_observations_via_spec_family(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nimport ast\n\n\ndef _build_method_shape_from_observation(parsed_module, observation):\n    node = observation.node\n    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n        return None\n    return (parsed_module, node)\n\n\n_METHOD_SHAPE_SPEC = ScopedShapeSpec(\n    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),\n    build_shape=_build_method_shape_from_observation,\n)\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    functions = collect_family_items(module, ScopedShapeWrapperFunctionFamily)
-    specs = collect_family_items(module, ScopedShapeWrapperSpecFamily)
-    assert [item.function_name for item in functions] == [
-        "_build_method_shape_from_observation"
-    ]
-    assert [item.spec_name for item in specs] == ["_METHOD_SHAPE_SPEC"]
 
 
 def test_detects_namespaced_auto_register_decorator_family(tmp_path: Path) -> None:

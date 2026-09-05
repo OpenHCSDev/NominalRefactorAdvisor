@@ -42,4 +42,4 @@ Observation Shapes
 ------------------
 
 .. automodule:: nominal_refactor_advisor.observation_shapes
-   :members: LiteralKind, FieldOriginKind, StructuralObservationTemplate, FieldObservation, LiteralDispatchObservation, ProjectionHelperShape, ScopedShapeWrapperFunction, ScopedShapeWrapperSpec, SentinelTypeObservation, DynamicMethodInjectionObservation, BuilderCallShape, RegistrationShape
+   :members: LiteralKind, FieldOriginKind, StructuralObservationTemplate, FieldObservation, LiteralDispatchObservation, ProjectionHelperShape, SentinelTypeObservation, DynamicMethodInjectionObservation, BuilderCallShape, RegistrationShape

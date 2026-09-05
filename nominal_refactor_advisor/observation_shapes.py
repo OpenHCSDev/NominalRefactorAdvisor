@@ -335,46 +335,6 @@ class ProjectionHelperShape(
 
 
 @dataclass(frozen=True)
-class ScopedShapeWrapperFunction(
-    ModuleBodyExecutionMixin,
-    LinenoObservationMixin,
-    FunctionNameOwnerMixin,
-    FunctionNameNominalWitnessMixin,
-    FunctionNameObservedNameMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.SCOPED_SHAPE_WRAPPER
-    function_name: str
-    lineno: int
-    node_types: tuple[str, ...]
-
-    @property
-    def fiber_key(self) -> str:
-        return f"function:{'/'.join(self.node_types)}"
-
-
-@dataclass(frozen=True)
-class ScopedShapeWrapperSpec(
-    ModuleBodyExecutionMixin,
-    LinenoObservationMixin,
-    FunctionNameNominalWitnessMixin,
-    FunctionNameObservedNameMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.SCOPED_SHAPE_WRAPPER
-    spec_name: str
-    lineno: int
-    function_name: str
-    node_types: tuple[str, ...]
-
-    owner_symbol: ClassVar[AliasProperty[str]] = AliasProperty("spec_name")
-
-    @property
-    def fiber_key(self) -> str:
-        return f"spec:{'/'.join(self.node_types)}:{self.function_name}"
-
-
-@dataclass(frozen=True)
 class SentinelTypeObservation(
     ModuleBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,

@@ -20,8 +20,6 @@ from .observation_shapes import (
     LiteralKind,
     ProjectionHelperShape,
     RegistrationShape,
-    ScopedShapeWrapperFunction,
-    ScopedShapeWrapperSpec,
     SentinelTypeObservation,
 )
 
@@ -59,8 +57,6 @@ from .ast_tools import (
     _literal_dispatch_observations_for_kind,
     _projection_helper_shape_from_function,
     _registration_key_fingerprint,
-    _scoped_shape_wrapper_function_from_function,
-    _scoped_shape_wrapper_spec_from_assign,
     _sentinel_type_observation,
     _sentinel_type_usage_observations,
 )
@@ -908,30 +904,6 @@ class StandardProjectionHelperObservationSpec(
     shape_helper = staticmethod(_projection_helper_shape_from_function)
 
 
-class ScopedShapeWrapperObservationSpec(
-    AutoRegisteredModuleShapeSpec[ScopedShapeWrapperFunction | ScopedShapeWrapperSpec],
-    ABC,
-):
-    _registry_root = True
-
-
-class ScopedShapeWrapperFunctionObservationSpec(
-    ScopedShapeWrapperObservationSpec,
-    ModuleOnlyFunctionObservationSpec[ScopedShapeWrapperFunction],
-    SyncFunctionOnlyMixin,
-    HelperBackedScopedFunctionObservationSpec[ScopedShapeWrapperFunction],
-):
-    shape_helper = staticmethod(_scoped_shape_wrapper_function_from_function)
-
-
-class ScopedShapeWrapperSpecObservationSpec(
-    ScopedShapeWrapperObservationSpec,
-    ModuleOnlyAssignObservationSpec[ScopedShapeWrapperSpec],
-    HelperBackedScopedAssignObservationSpec[ScopedShapeWrapperSpec],
-):
-    shape_helper = staticmethod(_scoped_shape_wrapper_spec_from_assign)
-
-
 class BuilderCallShapeFamily(
     SingleSpecCollectedFamily[BuilderCallShape], ShapeFamily[BuilderCallShape]
 ):
@@ -999,22 +971,6 @@ class ProjectionHelperObservationFamily(
 ):
     item_type = ProjectionHelperShape
     spec_root = ProjectionHelperObservationSpec
-
-
-class ScopedShapeWrapperFunctionFamily(
-    RegisteredSpecCollectedFamily[ScopedShapeWrapperFunction],
-    ObservationFamily[ScopedShapeWrapperFunction],
-):
-    item_type = ScopedShapeWrapperFunction
-    spec_root = ScopedShapeWrapperObservationSpec
-
-
-class ScopedShapeWrapperSpecFamily(
-    RegisteredSpecCollectedFamily[ScopedShapeWrapperSpec],
-    ObservationFamily[ScopedShapeWrapperSpec],
-):
-    item_type = ScopedShapeWrapperSpec
-    spec_root = ScopedShapeWrapperObservationSpec
 
 
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(

@@ -34,7 +34,6 @@ class ObservationKind(StrEnum):
     FIELD = "field"
     LITERAL_DISPATCH = "literal_dispatch"
     PROJECTION_HELPER = "projection_helper"
-    SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
     SENTINEL_TYPE = "sentinel_type"
 
 

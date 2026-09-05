@@ -61,8 +61,6 @@ from .observation_shapes import (
     LiteralKind,
     ProjectionHelperShape,
     RegistrationShape,
-    ScopedShapeWrapperFunction,
-    ScopedShapeWrapperSpec,
     SentinelTypeObservation,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
@@ -1599,18 +1597,6 @@ class _BuilderCallContext:
     call: ast.Call
     callee_name: str
     field_pairs: tuple[tuple[str, ast.AST], ...]
-
-
-@dataclass(frozen=True)
-class _ScopedShapeSpecCall:
-    spec_name: str
-    call: ast.Call
-
-
-@dataclass(frozen=True)
-class _ScopedShapeSpecKeywords:
-    function_name: str
-    node_types: tuple[str, ...]
 
 
 AstScopedNode: TypeAlias = ast.AST
@@ -3935,138 +3921,6 @@ def _projection_helper_shape_from_function(
     )
 
 
-def _scoped_shape_wrapper_node_types(
-    function: ast.FunctionDef,
-    body: list[ast.stmt],
-) -> tuple[str, ...] | None:
-    if len(function.args.args) != 2 or len(body) < 3:
-        return None
-    first_stmt, second_stmt = body[:2]
-    if not _assigns_observation_node(first_stmt, function.args.args[1].arg):
-        return None
-    if not isinstance(second_stmt, ast.If):
-        return None
-    node_types = TYPE_GUARD_PROJECTION.guarded_node_types(second_stmt.test, "node")
-    if not node_types or not _if_returns_none(second_stmt):
-        return None
-    return node_types
-
-
-def _assigns_observation_node(statement: ast.stmt, observation_arg_name: str) -> bool:
-    return bool(
-        isinstance(statement, ast.Assign)
-        and len(statement.targets) == 1
-        and isinstance(statement.targets[0], ast.Name)
-        and (statement.targets[0].id == "node")
-        and isinstance(statement.value, ast.Attribute)
-        and isinstance(statement.value.value, ast.Name)
-        and (statement.value.value.id == observation_arg_name)
-        and (statement.value.attr == "node")
-    )
-
-
-def _if_returns_none(statement: ast.If) -> bool:
-    return bool(
-        len(statement.body) == 1
-        and isinstance(statement.body[0], ast.Return)
-        and isinstance(statement.body[0].value, ast.Constant)
-        and (statement.body[0].value.value is None)
-    )
-
-
-def _scoped_shape_wrapper_function_from_function(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef,
-) -> ScopedShapeWrapperFunction | None:
-    body = statements_without_docstring(function.body)
-    node_types = _scoped_shape_wrapper_node_types(function, body)
-    if (
-        node_types is None
-        or not isinstance(body[-1], ast.Return)
-        or body[-1].value is None
-    ):
-        return None
-    return ScopedShapeWrapperFunction(
-        file_path=parsed_module.file_path,
-        function_name=function.name,
-        lineno=function.lineno,
-        node_types=node_types,
-    )
-
-
-def _scoped_shape_spec_call(node: ast.Assign) -> _ScopedShapeSpecCall | None:
-    target = as_ast(single_assign_target(node), ast.Name)
-    call = as_ast(node.value, ast.Call)
-    if target is None or call is None:
-        return None
-    if AstExpressionProjection.terminal_name(call.func) != "ScopedShapeSpec":
-        return None
-    return _ScopedShapeSpecCall(target.id, call)
-
-
-def _scoped_shape_spec_keywords(call: ast.Call) -> _ScopedShapeSpecKeywords | None:
-    node_types: tuple[str, ...] = ()
-    function_name = None
-    for keyword in call.keywords:
-        if keyword.arg == "node_types":
-            node_types = TYPE_GUARD_PROJECTION.type_name_tuple(keyword.value)
-        if keyword.arg == "build_shape":
-            function_name = AstExpressionProjection.terminal_name(keyword.value)
-    if not node_types or function_name is None:
-        return None
-    return _ScopedShapeSpecKeywords(function_name, node_types)
-
-
-def _scoped_shape_wrapper_spec_from_assign(
-    parsed_module: ParsedModule,
-    node: ast.Assign,
-) -> ScopedShapeWrapperSpec | None:
-    return (
-        Maybe.of(_scoped_shape_spec_call(node))
-        .combine(
-            lambda spec_call: _scoped_shape_spec_keywords(spec_call.call),
-            lambda spec_call, keywords: ScopedShapeWrapperSpec(
-                file_path=parsed_module.file_path,
-                spec_name=spec_call.spec_name,
-                lineno=node.lineno,
-                function_name=keywords.function_name,
-                node_types=keywords.node_types,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-class TypeGuardProjection:
-    def guarded_node_types(self, test: ast.AST, expected_name: str) -> tuple[str, ...]:
-        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            return self.guarded_node_types(test.operand, expected_name)
-        if not isinstance(test, ast.Call):
-            return ()
-        if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
-            return ()
-        if len(test.args) != 2:
-            return ()
-        if not isinstance(test.args[0], ast.Name) or test.args[0].id != expected_name:
-            return ()
-        return self.type_name_tuple(test.args[1])
-
-    def type_name_tuple(self, node: ast.AST) -> tuple[str, ...]:
-        if isinstance(node, ast.Name):
-            return (node.id,)
-        if isinstance(node, ast.Attribute):
-            return (node.attr,)
-        if isinstance(node, ast.Tuple):
-            names: list[str] = []
-            for item in node.elts:
-                names.extend(self.type_name_tuple(item))
-            return tuple(names)
-        return ()
-
-
-TYPE_GUARD_PROJECTION = TypeGuardProjection()
-
-
 def _sentinel_type_observation(
     parsed_module: ParsedModule,
     node: ast.Assign,
@@ -4342,11 +4196,6 @@ from .observation_families import (
     ProjectionHelperObservationSpec,
     RegistrationShapeFamily,
     RegistrationShapeSpec,
-    ScopedShapeWrapperFunctionFamily,
-    ScopedShapeWrapperFunctionObservationSpec,
-    ScopedShapeWrapperObservationSpec,
-    ScopedShapeWrapperSpecFamily,
-    ScopedShapeWrapperSpecObservationSpec,
     SentinelTypeAssignmentObservationSpec,
     SentinelTypeObservationFamily,
     SentinelTypeObservationSpec,
