@@ -43,6 +43,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
+from .class_mro import ClassMroAuthority
 from .declaration_dependencies import ClassScopeDependency
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
@@ -598,6 +599,7 @@ class CompactClassHeader(ClassDeclaration):
     base_references_are_complete: bool = False
     product_base_bindings_are_exact: bool = False
     is_final: bool = False
+    mro_bases_are_static: bool = False
 
     @property
     def base_resolution_is_complete(self) -> bool:
@@ -629,6 +631,21 @@ class CompactIndexedClass(CompactClassHeader):
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
+
+    @property
+    def has_class_creation_hook(self) -> bool:
+        """Class creation can invoke hooks declared as methods or assigned values."""
+
+        return not CLASS_METHOD_OWNERSHIP_HOOK_NAMES.isdisjoint(
+            (
+                *self.method_names,
+                *(
+                    member.name
+                    for member in self.direct_member_declarations
+                    if member.expression is not None
+                ),
+            )
+        )
 
     @property
     def direct_enum_member_names(self) -> tuple[str, ...]:
@@ -2047,6 +2064,10 @@ class CompactClassFamilyIndex:
     ancestors_by_symbol: dict[str, tuple[str, ...]]
     descendants_by_symbol: dict[str, tuple[str, ...]]
 
+    @cached_property
+    def mro_authority(self) -> ClassMroAuthority:
+        return ClassMroAuthority(self.classes_by_symbol)
+
     @classmethod
     def from_modules(
         cls,
@@ -2560,15 +2581,16 @@ class _UniqueKnownSymbolSuffixIndex:
     def root_relative_match(self, qualified_name: str) -> str | None:
         """Resolve one imported name across a narrower analysis-root boundary."""
 
-        parts = qualified_name.split(".")
-        return next(
-            (
-                match
-                for suffix_width in range(len(parts), 0, -1)
-                if (match := self.get(".".join(parts[-suffix_width:]))) is not None
-            ),
-            None,
+        matches = tuple(
+            symbol
+            for symbol in self._symbols_by_terminal_name.get(
+                qualified_name.rsplit(".", 1)[-1], ()
+            )
+            if symbol == qualified_name
+            or qualified_name.endswith(f".{symbol}")
+            or symbol.endswith(f".{qualified_name}")
         )
+        return matches[0] if len(matches) == 1 else None
 
 
 @lru_cache(maxsize=8)
@@ -2725,6 +2747,7 @@ class CompactNominalBindingKind(StrEnum):
 
     IMPORT = "import", True
     LOCAL_DECLARATION = "local_declaration", False
+    BUILTIN = "builtin", False
 
     projects_as_import_alias: bool
 
@@ -2777,6 +2800,17 @@ class ModuleNominalBindingSnapshot:
 
     def binding_for(self, name: str) -> CompactNominalBinding | None:
         return self.bindings_by_name.get(name)
+
+    def reference_for(self, parts: tuple[str, ...]) -> CompactNominalReference:
+        """Project a name path through its exact module or builtin binding."""
+
+        binding = self.binding_for(parts[0])
+        if binding is None and self.resolves_unshadowed_builtin(parts[0]):
+            binding = CompactNominalBinding(
+                qualified_name=f"builtins.{parts[0]}",
+                kind=CompactNominalBindingKind.BUILTIN,
+            )
+        return CompactNominalReference(parts, binding)
 
     def resolves_unshadowed_builtin(
         self,
@@ -3454,10 +3488,7 @@ def _compact_base_references(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
 ) -> tuple[CompactNominalReference, ...]:
     return tuple(
-        CompactNominalReference(
-            parts,
-            module_binding_snapshot.binding_for(parts[0]),
-        )
+        module_binding_snapshot.reference_for(parts)
         for base in node.bases
         if (
             parts := AstExpressionProjection.attribute_chain(
@@ -3547,14 +3578,18 @@ def _compact_indexed_classes(
                 is not None
             ),
             base_references=binding_facets.base_references,
+            mro_bases_are_static=all(
+                isinstance(base, ast.Name | ast.Attribute) for base in node.bases
+            ),
             direct_base_count=sum(
                 ClassSymbolResolutionAuthority.establishes_nominal_family(
                     declared_base_name
                 )
                 for base in node.bases
                 if (
-                    declared_base_name
-                    := ClassSymbolResolutionAuthority.declared_base_name(base)
+                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
+                        base
+                    )
                 )
                 is not None
             ),
@@ -6088,7 +6123,14 @@ class CompactClassFamilyIndexBuilder:
 
     def build(self) -> CompactClassFamilyIndex:
         records = tuple(
-            record for projection in self.projections for record in projection.classes
+            UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+                (
+                    record
+                    for projection in self.projections
+                    for record in projection.classes
+                ),
+                lambda record: record.symbol,
+            ).values()
         )
         known_symbols = frozenset(record.symbol for record in records)
         symbols_by_simple_name_lists: dict[str, list[str]] = defaultdict(list)
@@ -6142,11 +6184,13 @@ class CompactClassFamilyIndexBuilder:
         candidate = ".".join(reference.resolved_parts)
         if candidate in known_symbols:
             return candidate
+        if reference.root_binding is not None:
+            if reference.permits_root_relative_resolution:
+                return unique_symbols_by_suffix.root_relative_match(candidate)
+            return None
         module_local = ".".join((module_name, *reference.source_parts))
         if module_local in known_symbols:
             return module_local
-        if reference.permits_root_relative_resolution:
-            return unique_symbols_by_suffix.root_relative_match(candidate)
         return None
 
     @staticmethod

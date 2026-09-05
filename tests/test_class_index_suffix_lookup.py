@@ -108,6 +108,12 @@ def test_import_alias_suffix_index_preserves_ambiguous_fail_closed_result() -> N
     )
 
 
+@pytest.mark.parametrize("known_symbol", ("unrelated.Target", "other.types.Target"))
+def test_import_alias_never_discards_conflicting_module_qualifiers(known_symbol: str) -> None:
+    resolution = _resolution(frozenset({known_symbol}))
+    assert resolution.symbol_for_node(ast.parse("external.Target").body[0].value) is None
+
+
 def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
     symbols = frozenset(
         {

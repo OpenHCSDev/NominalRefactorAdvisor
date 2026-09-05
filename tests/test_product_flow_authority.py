@@ -327,7 +327,8 @@ def test_repository_resolves_annotated_member_method_from_current_class() -> Non
     assert incoming[0].context.owner_symbol == "pkg.member.Owner.execute"
 
 
-def test_repository_resolves_annotated_member_from_single_base_lineage() -> None:
+@pytest.mark.parametrize("bases", ("Base", "Left, Right"))
+def test_repository_resolves_annotated_member_from_native_mro(bases: str) -> None:
     repository = _repository(
         _module(
             "pkg.inherited_member",
@@ -338,7 +339,9 @@ def test_repository_resolves_annotated_member_from_single_base_lineage() -> None
             "class Base:\n"
             "    renderer: Renderer\n"
             "\n"
-            "class Owner(Base):\n"
+            "class Left(Base): pass\n"
+            "class Right(Base): pass\n"
+            f"class Owner({bases}):\n"
             "    def execute(self, value):\n"
             "        return self.renderer.render(value)\n",
         )
@@ -494,7 +497,7 @@ def test_repository_stops_at_dynamic_enclosing_function_binding() -> None:
     assert repository.incoming_calls_for("pkg.enclosing_shadow.consume") == ()
 
 
-def test_repository_rejects_ambiguous_inherited_method_lookup() -> None:
+def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
     repository = _repository(
         _module(
             "pkg.ambiguous_methods",
@@ -512,17 +515,9 @@ def test_repository_rejects_ambiguous_inherited_method_lookup() -> None:
         )
     )
 
-    resolution = repository.function_call_resolutions[0]
-    assert isinstance(resolution, CompactOpenFunctionCall)
-    assert resolution.target_resolution.violation is (
-        CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
-    )
-    assert resolution.target_resolution.possible_symbols == (
-        "pkg.ambiguous_methods.Leaf.consume",
-        "pkg.ambiguous_methods.Left.consume",
-        "pkg.ambiguous_methods.Right.consume",
-    )
-    assert repository.resolved_function_calls == ()
+    resolution = repository.function_call_resolutions[0].resolved_call
+    assert resolution is not None
+    assert resolution.callee.identity.symbol == "pkg.ambiguous_methods.Left.consume"
 
 
 def test_repository_rejects_duplicate_nominal_function_declaration() -> None:

@@ -128,8 +128,10 @@ def test_replacement_requires_one_expression(tmp_path: Path, expression: str) ->
     assert path.read_text(encoding="utf-8") == source
 
 
+@pytest.mark.parametrize("bases", ("Parent", "Left, Right"))
 def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
     tmp_path: Path,
+    bases: str,
 ) -> None:
     library = tmp_path / "library.py"
     library.write_text(
@@ -140,7 +142,9 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
     path = tmp_path / "probe.py"
     source = (
         "from library import Base as Parent\n"
-        "class Child(Parent): pass\n"
+        "class Left(Parent): pass\n"
+        "class Right(Parent):\n    @classmethod\n    def render(cls, value): return value + 2\n"
+        f"class Child({bases}): pass\n"
         "class Other:\n    @staticmethod\n    def render(value): return value - 1\n"
         "def run(value=3): return Child.render(value), Other.render(value)\n"
         "print(run())\n"
@@ -148,7 +152,14 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
     path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     sequence = CodemodPlanSequence.from_operations(
-        (_operation(path, "value + 1", callee_path=library, callee="Base.render"),)
+        (
+            _operation(
+                path,
+                "value + 1" if bases == "Parent" else "value + 2",
+                callee_path=library if bases == "Parent" else path,
+                callee="Base.render" if bases == "Parent" else "Right.render",
+            ),
+        )
     )
     assert sequence.referenced_source_targets() == (
         sequence.documents[0].recipes[0].operations[0].target,

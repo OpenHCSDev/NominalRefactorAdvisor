@@ -700,7 +700,7 @@ class CompactProductFlowRepository:
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
             )
-        member_resolution = self._member_declarations_in_single_lineage(
+        member_resolution = self._member_declarations_in_mro(
             owner_symbol,
             target.member_name,
         )
@@ -730,13 +730,29 @@ class CompactProductFlowRepository:
             f"{member_type_symbol}.{target.method_name}"
         )
 
-    def _member_declarations_in_single_lineage(
+    def _member_declarations_in_mro(
         self,
         owner_symbol: str,
         member_name: str,
     ) -> _CompactClassMemberResolution:
-        current_symbol = owner_symbol
-        while (current := self.class_index.class_for(current_symbol)) is not None:
+        owner = self.class_index.class_for(owner_symbol)
+        if owner is None:
+            return _CompactClassMemberResolution(
+                (), CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+            )
+        # A direct declaration already owns the member, independent of inherited order.
+        owners = (owner,)
+        if not any(
+            member.name == member_name for member in owner.direct_member_declarations
+        ):
+            mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
+            if mro is None:
+                return _CompactClassMemberResolution(
+                    (),
+                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+                )
+            owners = mro.declarations
+        for current in owners:
             declarations = tuple(
                 declaration
                 for declaration in current.direct_member_declarations
@@ -754,22 +770,6 @@ class CompactProductFlowRepository:
                         else CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
                     ),
                 )
-            if not current.base_resolution_is_complete:
-                return _CompactClassMemberResolution(
-                    (),
-                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
-                )
-            if len(current.resolved_base_symbols) > 1:
-                return _CompactClassMemberResolution(
-                    (),
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-                )
-            if not current.resolved_base_symbols:
-                return _CompactClassMemberResolution(
-                    (),
-                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-                )
-            current_symbol = current.resolved_base_symbols[0]
         return _CompactClassMemberResolution(
             (),
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
@@ -1234,31 +1234,22 @@ class CompactProductFlowRepository:
                 *self.class_index.ancestor_symbols(owner_symbol),
             )
         ]
-        current_symbol = owner_symbol
-        while True:
-            current = self.class_index.class_for(current_symbol)
-            if current is None:
+        mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
+        if mro is None:
+            return OpenCompactFunctionTarget(
+                tuple(possible_symbols),
+                CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+            )
+        for current in mro.declarations:
+            candidate_symbol = f"{current.symbol}.{member_name}"
+            if any(
+                member.name == member_name and member.expression is not None
+                for member in current.direct_member_declarations
+            ):
                 return OpenCompactFunctionTarget(
                     tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
+                    CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
                 )
-            if not current.base_resolution_is_complete:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
-                )
-            if len(current.resolved_base_symbols) > 1:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-                )
-            if not current.resolved_base_symbols:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-                )
-            current_symbol = current.resolved_base_symbols[0]
-            candidate_symbol = f"{current_symbol}.{member_name}"
             declaration = self.function_declarations_by_symbol.get(candidate_symbol)
             if declaration is not None:
                 return ResolvedCompactFunctionTarget(declaration)
@@ -1267,12 +1258,15 @@ class CompactProductFlowRepository:
                     tuple(possible_symbols),
                     CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
                 )
-            ancestor = self.class_index.class_for(current_symbol)
-            if ancestor is not None and ancestor.method_names.count(member_name) > 1:
+            if current.method_names.count(member_name) > 1:
                 return OpenCompactFunctionTarget(
                     tuple(possible_symbols),
                     CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
                 )
+        return OpenCompactFunctionTarget(
+            tuple(possible_symbols),
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        )
 
     def _has_dynamic_local_binding(
         self,

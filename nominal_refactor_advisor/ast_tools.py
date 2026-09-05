@@ -171,7 +171,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 25
+    version: int = 26
     max_payload_bytes: int = 100_000
 
 

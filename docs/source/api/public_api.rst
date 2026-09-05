@@ -28,6 +28,20 @@ Structural Hypothesis Surface
 Codemod Candidate Surface
 -------------------------
 
+Inherited call selection uses ``CompactClassFamilyIndex.mro_authority``.
+``ClassMroAuthority`` projects source declarations into inert types and delegates
+C3 linearisation to Python. The projection does not execute analysed modules or
+class bodies. Results are cached within that class-index snapshot and shared by
+method and annotated-member lookup.
+
+``ResolvedClassMro`` establishes declaration order, not successful execution of
+the original class body or equivalence of an authored replacement expression.
+``OpenClassMro`` carries the unresolved obligation and the class where it arose.
+Unknown or ambiguous bases, dynamic base expressions, unsupported class-creation
+hooks, cyclic graphs and inconsistent C3 orders remain open. Imported base
+resolution preserves qualified paths across analysis-root boundaries; an
+unrelated class with the same terminal name does not establish a binding.
+
 The codemod surface models source-anchored candidate rewrites and simulations.
 A clean current-snapshot simulation is not an application recommendation;
 export and application require a proof across reachable refactor trajectories.
