@@ -54,6 +54,13 @@ a later method definition can supersede an earlier assignment. Annotation-only
 statements do not replace module or class values, while function-local
 annotations retain their lexical binding effect.
 
+Import mutations retain the origin selected at their source position, derived
+by ``ImportBoundNameProjection``. The class index consumes the same projection.
+Imported call selection follows exporting namespace bindings and re-export
+chains, including relative imports and class aliases. Rebound exports cannot
+authorise edits to an older declaration; cyclic re-exports carry
+``CYCLIC_BINDING`` rather than selecting an arbitrary declaration.
+
 The codemod surface models source-anchored candidate rewrites and simulations.
 A clean current-snapshot simulation is not an application recommendation;
 export and application require a proof across reachable refactor trajectories.

@@ -30,6 +30,7 @@ from .ast_tools import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     CompactModuleIdentity,
     CollectedFamily,
+    ImportBoundNameProjection,
     ParsedModule,
     PythonSourcePathPolicy,
     SourceModule,
@@ -2920,32 +2921,16 @@ class ModuleNominalBindingAuthority:
         statement: ast.stmt,
         preceding_bindings: dict[str, CompactNominalBinding],
     ) -> dict[str, CompactNominalBinding]:
-        if isinstance(statement, ast.Import):
+        if isinstance(statement, ast.Import | ast.ImportFrom):
             return {
-                alias.asname or alias.name.split(".", 1)[0]: CompactNominalBinding(
-                    qualified_name=(
-                        alias.name if alias.asname else alias.name.split(".", 1)[0]
-                    ),
+                origin.bound_name: CompactNominalBinding(
+                    qualified_name=origin.qualified_name,
                     kind=CompactNominalBindingKind.IMPORT,
                 )
-                for alias in statement.names
-            }
-        if isinstance(statement, ast.ImportFrom):
-            resolved_module = (
-                self.parsed_module.module_path_identity.resolve_import_from_module(
-                    imported_module=statement.module,
-                    level=statement.level,
+                for origin in ImportBoundNameProjection(statement).origins(
+                    self.parsed_module.module_path_identity
                 )
-            )
-            if resolved_module is None:
-                return {}
-            return {
-                alias.asname or alias.name: CompactNominalBinding(
-                    qualified_name=f"{resolved_module}.{alias.name}",
-                    kind=CompactNominalBindingKind.IMPORT,
-                )
-                for alias in statement.names
-                if alias.name != "*"
+                if origin.qualified_name is not None
             }
         if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             return {

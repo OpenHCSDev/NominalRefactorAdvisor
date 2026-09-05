@@ -171,7 +171,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 27
+    version: int = 28
     max_payload_bytes: int = 100_000
 
 
@@ -1361,13 +1361,45 @@ class BuiltinCallName(StrEnum):
 
 
 @dataclass(frozen=True)
+class ImportedNameOrigin:
+    """One explicitly bound import name and its resolved nominal origin."""
+
+    bound_name: str
+    qualified_name: str | None
+
+
+@dataclass(frozen=True)
 class ImportBoundNameProjection:
     """Project Python import statements to names bound in their lexical scope."""
 
     statement: ast.Import | ast.ImportFrom
 
     def names(self) -> tuple[str, ...]:
-        return tuple(name for name, _ in self.name_sources())
+        return tuple(
+            name
+            for alias in self.statement.names
+            if (name := self.alias_bound_name(alias))
+        )
+
+    def origins(
+        self, module_identity: PythonModulePathIdentity
+    ) -> tuple[ImportedNameOrigin, ...]:
+        return tuple(
+            ImportedNameOrigin(bound_name, self.alias_origin(alias, module_identity))
+            for alias in self.statement.names
+            if (bound_name := self.alias_bound_name(alias))
+        )
+
+    def alias_origin(
+        self, alias: ast.alias, module_identity: PythonModulePathIdentity
+    ) -> str | None:
+        if isinstance(self.statement, ast.Import):
+            return alias.name if alias.asname else alias.name.split(".", 1)[0]
+        module_name = module_identity.resolve_import_from_module(
+            imported_module=self.statement.module,
+            level=self.statement.level,
+        )
+        return None if module_name is None else f"{module_name}.{alias.name}"
 
     def name_sources(self) -> tuple[tuple[str, str], ...]:
         return tuple(

@@ -5,7 +5,9 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 import pickle
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+import pytest
+
+from nominal_refactor_advisor.ast_tools import ImportBoundNameProjection, ParsedModule
 from nominal_refactor_advisor.product_flow import (
     BareCallTargetReference,
     CompactCallArgument,
@@ -48,6 +50,37 @@ def _signature(source: str) -> CompactFunctionSignature:
 
 def _value(name: str) -> LexicalValueReference:
     return LexicalValueReference(name)
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    (
+        ("import pkg.library", (("pkg", "pkg"),)),
+        ("import pkg.library as lib", (("lib", "pkg.library"),)),
+        ("from library import consume as run", (("run", "library.consume"),)),
+        ("from .library import consume", (("consume", "pkg.library.consume"),)),
+        ("from . import library", (("library", "pkg.library"),)),
+        ("from ...library import consume", (("consume", None),)),
+        ("from library import *", ()),
+    ),
+)
+def test_import_origins_share_the_name_projection(source: str, expected: tuple) -> None:
+    module = _parsed_module(source)
+    projection = ImportBoundNameProjection(module.module.body[0])
+    origins = projection.origins(module.module_path_identity)
+    assert (
+        tuple((origin.bound_name, origin.qualified_name) for origin in origins)
+        == expected
+    )
+    assert projection.names() == tuple(origin.bound_name for origin in origins)
+    flow = compact_product_flow_projection(module).flows[0]
+    assert (
+        tuple(
+            (mutation.reference.root_name, mutation.imported_origin)
+            for mutation in flow.mutations
+        )
+        == expected
+    )
 
 
 def test_annotation_only_statements_bind_locals_but_not_namespaces() -> None:

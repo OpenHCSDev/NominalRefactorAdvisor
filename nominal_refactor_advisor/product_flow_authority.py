@@ -1044,6 +1044,7 @@ class CompactProductFlowRepository:
         context: CompactProductFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
+        pending_symbols: frozenset[str] = frozenset(),
     ) -> CompactFunctionTargetResolution | None:
         root_name = reference.root_name
         class_projection = self.class_projections_by_module_name.get(
@@ -1100,18 +1101,15 @@ class CompactProductFlowRepository:
         assert binding is not None
 
         if binding.kind.is_import_binding:
-            alias_target = (
-                None
-                if class_projection is None
-                else dict(class_projection.import_aliases).get(root_name)
-            )
+            alias_target = binding.imported_origin
             if alias_target is None:
                 return OpenCompactFunctionTarget(
                     self._possible_binding_symbols(context, reference),
                     CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
                 )
             return self._function_resolution_for_symbol(
-                ".".join((alias_target, *reference.attribute_path))
+                ".".join((alias_target, *reference.attribute_path)),
+                pending_symbols,
             )
 
         if not binding.kind.is_definition_binding:
@@ -1122,13 +1120,30 @@ class CompactProductFlowRepository:
 
         binding_symbol = f"{context.owner_symbol}.{root_name}"
         if reference.attribute_path:
-            if self.class_index.class_for(binding_symbol) is None:
+            owner = self.class_index.class_for(binding_symbol)
+            if owner is None or owner.line != binding.line:
                 return OpenCompactFunctionTarget(
                     (".".join((binding_symbol, *reference.attribute_path)),),
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
                 )
-            binding_symbol = ".".join((binding_symbol, *reference.attribute_path))
-            return self._function_resolution_for_symbol(binding_symbol)
+            if len(reference.attribute_path) == 1:
+                return self._class_method_resolution(owner, reference.attribute_path[0])
+            class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
+            if class_context is not None:
+                resolution = self._scope_binding_resolution(
+                    class_context,
+                    LexicalValueReference(
+                        reference.attribute_path[0], reference.attribute_path[1:]
+                    ),
+                    None,
+                    pending_symbols,
+                )
+                if resolution is not None:
+                    return resolution
+            return OpenCompactFunctionTarget(
+                (".".join((binding_symbol, *reference.attribute_path)),),
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
         return self._selected_function_resolution(binding_symbol, binding)
 
     def _possible_binding_symbols(
@@ -1137,36 +1152,55 @@ class CompactProductFlowRepository:
         reference: LexicalValueReference,
     ) -> tuple[str, ...]:
         local_symbol = ".".join((context.owner_symbol, *reference.parts))
-        class_projection = self.class_projections_by_module_name.get(
-            context.module_name
-        )
-        alias_target = (
-            None
-            if class_projection is None
-            else dict(class_projection.import_aliases).get(reference.root_name)
-        )
-        imported_symbol = (
-            None
-            if alias_target is None
-            else ".".join((alias_target, *reference.attribute_path))
-        )
         return tuple(
             dict.fromkeys(
-                symbol
-                for symbol in (imported_symbol, local_symbol)
-                if symbol is not None
+                (
+                    *(
+                        ".".join((mutation.imported_origin, *reference.attribute_path))
+                        for mutation in context.flow.mutations_by_root_name.get(
+                            reference.root_name, ()
+                        )
+                        if mutation.imported_origin is not None
+                    ),
+                    local_symbol,
+                )
             )
         )
 
     def _function_resolution_for_symbol(
         self,
         symbol: str,
+        pending_symbols: frozenset[str] = frozenset(),
     ) -> CompactFunctionTargetResolution:
-        owner_symbol, _, member_name = symbol.rpartition(".")
-        owner = self.class_index.class_for(owner_symbol)
-        if owner is not None:
-            return self._class_method_resolution(owner, member_name)
-        return self._declared_function_resolution(symbol)
+        if symbol in pending_symbols:
+            return OpenCompactFunctionTarget(
+                tuple(sorted(pending_symbols)),
+                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
+            )
+        pending_symbols = pending_symbols | {symbol}
+        parts = symbol.split(".")
+        for prefix_length in range(len(parts) - 1, 0, -1):
+            context = self.module_flow_contexts.get(".".join(parts[:prefix_length]))
+            if context is None:
+                continue
+            resolution = self._scope_binding_resolution(
+                context,
+                LexicalValueReference(
+                    parts[prefix_length], tuple(parts[prefix_length + 1 :])
+                ),
+                None,
+                pending_symbols,
+            )
+            if resolution is not None:
+                return resolution
+            return OpenCompactFunctionTarget(
+                (symbol,),
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
+        return OpenCompactFunctionTarget(
+            (symbol,),
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        )
 
     def _declared_function_resolution(
         self,

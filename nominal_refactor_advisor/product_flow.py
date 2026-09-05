@@ -15,7 +15,13 @@ from functools import cached_property
 from typing import Self, TypeAlias
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import CollectedFamily, CompactModuleIdentity, ParsedModule
+from .ast_tools import (
+    CollectedFamily,
+    CompactModuleIdentity,
+    ImportBoundNameProjection,
+    ParsedModule,
+    PythonModulePathIdentity,
+)
 from .source_geometry import SourceByteSpan
 
 
@@ -276,6 +282,10 @@ class CompactMutationKind(StrEnum):
         member.is_import_binding = is_import_binding
         member.is_definition_binding = is_definition_binding
         return member
+
+    def validate_import_origin(self, origin: str | None) -> None:
+        if origin is not None and not self.is_import_binding:
+            raise ValueError("Only import mutations carry an imported origin")
 
 
 class CompactCallResultUse(StrEnum):
@@ -911,6 +921,10 @@ class CompactLexicalMutation:
     kind: CompactMutationKind
     position: CompactFlowPosition
     line: int
+    imported_origin: str | None = None
+
+    def __post_init__(self) -> None:
+        self.kind.validate_import_origin(self.imported_origin)
 
 
 class CompactFunctionTargetResolutionViolation(StrEnum):
@@ -921,6 +935,7 @@ class CompactFunctionTargetResolutionViolation(StrEnum):
     AMBIGUOUS_DECLARATION = "ambiguous_declaration"
     INCOMPLETE_RECEIVER_FAMILY = "incomplete_receiver_family"
     UNSUPPORTED_RECEIVER = "unsupported_receiver"
+    CYCLIC_BINDING = "cyclic_binding"
 
 
 class CompactBindingMutationResolution(ABC):
@@ -1520,14 +1535,10 @@ class _DeclarationCollector(ast.NodeVisitor):
                 self.generic_visit(child)
 
     def visit_Import(self, node: ast.Import) -> None:
-        self.imported_binding_names.update(
-            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
-        )
+        self.imported_binding_names.update(ImportBoundNameProjection(node).names())
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.imported_binding_names.update(
-            alias.asname or alias.name for alias in node.names if alias.name != "*"
-        )
+        self.imported_binding_names.update(ImportBoundNameProjection(node).names())
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = ".".join((*self.scope_names, node.name))
@@ -1609,6 +1620,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self,
         *,
         owner: CompactFlowOwner,
+        module_identity: PythonModulePathIdentity,
         lexical_scope_qualnames: tuple[str, ...],
         current_class_qualname: str | None,
         current_class_receiver_name: str | None,
@@ -1618,6 +1630,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         method_names_by_class: dict[str, frozenset[str]],
     ) -> None:
         self.owner = owner
+        self.module_identity = module_identity
         self.lexical_scope_qualnames = lexical_scope_qualnames
         self.current_class_qualname = current_class_qualname
         self.current_class_receiver_name = current_class_receiver_name
@@ -1690,12 +1703,15 @@ class _CompactFlowCollector(ast.NodeVisitor):
         reference: LexicalValueReference,
         node: SourcePositionedNode,
         kind: CompactMutationKind | None = None,
+        *,
+        imported_origin: str | None = None,
     ) -> CompactLexicalMutation:
         mutation = CompactLexicalMutation(
             reference=reference,
             kind=self.mutation_kind if kind is None else kind,
             position=self._position(),
             line=node.lineno,
+            imported_origin=imported_origin,
         )
         self.mutations.append(mutation)
         return mutation
@@ -1944,22 +1960,16 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
         self.nonlocal_binding_names.update(node.names)
 
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        for origin in ImportBoundNameProjection(node).origins(self.module_identity):
             self._record_mutation(
-                LexicalValueReference(alias.asname or alias.name.split(".", 1)[0]),
+                LexicalValueReference(origin.bound_name),
                 node,
                 CompactMutationKind.IMPORT,
+                imported_origin=origin.qualified_name,
             )
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            if alias.name != "*":
-                self._record_mutation(
-                    LexicalValueReference(alias.asname or alias.name),
-                    node,
-                    CompactMutationKind.IMPORT,
-                )
+    visit_ImportFrom = visit_Import
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_definition_expressions(node)
@@ -2117,6 +2127,7 @@ def compact_product_flow_projection(
         owner: frozenset(names) for owner, names in methods_by_class.items()
     }
     common = dict(
+        module_identity=parsed_module.module_path_identity,
         declared_function_names=declared_function_names,
         declared_method_names=frozenset(
             method_name

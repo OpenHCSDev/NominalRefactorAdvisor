@@ -260,6 +260,59 @@ def test_dsl_replaces_method_after_earlier_class_assignment(tmp_path: Path) -> N
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
+@pytest.mark.parametrize("shadowed", (False, True))
+def test_cli_follows_reexports_and_rejects_rebound_export(
+    tmp_path: Path, shadowed: bool
+) -> None:
+    library = tmp_path / "library.py"
+    library.write_text(
+        "def render(value): return value + 1\n"
+        + ("render = lambda value: value + 100\n" if shadowed else ""),
+        newline="",
+        encoding="utf-8",
+    )
+    facade = tmp_path / "facade.py"
+    facade.write_text(
+        "from library import render as exposed\n", newline="", encoding="utf-8"
+    )
+    path = tmp_path / "probe.py"
+    source = "from facade import exposed\ndef run(value=3): return exposed(value)\nprint(run())\n"
+    path.write_text(source, newline="", encoding="utf-8")
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    sequence = CodemodPlanSequence.from_operations(
+        (_operation(path, "value + 1", callee_path=library),)
+    )
+    cli = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(path),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+            "--json",
+        ],
+        input=json.dumps(json_report_object(sequence)),
+        capture_output=True,
+        text=True,
+    )
+    if shadowed:
+        assert cli.returncode != 0
+        assert path.read_bytes() == source.encode()
+    else:
+        assert cli.returncode == 0, cli.stderr
+        report = json.loads(cli.stdout)
+        assert report["applied"]
+        assert {entry["file_path"] for entry in report["base_revisions"]} >= {
+            path.as_posix(),
+            facade.as_posix(),
+            library.as_posix(),
+        }
+        assert "exposed(value)" not in path.read_text(encoding="utf-8")
+    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+
+
 def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
     tmp_path: Path,
 ) -> None:

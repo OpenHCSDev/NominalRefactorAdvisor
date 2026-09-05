@@ -53,6 +53,151 @@ def _open_product_violations(
     return frozenset(failure.violation for failure in resolution.failures)
 
 
+@pytest.mark.parametrize(
+    "import_source,call",
+    (
+        ("from library import consume\n", "consume(1)"),
+        ("import library as lib\n", "lib.consume(1)"),
+    ),
+)
+def test_imported_function_requires_live_export_binding(
+    import_source: str, call: str
+) -> None:
+    repository = _repository(
+        _module("library", "def consume(value): return value\nconsume = replacement\n"),
+        _module("probe", import_source + f"def run(): return {call}\n"),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+    assert (
+        resolution.target_resolution.violation
+        is CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+    )
+
+
+def test_reexport_chain_resolves_declaring_function() -> None:
+    repository = _repository(
+        _module("library", "def consume(value): return value\n"),
+        _module("facade", "from library import consume as exposed\n"),
+        _module(
+            "probe",
+            "from facade import exposed as consume\ndef run(): return consume(1)\n",
+        ),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is not None
+    assert resolution.resolved_call.callee.identity.symbol == "library.consume"
+
+
+def test_import_alias_is_selected_at_its_source_position() -> None:
+    repository = _repository(
+        _module("first", "def consume(value): return value\n"),
+        _module("second", "def consume(value): return value + 1\n"),
+        _module(
+            "probe",
+            "from first import consume\nconsume(1)\nfrom second import consume\nconsume(2)\n",
+        ),
+    )
+    resolutions = tuple(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe"
+    )
+    assert tuple(r.resolved_call.callee.identity.symbol for r in resolutions) == (
+        "first.consume",
+        "second.consume",
+    )
+
+
+def test_cyclic_reexports_remain_explicitly_unresolved() -> None:
+    repository = _repository(
+        _module("first", "from second import consume\n"),
+        _module("second", "from first import consume\n"),
+        _module("probe", "from first import consume\ndef run(): return consume(1)\n"),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+    assert (
+        resolution.target_resolution.violation
+        is CompactFunctionTargetResolutionViolation.CYCLIC_BINDING
+    )
+
+
+def test_reexported_class_resolves_its_method() -> None:
+    repository = _repository(
+        _module(
+            "pkg.library",
+            "class Owner:\n @staticmethod\n def consume(value): return value\n",
+        ),
+        _module("pkg.facade", "from .library import Owner\n"),
+        _module(
+            "pkg.probe",
+            "from .facade import Owner\ndef run(): return Owner.consume(1)\n",
+        ),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "pkg.probe.run"
+    )
+    assert resolution.resolved_call is not None
+    assert (
+        resolution.resolved_call.callee.identity.symbol == "pkg.library.Owner.consume"
+    )
+
+
+def test_exported_class_rebinding_does_not_authorise_old_method() -> None:
+    repository = _repository(
+        _module(
+            "library",
+            "class Owner:\n @staticmethod\n def consume(value): return value\nOwner = replacement\n",
+        ),
+        _module(
+            "probe", "from library import Owner\ndef run(): return Owner.consume(1)\n"
+        ),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+
+
+def test_imported_nested_class_resolves_each_namespace_binding() -> None:
+    repository = _repository(
+        _module(
+            "library",
+            "class Outer:\n class Inner:\n  @staticmethod\n  def consume(value): return value\n",
+        ),
+        _module(
+            "probe",
+            "from library import Outer\ndef run(): return Outer.Inner.consume(1)\n",
+        ),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is not None
+    assert (
+        resolution.resolved_call.callee.identity.symbol == "library.Outer.Inner.consume"
+    )
+
+
 def test_repository_joins_local_calls_constructions_and_callable_escapes() -> None:
     repository = _repository(
         _module(
