@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from functools import partial
 from typing import cast
 
+from nominal_refactor_advisor.class_index import ClassMethodPromotionSafetyProfile
+
 from .ast_tools import (
     AstParentIndex,
     ModuleAnnotationEvaluationMode,
@@ -94,9 +96,22 @@ class _TypeKeyedBehaviorMethodDescent:
     source_module: ParsedModule
     target_module: ParsedModule
     class_family_index: ClassFamilyIndex
-    target_symbol: str
+    projection_class: IndexedClass
 
     def transformed_source(self) -> str:
+        safety = ClassMethodPromotionSafetyProfile.from_method(
+            self.projection_method,
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.source_module.module.body),
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                self.projection_class.node.body
+            ),
+            source_lines=tuple(self.source_module.source.splitlines()),
+        )
+        if safety.hazards:
+            raise ValueError(
+                f"projected method {self.projection_method.name!r} "
+                f"has ownership dependencies: {', '.join(safety.hazards)}"
+            )
         method = copy.deepcopy(self.projection_method)
         if method.decorator_list:
             raise ValueError(
@@ -191,7 +206,7 @@ class _TypeKeyedBehaviorMethodDescent:
             self.class_family_index,
         )
         guarded_symbol = resolver.symbol_for_reference(guarded_type)
-        if guarded_symbol != self.target_symbol:
+        if guarded_symbol != self.target_class.symbol:
             raise ValueError(
                 f"projected method {self.projection_method.name!r} guards a type "
                 "different from its registry key"
@@ -228,16 +243,7 @@ class _TypeKeyedBehaviorMethodDescent:
         return call.args[1]
 
     def _require_target_module_bindings(self, method: ast.FunctionDef) -> None:
-        parameter_names = frozenset(
-            argument.arg
-            for argument in (
-                *method.args.posonlyargs,
-                *method.args.args,
-                *method.args.kwonlyargs,
-                *((method.args.vararg,) if method.args.vararg is not None else ()),
-                *((method.args.kwarg,) if method.args.kwarg is not None else ()),
-            )
-        )
+        parameter_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(method)
         local_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(method.body)
         required_names = (
             frozenset(
@@ -872,7 +878,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                     source_module=parsed_modules[projection_class.file_path],
                     target_module=parsed_modules[target_class.file_path],
                     class_family_index=family_index,
-                    target_symbol=target_class.symbol,
+                    projection_class=projection_class,
                 ).transformed_source()
                 for method_name in self.component.behavior_method_names
                 if method_name in methods_by_name

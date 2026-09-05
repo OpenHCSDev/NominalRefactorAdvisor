@@ -24333,6 +24333,8 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
             "--json",
             "--json-payload",
             "full",
+            "--scan-budget-seconds",
+            "0",
         ],
         cwd=repo_root,
         env=cache_env,
@@ -24340,11 +24342,12 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
         text=True,
         check=False,
     )
+    # This tests context/cache semantics, not elapsed time on a loaded CI runner.
+    assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     source_index = cast(dict[str, object], payload["source_index"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
 
-    assert result.returncode == 0, result.stderr
     assert {target["qualname"] for target in ast_targets} >= {
         "LocalEnvelope",
         "RequestCarrier",
@@ -27018,6 +27021,148 @@ def test_type_keyed_behavior_recipe_requires_mro_equivalent_lookup(
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
     assert "MRO-aware registry lookup" in plan.records[0].reason
+
+
+@pytest.mark.parametrize(
+    ("expression", "hazard", "expected"),
+    (
+        ("event.__secret", "private_name_mangling", "source-owned"),
+        ("__class__.__name__", "class_cell_reference", "NamedEventProjection"),
+        ("super().__class__.__name__", "super_reference", "super"),
+    ),
+)
+def test_type_keyed_descent_preserves_class_owned_method_semantics(
+    tmp_path: Path, expression: str, hazard: str, expected: str
+) -> None:
+    source = _type_keyed_behavior_projection_source().replace(
+        "return event.name", f"return {expression}"
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    namespace: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), namespace)
+    event = namespace["NamedEvent"]()
+    event._NamedEventProjection__secret = "source-owned"
+    event._NamedEvent__secret = "destination-owned"
+    assert namespace["render_event"](event) == expected
+
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = DescendTypeKeyedBehaviorProjectionOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(), qualname="EventProjection"
+        )
+    )
+    with pytest.raises(ValueError, match=hazard):
+        operation.source_edits_from_snapshot(snapshot)
+    assert module_path.read_text(encoding="utf-8") == source
+
+
+def test_type_keyed_descent_rejects_inherited_registry_key_overwrite(
+    tmp_path: Path,
+) -> None:
+    source = _type_keyed_behavior_projection_source() + (
+        "\nclass Replacement(NamedEventProjection):\n"
+        "    def render(self, event: Event) -> str:\n"
+        '        return "replacement"\n'
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    namespace: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), namespace)
+    event = namespace["NamedEvent"]()
+    assert namespace["render_event"](event) == "replacement"
+    assert namespace["EventProjection"].__registry__[namespace["NamedEvent"]] is (
+        namespace["Replacement"]
+    )
+
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = DescendTypeKeyedBehaviorProjectionOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(), qualname="EventProjection"
+        )
+    )
+    with pytest.raises(ValueError, match="outside the proved type bindings"):
+        operation.source_edits_from_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize("private_access", (False, True))
+def test_type_keyed_descent_cli_preserves_runtime_or_rejects_without_writes(
+    tmp_path: Path, newline: str, private_access: bool
+) -> None:
+    source = _type_keyed_behavior_projection_source()
+    if private_access:
+        source = source.replace("return event.name", "return event.__secret")
+    source += (
+        "\nevent = NamedEvent()\n"
+        'event.name = "source-owned"\n'
+        'event._NamedEventProjection__secret = "source-owned"\n'
+        'event._NamedEvent__secret = "destination-owned"\n'
+        "print(render_event(event))\n"
+    )
+    module_path = tmp_path / "probe.py"
+    module_path.write_text(source.replace("\n", newline), encoding="utf-8", newline="")
+    original = module_path.read_bytes()
+    before = subprocess.check_output([sys.executable, str(module_path)])
+    plan = CodemodPlanSequence.from_operations(
+        (
+            DescendTypeKeyedBehaviorProjectionOperation(
+                target=SourceRewriteTarget(
+                    file_path=module_path.as_posix(), qualname="EventProjection"
+                )
+            ),
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(module_path),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+            "--json",
+        ],
+        input=json.dumps(json_report_object(plan)),
+        capture_output=True,
+        text=True,
+    )
+    if private_access:
+        assert result.returncode != 0
+        assert "private_name_mangling" in result.stdout + result.stderr
+        assert module_path.read_bytes() == original
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert b"class EventProjection" not in module_path.read_bytes()
+    assert subprocess.check_output([sys.executable, str(module_path)]) == before
+
+
+@pytest.mark.parametrize(
+    "parameter", ("event: Event, marker=object()", "event: Event, *, marker=object()")
+)
+def test_type_keyed_descent_reuses_evaluated_default_ownership_guard(
+    tmp_path: Path, parameter: str
+) -> None:
+    source = _type_keyed_behavior_projection_source().replace(
+        "def render(self, event: Event) -> str:\n        return event.name",
+        f"def render(self, {parameter}) -> str:\n        return event.name",
+    )
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    namespace: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), namespace)
+    event = namespace["NamedEvent"]()
+    event.name = "source-owned"
+    assert namespace["render_event"](event) == "source-owned"
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = DescendTypeKeyedBehaviorProjectionOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(), qualname="EventProjection"
+        )
+    )
+    with pytest.raises(ValueError, match="evaluated_default"):
+        operation.source_edits_from_snapshot(snapshot)
 
 
 def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(

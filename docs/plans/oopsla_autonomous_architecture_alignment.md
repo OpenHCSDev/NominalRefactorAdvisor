@@ -218,3 +218,31 @@ derived keys, check the dependency's supported policy surface, and verify the
 advisor's static registry model against native registration. The fix belongs
 with the key-selection authority; per-child copied keys would introduce another
 maintenance obligation.
+
+The native follow-up verified that type-keyed descent already rejects an
+inherited-key overwrite through its closed-family check: the replacement child
+is outside the explicit type bindings. This is now covered by a runtime-backed
+regression, rather than inferred from the guard's source. It does not fix the
+dependency's generated-key behaviour.
+
+The same audit found an independent source-fidelity failure in method descent:
+moving `event.__secret` from `NamedEventProjection` to `NamedEvent` changed its
+native lookup from `_NamedEventProjection__secret` to `_NamedEvent__secret`.
+The recipe had accepted the change. Descent now consumes the existing
+`ClassMethodPromotionSafetyProfile`; private identifiers, class cells, `super()`
+and the profile's other ownership dependencies share the promotion proof.
+`docs/examples/behavior_descent_safety_refactor.py` records the applied DSL
+sequence. Native CLI tests cover successful descent and refusal without source
+writes, with LF and CRLF input.
+
+### Open Follow-up: Cross-Module Method Globals
+
+A native two-module probe also confirmed that
+`_TypeKeyedBehaviorMethodDescent._require_target_module_bindings` accepts a
+same-spelled destination global without proving its origin. With `label =
+"source"` in the projection module and `label = "target"` in the target module,
+descending `return event.name + label` changes `event:source` to `event:target`.
+The class-ownership profile does not establish module-global equivalence.
+This remains open: replace the name-presence check using the existing lexical
+dependency and module-binding/import authorities, with native cross-module
+tests. An equal spelling or equal current value cannot prove shared ownership.

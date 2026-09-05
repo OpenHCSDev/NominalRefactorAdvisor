@@ -95,6 +95,16 @@ members to this ancestor before moving the ancestor into ``lexical_scopes``.
 Its reusable three-stage ``OWNERSHIP_PLAN`` composes those declaration moves;
 the complete plan also changes the visitor's scope entry and decorator source.
 
+Type-keyed behaviour descent uses ``ClassMethodPromotionSafetyProfile`` before
+changing a method's class owner. The shared profile retains dependencies on
+private-name mangling, ``__class__``, ``super()``, evaluated defaults and
+class-local annotations. A dependency without a preservation proof rejects the
+descent. Registry-family closure separately rejects descendants outside the
+proved type bindings, including a subclass that inherits and overwrites a
+parent's registry key. The recorded :download:`behaviour descent safety refactor
+<../../examples/behavior_descent_safety_refactor.py>` adds the shared proof and
+replaces repeated parameter enumeration with the lexical binding authority.
+
 ``python_module_identity`` owns importable module names derived from source
 paths. The former ``ast_tools`` exports refer to the same declaration objects;
 production consumers import from the owning modules.
