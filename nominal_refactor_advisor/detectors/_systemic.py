@@ -1953,56 +1953,6 @@ class NominalInstanceExplicitOrderingDetector(
         )
 
 
-class ParallelRegistryProjectionFamilyDetector(
-    ModuleCollectorCandidateDetector[ParallelRegistryProjectionFamilyCandidate]
-):
-    candidate_collector = staticmethod(_parallel_registry_projection_family_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Parallel registry projection builders should collapse into one family spec",
-        "The docs say one semantic family should have one authoritative owner. When several functions differ only in which registry authority feeds which target constructor, the projection-axis mapping should become one declared spec or family authority instead of several hand-wired wrappers.",
-        "single authoritative registry-projection family",
-        "same registry-authority-to-target projection shape repeated across sibling functions",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        (
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, catalog_candidate: ParallelRegistryProjectionFamilyCandidate
-    ) -> RefactorFinding:
-        function_names = ", ".join(
-            (function.qualname for function in catalog_candidate.functions[:4])
-        )
-        extractor_bases = ", ".join(
-            (
-                function.extractor_base_name
-                for function in catalog_candidate.functions[:4]
-            )
-        )
-        catalog_types = ", ".join(
-            (function.catalog_type_name for function in catalog_candidate.functions[:4])
-        )
-        evidence = tuple(
-            function.evidence for function in catalog_candidate.functions[:6]
-        )
-        return self.build_finding(
-            (
-                f"Functions {function_names} each build {catalog_types} through "
-                f"`{catalog_candidate.collector_name}(structure, ExtractorBase.{catalog_candidate.registry_accessor_name}())` "
-                f"over parallel extractor bases {extractor_bases}."
-            ),
-            evidence,
-        )
-
-
 def _target_has_repeated_keyed_family_root(
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
     config: DetectorConfig,

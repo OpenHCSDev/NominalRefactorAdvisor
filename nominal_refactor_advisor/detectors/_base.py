@@ -3429,16 +3429,6 @@ _NAME_LITERAL = "name"
 _EVAL_PARSE_MODE = "eval"
 
 
-def _registered_catalog_projection_candidates(
-    module: ParsedModule,
-) -> tuple[RegisteredCatalogProjectionCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _registered_catalog_projection_candidates_for_function,
-        sort_key=lambda item: (item.file_path, item.line, item.qualname),
-    )
-
-
 def _is_upper_snake_identifier(name: str) -> bool:
     return bool(re.fullmatch("[A-Z][A-Z0-9_]*", name))
 
@@ -3458,53 +3448,6 @@ def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.
 
 def _module_level_named_dicts(module: ParsedModule) -> dict[str, tuple[int, ast.Dict]]:
     return SUPPORT_PROJECTION_AUTHORITY.module_level_named_instances(module, ast.Dict)
-
-
-def _registered_catalog_projection_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-) -> Iterable[RegisteredCatalogProjectionCandidate]:
-    body = statements_without_docstring(list(function.body))
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-        return
-    returned = body[0].value
-    if not isinstance(returned, ast.Call) or returned.args:
-        return
-    if len(returned.keywords) != 1:
-        return
-    keyword = returned.keywords[0]
-    if keyword.arg is None or keyword.value is None:
-        return
-    if not isinstance(keyword.value, ast.Call) or keyword.value.keywords:
-        return
-    collector_name = ast.unparse(keyword.value.func)
-    if len(keyword.value.args) != 2 or not isinstance(keyword.value.args[0], ast.Name):
-        return
-    structure_param_name = keyword.value.args[0].id
-    registry_call = keyword.value.args[1]
-    if not (
-        isinstance(registry_call, ast.Call)
-        and (not registry_call.args)
-        and (not registry_call.keywords)
-        and isinstance(registry_call.func, ast.Attribute)
-    ):
-        return
-    yield RegisteredCatalogProjectionCandidate(
-        file_path=module.file_path,
-        line=function.lineno,
-        qualname=qualname,
-        catalog_type_name=ast.unparse(returned.func),
-        collector_name=collector_name,
-        structure_param_name=structure_param_name,
-        extractor_base_name=ast.unparse(registry_call.func.value),
-        registry_accessor_name=registry_call.func.attr,
-        return_keyword_names=tuple(
-            keyword_item.arg
-            for keyword_item in returned.keywords
-            if keyword_item.arg is not None
-        ),
-    )
 
 
 def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool:
@@ -4480,42 +4423,6 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
     return sorted_tuple(
         candidates,
         key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
-    )
-
-
-def _parallel_registry_projection_family_candidates(
-    module: ParsedModule,
-) -> tuple[ParallelRegistryProjectionFamilyCandidate, ...]:
-    candidates = _registered_catalog_projection_candidates(module)
-    grouped: dict[
-        (tuple[str, str, tuple[str, ...]], list[RegisteredCatalogProjectionCandidate])
-    ] = defaultdict(list)
-    for candidate in candidates:
-        grouped[
-            candidate.collector_name,
-            candidate.registry_accessor_name,
-            candidate.return_keyword_names,
-        ].append(candidate)
-    return tuple(
-        (
-            ParallelRegistryProjectionFamilyCandidate(
-                file_path=module.file_path,
-                collector_name=collector_name,
-                registry_accessor_name=registry_accessor_name,
-                return_keyword_names=return_keyword_names,
-                functions=sorted_tuple(
-                    functions, key=lambda item: (item.line, item.qualname)
-                ),
-            )
-            for (
-                collector_name,
-                registry_accessor_name,
-                return_keyword_names,
-            ), functions in sorted(grouped.items())
-            if len(functions) >= 2
-            and len({item.catalog_type_name for item in functions}) >= 2
-            and (len({item.extractor_base_name for item in functions}) >= 2)
-        )
     )
 
 
@@ -6922,28 +6829,6 @@ class DerivedQueryIndexCandidate:
     exception_names: tuple[str, ...]
 
     evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-
-
-@dataclass(frozen=True)
-class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
-    qualname: str
-    catalog_type_name: str
-    collector_name: str
-    structure_param_name: str
-    extractor_base_name: str
-    registry_accessor_name: str
-    return_keyword_names: tuple[str, ...]
-
-    evidence = _LINE_QUALNAME_EVIDENCE
-
-
-@dataclass(frozen=True)
-class ParallelRegistryProjectionFamilyCandidate:
-    file_path: str
-    collector_name: str
-    registry_accessor_name: str
-    return_keyword_names: tuple[str, ...]
-    functions: tuple[RegisteredCatalogProjectionCandidate, ...]
 
 
 @dataclass(frozen=True)

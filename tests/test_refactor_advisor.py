@@ -13993,26 +13993,6 @@ def test_preserves_template_method_implementation_inheritance(tmp_path: Path) ->
     assert findings == []
 
 
-def test_detects_parallel_registry_projection_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass AlphaAuthority:\n    @classmethod\n    def declared_variants(cls):\n        return ()\n\n\nclass BetaAuthority:\n    @classmethod\n    def declared_variants(cls):\n        return ()\n\n\nclass AlphaProjection:\n    def __init__(self, *, sites):\n        self.sites = sites\n\n\nclass BetaProjection:\n    def __init__(self, *, sites):\n        self.sites = sites\n\n\ndef _collect_sites(structure, extractor_types):\n    return tuple(extractor_types)\n\n\ndef projection_from_alpha(source):\n    return AlphaProjection(\n        sites=_collect_sites(source, AlphaAuthority.declared_variants())\n    )\n\n\ndef projection_from_beta(source):\n    return BetaProjection(\n        sites=_collect_sites(source, BetaAuthority.declared_variants())\n    )\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "parallel_registry_projection_family"
-        )
-    )
-    assert "projection_from_alpha" in finding.summary
-    assert "projection_from_beta" in finding.summary
-    assert "AlphaAuthority" in finding.summary
-    assert "BetaAuthority" in finding.summary
-
-
 def test_detects_repeated_keyed_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
