@@ -29,6 +29,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .native_declarations import NativeDeclaration
 from .codemod_declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC as DeclarationMutationOperationABC,
@@ -2521,6 +2522,30 @@ class ClassAuthorityReferenceProof:
     symbol_table: ModuleSymbolTable
 
     @classmethod
+    def from_native_declaration(
+        cls,
+        context: CodemodSelectorContext,
+        declaration: type,
+        projection_path: str,
+    ) -> ClassAuthorityReferenceProof:
+        native = NativeDeclaration(declaration)
+        targets = context.source_index.targets_matching_repository_symbol(
+            native.qualified_name
+        )
+        if len(targets) != 1 or not targets[0].is_class:
+            raise ValueError(
+                f"Native class authority {native.qualified_name!r} requires one source declaration"
+            )
+        target = targets[0]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError("Native class authority is not a class declaration")
+        native.require_source_matches(node)
+        return cls.from_context(
+            context, ResolvedClassTarget(target, node), projection_path
+        )
+
+    @classmethod
     def from_context(
         cls,
         context: CodemodSelectorContext,
@@ -2898,6 +2923,8 @@ class CandidateCollectorMigration:
     import_source: str | None
     rationale: str
 
+    replaced_base: ast.expr
+
     @property
     def contextual_base_source(self) -> str:
         return (
@@ -2948,36 +2975,9 @@ class CandidateCollectorMigration:
 
     def class_header_replacements(self) -> tuple[PhysicalSourceEdit, ...]:
         header = ClassHeaderSpanSourceAuthority(node=self.node, source=self.source)
-        replaced_base_name = self.candidate.replaced_base_name
-        matching_base_items = tuple(
-            base_item
-            for base_item in header.base_items
-            if base_item == replaced_base_name
-            or base_item.startswith(f"{replaced_base_name}[")
-        )
-        if len(matching_base_items) != 1:
-            raise ValueError(
-                f"{self.node.name!r} must have one {replaced_base_name!r} base"
-            )
-        registered_collector_base_names = (
-            DerivedCandidateCollectorMixin.collector_base_names()
-        )
-        if any(
-            base_item.split("[", 1)[0] in registered_collector_base_names
-            for base_item in header.base_items
-            if base_item not in matching_base_items
-        ):
-            raise ValueError(
-                f"{self.node.name!r} already composes a candidate collector base"
-            )
         return header.source_edits(
-            header.with_base_items(
-                tuple(
-                    self.contextual_base_source
-                    if base_item in matching_base_items
-                    else base_item
-                    for base_item in header.base_items
-                )
+            header.with_replaced_base(
+                ast.unparse(self.replaced_base), self.contextual_base_source
             ),
             file_path=self.target.file_path,
             rationale=self.rationale
@@ -3117,59 +3117,69 @@ class DeriveCandidateCollectorOperation(
     def source_edits_for_witness(
         self,
         snapshot: CodemodSourceSnapshot,
-        witness: CurrentLineWitness[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
+        witness: CurrentLineWitness[
+            CandidateCollectorBoilerplateCandidate, ast.FunctionDef
+        ],
     ) -> tuple[NominalSourceEdit, ...]:
         return self.required_migration(snapshot, witness).source_edits(snapshot)
 
     def required_migration(
         self,
         snapshot: CodemodSourceSnapshot,
-        witness: CurrentLineWitness[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
+        witness: CurrentLineWitness[
+            CandidateCollectorBoilerplateCandidate, ast.FunctionDef
+        ],
     ) -> CandidateCollectorMigration:
         candidate = witness.candidate
-        class_target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.CLASS,),
-            file_paths=(candidate.file_path,),
-            qualnames=(candidate.class_name,),
-        ).target_ids(snapshot)
-        if len(class_target_ids) != 1:
-            raise ValueError(
-                f"Candidate collector owner count is {len(class_target_ids)}"
-            )
-        class_target = snapshot.source_index.target_by_id[class_target_ids[0]]
-        class_node = snapshot.ast_target_nodes_by_id[class_target.target_id]
-        if not isinstance(class_node, ast.ClassDef):
-            raise ValueError("Candidate collector owner is not a class declaration")
-        replacement_base_targets = tuple(
-            target
-            for target in snapshot.source_index.ast_targets
-            if target.is_class
-            and target.name == candidate.recommended_base_name
-            and target.qualname == target.name
-        )
-        if len(replacement_base_targets) != 1:
-            raise ValueError(
-                f"{candidate.recommended_base_name!r} resolves to "
-                f"{len(replacement_base_targets)} class authorities"
-            )
-        replacement_base_target = replacement_base_targets[0]
-        replacement_base_node = snapshot.ast_target_nodes_by_id[
-            replacement_base_target.target_id
-        ]
-        if not isinstance(replacement_base_node, ast.ClassDef):
-            raise ValueError("Candidate collector base is not a class declaration")
-        import_source = ClassAuthorityReferenceProof.from_context(
+        owner = ResolvedClassTarget.from_rewrite_target(
             snapshot,
-            ResolvedClassTarget(replacement_base_target, replacement_base_node),
-            class_target.file_path,
-        ).required_import_source(snapshot)
+            SourceRewriteTarget(
+                file_path=candidate.file_path, qualname=candidate.class_name
+            ),
+        )
+        original = ClassAuthorityReferenceProof.from_native_declaration(
+            snapshot,
+            candidate.collector_scope.forwarding_detector_type,
+            owner.file_path,
+        )
+        replacement = ClassAuthorityReferenceProof.from_native_declaration(
+            snapshot,
+            candidate.recommended_base_type,
+            owner.file_path,
+        )
+        bindings = ModuleNominalBindingAuthority(
+            snapshot.parsed_module_for_source_path(owner.file_path)
+        )
+        collector_symbols = {
+            NativeDeclaration(declaration).qualified_name
+            for declaration in DerivedCandidateCollectorMixin.registered_collector_base_types()
+        }
+        if any(
+            bindings.qualified_name_at(base, line=owner.node.lineno)
+            in collector_symbols
+            for base in owner.node.bases
+        ):
+            raise ValueError(
+                "Collector migration has a competing native collector base"
+            )
+        replaced_bases = tuple(
+            base
+            for base in owner.node.bases
+            if bindings.qualified_name_at(base, line=owner.node.lineno)
+            == original.authority_symbol
+        )
+        if len(replaced_bases) != 1:
+            raise ValueError(
+                "Collector migration requires one exact native forwarding base"
+            )
         return CandidateCollectorMigration(
             candidate=candidate,
-            target=class_target,
-            node=class_node,
-            source=snapshot.sources_by_file_path[class_target.file_path],
-            import_source=import_source,
+            target=owner.target,
+            node=owner.node,
+            source=snapshot.sources_by_file_path[owner.file_path],
+            import_source=replacement.required_import_source(snapshot),
             rationale=self.rationale,
+            replaced_base=replaced_bases[0],
         )
 
 

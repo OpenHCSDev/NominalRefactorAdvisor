@@ -5,11 +5,10 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from dataclasses import dataclass
-import inspect
-from textwrap import dedent
 
 from .ast_tools import statements_without_docstring
 from .call_binding import CompactFunctionSignature, CompactParameterKind
+from .native_declarations import NativeDeclaration
 
 
 @dataclass(frozen=True)
@@ -24,12 +23,11 @@ class PositionalForwardingCall:
     def from_callable(
         cls, function: Callable[..., object]
     ) -> PositionalForwardingCall | None:
-        """Project a source-backed native function through the same AST contract."""
-
-        declarations = ast.parse(dedent(inspect.getsource(function))).body
-        if len(declarations) != 1 or not isinstance(declarations[0], ast.FunctionDef):
+        """Project native source through the same positional-call contract."""
+        node = NativeDeclaration(function).node
+        if not isinstance(node, ast.FunctionDef):
             return None
-        return cls.from_function(declarations[0])
+        return cls.from_function(node)
 
     @classmethod
     def from_function(

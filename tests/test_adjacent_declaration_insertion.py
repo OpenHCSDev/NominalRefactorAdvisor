@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
@@ -214,16 +214,12 @@ def test_inserting_before_dataclass_cannot_move_its_generated_constructor(
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 def test_collector_declaration_preserves_decorated_findings_anchor(
-    tmp_path: Path, newline: str
+    tmp_path: Path, newline: str, native_collector_module: ParsedModule
 ) -> None:
     path = tmp_path / "probe.py"
     source = (
-        "from typing import Generic, TypeVar\n"
-        "T = TypeVar('T')\n"
+        "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
         "events = []\n"
-        "class CrossModuleCandidateDetector(Generic[T]): pass\n"
-        "class CrossModuleCollectorCandidateDetector(CrossModuleCandidateDetector[T]):\n"
-        "    def _candidate_items(self, modules, config): return self.candidate_collector(modules)\n"
         "def collect(modules): return ('original',)\n"
         "def traced(function):\n"
         "    events.append(function.__name__)\n"
@@ -248,7 +244,9 @@ def test_collector_declaration_preserves_decorated_findings_anchor(
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(
+            (*parse_python_modules(tmp_path), native_collector_module)
+        )
     )
     assert simulation.is_clean
     simulation.apply()

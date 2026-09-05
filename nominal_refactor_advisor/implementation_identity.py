@@ -106,7 +106,7 @@ class _ImplementationDependencyTraversal:
 
         if isinstance(value, type) and expands_dependencies:
             for owner in value.__mro__:
-                for declared_value in vars(owner).values():
+                for declared_value in tuple(vars(owner).values()):
                     self._visit(declared_value)
         elif is_dataclass(value) and not isinstance(value, type):
             self._module_names.add(type(value).__module__)

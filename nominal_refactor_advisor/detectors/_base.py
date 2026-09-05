@@ -7509,14 +7509,14 @@ class CandidateCollectorBoilerplateCandidate(
         )
 
     @property
-    def replaced_base_name(self) -> str:
-        return self.collector_scope.forwarding_detector_type.__name__
+    def recommended_base_type(self) -> type[DerivedCandidateCollectorMixin]:
+        return DerivedCandidateCollectorMixin.collector_base_types_by_shape()[
+            CandidateCollectorBaseShape(self.collector_scope, self.uses_config)
+        ]
 
     @property
     def recommended_base_name(self) -> str:
-        return DerivedCandidateCollectorMixin.collector_base_name_for_shape(
-            CandidateCollectorBaseShape(self.collector_scope, self.uses_config)
-        )
+        return self.recommended_base_type.__name__
 
 
 @dataclass(frozen=True)

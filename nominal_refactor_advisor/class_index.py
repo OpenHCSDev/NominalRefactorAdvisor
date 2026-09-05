@@ -60,6 +60,7 @@ from .lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
+from .native_declarations import NativeDeclaration
 from .native_syntax import NativePythonSyntaxIndex
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
@@ -3066,7 +3067,7 @@ class ModuleNominalBindingView(ABC):
                 line=owner.lineno,
             ),
         )
-        qualified_name = f"{declaration.__module__}.{declaration.__qualname__}"
+        qualified_name = NativeDeclaration(declaration).qualified_name
         if not any(
             witness is not None and witness.qualified_name == qualified_name
             for witness in witnesses

@@ -5477,21 +5477,14 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
 
 def test_derive_candidate_collector_operation(
     tmp_path: Path,
+    native_collector_module: ParsedModule,
 ) -> None:
     _write_module(tmp_path, "pkg/__init__.py", "")
-    _write_module(
-        tmp_path,
-        "pkg/collector_runtime.py",
-        "class CandidateFindingDetector:\n"
-        "    pass\n\n\n"
-        "class ConfiguredModuleCollectorCandidateDetector:\n"
-        "    pass\n",
-    )
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from .collector_runtime import (\n"
+        "from nominal_refactor_advisor.detectors._base import (\n"
         "    DetectorConfig,\n"
         "    CandidateFindingDetector,\n"
         "    ParsedModule,\n"
@@ -5511,7 +5504,7 @@ def test_derive_candidate_collector_operation(
         "    def _finding_for_candidate(self, candidate):\n"
         "        return candidate\n",
     )
-    modules = parse_python_modules(tmp_path)
+    modules = (*parse_python_modules(tmp_path), native_collector_module)
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
@@ -5533,8 +5526,13 @@ def test_derive_candidate_collector_operation(
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert "ConfiguredModuleCollectorCandidateDetector" in rewritten
-    assert "from .collector_runtime import (" in rewritten
-    assert "    ConfiguredModuleCollectorCandidateDetector," in rewritten
+    assert "from nominal_refactor_advisor.detectors._base import (" in rewritten
+    assert sum(
+        alias.name == "ConfiguredModuleCollectorCandidateDetector"
+        for statement in ast.parse(rewritten).body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    ) == 1
     assert "from ._base" not in rewritten
     assert (
         "class AlphaDetector(ConfiguredModuleCollectorCandidateDetector[Candidate]):"
@@ -5946,13 +5944,14 @@ def test_source_text_geometry_rejects_replacements_outside_target_span(
 
 def test_operation_compiler_coalesces_identical_line_replacements(
     tmp_path: Path,
+    native_collector_module: ParsedModule,
 ) -> None:
-    _write_candidate_collector_base_module(tmp_path)
+    _write_module(tmp_path, "pkg/__init__.py", "")
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from ._base import (\n"
+        "from nominal_refactor_advisor.detectors._base import (\n"
         "    CrossModuleCandidateDetector,\n"
         "    DetectorConfig,\n"
         "    ParsedModule,\n"
@@ -5979,7 +5978,7 @@ def test_operation_compiler_coalesces_identical_line_replacements(
         "        del config\n"
         "        return _beta_candidates(modules)\n",
     )
-    modules = parse_python_modules(tmp_path)
+    modules = (*parse_python_modules(tmp_path), native_collector_module)
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
@@ -6077,13 +6076,14 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
 
 def test_derive_candidate_collector_collapses_existing_candidate_method(
     tmp_path: Path,
+    native_collector_module: ParsedModule,
 ) -> None:
-    _write_candidate_collector_base_module(tmp_path)
+    _write_module(tmp_path, "pkg/__init__.py", "")
     module_path = tmp_path / "pkg/detectors.py"
     _write_module(
         tmp_path,
         "pkg/detectors.py",
-        "from ._base import CrossModuleCandidateDetector\n"
+        "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
         "\n\n"
         "class Candidate:\n"
         "    pass\n"
@@ -6104,7 +6104,7 @@ def test_derive_candidate_collector_collapses_existing_candidate_method(
         "    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig):\n"
         "        return []\n",
     )
-    modules = parse_python_modules(tmp_path)
+    modules = (*parse_python_modules(tmp_path), native_collector_module)
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
@@ -14399,12 +14399,14 @@ def test_source_segment_projection_reuses_cached_geometry(
     assert source_segments.lines is source_lines
 
 
-def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
-    _write_candidate_collector_base_module(tmp_path)
+def test_detects_candidate_collector_boilerplate(
+    tmp_path: Path, native_collector_module: ParsedModule
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "from ._base import CandidateFindingDetector\n"
+        "from nominal_refactor_advisor.detectors._base import CandidateFindingDetector\n"
         "def _local_candidates(module): return ()\n"
         "def _configured_candidates(module, config): return ()\n"
         '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
@@ -14427,7 +14429,7 @@ def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
             for finding in findings
         )
     )
-    modules = parse_python_modules(tmp_path)
+    modules = (*parse_python_modules(tmp_path), native_collector_module)
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     plan = snapshot.plan_from_findings(
         findings,

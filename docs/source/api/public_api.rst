@@ -618,6 +618,28 @@ unresolved wildcard exposure prevent the rewrite. Explicit builtin imports and
 wildcard imports whose export declarations exclude the name can establish the
 required binding.
 
+.. automodule:: nominal_refactor_advisor.native_declarations
+   :members: NativeDeclaration
+
+``NativeDeclaration`` derives a qualified name from a Python declaration and
+lazily inspects its source. Source matching compares declaration ASTs without
+location attributes. Builtin identity is available independently of source;
+source-dependent operations reject declarations without inspectable source.
+
+Collector migration resolves the original and replacement bases by their native
+qualified identities and requires their source declarations to match. The
+original base reference must resolve at class creation, and competing registered
+collector bases, including imported aliases, prevent the rewrite. A same-named
+class in another module or an altered declaration under the canonical name does
+not establish native authority.
+
+These checks establish declaration identity, forwarding and capture conditions.
+They do not establish arbitrary multiple-inheritance replacement equivalence,
+class-creation hook equivalence or unchanged annotation introspection. The
+recorded plans in ``docs/examples/collector_base_authority_refactor.py`` and
+``docs/examples/native_declaration_consumers_refactor.py`` migrate consumers
+after the shared native-source proof declarations have been authored.
+
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 

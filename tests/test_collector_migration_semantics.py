@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
@@ -129,6 +129,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 )
 def test_migration_preserves_native_outcome_or_refuses_without_writing(
     tmp_path: Path,
+    native_collector_module: ParsedModule,
     declarations: str,
     class_prefix: str,
     signature: str,
@@ -138,11 +139,7 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
 ) -> None:
     path = tmp_path / "probe.py"
     source = (
-        "from typing import Generic, TypeVar\n"
-        "T = TypeVar('T')\n"
-        "class CrossModuleCandidateDetector(Generic[T]): pass\n"
-        "class CrossModuleCollectorCandidateDetector(CrossModuleCandidateDetector[T]):\n"
-        "    def _candidate_items(self, modules, config): return self.candidate_collector(modules)\n"
+        "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
         + declarations
         + "class Owner(CrossModuleCandidateDetector[int]):\n"
         + class_prefix
@@ -164,7 +161,9 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
     )
     try:
         simulation = plan.simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(
+                (*parse_python_modules(tmp_path), native_collector_module)
+            )
         )
     except ValueError:
         assert path.read_bytes() == source.encode()
@@ -182,7 +181,10 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
     ("", "from builtins import staticmethod\n", "from provider import *\n"),
 )
 def test_cli_preserves_stable_imported_collector_alias(
-    tmp_path: Path, configured: bool, descriptor_import: str
+    tmp_path: Path,
+    configured: bool,
+    descriptor_import: str,
+    native_collector_module: ParsedModule,
 ) -> None:
     provider = tmp_path / "provider.py"
     provider.write_text(
@@ -192,19 +194,11 @@ def test_cli_preserves_stable_imported_collector_alias(
         newline="",
     )
     path = tmp_path / "probe.py"
-    collector_base = (
-        "ConfiguredCrossModuleCollectorCandidateDetector"
-        if configured
-        else "CrossModuleCollectorCandidateDetector"
-    )
     arguments = "modules, config" if configured else "modules"
     source = (
-        descriptor_import + "from typing import Generic, TypeVar\n"
+        descriptor_import
+        + "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
         "from provider import collect as acquire\n"
-        "T = TypeVar('T')\n"
-        "class CrossModuleCandidateDetector(Generic[T]): pass\n"
-        f"class {collector_base}(CrossModuleCandidateDetector[T]):\n"
-        f"    def _candidate_items(self, modules, config): return self.candidate_collector({arguments})\n"
         "class Owner(CrossModuleCandidateDetector[int]):\n"
         "    def _candidate_items(self, modules, config):\n"
         f"        return acquire({arguments})\n"
@@ -227,6 +221,9 @@ def test_cli_preserves_stable_imported_collector_alias(
             "-m",
             "nominal_refactor_advisor",
             str(tmp_path),
+            str(native_collector_module.path),
+            "--scan-budget-seconds",
+            "0",
             "--codemod-plan",
             "-",
             "--codemod-apply",

@@ -3,10 +3,30 @@
 from __future__ import annotations
 
 import os
+import ast
+import inspect
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from collections.abc import Iterator
 
 import pytest
+
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.detectors import _base as collector_runtime
+
+
+@pytest.fixture(scope="session")
+def native_collector_module() -> ParsedModule:
+    """Current native collector declarations, shared without copying their schema."""
+
+    source = inspect.getsource(collector_runtime)
+    return ParsedModule(
+        path=Path(collector_runtime.__file__),
+        module_name=collector_runtime.__name__,
+        is_package_init=False,
+        module=ast.parse(source),
+        source=source,
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

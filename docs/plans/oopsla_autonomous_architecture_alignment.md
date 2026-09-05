@@ -570,3 +570,60 @@ Current selection accepted it. The next batch must prove the base-replacement
 relation rather than infer full class behaviour from a name and forwarding
 shape. The probe used an in-memory source snapshot and native execution before
 and after simulation; it did not modify repository source.
+
+### Native Collector Declaration Authority
+
+The migration now resolves original and replacement bases by native qualified
+identity and compares their declaration ASTs with inspected source. Original
+base binding is checked at class creation. Candidate records retain the native
+replacement type; emitted names derive from it. `NativeDeclaration` owns native
+identity and inspected source for the base proof, forwarding projection and
+generated-descriptor binding consumers.
+
+Native regression cases cover unrelated same-name bases that change inherited
+attributes, methods or constructors, and altered source under the canonical
+qualified name. An additional native MI counterexample demonstrated a
+one-argument collector being called with two arguments after replacement.
+Competing registered collector bases are rejected by their resolved identity,
+including imported aliases. This preserves the previous competing-base check
+without its short-name matching. Positive fixtures now include the actual
+registered declarations, including batch coalescing and finding-backed synthesis.
+
+`docs/examples/collector_base_authority_refactor.py` and
+`docs/examples/native_declaration_consumers_refactor.py` each record six stages.
+A real CLI replay against `15fedaa`, after two prerequisite declaration/import
+stages and adding the authored native-source module, applied all 14 stages and
+produced matching consumer declaration ASTs. The ASCII-locale run passed 70
+tests; a Python 3.14 collector and CLI run passed 100 tests.
+
+This establishes native declaration identity and the checked forwarding and
+capture conditions, not arbitrary base-replacement equivalence. Full sibling
+MRO effects, class-creation hooks and annotation-introspection equivalence remain
+open. The API reference records these boundaries separately from the plans.
+
+### Deferred Annotation Metadata During Dependency Inspection
+
+CI runs `33995924217` and `33995325471` failed on Python 3.14 with a live class
+dictionary changing during implementation-dependency traversal. The downstream
+CLI JSON failures resulted from that exception, rather than malformed reporting.
+A native Python 3.14 reproduction showed method-annotation evaluation
+materialising metadata on its owning class while that class was being scanned.
+
+The traversal now snapshots each owner's declared values before recursively
+visiting dependencies. It still follows the native MRO and includes dependencies
+revealed by deferred annotations. Two native regressions failed before the change;
+the post-change run covering them, the affected cache paths and CLI checks passed
+59 tests. `docs/examples/implementation_namespace_snapshot_refactor.py` records
+the authored edit; its real CLI replay produced an identical module AST.
+
+The next performance audit should reuse native source projections across batch
+operations without accepting stale source. A local probe under concurrent test
+load took 1.87 seconds for 20 fresh projections of one registered collector class,
+while reusing one projection avoided repeated inspection. This is a diagnostic
+comparison, not a representative throughput benchmark.
+
+Final combined validation passed 2,229 tests on Python 3.11 (15 skipped) and all
+2,244 tests on Python 3.14 with coverage. The touched-file audit ran all 81
+detectors with no omissions or findings. The documentation build retains only
+the two previously recorded duplicate-description warnings. Cross-platform CI
+must confirm the metadata-traversal correction on Windows and macOS.
