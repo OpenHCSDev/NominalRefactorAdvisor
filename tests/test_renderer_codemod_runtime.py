@@ -132,3 +132,54 @@ def test_renderer_and_detector_collapse_preserve_runtime(
         assert simulation.is_clean
         simulation.document_simulation.apply()
         assert _execute(module_path) == expected
+
+
+@pytest.mark.parametrize(
+    "payload, collector",
+    (
+        ("'summary', (), title=__class__.__name__", None),
+        ("'summary', (), title=__label", None),
+        (
+            "'summary', ()",
+            "    candidate_collector = staticmethod(lambda module, spec=finding_spec: ())\n",
+        ),
+    ),
+    ids=("class-cell", "private-name", "class-local-default"),
+)
+def test_detector_collapse_keeps_class_dependent_renderers(
+    tmp_path: Path, payload: str, collector: str | None,
+) -> None:
+    module_path = tmp_path / "probe.py"
+    source = "_ProbeDetector__label = 'private'\n" + _RUNTIME_SOURCE.replace(
+        "PAYLOAD", payload,
+    )
+    if collector is not None:
+        source = source.replace(
+            "    candidate_collector = retain('collector', staticmethod(lambda module: ()))\n",
+            "",
+        ).replace('if __name__ == "__main__":', collector + '\nif __name__ == "__main__":')
+    module_path.write_text(source)
+    expected = _execute(module_path)
+
+    for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
+        findings = tuple(
+            finding for finding in analyze_path(tmp_path)
+            if finding.detector_id == detector_id
+        )
+        assert len(findings) == 1
+        snapshot = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path), findings,
+        )
+        plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
+        if detector_id == "declarative_detector_class":
+            assert plan.records[0].status is not (
+                FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+            )
+            assert "class scope" in plan.records[0].reason
+            assert _execute(module_path) == expected
+            break
+        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        assert simulation.is_clean
+        simulation.document_simulation.apply()
+        assert _execute(module_path) == expected

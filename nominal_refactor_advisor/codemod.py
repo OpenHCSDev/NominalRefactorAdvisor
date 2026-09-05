@@ -538,7 +538,10 @@ from .codemod_spacing import (
     SourceInsertionBoundary,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .declaration_dependencies import FunctionBindingProjection
+from .declaration_dependencies import (
+    FunctionBindingProjection,
+    ModuleLexicalDependencyProjection,
+)
 from .detectors._base import (
     CandidateCollectorBoilerplateCandidate,
     CallableCandidateFindingRenderer,
@@ -5099,7 +5102,13 @@ class DeclarativeDetectorClassFindingRecipeSynthesizer(
         module: ParsedModule,
         context: CodemodSelectorContext,
     ) -> RefactorRecipe:
-        del context
+        ModuleLexicalDependencyProjection.require_class_body_independence(node)
+        source = context.sources_by_file_path[target.file_path]
+        class_span = SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(node)
+        )
+        if class_span.contains_comment(source):
+            raise ValueError("detector class source contains comments")
         class_source = module.source_segments.segment_for_node(node)
         if class_source is None:
             raise ValueError("detector class source is unavailable")

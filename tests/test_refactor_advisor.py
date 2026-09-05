@@ -14593,6 +14593,36 @@ def test_declarative_detector_class_preserves_custom_detector_identity(
     )
 
 
+@pytest.mark.parametrize(
+    "header, spec, comment, reason",
+    (
+        ("", "finding_spec: FindingSpec", "", "annotations"),
+        (", metaclass=CustomMeta", "finding_spec", "", "header"),
+        ("", "finding_spec", "    # Keep the explanation with its declaration.\n", "comments"),
+    ),
+)
+def test_declarative_detector_collapse_keeps_unrepresented_source(
+    tmp_path: Path, header: str, spec: str, comment: str, reason: str,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class LocalCandidate:\n    pass\n\n"
+        f"class LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]{header}):\n"
+        f"{comment}    {spec} = LOCAL_FINDING_SPEC\n"
+        "    finding_renderer = LOCAL_FINDING_RENDERER\n",
+    )
+    findings = tuple(
+        item for item in analyze_path(tmp_path)
+        if item.detector_id == "declarative_detector_class"
+    )
+    assert len(findings) == 1
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+    plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
+    assert plan.records[0].status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert reason in plan.records[0].reason
+
+
 def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

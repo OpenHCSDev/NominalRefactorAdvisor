@@ -5666,14 +5666,15 @@ def test_compact_class_method_promotion_hazards_are_nominal_facts(
         for method in methods
     }
     hazard = class_index_module.MethodPromotionHazard
+    scope_dependency = class_index_module.ClassScopeDependency
 
     assert hazards_by_class == {
         "SafeProperty": (),
         "SafeBuiltinAnnotation": (),
-        "SuperReference": (hazard.SUPER_REFERENCE,),
-        "AliasedSuperReference": (hazard.SUPER_REFERENCE,),
-        "ClassCellReference": (hazard.CLASS_CELL_REFERENCE,),
-        "PrivateName": (hazard.PRIVATE_NAME_MANGLING,),
+        "SuperReference": (scope_dependency.SUPER_REFERENCE,),
+        "AliasedSuperReference": (scope_dependency.SUPER_REFERENCE,),
+        "ClassCellReference": (scope_dependency.CLASS_CELL_REFERENCE,),
+        "PrivateName": (scope_dependency.PRIVATE_NAME_MANGLING,),
         "CustomDecorator": (hazard.CUSTOM_METHOD_DECORATOR,),
         "PositionalDefault": (hazard.EVALUATED_DEFAULT,),
         "KeywordDefault": (hazard.EVALUATED_DEFAULT,),

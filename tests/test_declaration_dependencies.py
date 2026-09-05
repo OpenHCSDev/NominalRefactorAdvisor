@@ -6,10 +6,75 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.declaration_dependencies import (
+    ClassScopeDependency,
     DeclarationDependencyProjection,
     ModuleBindingResolutionPhase,
     ModuleLexicalDependencyProjection,
 )
+
+
+@pytest.mark.parametrize(
+    "source, dependency",
+    (
+        ("lambda self: super().render()", ClassScopeDependency.SUPER_REFERENCE),
+        ("lambda self: __class__", ClassScopeDependency.CLASS_CELL_REFERENCE),
+        ("lambda self: self.__value", ClassScopeDependency.PRIVATE_NAME_MANGLING),
+        ("lambda __value: 1", ClassScopeDependency.PRIVATE_NAME_MANGLING),
+    ),
+)
+def test_class_scope_dependencies_apply_to_expressions(
+    source: str, dependency: ClassScopeDependency,
+) -> None:
+    assert ClassScopeDependency.from_node(ast.parse(source)) == (dependency,)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "value = External\n    alias = value",
+        "value = External\n    render = lambda arg=value: arg",
+        "value = External\n    values = [item for item in value]",
+        "value: ValueType = External",
+        "value = __module__",
+        "value = __qualname__",
+    ),
+)
+def test_class_scope_removal_rejects_lost_bindings(body: str) -> None:
+    node = ast.parse("class Owner:\n    " + body).body[0]
+    assert isinstance(node, ast.ClassDef)
+    with pytest.raises(ValueError, match="class scope"):
+        ModuleLexicalDependencyProjection.require_class_body_independence(node)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "value = External\n    render = lambda value: value",
+        "value = External\n    render = lambda: value",
+        "value = value\n    render = lambda: value",
+        "value = External\n    values = [value for value in External]",
+        "value = External\n    render = lambda: (value := External)",
+    ),
+)
+def test_class_scope_removal_respects_expression_scope(body: str) -> None:
+    node = ast.parse("class Owner:\n    " + body).body[0]
+    assert isinstance(node, ast.ClassDef)
+    ModuleLexicalDependencyProjection.require_class_body_independence(node)
+
+
+def test_class_scope_removal_keeps_class_creation_keywords() -> None:
+    node = ast.parse("class Owner(metaclass=Meta):\n    value = External").body[0]
+    assert isinstance(node, ast.ClassDef)
+    with pytest.raises(ValueError, match="class scope header"):
+        ModuleLexicalDependencyProjection.require_class_body_independence(node)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 requires Python 3.12")
+def test_class_scope_removal_keeps_type_parameter_bindings() -> None:
+    node = ast.parse("class Owner[T]:\n    value = T").body[0]
+    assert isinstance(node, ast.ClassDef)
+    with pytest.raises(ValueError, match="class scope header"):
+        ModuleLexicalDependencyProjection.require_class_body_independence(node)
 
 
 def _projection(source: str) -> DeclarationDependencyProjection:

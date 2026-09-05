@@ -45,6 +45,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
+from .declaration_dependencies import ClassScopeDependency
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .native_syntax import NativePythonSyntaxIndex
@@ -1297,37 +1298,6 @@ class ClassMethodReceiverRequirements:
 MethodPromotionHazardPredicate: TypeAlias = Callable[[MethodPromotionInspection], bool]
 
 
-def _has_super_reference(inspection: MethodPromotionInspection) -> bool:
-    return any(
-        isinstance(node, ast.Name) and node.id == "super"
-        for node in ast.walk(inspection.method)
-    )
-
-
-def _has_class_cell_reference(inspection: MethodPromotionInspection) -> bool:
-    return any(
-        isinstance(node, ast.Name) and node.id == "__class__"
-        for node in ast.walk(inspection.method)
-    )
-
-
-def _has_private_name_mangling(inspection: MethodPromotionInspection) -> bool:
-    names = (
-        inspection.method.name,
-        *(
-            node.id
-            for node in ast.walk(inspection.method)
-            if isinstance(node, ast.Name)
-        ),
-        *(
-            node.attr
-            for node in ast.walk(inspection.method)
-            if isinstance(node, ast.Attribute)
-        ),
-    )
-    return any(name.startswith("__") and not name.endswith("__") for name in names)
-
-
 _PROMOTABLE_METHOD_DECORATOR_NAMES = frozenset(
     ("classmethod", "property", "staticmethod")
 )
@@ -1450,9 +1420,6 @@ def _has_attached_leading_comment(inspection: MethodPromotionInspection) -> bool
 class MethodPromotionHazard(StrEnum):
     """One promotion hazard carrying its own syntax recognition behavior."""
 
-    SUPER_REFERENCE = ("super_reference", _has_super_reference)
-    CLASS_CELL_REFERENCE = ("class_cell_reference", _has_class_cell_reference)
-    PRIVATE_NAME_MANGLING = ("private_name_mangling", _has_private_name_mangling)
     CUSTOM_METHOD_DECORATOR = (
         "custom_method_decorator",
         _has_custom_method_decorator,
@@ -1491,7 +1458,7 @@ class MethodPromotionHazard(StrEnum):
 class ClassMethodPromotionSafetyProfile:
     """Complete promotion hazards derived from one current method declaration."""
 
-    hazards: tuple[MethodPromotionHazard, ...]
+    hazards: tuple[ClassScopeDependency | MethodPromotionHazard, ...]
 
     @classmethod
     def from_method(
@@ -1509,7 +1476,7 @@ class ClassMethodPromotionSafetyProfile:
             source_lines,
         )
         return cls(
-            tuple(
+            ClassScopeDependency.from_node(method) + tuple(
                 hazard
                 for hazard in MethodPromotionHazard
                 if hazard.is_present(inspection)
@@ -1528,7 +1495,7 @@ class CompactClassMethod:
     body_statement_count: int
     statement_sources: tuple[str, ...]
     exact_source_digest: str | None
-    promotion_hazards: tuple[MethodPromotionHazard, ...]
+    promotion_hazards: tuple[ClassScopeDependency | MethodPromotionHazard, ...]
     receiver_member_names: frozenset[str]
 
     @property

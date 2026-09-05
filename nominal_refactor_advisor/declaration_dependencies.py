@@ -21,6 +21,52 @@ MovableDeclaration: TypeAlias = (
 )
 
 
+def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
+    names = (
+        *(node.id for node in nodes if isinstance(node, ast.Name)),
+        *(node.attr for node in nodes if isinstance(node, ast.Attribute)),
+        *(node.arg for node in nodes if isinstance(node, ast.arg)),
+        *(
+            node.name for node in nodes
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        ),
+    )
+    return any(name.startswith("__") and not name.endswith("__") for name in names)
+
+
+class ClassScopeDependency(StrEnum):
+    """Python syntax whose meaning can depend on its enclosing class owner."""
+
+    SUPER_REFERENCE = (
+        "super_reference",
+        lambda nodes: any(
+            isinstance(node, ast.Name) and node.id == "super" for node in nodes
+        ),
+    )
+    CLASS_CELL_REFERENCE = (
+        "class_cell_reference",
+        lambda nodes: any(
+            isinstance(node, ast.Name) and node.id == "__class__" for node in nodes
+        ),
+    )
+    PRIVATE_NAME_MANGLING = ("private_name_mangling", _has_private_identifiers)
+
+    predicate: Callable[[tuple[ast.AST, ...]], bool]
+
+    def __new__(
+        cls, value: str, predicate: Callable[[tuple[ast.AST, ...]], bool],
+    ) -> "ClassScopeDependency":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.predicate = predicate
+        return member
+
+    @classmethod
+    def from_node(cls, node: ast.AST) -> tuple["ClassScopeDependency", ...]:
+        nodes = tuple(ast.walk(node))
+        return tuple(dependency for dependency in cls if dependency.predicate(nodes))
+
+
 class DeclarationDependencyUse(StrEnum):
     """Execution context in which a declaration resolves an external name."""
 
@@ -119,6 +165,34 @@ class ModuleLexicalDependencyProjection:
     stringized_annotations: tuple[StringizedAnnotationSurface, ...]
 
     @classmethod
+    def require_class_body_independence(cls, node: ast.ClassDef) -> None:
+        """Check direct lexical dependencies before removing a class scope.
+
+        Compare references by AST identity, not just name: a lambda's parameter
+        may shadow a class field with exactly the same spelling.
+        """
+
+        if node.decorator_list or node.keywords or _type_parameter_names(node):
+            raise ValueError("class scope header contains unrepresented declarations")
+        if any(isinstance(statement, ast.AnnAssign) for statement in node.body):
+            raise ValueError("class scope contains annotations not carried by the declaration")
+        dependencies = ClassScopeDependency.from_node(node)
+        if dependencies:
+            raise ValueError(f"class scope dependencies: {', '.join(dependencies)}")
+        original = cls.from_module(ast.Module(body=[node], type_ignores=[]))
+        flattened = cls.from_module(ast.Module(body=node.body, type_ignores=[]))
+        original_references = frozenset(original.external_name_references)
+        exposed = tuple(
+            reference for reference in flattened.external_name_references
+            if reference not in original_references
+        )
+        if exposed:
+            raise ValueError(
+                "class scope binds moved references: "
+                + ", ".join(sorted({reference.id for reference in exposed}))
+            )
+
+    @classmethod
     def from_module(
         cls,
         module: ast.Module,
@@ -212,7 +286,10 @@ class FunctionBindingProjection:
 
 @dataclass
 class _ClassScope:
-    available_names: set[str] = field(default_factory=set)
+    # Python initializes these names before executing the explicit class body.
+    available_names: set[str] = field(
+        default_factory=lambda: {"__module__", "__qualname__"}
+    )
     global_names: frozenset[str] = frozenset()
     nonlocal_names: frozenset[str] = frozenset()
 
