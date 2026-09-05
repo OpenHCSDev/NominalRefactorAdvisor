@@ -8,6 +8,10 @@ from . import export_tools as _export_tools
 from .analysis import (
     analyze_lean_export,
 )
+from .class_member_authority_codemod import (
+    FactorExactDataclassFieldAuthorityOperation,
+    PromoteExactDataclassFieldsToExistingAuthorityOperation,
+)
 from .cli import (
     analyze_path,
     analyze_paths,
@@ -17,10 +21,8 @@ from .cli import (
 from .codemod import (
     CarrierFieldProjection,
     DeleteClassAssignmentsOperation,
-    FactorExactDataclassFieldAuthorityOperation,
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
-    PromoteExactDataclassFieldsToExistingAuthorityOperation,
     ReplaceFieldsWithCarrierOperation,
     ReplaceFunctionBodyOperation,
     ReplaceTargetOperation,
