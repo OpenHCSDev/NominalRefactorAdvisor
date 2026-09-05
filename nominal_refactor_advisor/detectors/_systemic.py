@@ -3113,53 +3113,6 @@ class ImplicitSelfContractMixinDetector(
         )
 
 
-class RepeatedGuardValidatorFamilyDetector(
-    ConfiguredModuleCollectorCandidateDetector[RepeatedGuardValidatorFamilyCandidate]
-):
-    candidate_collector = staticmethod(_repeated_guard_validator_family_candidates)
-    finding_spec = high_confidence_spec(
-        PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Repeated guard validators should collapse into one case-policy authority",
-        "When several sibling boolean helpers walk the same subject through fail-fast guards and case-local final checks, the algorithm skeleton is split across helper names instead of being owned by one nominal case policy or declarative rule family.",
-        "single authoritative case-policy or rule-table validator",
-        "same subject and subordinate view validated through repeated fail-fast sibling helpers",
-        (
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
-        (
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.CLASS_FAMILY,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, family_candidate: RepeatedGuardValidatorFamilyCandidate
-    ) -> RefactorFinding:
-        function_names = ", ".join(
-            (function.function_name for function in family_candidate.functions[:6])
-        )
-        shared_attrs = ", ".join(family_candidate.shared_attr_names[:6])
-        alias_summary = (
-            f" through `{family_candidate.alias_source_attr}`"
-            if family_candidate.alias_source_attr is not None
-            else ""
-        )
-        shared_helpers = ", ".join(family_candidate.shared_helper_call_names[:3])
-        helper_summary = (
-            f" Shared helper calls: {shared_helpers}." if shared_helpers else ""
-        )
-        return self.build_finding(
-            (
-                f"Boolean validators {function_names} each guard `{family_candidate.subject_param_name}`{alias_summary} "
-                f"with the same fail-fast attribute checks over {shared_attrs}.{helper_summary}"
-            ),
-            family_candidate.evidence,
-        )
-
-
 class RepeatedResultAssemblyPipelineDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedResultAssemblyPipelineCandidate]
 ):
