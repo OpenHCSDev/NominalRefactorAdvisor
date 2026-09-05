@@ -116,6 +116,27 @@ def test_saved_call_replacement_rejects_shadowed_declaration(tmp_path: Path) -> 
         )
 
 
+def test_branch_alias_does_not_hide_an_unresolved_call_to_selected_declaration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "probe.py"
+    source = (
+        "def render(value): return value\n"
+        "def other(value): return value + 1\n"
+        "def run(flag):\n"
+        "    alias = render\n"
+        "    if flag:\n"
+        "        alias = other\n"
+        "    return render(1), alias(2)\n"
+    )
+    path.write_text(source, encoding="utf-8", newline="")
+    with pytest.raises(ValueError, match="unresolved"):
+        CodemodPlanSequence.from_operations((_operation(path, "1"),)).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
+    assert path.read_bytes() == source.encode()
+
+
 @pytest.mark.parametrize("expression", ("1; other()", "return 1", "1) + other(2"))
 def test_replacement_requires_one_expression(tmp_path: Path, expression: str) -> None:
     path = tmp_path / "probe.py"

@@ -200,14 +200,13 @@ class CompactCallBindingViolation(StrEnum):
 class CompactFlowOwnerKind(StrEnum):
     """Executable source scopes represented by compact flow facts."""
 
-    MODULE = "module", True, False, False, True
-    CLASS_BODY = "class_body", False, False, True, False
-    FUNCTION = "function", False, True, False, True
+    MODULE = "module", True, False, False
+    CLASS_BODY = "class_body", False, False, True
+    FUNCTION = "function", False, True, False
 
     is_module_scope: bool
     is_function_scope: bool
     is_class_body_scope: bool
-    supports_exact_value_aliases: bool
 
     def __new__(
         cls,
@@ -215,14 +214,12 @@ class CompactFlowOwnerKind(StrEnum):
         is_module_scope: bool,
         is_function_scope: bool,
         is_class_body_scope: bool,
-        supports_exact_value_aliases: bool,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.is_module_scope = is_module_scope
         member.is_function_scope = is_function_scope
         member.is_class_body_scope = is_class_body_scope
-        member.supports_exact_value_aliases = supports_exact_value_aliases
         return member
 
     def deferred_binding_resolution(
@@ -1074,11 +1071,20 @@ class CompactExactValueAlias:
     """One exact lexical binding to an unchanged value in a supported scope."""
 
     source: LexicalValueReference
+    source_position: CompactFlowPosition
     binding_mutation: CompactLexicalMutation
 
     @property
     def target(self) -> LexicalValueReference:
         return self.binding_mutation.reference
+
+    def source_for(self, reference: LexicalValueReference) -> LexicalValueReference:
+        """Project a use's attribute suffix onto the captured source reference."""
+
+        return LexicalValueReference(
+            self.source.root_name,
+            (*self.source.attribute_path, *reference.attribute_path),
+        )
 
 
 @dataclass(frozen=True)
@@ -1252,6 +1258,24 @@ class CompactFunctionDeclaration:
         return CompactFunctionBindingKind.from_declaration(
             self.owner_class_qualname,
             self.decorators,
+        )
+
+    def preserves_alias_call_binding(
+        self, alias: CompactExactValueAlias, owner: CompactFlowOwner, module_name: str
+    ) -> bool:
+        """Prove free-function capture or same-class descriptor identity.
+
+        Moving a descriptor through attribute access or into another class needs
+        receiver evidence beyond a lexical alias; keep those bindings open.
+        """
+
+        return (
+            self.owner_class_qualname is None and not owner.kind.is_class_body_scope
+        ) or (
+            owner.kind.is_class_body_scope
+            and not alias.source.attribute_path
+            and self.identity.module_name == module_name
+            and self.owner_class_qualname == owner.qualname
         )
 
     @property
@@ -1442,7 +1466,7 @@ class CompactFunctionFlow:
             )
         source_resolution = self._value_origin_for(
             alias.source,
-            mutation.position,
+            alias.source_position,
             visited_root_names | {root_name},
         )
         return source_resolution.through_alias(
@@ -1455,16 +1479,12 @@ class CompactFunctionFlow:
         reference: LexicalValueReference,
         mutations: tuple[CompactLexicalMutation, ...],
     ) -> tuple[LexicalValueReference, ...]:
-        suffix = reference.attribute_path
         return tuple(
             dict.fromkeys(
                 (
                     reference,
                     *(
-                        LexicalValueReference(
-                            alias.source.root_name,
-                            (*alias.source.attribute_path, *suffix),
-                        )
+                        alias.source_for(reference)
                         for mutation in mutations
                         if (
                             alias := self.exact_aliases_by_binding_mutation.get(
@@ -1842,16 +1862,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             CompactMutationKind.ASSIGNMENT,
         )
         source = LexicalValueReference.from_expression(node.value)
-        if self._is_exact_value_alias_assignment(node.targets, source):
-            assert source is not None
-            self.exact_value_aliases.extend(
-                CompactExactValueAlias(
-                    source=source,
-                    binding_mutation=mutation,
-                )
-                for target, mutation in zip(node.targets, mutations, strict=True)
-                if isinstance(target, ast.Name)
-            )
+        self._record_exact_value_aliases(node.targets, source, mutations)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is None and not self.owner.kind.is_function_scope:
@@ -1874,15 +1885,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             if node.value is None
             else LexicalValueReference.from_expression(node.value)
         )
-        if self._is_exact_value_alias_assignment((node.target,), source):
-            assert isinstance(node.target, ast.Name)
-            assert source is not None
-            self.exact_value_aliases.append(
-                CompactExactValueAlias(
-                    source=source,
-                    binding_mutation=mutations[0],
-                )
-            )
+        self._record_exact_value_aliases((node.target,), source, mutations)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self.visit(node.value)
@@ -1939,8 +1942,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         source: LexicalValueReference | None,
     ) -> bool:
         return bool(
-            self.owner.kind.supports_exact_value_aliases
-            and source is not None
+            source is not None
             and targets
             and all(
                 isinstance(target, ast.Name)
@@ -1951,6 +1953,24 @@ class _CompactFlowCollector(ast.NodeVisitor):
                 )
                 for target in targets
             )
+        )
+
+    def _record_exact_value_aliases(
+        self,
+        targets: tuple[ast.expr, ...] | list[ast.expr],
+        source: LexicalValueReference | None,
+        mutations: tuple[CompactLexicalMutation, ...],
+    ) -> None:
+        if not self._is_exact_value_alias_assignment(targets, source):
+            return
+        assert source is not None
+        self.exact_value_aliases.extend(
+            CompactExactValueAlias(
+                source=source,
+                source_position=mutations[0].position,
+                binding_mutation=mutation,
+            )
+            for mutation in mutations
         )
 
     def visit_Global(self, node: ast.Global) -> None:

@@ -48,9 +48,10 @@ write; deferred module and class namespace lookup uses the final write.
 Deferred closure lookup with multiple writes remains unresolved. Conditional
 writes also remain unresolved.
 
-Method selection checks that the selected definition is the function's source
-declaration. Reassigned or deleted methods cannot authorise call replacement;
-a later method definition can supersede an earlier assignment. Annotation-only
+Method selection checks the selected binding against its source declaration.
+Exact aliases retain the captured declaration; other reassignments and deletions
+cannot authorise edits to an older method. A later method definition can
+supersede an earlier assignment. Annotation-only
 statements do not replace module or class values, while function-local
 annotations retain their lexical binding effect.
 
@@ -60,6 +61,19 @@ Imported call selection follows exporting namespace bindings and re-export
 chains, including relative imports and class aliases. Rebound exports cannot
 authorise edits to an older declaration; cyclic re-exports carry
 ``CYCLIC_BINDING`` rather than selecting an arbitrary declaration.
+
+``CompactExactValueAlias`` records the source reference and its evaluation
+position before assignment targets are written. Callable lookup follows those
+facts through module and local aliases and same-class method aliases, including
+inherited static and class methods. Later rebinding of the source name does not
+change the captured declaration. Alias cycles are tracked by source binding
+events, allowing repeated assignments to the same name without treating them as
+cycles. Conditional aliases remain unresolved and retain their possible callee
+identities for codemod selection checks.
+
+Descriptor transfers across classes or through attribute access remain open
+where receiver binding has not been established. Callable identity alone does
+not prove that the original call signature applies to such transfers.
 
 The codemod surface models source-anchored candidate rewrites and simulations.
 Simulation applies planned replacement source verbatim, including its final

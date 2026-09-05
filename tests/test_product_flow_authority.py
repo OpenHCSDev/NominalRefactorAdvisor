@@ -75,8 +75,9 @@ def test_imported_function_requires_live_export_binding(
     assert resolution.resolved_call is None
     assert (
         resolution.target_resolution.violation
-        is CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+        is CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
     )
+    assert "library.consume" in resolution.target_resolution.possible_symbols
 
 
 def test_reexport_chain_resolves_declaring_function() -> None:
@@ -95,6 +96,153 @@ def test_reexport_chain_resolves_declaring_function() -> None:
     )
     assert resolution.resolved_call is not None
     assert resolution.resolved_call.callee.identity.symbol == "library.consume"
+
+
+@pytest.mark.parametrize("class_scope", (False, True))
+@pytest.mark.parametrize(
+    "capture",
+    (
+        "alias = first\nfirst = replacement\n",
+        "alias = first\nfirst = alias\n",
+        "alias = first\nalias = alias\n",
+        "first = alias = first\n",
+        "alias: object = first\n",
+    ),
+)
+def test_callable_alias_captures_source_before_assignment_targets(
+    class_scope: bool, capture: str
+) -> None:
+    prefix = "class Owner:\n" if class_scope else ""
+    indent = "    " if class_scope else ""
+    definition = (
+        "    @staticmethod\n    def first(value): return value\n"
+        if class_scope
+        else "def first(value): return value\n"
+    )
+    source = (
+        prefix
+        + definition
+        + "".join(indent + line + "\n" for line in capture.splitlines())
+    )
+    source += (
+        "def run(): return " + ("Owner.alias" if class_scope else "alias") + "(3)\n"
+    )
+    repository = _repository(_module("probe", source))
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is not None
+    assert resolution.resolved_call.callee.identity.symbol == (
+        "probe.Owner.first" if class_scope else "probe.first"
+    )
+
+
+def test_local_alias_resolves_module_function_and_local_function() -> None:
+    repository = _repository(
+        _module(
+            "probe",
+            "def first(value): return value\n"
+            "def run():\n"
+            "    def second(value): return value\n"
+            "    alias = first\n"
+            "    alias(1)\n"
+            "    alias = second\n"
+            "    return alias(2)\n",
+        )
+    )
+    calls = tuple(
+        r
+        for r in repository.resolved_function_calls
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert tuple(r.callee.identity.symbol for r in calls) == (
+        "probe.first",
+        "probe.run.second",
+    )
+
+
+@pytest.mark.parametrize(
+    "decorator,parameters",
+    (
+        ("", "self, value"),
+        ("@classmethod\n    ", "cls, value"),
+        ("@staticmethod\n    ", "value"),
+    ),
+)
+def test_inherited_method_alias_preserves_descriptor_binding(
+    decorator: str, parameters: str
+) -> None:
+    repository = _repository(
+        _module(
+            "probe",
+            "class Parent:\n"
+            f"    {decorator}def first({parameters}): return value\n"
+            "    alias = first\n"
+            "class Child(Parent):\n"
+            "    def run(self): return self.alias(3)\n",
+        )
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.Child.run"
+    )
+    assert resolution.resolved_call is not None
+    assert resolution.resolved_call.callee.identity.symbol == "probe.Parent.first"
+    call = resolution.resolved_call.call
+    assert resolution.resolved_call.callee.bind_call(
+        call.arguments.positional, call.arguments.keywords
+    ).is_exact
+
+
+def test_alias_reexport_cycle_is_open_without_recursion() -> None:
+    repository = _repository(
+        _module(
+            "first",
+            "from second import alias as implementation\nalias = implementation\n",
+        ),
+        _module(
+            "second",
+            "from first import alias as implementation\nalias = implementation\n",
+        ),
+        _module("probe", "from first import alias\ndef run(): return alias(1)\n"),
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+    assert (
+        resolution.target_resolution.violation
+        is CompactFunctionTargetResolutionViolation.CYCLIC_BINDING
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def function(self, value): return value\nclass Owner:\n    alias = function\n    def run(self): return self.alias(3)\n",
+        "class Base:\n    def first(self, value): return value\nclass Owner:\n    alias = Base.first\n    def run(self): return self.alias(3)\n",
+        "class Base:\n    def first(self, value): return value\nalias = Base.first\ndef run(): return alias(3)\n",
+    ),
+)
+def test_descriptor_rebinding_is_not_inferred_from_callable_identity(
+    source: str,
+) -> None:
+    repository = _repository(_module("probe", source))
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol.endswith(".run")
+    )
+    assert resolution.resolved_call is None
+    assert (
+        resolution.target_resolution.violation
+        is CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER
+    )
 
 
 def test_import_alias_is_selected_at_its_source_position() -> None:
@@ -666,17 +814,31 @@ def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
 
 
 @pytest.mark.parametrize(
-    "write",
+    "write,violation",
     (
-        "    consume = replacement\n",
-        "    consume: object = replacement\n",
-        "    if flag:\n        consume = replacement\n",
-        "    del consume\n",
-        "    class consume: pass\n",
+        (
+            "    consume = replacement\n",
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        ),
+        (
+            "    consume: object = replacement\n",
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        ),
+        (
+            "    if flag:\n        consume = replacement\n",
+            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+        ),
+        ("    del consume\n", CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING),
+        (
+            "    class consume: pass\n",
+            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+        ),
     ),
 )
 @pytest.mark.parametrize("base", ("Owner", "Child"))
-def test_method_selection_respects_class_body_writes(write: str, base: str) -> None:
+def test_method_selection_respects_class_body_writes(
+    write: str, violation: CompactFunctionTargetResolutionViolation, base: str
+) -> None:
     repository = _repository(
         _module(
             "probe",
@@ -694,10 +856,8 @@ def test_method_selection_respects_class_body_writes(write: str, base: str) -> N
         if r.context.owner_symbol == "probe.run"
     )
     assert resolution.resolved_call is None
-    assert (
-        resolution.target_resolution.violation
-        is CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
-    )
+    assert resolution.target_resolution.violation is violation
+    assert "probe.Owner.consume" in resolution.target_resolution.possible_symbols
 
 
 @pytest.mark.parametrize(

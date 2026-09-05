@@ -29,6 +29,7 @@ from .collection_algebra import (
 from .product_flow import (
     CompactCallTargetReference,
     CompactCallableReferenceUse,
+    CompactExactValueAlias,
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
@@ -43,6 +44,8 @@ from .product_flow import (
     LexicalValueReference,
     compact_product_flow_projection,
 )
+
+CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 
 @dataclass(frozen=True)
 class CompactProductFlowContext:
@@ -74,6 +77,13 @@ class CompactFunctionTargetResolution(ABC):
     def possible_symbols(self) -> tuple[str, ...]:
         raise NotImplementedError
 
+    @abstractmethod
+    def through_alias(
+        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+    ) -> CompactFunctionTargetResolution:
+        """Retain unresolved provenance or prove the captured callable's binding."""
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class ResolvedCompactFunctionTarget(CompactFunctionTargetResolution):
@@ -88,6 +98,18 @@ class ResolvedCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return (self.resolved_declaration.identity.symbol,)
+
+    def through_alias(
+        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+    ) -> CompactFunctionTargetResolution:
+        if self.resolved_declaration.preserves_alias_call_binding(
+            alias, context.flow.owner, context.module_name
+        ):
+            return self
+        return OpenCompactFunctionTarget(
+            self.possible_symbols,
+            CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+        )
 
 
 @dataclass(frozen=True)
@@ -104,6 +126,21 @@ class OpenCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return self.candidate_symbols
+
+    def through_alias(
+        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+    ) -> CompactFunctionTargetResolution:
+        return OpenCompactFunctionTarget(
+            tuple(
+                dict.fromkeys(
+                    (
+                        f"{context.owner_symbol}.{alias.target.root_name}",
+                        *self.possible_symbols,
+                    )
+                )
+            ),
+            self.violation,
+        )
 
 
 @dataclass(frozen=True)
@@ -1012,6 +1049,7 @@ class CompactProductFlowRepository:
         context: CompactProductFlowContext,
         reference: LexicalValueReference,
         position: CompactFlowPosition,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> CompactFunctionTargetResolution:
         possible_symbols: list[str] = []
         for scope_qualname in context.flow.lexical_scope_qualnames:
@@ -1028,9 +1066,12 @@ class CompactProductFlowRepository:
             resolution = self._scope_binding_resolution(
                 scope_context,
                 reference,
-                position
-                if scope_context.owner_symbol == context.owner_symbol
-                else None,
+                (
+                    position
+                    if scope_context.owner_symbol == context.owner_symbol
+                    else None
+                ),
+                pending_bindings,
             )
             if resolution is not None:
                 return resolution
@@ -1044,7 +1085,7 @@ class CompactProductFlowRepository:
         context: CompactProductFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
-        pending_symbols: frozenset[str] = frozenset(),
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> CompactFunctionTargetResolution | None:
         root_name = reference.root_name
         class_projection = self.class_projections_by_module_name.get(
@@ -1094,27 +1135,54 @@ class CompactProductFlowRepository:
             return None
         if selection.violation is not None:
             return OpenCompactFunctionTarget(
-                self._possible_binding_symbols(context, reference),
+                self._possible_binding_symbols(context, reference, pending_bindings),
                 selection.violation,
             )
         binding = selection.mutation
         assert binding is not None
+        binding_visit = (context.owner_symbol, binding)
+        if binding_visit in pending_bindings:
+            return OpenCompactFunctionTarget(
+                tuple(
+                    sorted(
+                        {
+                            f"{owner}.{mutation.reference.root_name}"
+                            for owner, mutation in pending_bindings
+                        }
+                    )
+                ),
+                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
+            )
+        if not binding.kind.is_definition_binding:
+            pending_bindings = pending_bindings | {binding_visit}
+
+        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
+        if alias is not None:
+            resolution = self._lexical_function_target_resolution(
+                context,
+                alias.source_for(reference),
+                alias.source_position,
+                pending_bindings,
+            )
+            return resolution.through_alias(alias, context)
 
         if binding.kind.is_import_binding:
             alias_target = binding.imported_origin
             if alias_target is None:
                 return OpenCompactFunctionTarget(
-                    self._possible_binding_symbols(context, reference),
+                    self._possible_binding_symbols(
+                        context, reference, pending_bindings
+                    ),
                     CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
                 )
             return self._function_resolution_for_symbol(
                 ".".join((alias_target, *reference.attribute_path)),
-                pending_symbols,
+                pending_bindings,
             )
 
         if not binding.kind.is_definition_binding:
             return OpenCompactFunctionTarget(
-                self._possible_binding_symbols(context, reference),
+                self._possible_binding_symbols(context, reference, pending_bindings),
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
             )
 
@@ -1127,7 +1195,11 @@ class CompactProductFlowRepository:
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
                 )
             if len(reference.attribute_path) == 1:
-                return self._class_method_resolution(owner, reference.attribute_path[0])
+                return self._class_method_resolution(
+                    owner,
+                    reference.attribute_path[0],
+                    pending_bindings,
+                )
             class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
             if class_context is not None:
                 resolution = self._scope_binding_resolution(
@@ -1136,7 +1208,7 @@ class CompactProductFlowRepository:
                         reference.attribute_path[0], reference.attribute_path[1:]
                     ),
                     None,
-                    pending_symbols,
+                    pending_bindings,
                 )
                 if resolution is not None:
                     return resolution
@@ -1150,6 +1222,7 @@ class CompactProductFlowRepository:
         self,
         context: CompactProductFlowContext,
         reference: LexicalValueReference,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> tuple[str, ...]:
         local_symbol = ".".join((context.owner_symbol, *reference.parts))
         return tuple(
@@ -1162,6 +1235,25 @@ class CompactProductFlowRepository:
                         )
                         if mutation.imported_origin is not None
                     ),
+                    *(
+                        symbol
+                        for mutation in context.flow.mutations_by_root_name.get(
+                            reference.root_name, ()
+                        )
+                        if (context.owner_symbol, mutation) not in pending_bindings
+                        and (
+                            alias := context.flow.exact_aliases_by_binding_mutation.get(
+                                mutation
+                            )
+                        )
+                        is not None
+                        for symbol in self._lexical_function_target_resolution(
+                            context,
+                            alias.source_for(reference),
+                            alias.source_position,
+                            pending_bindings | {(context.owner_symbol, mutation)},
+                        ).possible_symbols
+                    ),
                     local_symbol,
                 )
             )
@@ -1170,14 +1262,8 @@ class CompactProductFlowRepository:
     def _function_resolution_for_symbol(
         self,
         symbol: str,
-        pending_symbols: frozenset[str] = frozenset(),
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> CompactFunctionTargetResolution:
-        if symbol in pending_symbols:
-            return OpenCompactFunctionTarget(
-                tuple(sorted(pending_symbols)),
-                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
-            )
-        pending_symbols = pending_symbols | {symbol}
         parts = symbol.split(".")
         for prefix_length in range(len(parts) - 1, 0, -1):
             context = self.module_flow_contexts.get(".".join(parts[:prefix_length]))
@@ -1189,7 +1275,7 @@ class CompactProductFlowRepository:
                     parts[prefix_length], tuple(parts[prefix_length + 1 :])
                 ),
                 None,
-                pending_symbols,
+                pending_bindings,
             )
             if resolution is not None:
                 return resolution
@@ -1241,6 +1327,7 @@ class CompactProductFlowRepository:
         self,
         owner: CompactIndexedClass,
         member_name: str,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> CompactFunctionTargetResolution:
         possible_symbols = [
             f"{class_symbol}.{member_name}"
@@ -1260,29 +1347,30 @@ class CompactProductFlowRepository:
                 )
             owners = mro.declarations
         for current in owners:
-            candidate_symbol = f"{current.symbol}.{member_name}"
             context = self.flow_contexts_by_owner_symbol.get(current.symbol)
             if context is None:
                 return OpenCompactFunctionTarget(
                     tuple(possible_symbols),
                     CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
                 )
-            selection = context.flow.binding_resolution_for(member_name)
-            if selection is None:
+            resolution = self._scope_binding_resolution(
+                context,
+                LexicalValueReference(member_name),
+                None,
+                pending_bindings,
+            )
+            if resolution is None:
                 continue
-            if selection.violation is not None:
+            declaration = resolution.declaration
+            if declaration is not None and (
+                declaration.identity.module_name != current.module_name
+                or declaration.owner_class_qualname != current.qualname
+            ):
                 return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    selection.violation,
+                    resolution.possible_symbols,
+                    CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
                 )
-            binding = selection.mutation
-            assert binding is not None
-            if not binding.kind.is_definition_binding:
-                return OpenCompactFunctionTarget(
-                    tuple(possible_symbols),
-                    CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-                )
-            return self._selected_function_resolution(candidate_symbol, binding)
+            return resolution
         return OpenCompactFunctionTarget(
             tuple(possible_symbols),
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,

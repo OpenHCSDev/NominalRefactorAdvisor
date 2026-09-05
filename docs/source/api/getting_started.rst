@@ -336,6 +336,12 @@ definition's decorators, defaults and annotations. Review those effects and
 behavioural equivalence before applying the plan; its checks establish binding
 availability and source ownership, not equivalent behaviour.
 
+To edit calls after introducing an alias, append ``replace_declared_call`` or
+``replace_declared_call_arguments`` to the sequence. Select the original
+``implementation`` declaration as the callee. The next stage follows the alias
+in the projected source, including same-class method aliases, so the plan does
+not need to rediscover or text-match the new call spelling.
+
 Use ``project_function_local`` to replace reads of a single-assignment local
 with an existing parameter's access path, such as ``self.geometry``. Set
 ``local_name`` to the local binding and ``projection_source`` to the access
