@@ -4023,14 +4023,15 @@ class SemanticWitnessFamilyDetector(
     candidate_collector = _witness_carrier_family_candidates
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
-        "Semantic carrier family should share one nominal base",
-        "Several frozen dataclass carriers repeat the same location and naming roles under different field names. That leaves one semantic family structurally expanded instead of giving it one nominal carrier root.",
-        "one authoritative nominal base for a semantic metadata carrier family",
+        "Renamed semantic carrier roles need one nominal inheritance spine",
+        "Several frozen dataclass carriers repeat location and naming roles under distinct field names. One root should own family identity while reusable role mixins own the orthogonal slices and compose through MRO.",
+        "one authoritative nominal carrier root plus reusable semantic-role mixins",
         "same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,
             CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.MRO_ORDERING,
         ),
     )
 
@@ -4047,13 +4048,22 @@ class SemanticWitnessFamilyDetector(
                 )
             )
         )
+        role_summary = "; ".join(
+            (
+                f"{role.require_mixin_name()} for {field_names}"
+                for role, field_names in witness_candidate.role_field_names
+            )
+        )
+        shared_role_names = tuple(
+            role.value for role in witness_candidate.shared_role_names
+        )
         return self.build_finding(
-            f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier.",
+            f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {shared_role_names} under renamed fields; establish one nominal carrier root and compose {role_summary} through MRO.",
             evidence,
             metrics=WitnessCarrierMetrics(
                 class_count=len(witness_candidate.class_names),
                 shared_role_count=len(witness_candidate.shared_role_names),
                 class_names=witness_candidate.class_names,
-                shared_role_names=witness_candidate.shared_role_names,
+                shared_role_names=shared_role_names,
             ),
         )

@@ -14908,31 +14908,43 @@ def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
         "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass FunctionTrace:\n    file_path: str\n    function_name: str\n    line: int\n    helper_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass RegistryTrace:\n    source_path: str\n    registry_name: str\n    init_line: int\n    class_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass ExportTrace:\n    artifact_path: str\n    subject_name: str\n    method_line: int\n    export_names: tuple[str, ...]\n",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (item for item in findings if item.detector_id == "semantic_witness_family")
-    )
+    witness_findings = [
+        item
+        for item in findings
+        if item.pattern_id == PatternId.NOMINAL_WITNESS_CARRIER
+    ]
+    assert [item.detector_id for item in witness_findings] == [
+        "semantic_witness_family"
+    ]
+    finding = witness_findings[0]
     assert "FunctionTrace" in finding.summary
+    assert "PrimaryNameMixin" in finding.summary
+    assert "through MRO" in finding.summary
 
 
-def test_detects_mixin_enforcement_for_renamed_semantic_roles(tmp_path: Path) -> None:
+def test_semantic_witness_family_owns_renamed_role_mixin_evidence(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass FunctionTrace:\n    file_path: str\n    function_name: str\n    method_line: int\n    helper_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass RegistryTrace:\n    source_path: str\n    registry_name: str\n    line: int\n    class_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass ExportTrace:\n    artifact_path: str\n    subject_name: str\n    init_line: int\n    export_names: tuple[str, ...]\n",
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            item
-            for item in findings
-            if item.detector_id == "mixin_enforcement"
-            and "function_name" in item.summary
-            and ("class_names" in item.summary)
-        )
-    )
+    witness_findings = [
+        item
+        for item in findings
+        if item.pattern_id == PatternId.NOMINAL_WITNESS_CARRIER
+    ]
+    assert [item.detector_id for item in witness_findings] == [
+        "semantic_witness_family"
+    ]
+    finding = witness_findings[0]
     assert "FunctionTrace" in finding.summary
     assert "RegistryTrace" in finding.summary
-    assert "multiple inheritance" in finding.summary
+    assert "NameFamilyMixin" in finding.summary
+    assert "SourceLineMixin" in finding.summary
+    assert "through MRO" in finding.summary
 
 
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:

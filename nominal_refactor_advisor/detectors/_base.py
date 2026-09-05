@@ -169,6 +169,7 @@ from ..models import (
     RegistrationMetrics,
     RepeatedMethodMetrics,
     ResolutionAxisMetrics,
+    SemanticFieldRole,
     SentinelSimulationMetrics,
     SourceLineReference,
     SourceLocation,
@@ -1243,7 +1244,9 @@ ManualRecordConstructorFieldPartition: TypeAlias = tuple[
     tuple[str, ...], tuple[str, ...]
 ]
 ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
-NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
+NormalizedRoleFieldMap: TypeAlias = tuple[
+    tuple[SemanticFieldRole, tuple[str, ...]], ...
+]
 
 
 def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeValueT]:
@@ -3098,14 +3101,11 @@ class CandidateCollectionAuthority:
                 continue
             if len(normalized_roles) < 3:
                 continue
-            if {"source_path", "source_line"} - set(normalized_roles):
+            if SemanticFieldRole.required_carrier_coordinates() - set(
+                normalized_roles
+            ):
                 continue
-            if not {
-                "name_payload",
-                _NAME_FAMILY_FIELD,
-                _SUBJECT_NAME_FIELD,
-                "observed_name",
-            } & set(normalized_roles):
+            if not SemanticFieldRole.carrier_naming_roles() & set(normalized_roles):
                 continue
             candidates.append(
                 WitnessCarrierClassCandidate(
@@ -6613,6 +6613,21 @@ def _witness_carrier_family_candidates(
             *(set(candidate.base_names) for candidate in ordered_items)
         ):
             continue
+        role_field_names = tuple(
+            (
+                (role, aliased_field_names)
+                for role in SemanticFieldRole.mixin_roles()
+                for aliased_field_names in (
+                    SUPPORT_PROJECTION_AUTHORITY.aliased_field_names_for_role(
+                        role,
+                        ordered_items,
+                    ),
+                )
+                if aliased_field_names
+            )
+        )
+        if not role_field_names:
+            continue
         seen_class_names.add(class_names)
         findings.append(
             WitnessCarrierFamilyCandidate(
@@ -6620,6 +6635,7 @@ def _witness_carrier_family_candidates(
                 class_names=class_names,
                 line_numbers=tuple((candidate.line for candidate in ordered_items)),
                 shared_role_names=shared_role_names,
+                role_field_names=role_field_names,
             )
         )
     return tuple(findings)
@@ -6694,40 +6710,6 @@ def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate)
         f"# The consumer `{candidate.function_name}` only observes `{candidate.parameter_name}` through methods {candidate.observed_method_names}.\n"
         f"# Introduce an ABC witness for that view and type the consumer against it instead of duck-typed coincidence."
     )
-
-
-def _witness_carrier_family_patch(
-    candidate: WitnessCarrierFamilyCandidate,
-) -> str:
-    return (
-        f"# Introduce one nominal carrier root for {candidate.class_names}.\n"
-        f"# Move shared semantic roles {candidate.shared_role_names} into the base class and keep only fiber-specific payload in each leaf carrier."
-    )
-
-
-class WitnessMixinRole(StrEnum):
-    """Declared semantic witness role and its nominal mixin owner."""
-
-    mixin_name: str
-
-    def __new__(cls, value: str, mixin_name: str) -> "WitnessMixinRole":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.mixin_name = mixin_name
-        return member
-
-    NAME_PAYLOAD = ("name_payload", "PrimaryNameMixin")
-    NAME_FAMILY = (_NAME_FAMILY_FIELD, "NameFamilyMixin")
-    SOURCE_LINE = ("source_line", "SourceLineMixin")
-    SOURCE_PATH = ("source_path", "SourcePathMixin")
-
-    @classmethod
-    def recognizes(cls, role_name: str) -> bool:
-        return any(role.value == role_name for role in cls)
-
-
-def _witness_role_mixin_name(role_name: str) -> str:
-    return WitnessMixinRole(role_name).mixin_name
 
 
 def _as_builder_shape(shape: object) -> BuilderCallShape:
@@ -6894,43 +6876,63 @@ class SupportProjectionAuthority:
             and node.func.id == "dict"
         )
 
-    def normalize_semantic_field_roles(self, field_name: str) -> tuple[str, ...]:
-        roles: list[str] = list(SourceLocation.semantic_field_role_names(field_name))
-        scope_field_names = {
-            ScopedAstObservation.class_scope_field_name(),
-            ScopedAstObservation.function_scope_field_name(),
-        }
-        if field_name in {_SUBJECT_NAME_FIELD, *scope_field_names}:
-            roles.append(_SUBJECT_NAME_FIELD)
-        if field_name in {
-            "observed_name",
-            "method_name",
-            "builder_name",
-            "export_name",
-        }:
-            roles.append("observed_name")
-        if (
-            field_name == _NAME_LITERAL
-            or field_name == _SUBJECT_NAME_FIELD
-            or field_name.endswith("_name")
-        ):
-            roles.append("name_payload")
-        if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
-            roles.append(_NAME_FAMILY_FIELD)
-        return tuple(dict.fromkeys(roles))
+    def normalize_semantic_field_roles(
+        self,
+        field_name: str,
+    ) -> tuple[SemanticFieldRole, ...]:
+        return SemanticFieldRole.for_field_name(field_name)
 
     def normalized_semantic_role_fields(
         self,
         field_names: tuple[str, ...],
     ) -> NormalizedRoleFieldMap:
-        role_to_fields: dict[str, set[str]] = defaultdict(set)
+        role_to_fields: dict[SemanticFieldRole, set[str]] = defaultdict(set)
         for field_name in field_names:
             for role_name in self.normalize_semantic_field_roles(field_name):
                 role_to_fields[role_name].add(field_name)
         return tuple(
             (role_name, sorted_tuple(role_fields))
-            for role_name, role_fields in sorted(role_to_fields.items())
+            for role_name, role_fields in sorted(
+                role_to_fields.items(),
+                key=lambda item: item[0].value,
+            )
         )
+
+    def aliased_field_names_for_role(
+        self,
+        role: SemanticFieldRole,
+        candidates: tuple[WitnessCarrierClassCandidate, ...],
+    ) -> tuple[str, ...]:
+        """Return distinct field aliases proving one reusable role slice."""
+
+        fields_by_carrier = tuple(
+            (
+                next(
+                    (
+                        field_names
+                        for candidate_role, field_names in (
+                            candidate.normalized_role_fields
+                        )
+                        if candidate_role is role
+                    ),
+                    (),
+                )
+                for candidate in candidates
+            )
+        )
+        participating_fields = tuple(
+            field_names for field_names in fields_by_carrier if field_names
+        )
+        if len(participating_fields) < 2:
+            return ()
+        aliases = sorted_tuple(
+            {
+                field_name
+                for field_names in participating_fields
+                for field_name in field_names
+            }
+        )
+        return aliases if len(aliases) >= 2 else ()
 
     def materialize_observations(
         self,
@@ -8542,19 +8544,15 @@ class StructuralConfusabilityCandidate(
 class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     base_names: tuple[str, ...]
     family_tokens: tuple[str, ...]
-    normalized_roles: tuple[str, ...]
+    normalized_roles: tuple[SemanticFieldRole, ...]
     normalized_role_fields: NormalizedRoleFieldMap
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)
 class WitnessCarrierFamilyCandidate(ClassLineNumbersGroup):
-    shared_role_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class WitnessMixinEnforcementCandidate(ClassLineNumbersGroup):
-    role_field_names: tuple[tuple[str, tuple[str, ...]], ...]
+    shared_role_names: tuple[SemanticFieldRole, ...]
+    role_field_names: tuple[tuple[SemanticFieldRole, tuple[str, ...]], ...]
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

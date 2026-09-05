@@ -12,7 +12,6 @@ from abc import ABC, abstractmethod
 from dataclasses import (
     dataclass,
     field,
-    fields,
     replace,
 )
 from enum import StrEnum
@@ -88,9 +87,107 @@ class RequiredRelationDeclaration(ABC):
 
 
 class SemanticFieldRole(StrEnum):
-    SOURCE_PATH = "source_path"
-    SOURCE_LINE = "source_line"
-    OWNER_SYMBOL = "owner_symbol"
+    """Normalized semantic role owned independently of source field spelling."""
+
+    mixin_name: str | None
+    exact_field_names: frozenset[str]
+    field_name_suffixes: tuple[str, ...]
+    required_carrier_coordinate: bool
+    carrier_naming_role: bool
+
+    def __new__(
+        cls,
+        value: str,
+        exact_field_names: tuple[str, ...],
+        field_name_suffixes: tuple[str, ...],
+        mixin_name: str | None = None,
+        required_carrier_coordinate: bool = False,
+        carrier_naming_role: bool = False,
+    ) -> "SemanticFieldRole":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.exact_field_names = frozenset(exact_field_names)
+        member.field_name_suffixes = field_name_suffixes
+        member.mixin_name = mixin_name
+        member.required_carrier_coordinate = required_carrier_coordinate
+        member.carrier_naming_role = carrier_naming_role
+        return member
+
+    SOURCE_PATH = ("source_path", (), ("_path",), "SourcePathMixin", True)
+    SOURCE_LINE = (
+        "source_line",
+        ("line", "lineno"),
+        ("_line",),
+        "SourceLineMixin",
+        True,
+    )
+    OWNER_SYMBOL = ("owner_symbol", ("symbol",), ("_symbol",))
+    SUBJECT_NAME = (
+        "subject_name",
+        ("subject_name", "class_name", "function_name"),
+        (),
+        None,
+        False,
+        True,
+    )
+    OBSERVED_NAME = (
+        "observed_name",
+        ("observed_name", "method_name", "builder_name", "export_name"),
+        (),
+        None,
+        False,
+        True,
+    )
+    NAME_PAYLOAD = (
+        "name_payload",
+        ("name",),
+        ("_name",),
+        "PrimaryNameMixin",
+        False,
+        True,
+    )
+    NAME_FAMILY = (
+        "name_family",
+        ("name_family",),
+        ("_names",),
+        "NameFamilyMixin",
+        False,
+        True,
+    )
+
+    def matches_field_name(self, field_name: str) -> bool:
+        """Return whether one source field spells this semantic role."""
+
+        return field_name in self.exact_field_names or field_name.endswith(
+            self.field_name_suffixes
+        )
+
+    @classmethod
+    def for_field_name(cls, field_name: str) -> tuple["SemanticFieldRole", ...]:
+        """Derive every overlapping semantic role for one source field."""
+
+        return tuple(role for role in cls if role.matches_field_name(field_name))
+
+    @classmethod
+    def required_carrier_coordinates(cls) -> frozenset["SemanticFieldRole"]:
+        return frozenset(role for role in cls if role.required_carrier_coordinate)
+
+    @classmethod
+    def carrier_naming_roles(cls) -> frozenset["SemanticFieldRole"]:
+        return frozenset(role for role in cls if role.carrier_naming_role)
+
+    @classmethod
+    def mixin_roles(cls) -> tuple["SemanticFieldRole", ...]:
+        """Return roles whose reusable nominal mixin is declaration-owned."""
+
+        return tuple(role for role in cls if role.mixin_name is not None)
+
+    def require_mixin_name(self) -> str:
+        """Return this role's mixin owner or fail on a non-mixin role."""
+
+        if self.mixin_name is None:
+            raise TypeError(f"Semantic role {self.value!r} does not own a mixin.")
+        return self.mixin_name
 
 
 class EnvironmentReadKind(StrEnum):
@@ -178,35 +275,6 @@ class SourceLocation(SourceLineReference, SemanticRecord):
     @property
     def subject_symbol(self) -> str:
         return EvidenceSymbol(self.symbol).subject
-
-    @classmethod
-    def file_path_field_name(cls) -> str:
-        return next(field.name for field in fields(cls) if field.name.endswith("_path"))
-
-    @classmethod
-    def line_field_name(cls) -> str:
-        return next(field.name for field in fields(cls) if field.name == "line")
-
-    @classmethod
-    def symbol_field_name(cls) -> str:
-        return next(field.name for field in fields(cls) if field.name == "symbol")
-
-    @classmethod
-    def semantic_field_role_names(cls, field_name: str) -> tuple[str, ...]:
-        roles: list[str] = []
-        if field_name == cls.file_path_field_name() or field_name.endswith("_path"):
-            roles.append(SemanticFieldRole.SOURCE_PATH.value)
-        if field_name in {cls.line_field_name(), "lineno"} or field_name.endswith(
-            "_line"
-        ):
-            roles.append(SemanticFieldRole.SOURCE_LINE.value)
-        if field_name in {
-            cls.symbol_field_name(),
-            "owner_symbol",
-        } or field_name.endswith("_symbol"):
-            roles.append(SemanticFieldRole.OWNER_SYMBOL.value)
-        return tuple(roles)
-
 
 @dataclass(frozen=True)
 class SourceLocationZipDescriptorShape(SemanticRecord):
