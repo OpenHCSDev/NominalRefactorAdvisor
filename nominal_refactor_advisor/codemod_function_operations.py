@@ -14,6 +14,11 @@ from .codemod_call_source import (
     DeclaredCallExpressionRewrite,
     DeclaredCallRewriteABC,
 )
+from .codemod_declaration_operations import (
+    DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
+    DeclarationMutationOperationABC as DeclarationMutationOperationABC,
+    ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
+)
 from .codemod_declaration_source import (
     FunctionBindingProjectionSourceAuthority,
     FunctionAliasSourceAuthority,
@@ -46,34 +51,12 @@ from .descriptor_algebra import AliasProperty
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
 
+
 @dataclass(frozen=True, kw_only=True)
-class FunctionMutationOperationABC(SourceReprovedOperation, ABC):
-    """Source-proved mutation of one function declaration."""
+class FunctionMutationOperationABC(DeclarationMutationOperationABC, ABC):
+    """Mutation family whose source authorities require a function declaration."""
 
     source_authority: ClassVar[type[FunctionRegionSourceAuthority]]
-
-    @property
-    @abstractmethod
-    def replacement_source(self) -> str:
-        """Project the leaf operation's declared replacement payload."""
-
-        raise NotImplementedError
-
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        _target_identifier, target, node = self.target_node_from_context(snapshot)
-        authority = type(self).source_authority(
-            node=node,
-            source=snapshot.sources_by_file_path[target.file_path],
-        )
-        return authority.geometry.physical_edits(
-            file_path=target.file_path,
-            replacements=(authority.replacement(self.replacement_source),),
-            rationale=self.rationale
-            or f"{self.operation_key()} on {target.qualname!r}.",
-        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -139,15 +122,12 @@ class AliasFunctionOperation(RepositorySourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionDecoratorsOperation(FunctionMutationOperationABC):
-    """Replace a function's decorator block while retaining its header and suite."""
-
-    decorators_source: str = codemod_payload_field(
-        EmptyDefaultStringPayloadValueCodec(), default=""
-    )
+class ReplaceFunctionDecoratorsOperation(
+    DeclarationDecoratorsPayload, FunctionMutationOperationABC
+):
+    """Function-only decorator mutation using the shared source and payload authority."""
 
     source_authority = FunctionDecoratorsSourceAuthority
-    replacement_source = AliasProperty[str]("decorators_source")
 
 
 @dataclass(frozen=True, kw_only=True)

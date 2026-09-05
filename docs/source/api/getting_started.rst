@@ -370,6 +370,21 @@ To change a function's decorators without rewriting its implementation, use
 multiple decorators in their intended order; an empty string removes them.
 Existing comments in the replaced block require review and are not discarded.
 
+For a class, use ``replace_declaration_decorators``. For example, this preserves
+a dataclass's fields and methods while choosing identity-based equality:
+
+.. code-block:: python
+
+   ReplaceDeclarationDecoratorsOperation(
+       target=SourceRewriteTarget(file_path="model.py", qualname="Context"),
+       decorators_source="@dataclass(eq=False)",
+   )
+
+The same operation accepts functions and async functions. Keep
+``replace_function_decorators`` when the plan must reject a class target.
+Ensure any newly referenced decorator names are imported before applying the
+change.
+
 This recorded NRA plan memoizes three projections of an immutable declaration:
 
 .. literalinclude:: ../../examples/cache_call_declaration_projections.py

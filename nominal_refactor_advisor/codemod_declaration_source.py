@@ -158,6 +158,12 @@ class NamedDeclarationSourceAuthority:
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
     source: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            raise ValueError("Named declaration source requires a class or function")
+
     @cached_property
     def geometry(self) -> SourceTextGeometry:
         return SourceTextGeometry(self.source)
@@ -663,14 +669,21 @@ class FunctionSourceAuthority(NamedDeclarationSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionRegionSourceAuthority(FunctionSourceAuthority, ABC):
-    """A function-owned region replaced by an authored source fragment."""
+class DeclarationRegionSourceAuthority(NamedDeclarationSourceAuthority, ABC):
+    """A named declaration's region replaced by an authored source fragment."""
 
     @abstractmethod
     def replacement(self, source: str, /) -> SourceTextSpanReplacement:
         """Derive the declaration-owned span and its replacement source."""
 
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class FunctionRegionSourceAuthority(
+    FunctionSourceAuthority, DeclarationRegionSourceAuthority, ABC
+):
+    """A declaration region restricted to functions and methods."""
 
 
 @dataclass(frozen=True)
@@ -702,8 +715,8 @@ class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionDecoratorsSourceAuthority(FunctionRegionSourceAuthority):
-    """Own only the decorator block preceding a function's unchanged header."""
+class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
+    """Own only the decorator block preceding an unchanged declaration header."""
 
     def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
         first_line = self.geometry.node_start_line(
@@ -714,9 +727,9 @@ class FunctionDecoratorsSourceAuthority(FunctionRegionSourceAuthority):
             self.geometry.line_offsets[self.node.lineno - 1],
         )
         if self.geometry.span_contains_comment(span):
-            raise ValueError("Function decorator replacement would discard comments")
+            raise ValueError("Declaration decorator replacement would discard comments")
         header = _SingleLogicalLineSource.parse(
-            self.geometry.lines[self.node.lineno - 1], "Function header"
+            self.geometry.lines[self.node.lineno - 1], "Declaration header"
         )
         prefix = decorators_source
         if prefix and not prefix.endswith(("\n", "\r")):
@@ -724,7 +737,7 @@ class FunctionDecoratorsSourceAuthority(FunctionRegionSourceAuthority):
         scaffold = SourceTextGeometry(prefix + "def _decorated(): pass\n")
         module = ast.parse(scaffold.source)
         if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
-            raise ValueError("Replacement must contain only function decorators")
+            raise ValueError("Replacement must contain only declaration decorators")
         rendered = scaffold.indented_source(header.indent)
         return SourceTextSpanReplacement.from_offsets(
             start_offset=span.start_offset,
@@ -733,6 +746,13 @@ class FunctionDecoratorsSourceAuthority(FunctionRegionSourceAuthority):
                 rendered.splitlines(keepends=True)[: module.body[0].lineno - 1]
             ),
         )
+
+
+@dataclass(frozen=True)
+class FunctionDecoratorsSourceAuthority(
+    FunctionRegionSourceAuthority, DeclarationDecoratorsSourceAuthority
+):
+    """Function-only refinement of the shared decorator source region."""
 
 
 @dataclass(frozen=True)

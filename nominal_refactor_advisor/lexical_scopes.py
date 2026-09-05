@@ -9,6 +9,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 from typing import ClassVar, Self
 
 from .lexical_bindings import (
@@ -83,6 +84,12 @@ class LexicalScopeABC(ABC):
 
         return None
 
+    @property
+    def class_declaration(self) -> ast.ClassDef | None:
+        """Return the class source owned by this frame, if it is a class scope."""
+
+        return None
+
 
 @dataclass(frozen=True)
 class ScopeBindingProjection:
@@ -143,7 +150,7 @@ class TypeParameterScope(FunctionBindingProjection):
 class ClassNamespaceScope(LexicalScopeABC):
     """One ordered class namespace; alternatives join without choosing a path."""
 
-    declarations: ScopeBindingProjection
+    node: ast.ClassDef
     bindings: dict[str, LexicalNameResolution] = field(
         default_factory=lambda: dict.fromkeys(
             ("__module__", "__qualname__"), LexicalNameResolution.INTERNAL
@@ -151,6 +158,14 @@ class ClassNamespaceScope(LexicalScopeABC):
     )
     unproved_execution_names: frozenset[str] = frozenset()
     requires_class_namespace_visibility = True
+
+    @cached_property
+    def declarations(self) -> ScopeBindingProjection:
+        return ScopeBindingProjection.from_nodes(self.node.body)
+
+    @property
+    def class_declaration(self) -> ast.ClassDef:
+        return self.node
 
     @property
     def execution_namespace(self) -> ClassNamespaceScope:
@@ -197,3 +212,41 @@ class ClassNamespaceScope(LexicalScopeABC):
             )
             for name in set().union(*snapshots)
         }
+
+
+@dataclass(eq=False)
+class LexicalScopeContext:
+    """Own lexical frames and derive class provenance from those same frames."""
+
+    scopes: list[LexicalScopeABC] = field(default_factory=list)
+
+    def _resolve_name(self, name: str) -> LexicalNameResolution:
+        class_namespace_visible = True
+        for scope in reversed(self.scopes):
+            resolution = scope.resolve_name(
+                name, class_namespace_visible=class_namespace_visible
+            )
+            if resolution is not None:
+                return resolution
+            class_namespace_visible &= not scope.hides_enclosing_class_namespace
+        return LexicalNameResolution.EXTERNAL
+
+    @property
+    def _active_class_scope(self) -> ClassNamespaceScope | None:
+        return self.scopes[-1].execution_namespace if self.scopes else None
+
+    @property
+    def owner_classes(self) -> tuple[ast.ClassDef, ...]:
+        return tuple(
+            node
+            for scope in self.scopes
+            if (node := scope.class_declaration) is not None
+        )
+
+    @contextmanager
+    def _scope(self, scope: LexicalScopeABC) -> Iterator[None]:
+        self.scopes.append(scope)
+        try:
+            yield
+        finally:
+            self.scopes.pop()

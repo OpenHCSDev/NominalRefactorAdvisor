@@ -85,6 +85,16 @@ The :download:`argument binding consolidation
 duplicated parameter-name helper, removes its import and deletes the helper in
 six projected stages.
 
+``LexicalScopeContext`` owns the lexical frame stack. Class provenance is a
+read-only projection of each frame's ``class_declaration``, rather than a second
+stack. ``ClassNamespaceScope`` retains its source node and derives compile-time
+bindings from it. Scope entry restores the prior frame stack on normal exit and
+exceptions. The :download:`scope context refactor
+<../../examples/lexical_scope_context_refactor.py>` promotes the existing lookup
+members to this ancestor before moving the ancestor into ``lexical_scopes``.
+Its reusable three-stage ``OWNERSHIP_PLAN`` composes those declaration moves;
+the complete plan also changes the visitor's scope entry and decorator source.
+
 ``python_module_identity`` owns importable module names derived from source
 paths. The former ``ast_tools`` exports refer to the same declaration objects;
 production consumers import from the owning modules.
@@ -139,12 +149,20 @@ A raw classmethod descriptor retains declaration identity but reports
 different explicit lookup form.
 
 The codemod surface models source-anchored candidate rewrites and simulations.
-``FunctionDecoratorsSourceAuthority`` owns the decorator region independently
-of a function's header and suite. ``SourceTextGeometry`` resolves decorator
+``DeclarationDecoratorsSourceAuthority`` owns the decorator region independently
+of a class or function's header and suite. ``FunctionDecoratorsSourceAuthority``
+is its function-only refinement, sharing the same rendering implementation.
+``SourceTextGeometry`` resolves decorator
 markers from tokens, including parenthesized multiline expressions whose AST
 positions begin after ``@``. Statement moves and deletions use that same source
 geometry; moved declaration text is derived from its source rather than stored
 as an independent copy.
+
+``codemod_declaration_operations`` owns ``DeclarationMutationOperationABC``,
+``DeclarationDecoratorsPayload`` and ``ReplaceDeclarationDecoratorsOperation``.
+The function-specific operation combines the same payload with the function
+mutation contract. Both derive their wire fields from the shared payload
+declaration and retain distinct operation identities.
 
 ``InsertClassMemberOperation`` in ``codemod_class_operations`` derives a
 ``ClassMemberSource`` from one authored declaration and emits the existing

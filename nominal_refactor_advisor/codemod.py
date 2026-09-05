@@ -29,6 +29,11 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .codemod_declaration_operations import (
+    DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
+    DeclarationMutationOperationABC as DeclarationMutationOperationABC,
+    ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
+)
 from .codemod_statement_source import AssignmentDeletionSource
 from .codemod_class_operations import InsertClassMemberOperation as InsertClassMemberOperation
 from .codemod_assignment_operations import (
@@ -285,6 +290,8 @@ from .codemod_architecture_guards import (
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
 from .codemod_declaration_source import (
+    DeclarationDecoratorsSourceAuthority as DeclarationDecoratorsSourceAuthority,
+    DeclarationRegionSourceAuthority as DeclarationRegionSourceAuthority,
     FunctionAliasSourceAuthority as FunctionAliasSourceAuthority,
     ClassBodySourceAuthority as ClassBodySourceAuthority,
     ClassMemberInsertion as ClassMemberInsertion,

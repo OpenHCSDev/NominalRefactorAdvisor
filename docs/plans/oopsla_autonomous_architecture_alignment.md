@@ -183,3 +183,38 @@ or reaches a clean source-reproved refactor. That evidence can distinguish
 useful assurance-gap detectors from machinery that does not improve correct
 maintenance, then support a controlled empirical study or detailed experience
 report.
+
+## Open Dependency Evidence: Derived Registry Keys
+
+Observed on 2026-09-05 with `metaclass-registry` 0.1.4: a concrete subclass
+inherits its parent's generated key before the configured class-name extractor
+is consulted. Registration then replaces the parent's entry. This is a source
+identity problem, not a reason to prohibit concrete inheritance.
+
+```python
+from metaclass_registry import AutoRegisterMeta
+
+class Family(metaclass=AutoRegisterMeta):
+    __registry_key__ = "key"
+    __key_extractor__ = staticmethod(lambda name, cls: name)
+    __skip_if_no_key__ = True
+
+class Parent(Family):
+    pass
+
+class Child(Parent):
+    pass
+
+# Observed: Parent.key == Child.key == "Parent"
+# Observed: Family.__registry__["Parent"] is Child
+```
+
+NRA's concrete-descendant catalog test caught this during decorator-operation
+development. The decorator operations now combine one shared payload trait with
+their respective target contracts, following the existing function-body payload
+model. That factoring does not resolve the dependency's general inheritance
+behaviour. The remaining audit must distinguish declared keys from materialised
+derived keys, check the dependency's supported policy surface, and verify the
+advisor's static registry model against native registration. The fix belongs
+with the key-selection authority; per-child copied keys would introduce another
+maintenance obligation.

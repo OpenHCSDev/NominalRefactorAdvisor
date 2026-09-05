@@ -7,7 +7,10 @@ import copy
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import (
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -25,8 +28,7 @@ from .lexical_scopes import (
     ClassNamespaceScope,
     FunctionBindingProjection as FunctionBindingProjection,
     LexicalNameResolution,
-    LexicalScopeABC,
-    ScopeBindingProjection,
+    LexicalScopeContext as LexicalScopeContext,
     TypeParameterScope,
 )
 from .lexical_bindings import (
@@ -390,18 +392,17 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
-class _DeclarationDependencyCollector(ast.NodeVisitor):
+class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
     """Resolve names against the lexical scopes carried by moved declarations."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.names_by_use: dict[DeclarationDependencyUse, set[str]] = {
             use: set() for use in DeclarationDependencyUse
         }
         self.use = DeclarationDependencyUse.EXECUTION
         self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
-        self.scopes: list[LexicalScopeABC] = []
         self.annotation_count = 0
-        self.owner_classes: list[ast.ClassDef] = []
         self.direct_name_surfaces: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
 
@@ -428,7 +429,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             if self.use is not DeclarationDependencyUse.DEFERRED_ANNOTATION:
                 self.direct_name_surfaces.append(
                     ModuleNameReferenceSurface(
-                        owner_classes=tuple(self.owner_classes),
+                        owner_classes=self.owner_classes,
                         reference=node,
                         use=self.use,
                         binding_phase=self.binding_phase,
@@ -444,10 +445,9 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._visit_argument_defaults(node.args)
-        self.scopes.append(FunctionBindingProjection.from_function(node))
-        with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
-            self.visit(node.body)
-        self.scopes.pop()
+        with self._scope(FunctionBindingProjection.from_function(node)):
+            with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
+                self.visit(node.body)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._visit_class(node)
@@ -531,11 +531,9 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             self._visit_argument_annotations(node.args)
             if node.returns is not None:
                 self._visit_annotation(node.returns)
-            self.scopes.append(FunctionBindingProjection.from_function(node))
-            with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
-                for statement in node.body:
-                    self.visit(statement)
-            self.scopes.pop()
+            with self._scope(FunctionBindingProjection.from_function(node)):
+                with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
+                    self._visit_nodes(node.body)
         self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
 
     def _visit_class(self, node: ast.ClassDef) -> None:
@@ -547,15 +545,8 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             for keyword in node.keywords:
                 self.visit(keyword)
             self._visit_type_parameters(node)
-            scope = ClassNamespaceScope(
-                declarations=ScopeBindingProjection.from_nodes(node.body),
-            )
-            self.scopes.append(scope)
-            self.owner_classes.append(node)
-            for statement in node.body:
-                self.visit(statement)
-            self.owner_classes.pop()
-            self.scopes.pop()
+            with self._scope(ClassNamespaceScope(node=node)):
+                self._visit_nodes(node.body)
         self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
 
     def _visit_argument_defaults(self, arguments: ast.arguments) -> None:
@@ -597,7 +588,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             self.annotation_count += 1
         stringized_surfaces = StringizedAnnotationSurface.from_annotation(
             expression,
-            owner_classes=tuple(self.owner_classes),
+            owner_classes=self.owner_classes,
         )
         self.stringized_annotation_surfaces.extend(stringized_surfaces)
         with self._dependency_use(DeclarationDependencyUse.EVALUATED_ANNOTATION):
@@ -621,19 +612,19 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> Iterator[None]:
         parameter_names = _type_parameter_names(node)
-        if parameter_names:
-            self.scopes.append(
+        context = (
+            self._scope(
                 TypeParameterScope(
                     local_names=parameter_names,
                     global_names=frozenset(),
                     nonlocal_names=frozenset(),
                 )
             )
-        try:
+            if parameter_names
+            else nullcontext()
+        )
+        with context:
             yield
-        finally:
-            if parameter_names:
-                self.scopes.pop()
 
     def _visit_comprehension(
         self,
@@ -661,37 +652,19 @@ class _DeclarationDependencyCollector(ast.NodeVisitor):
             for generator in node.generators
             for name in _store_names(generator.target)
         }
-        self.scopes.append(
-            FunctionBindingProjection(
-                local_names=frozenset(local_names),
-                global_names=frozenset(),
-                nonlocal_names=frozenset(),
-            )
+        scope = FunctionBindingProjection(
+            local_names=frozenset(local_names),
+            global_names=frozenset(),
+            nonlocal_names=frozenset(),
         )
-        for condition in first.ifs:
-            self.visit(condition)
-        for generator in remaining:
-            self.visit(generator.iter)
-            for condition in generator.ifs:
+        with self._scope(scope):
+            for condition in first.ifs:
                 self.visit(condition)
-        for expression in result_expressions:
-            self.visit(expression)
-        self.scopes.pop()
-
-    def _resolve_name(self, name: str) -> LexicalNameResolution:
-        class_namespace_visible = True
-        for scope in reversed(self.scopes):
-            resolution = scope.resolve_name(
-                name, class_namespace_visible=class_namespace_visible
-            )
-            if resolution is not None:
-                return resolution
-            class_namespace_visible &= not scope.hides_enclosing_class_namespace
-        return LexicalNameResolution.EXTERNAL
-
-    @property
-    def _active_class_scope(self) -> ClassNamespaceScope | None:
-        return self.scopes[-1].execution_namespace if self.scopes else None
+            for generator in remaining:
+                self.visit(generator.iter)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            self._visit_nodes(result_expressions)
 
     def _record_class_binding(
         self,
