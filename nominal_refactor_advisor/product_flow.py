@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from typing import Self, TypeAlias
+from typing import Callable, Self, TypeAlias
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
@@ -97,23 +97,63 @@ class CompactTransparentSignatureDecorator(StrEnum):
         return any(member.matches(decorator) for member in cls)
 
 
+class CompactDescriptorAccess(StrEnum):
+    """Descriptor lookup form with member-owned implicit argument projection."""
+
+    DIRECT = "direct", lambda kind: kind.direct_implicit_parameter_count
+    CLASS = "class", lambda kind: kind.class_implicit_parameter_count
+    INSTANCE = "instance", lambda kind: kind.implicit_parameter_count
+    UNKNOWN = "unknown", lambda kind: None
+
+    def __new__(
+        cls,
+        value: str,
+        parameter_count: Callable[[CompactFunctionBindingKind], int | None],
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._parameter_count = parameter_count
+        return member
+
+    def implicit_parameter_count(self, kind: CompactFunctionBindingKind) -> int | None:
+        return self._parameter_count(kind)
+
+
 class CompactFunctionBindingKind(StrEnum):
     """Nominal callable binding form with member-owned matching semantics."""
 
-    FUNCTION = "function", 0, False, None
-    INSTANCE_METHOD = "instance_method", 1, True, None
+    FUNCTION = "function", 0, False, None, CompactDescriptorAccess.DIRECT, 0, 0
+    INSTANCE_METHOD = (
+        "instance_method",
+        1,
+        True,
+        None,
+        CompactDescriptorAccess.INSTANCE,
+        0,
+        0,
+    )
     CLASS_METHOD = (
         "class_method",
         1,
         True,
         CompactTransparentSignatureDecorator.CLASS_METHOD,
+        CompactDescriptorAccess.CLASS,
+        1,
+        None,
     )
     STATIC_METHOD = (
         "static_method",
         0,
         True,
         CompactTransparentSignatureDecorator.STATIC_METHOD,
+        CompactDescriptorAccess.DIRECT,
+        0,
+        0,
     )
+
+    receiver_access: CompactDescriptorAccess
+    class_implicit_parameter_count: int
+    direct_implicit_parameter_count: int | None
 
     def __new__(
         cls,
@@ -121,12 +161,18 @@ class CompactFunctionBindingKind(StrEnum):
         implicit_parameter_count: int,
         class_owned: bool,
         binding_decorator: CompactTransparentSignatureDecorator | None,
+        receiver_access: CompactDescriptorAccess,
+        class_implicit_parameter_count: int,
+        direct_implicit_parameter_count: int | None,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member._implicit_parameter_count = implicit_parameter_count
         member._class_owned = class_owned
         member._binding_decorator = binding_decorator
+        member.receiver_access = receiver_access
+        member.class_implicit_parameter_count = class_implicit_parameter_count
+        member.direct_implicit_parameter_count = direct_implicit_parameter_count
         return member
 
     @property
@@ -336,6 +382,12 @@ class CompactCallTargetReference(ABC):
     def terminal_name(self) -> str | None:
         raise NotImplementedError
 
+    def receiver_access(
+        self, caller: CompactFunctionDeclaration | None
+    ) -> CompactDescriptorAccess:
+        """Receiver evidence for syntax requiring current-class resolution."""
+        return CompactDescriptorAccess.UNKNOWN
+
     @property
     @abstractmethod
     def lexical_reference(self) -> LexicalValueReference | None:
@@ -396,6 +448,15 @@ class BareCallTargetReference(CompactCallTargetReference):
 class CurrentClassMethodReference(CurrentClassCallTargetReference):
     owner_class_qualname: str
     method_name: str
+
+    def receiver_access(
+        self, caller: CompactFunctionDeclaration | None
+    ) -> CompactDescriptorAccess:
+        return (
+            CompactDescriptorAccess.UNKNOWN
+            if caller is None
+            else caller.binding_kind.receiver_access
+        )
 
     def local_candidate_symbols(
         self,
@@ -930,20 +991,37 @@ class CompactFunctionDeclaration:
             self.binding_kind.implicit_parameter_count
         )
 
+    def signature_for_access(
+        self, access: CompactDescriptorAccess
+    ) -> CompactFunctionSignature | None:
+        count = access.implicit_parameter_count(self.binding_kind)
+        if count is None:
+            return None
+        return self.call_signature if count else self.signature
+
     def bind_call(
         self,
         positional_arguments: tuple[CompactCallArgument, ...],
         keyword_arguments: tuple[CompactKeywordArgument, ...],
+        *,
+        access: CompactDescriptorAccess = CompactDescriptorAccess.INSTANCE,
     ) -> CompactCallBinding:
         if self.signature_decorator_hazard:
             return ViolatedCompactCallBinding(
                 CompactCallBindingViolation.SIGNATURE_DECORATOR_HAZARD
             )
-        if self.binding_kind.implicit_parameter_count > len(self.signature.parameters):
+        count = access.implicit_parameter_count(self.binding_kind)
+        if count is None:
+            return ViolatedCompactCallBinding(
+                CompactCallBindingViolation.INVALID_DESCRIPTOR_ACCESS
+            )
+        if count > len(self.signature.parameters):
             return ViolatedCompactCallBinding(
                 CompactCallBindingViolation.INVALID_IMPLICIT_PARAMETER
             )
-        return self.call_signature.bind(positional_arguments, keyword_arguments)
+        signature = self.signature_for_access(access)
+        assert signature is not None
+        return signature.bind(positional_arguments, keyword_arguments)
 
 
 @dataclass(frozen=True)

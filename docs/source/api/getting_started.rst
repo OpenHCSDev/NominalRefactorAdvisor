@@ -285,6 +285,11 @@ new arguments against its current signature; unrelated same-named methods are
 left alone. It rejects unresolved selections, argument unpacking, and edits that
 would discard argument comments.
 
+Keep an explicit receiver when editing an unbound call such as
+``Owner.method(owner, value)``. A bound call such as ``self.method(value)``
+does not take that argument. Validation follows each call's lookup form, even
+when several selected calls share one declaration.
+
 You choose the new expressions and their evaluation order. Signature binding is
 not a proof that those expressions preserve behaviour.
 

@@ -81,6 +81,22 @@ Descriptor transfers across classes or through attribute access remain open
 where receiver binding has not been established. Callable identity alone does
 not prove that the original call signature applies to such transfers.
 
+``ResolvedCompactFunctionTarget`` retains ``CompactDescriptorAccess`` alongside
+the declaration. Direct descriptor access, class lookup and instance lookup
+select their implicit-argument rules from ``CompactFunctionBindingKind``.
+``CompactResolvedFunctionCall`` retains that resolved target and derives its
+callee, call signature and argument binding from it. Call-edit and carrier
+refactoring consumers use the resolved call rather than reconstructing binding
+from the callee alone.
+
+An instance method accessed through its class requires an explicit receiver;
+instance lookup supplies it. Class methods bind their receiver through either
+class or instance lookup, while static methods receive no implicit argument.
+A raw classmethod descriptor retains declaration identity but reports
+``INVALID_DESCRIPTOR_ACCESS`` when used as a call target. Declaration-only
+``bind_call`` defaults to instance lookup; its ``access`` argument selects a
+different explicit lookup form.
+
 The codemod surface models source-anchored candidate rewrites and simulations.
 ``FunctionDecoratorsSourceAuthority`` owns the decorator region independently
 of a function's header and suite. ``SourceTextGeometry`` resolves decorator

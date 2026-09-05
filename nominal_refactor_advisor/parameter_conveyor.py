@@ -799,11 +799,11 @@ class ClosedParameterConveyorComponentBuilder:
     def _simple_bound_arguments(
         edge: CompactResolvedFunctionCall,
     ) -> dict[str, LexicalValueReference]:
-        binding = edge.call.bind_to(edge.callee)
+        binding = edge.binding
         if not binding.is_exact:
             return {}
         arguments: dict[str, LexicalValueReference] = {}
-        for parameter in edge.callee.call_signature.parameters:
+        for parameter in edge.call_signature.parameters:
             bound_argument = binding.argument_for(parameter.name)
             if bound_argument is None or len(bound_argument.values) != 1:
                 continue

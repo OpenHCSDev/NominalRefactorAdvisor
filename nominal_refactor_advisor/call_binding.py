@@ -63,6 +63,7 @@ class CompactCallBindingViolation(StrEnum):
     MISSING_REQUIRED_ARGUMENT = "missing_required_argument"
     SIGNATURE_DECORATOR_HAZARD = "signature_decorator_hazard"
     INVALID_IMPLICIT_PARAMETER = "invalid_implicit_parameter"
+    INVALID_DESCRIPTOR_ACCESS = "invalid_descriptor_access"
 
 
 @dataclass(frozen=True)

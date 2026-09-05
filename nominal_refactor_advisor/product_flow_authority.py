@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from typing import Callable, Self, TypeAlias, cast
 
 from .ast_tools import CollectedFamily, ParsedModule
+from .call_binding import CompactCallBinding, CompactFunctionSignature
 from .class_index import (
     CompactClassMemberDeclaration,
     CompactClassFamilyIndex,
@@ -28,8 +29,10 @@ from .collection_algebra import (
 )
 from .product_flow import (
     CompactCallTargetReference,
+    CompactCallArguments,
     CompactCallableReferenceUse,
     CompactExactValueAlias,
+    CompactDescriptorAccess,
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
@@ -84,12 +87,26 @@ class CompactFunctionTargetResolution(ABC):
         """Retain unresolved provenance or prove the captured callable's binding."""
         raise NotImplementedError
 
+    @abstractmethod
+    def through_descriptor(
+        self, access: CompactDescriptorAccess
+    ) -> CompactFunctionTargetResolution:
+        """Retain how namespace lookup binds this target's descriptor."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def resolve_call(
+        self, context: CompactProductFlowContext, call: CompactFunctionCall
+    ) -> CompactFunctionCallResolution:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class ResolvedCompactFunctionTarget(CompactFunctionTargetResolution):
     """One target proven to have exactly one nominal function declaration."""
 
     resolved_declaration: CompactFunctionDeclaration
+    descriptor_access: CompactDescriptorAccess = CompactDescriptorAccess.DIRECT
 
     @property
     def declaration(self) -> CompactFunctionDeclaration:
@@ -98,6 +115,32 @@ class ResolvedCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return (self.resolved_declaration.identity.symbol,)
+
+    def through_descriptor(
+        self, access: CompactDescriptorAccess
+    ) -> CompactFunctionTargetResolution:
+        return replace(self, descriptor_access=access)
+
+    def resolve_call(
+        self, context: CompactProductFlowContext, call: CompactFunctionCall
+    ) -> CompactFunctionCallResolution:
+        return CompactResolvedFunctionCall(context, call, self)
+
+    @property
+    def call_signature(self) -> CompactFunctionSignature:
+        signature = self.declaration.signature_for_access(self.descriptor_access)
+        if signature is None:
+            raise ValueError(
+                "Descriptor access does not establish a callable signature"
+            )
+        return signature
+
+    def bind_arguments(self, arguments: CompactCallArguments) -> CompactCallBinding:
+        return self.declaration.bind_call(
+            arguments.positional,
+            arguments.keywords,
+            access=self.descriptor_access,
+        )
 
     def through_alias(
         self, alias: CompactExactValueAlias, context: CompactProductFlowContext
@@ -126,6 +169,16 @@ class OpenCompactFunctionTarget(CompactFunctionTargetResolution):
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return self.candidate_symbols
+
+    def through_descriptor(
+        self, access: CompactDescriptorAccess
+    ) -> CompactFunctionTargetResolution:
+        return self
+
+    def resolve_call(
+        self, context: CompactProductFlowContext, call: CompactFunctionCall
+    ) -> CompactFunctionCallResolution:
+        return CompactOpenFunctionCall(context, call, self)
 
     def through_alias(
         self, alias: CompactExactValueAlias, context: CompactProductFlowContext
@@ -201,11 +254,23 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
 
     context: CompactProductFlowContext
     call: CompactFunctionCall
-    callee: CompactFunctionDeclaration
+    resolved_target: ResolvedCompactFunctionTarget
+
+    @property
+    def callee(self) -> CompactFunctionDeclaration:
+        return self.resolved_target.declaration
 
     @property
     def target_resolution(self) -> ResolvedCompactFunctionTarget:
-        return ResolvedCompactFunctionTarget(self.callee)
+        return self.resolved_target
+
+    @property
+    def call_signature(self) -> CompactFunctionSignature:
+        return self.resolved_target.call_signature
+
+    @cached_property
+    def binding(self) -> CompactCallBinding:
+        return self.resolved_target.bind_arguments(self.call.arguments)
 
     @property
     def resolved_call(self) -> "CompactResolvedFunctionCall":
@@ -652,10 +717,7 @@ class CompactProductFlowRepository:
             call.target,
             call.position,
         )
-        declaration = target_resolution.declaration
-        if declaration is None:
-            return CompactOpenFunctionCall(context, call, target_resolution)
-        return CompactResolvedFunctionCall(context, call, declaration)
+        return target_resolution.resolve_call(context, call)
 
     def resolve_callable_escape(
         self,
@@ -695,7 +757,9 @@ class CompactProductFlowRepository:
                     candidates,
                     CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
                 )
-            return self._function_resolution_for_symbol(candidates[0])
+            return self._function_resolution_for_symbol(
+                candidates[0]
+            ).through_descriptor(target.receiver_access(context.declaration))
 
         return self._lexical_function_target_resolution(
             context,
@@ -756,7 +820,7 @@ class CompactProductFlowRepository:
             )
         return self._function_resolution_for_symbol(
             f"{member_type_symbol}.{target.method_name}"
-        )
+        ).through_descriptor(CompactDescriptorAccess.INSTANCE)
 
     def _member_declarations_in_mro(
         self,
@@ -1370,7 +1434,7 @@ class CompactProductFlowRepository:
                     resolution.possible_symbols,
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
                 )
-            return resolution
+            return resolution.through_descriptor(CompactDescriptorAccess.CLASS)
         return OpenCompactFunctionTarget(
             tuple(possible_symbols),
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,

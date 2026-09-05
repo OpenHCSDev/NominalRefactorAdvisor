@@ -1439,7 +1439,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         )
         positional_parameter_names = tuple(
             parameter.name
-            for parameter in resolved_call.callee.call_signature.parameters
+            for parameter in resolved_call.call_signature.parameters
             if parameter.kind.accepts_positional and not parameter.kind.variadic
         )
         rewritten.args = [

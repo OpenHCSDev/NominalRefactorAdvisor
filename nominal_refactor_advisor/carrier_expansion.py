@@ -522,14 +522,14 @@ class DeclaredCarrierExpansionBuilder:
         self,
         call: CompactResolvedFunctionCall,
     ) -> tuple[DeclaredCarrierExpansion, ...]:
-        call_binding = call.call.bind_to(call.callee)
+        call_binding = call.binding
         if not call_binding.is_exact:
             return ()
         bindings_by_carrier: dict[
             tuple[LexicalValueReference, str],
             list[CarrierCollapseFieldBinding],
         ] = {}
-        for parameter in call.callee.call_signature.parameters:
+        for parameter in call.call_signature.parameters:
             argument = call_binding.argument_for(parameter.name)
             if argument is None or len(argument.values) != 1:
                 continue
@@ -636,11 +636,11 @@ class DeclaredCarrierExpansionBuilder:
         call: CompactResolvedFunctionCall,
         caller_mapping: tuple[tuple[str, str], ...],
     ) -> ForwardedCarrierExpansion | None:
-        call_binding = call.call.bind_to(call.callee)
+        call_binding = call.binding
         if not call_binding.is_exact:
             return None
         parameters_by_origin: dict[LexicalValueReference, set[str]] = defaultdict(set)
-        for parameter in call.callee.call_signature.parameters:
+        for parameter in call.call_signature.parameters:
             argument = call_binding.argument_for(parameter.name)
             if argument is None or len(argument.values) != 1:
                 continue

@@ -128,7 +128,7 @@ class DeclaredCallArgumentsRewrite(DeclaredCallRewriteABC):
         return self.geometry.call_argument_span(node)
 
     def source_for_call(self, call: CompactResolvedFunctionCall) -> str:
-        binding = self.arguments.bind_to(call.callee)
+        binding = call.target_resolution.bind_arguments(self.arguments)
         if not binding.is_exact:
             raise ValueError(
                 f"Replacement arguments do not bind to {call.callee.identity.symbol!r}: {binding.violation}"
