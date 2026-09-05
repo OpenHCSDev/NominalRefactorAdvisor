@@ -18,7 +18,6 @@ from .observation_shapes import (
     FieldObservation,
     LiteralDispatchObservation,
     LiteralKind,
-    ProjectionHelperShape,
     RegistrationShape,
     SentinelTypeObservation,
 )
@@ -55,7 +54,6 @@ from .ast_tools import (
     _iter_class_decorator_family_calls,
     _known_class_family,
     _literal_dispatch_observations_for_kind,
-    _projection_helper_shape_from_function,
     _registration_key_fingerprint,
     _sentinel_type_observation,
     _sentinel_type_usage_observations,
@@ -888,22 +886,6 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
         return observations
 
 
-class ProjectionHelperObservationSpec(
-    AutoRegisteredModuleShapeSpec[ProjectionHelperShape],
-    FunctionObservationSpec[ProjectionHelperShape],
-    ABC,
-):
-    _registry_root = True
-
-
-class StandardProjectionHelperObservationSpec(
-    ProjectionHelperObservationSpec,
-    ModuleOnlyFunctionObservationSpec[ProjectionHelperShape],
-    HelperBackedScopedFunctionObservationSpec[ProjectionHelperShape],
-):
-    shape_helper = staticmethod(_projection_helper_shape_from_function)
-
-
 class BuilderCallShapeFamily(
     SingleSpecCollectedFamily[BuilderCallShape], ShapeFamily[BuilderCallShape]
 ):
@@ -963,14 +945,6 @@ class FieldObservationFamily(
 ):
     item_type = FieldObservation
     spec_root = FieldObservationSpec
-
-
-class ProjectionHelperObservationFamily(
-    RegisteredSpecCollectedFamily[ProjectionHelperShape],
-    ObservationFamily[ProjectionHelperShape],
-):
-    item_type = ProjectionHelperShape
-    spec_root = ProjectionHelperObservationSpec
 
 
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(

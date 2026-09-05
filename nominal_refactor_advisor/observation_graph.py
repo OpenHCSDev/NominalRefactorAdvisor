@@ -33,7 +33,6 @@ class ObservationKind(StrEnum):
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
     FIELD = "field"
     LITERAL_DISPATCH = "literal_dispatch"
-    PROJECTION_HELPER = "projection_helper"
     SENTINEL_TYPE = "sentinel_type"
 
 

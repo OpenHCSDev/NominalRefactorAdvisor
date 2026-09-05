@@ -311,30 +311,6 @@ class LiteralDispatchObservation(
 
 
 @dataclass(frozen=True)
-class ProjectionHelperShape(
-    FunctionBodyLinenoSymbolObservationMixin,
-    FunctionNameNominalWitnessMixin,
-    StructuralObservationTemplate,
-):
-    OBSERVATION_KIND = ObservationKind.PROJECTION_HELPER
-    function_name: str
-    lineno: int
-    outer_call_name: str
-    aggregator_name: str
-    iterable_fingerprint: str
-    projected_attribute: str
-
-    symbol: ClassVar[AliasProperty[str]] = AliasProperty("function_name")
-    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("projected_attribute")
-
-    @property
-    def fiber_key(self) -> str:
-        return (
-            f"{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}"
-        )
-
-
-@dataclass(frozen=True)
 class SentinelTypeObservation(
     ModuleBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,

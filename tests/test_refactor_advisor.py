@@ -67,7 +67,6 @@ from nominal_refactor_advisor.ast_tools import (
     LiteralKind,
     ModuleAnnotationEvaluationMode,
     NumericLiteralDispatchObservationFamily,
-    ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
     SentinelTypeObservationFamily,
@@ -23487,32 +23486,6 @@ def test_collects_registration_shapes_via_spec_family(
     }
 
 
-def test_collects_projection_helper_shapes_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef labels(items):\n    return tuple(sorted(item.label for item in items))\n\n\ndef scores(items):\n    return tuple(sorted(item.score for item in items))\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    shapes = collect_family_items(module, ProjectionHelperObservationFamily)
-    assert {shape.projected_attribute for shape in shapes} == {"label", "score"}
-
-
-def test_projection_helper_shape_has_no_registered_execution_roster() -> None:
-    removed_step_types = (
-        "_ProjectionOuterCallStep",
-        "_SingleReturnCallStep",
-        "_SingleArgumentCallStep",
-        "_TerminalCalleeFamilyStep",
-        "_ProjectionGeneratorAttributeStep",
-        "_SingleProjectionGeneratorStep",
-        "_ProjectionNameTargetStep",
-        "_ProjectedAttributeStep",
-    )
-
-    assert all(not hasattr(ast_tools_module, name) for name in removed_step_types)
-
-
 def test_collects_field_observation_fibers_for_dataclass_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -25308,24 +25281,6 @@ def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
     assert "ModuleFamilyCatalog" in finding.summary
     assert "self.members" in finding.summary
-
-
-def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef dedupe(items):\n    return items\n\n\ndef capability_labels(capabilities):\n    return tuple(dedupe(tag.label for tag in capabilities))\n\n\ndef capability_distinctions(capabilities):\n    return tuple(dedupe(tag.distinction for tag in capabilities))\n\n\ndef observation_labels(observations):\n    return tuple(dedupe(tag.label for tag in observations))\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "repeated_projection_helpers"
-        )
-    )
-    assert finding.metrics.mapping_site_count == 3
-    assert finding.metrics.field_count == 2
 
 
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:

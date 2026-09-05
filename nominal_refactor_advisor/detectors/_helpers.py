@@ -1092,37 +1092,6 @@ def _projection_builder_groups(
     )
 
 
-def _projection_helper_groups(
-    module: ParsedModule,
-) -> tuple[tuple[ProjectionHelperShape, ...], ...]:
-    shapes: tuple[ProjectionHelperShape, ...] = (
-        CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-            module, ProjectionHelperObservationFamily, ProjectionHelperShape
-        )
-    )
-    graph = ObservationGraph(tuple(shape.structural_observation for shape in shapes))
-    lookup = _carrier_lookup(tuple(shapes))
-    groups: list[tuple[ProjectionHelperShape, ...]] = []
-    for fiber in graph.fibers_with_min_observations(
-        ObservationKind.PROJECTION_HELPER,
-        StructuralExecutionLevel.FUNCTION_BODY,
-        minimum_observations=2,
-    ):
-        ordered = tuple(
-            (
-                _as_projection_helper_shape(item)
-                for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
-                    fiber.observations, lookup
-                )
-            )
-        )
-        attributes = {shape.projected_attribute for shape in ordered}
-        if len(attributes) < 2:
-            continue
-        groups.append(ordered)
-    return tuple(groups)
-
-
 def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:

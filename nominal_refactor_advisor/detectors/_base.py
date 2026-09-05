@@ -100,8 +100,6 @@ from ..ast_tools import (
     DynamicMethodInjectionObservationFamily,
     ParsedModule,
     SourceModule,
-    ProjectionHelperShape,
-    ProjectionHelperObservationFamily,
     RegistrationShape,
     RegistrationShapeFamily,
     ScopedAstObservation,
@@ -6049,12 +6047,6 @@ def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate)
 def _as_builder_shape(shape: object) -> BuilderCallShape:
     if not isinstance(shape, BuilderCallShape):
         raise TypeError(f"Expected BuilderCallShape, got {type(shape)!r}")
-    return shape
-
-
-def _as_projection_helper_shape(shape: object) -> ProjectionHelperShape:
-    if not isinstance(shape, ProjectionHelperShape):
-        raise TypeError(f"Expected ProjectionHelperShape, got {type(shape)!r}")
     return shape
 
 

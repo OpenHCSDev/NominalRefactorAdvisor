@@ -84,7 +84,6 @@ from ..type_keyed_behavior import (
 from ._base import *
 from ._base import high_confidence_certified_spec
 from ._helpers import *
-from ._helpers import _projection_helper_groups
 
 
 
@@ -3255,46 +3254,6 @@ class RepeatedLocalRegexBundleDetector(
                 field_names=regex_candidate.regex_literals,
                 source_name=regex_candidate.owner_name,
                 identity_field_names=(),
-            ),
-        )
-
-
-class RepeatedProjectionHelperDetector(
-    ModuleCollectorCandidateDetector[tuple[ProjectionHelperShape, ...]]
-):
-    detector_id = "repeated_projection_helpers"
-    candidate_collector = _projection_helper_groups
-    finding_spec = finding_spec_template(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated projection helper wrappers should become one projector",
-        "The docs treat parallel projection helpers as a coherence failure: once several helpers differ only in which semantic attribute they project, the wrapper structure should be centralized in one authoritative projector and the varying projection should become a parameter.",
-        "single authoritative projection helper for a repeated semantic wrapper family",
-        "same helper wrapper shape repeated across sibling module functions",
-        (
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
-        (
-            ObservationTag.PROJECTION_HELPER,
-            ObservationTag.NORMALIZED_AST,
-        ),
-    )
-
-    def _finding_for_candidate(
-        self, ordered: tuple[ProjectionHelperShape, ...]
-    ) -> RefactorFinding:
-        attributes = {shape.projected_attribute for shape in ordered}
-        evidence = tuple(
-            (
-                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
-                for shape in ordered[:6]
-            )
-        )
-        return self.build_finding(
-            f"Projection helper wrappers {', '.join((shape.function_name for shape in ordered[:4]))} repeat the same wrapper shape while only projecting different attributes.",
-            evidence,
-            metrics=MappingMetrics(
-                mapping_site_count=len(ordered), field_count=len(attributes)
             ),
         )
 

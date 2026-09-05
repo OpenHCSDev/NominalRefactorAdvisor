@@ -59,7 +59,6 @@ from .observation_shapes import (
     FieldOriginKind,
     LiteralDispatchObservation,
     LiteralKind,
-    ProjectionHelperShape,
     RegistrationShape,
     SentinelTypeObservation,
 )
@@ -2953,7 +2952,6 @@ AstFingerprintInput: TypeAlias = (
     | AstConstantValue
 )
 AstFingerprintAtom: TypeAlias = str | int | bool | None
-AstFingerprintKey: TypeAlias = AstFingerprintAtom | tuple["AstFingerprintKey", ...]
 
 
 def _normalized_constant(value: AstConstantValue) -> AstFingerprintAtom:
@@ -2966,58 +2964,6 @@ def _normalized_constant(value: AstConstantValue) -> AstFingerprintAtom:
     if value is None:
         return None
     return "CONST"
-
-
-def _normalized_ast_key(node: AstFingerprintInput) -> AstFingerprintKey:
-    if isinstance(node, ast.FunctionDef):
-        return (
-            "FunctionDef",
-            "FUNC",
-            _normalized_ast_key(node.args),
-            tuple((_normalized_ast_key(stmt) for stmt in node.body)),
-            tuple((_normalized_ast_key(dec) for dec in node.decorator_list)),
-        )
-    if isinstance(node, ast.AsyncFunctionDef):
-        return (
-            "AsyncFunctionDef",
-            "FUNC",
-            _normalized_ast_key(node.args),
-            tuple((_normalized_ast_key(stmt) for stmt in node.body)),
-            tuple((_normalized_ast_key(dec) for dec in node.decorator_list)),
-        )
-    if isinstance(node, ast.arg):
-        return ("arg", "ARG")
-    if isinstance(node, ast.Name):
-        return ("Name", "VAR", node.ctx.__class__.__name__)
-    if isinstance(node, ast.Constant):
-        return ("Constant", _normalized_constant(node.value))
-    if isinstance(node, ast.Attribute):
-        return (
-            "Attribute",
-            _normalized_ast_key(node.value),
-            "ATTR",
-            node.ctx.__class__.__name__,
-        )
-    if isinstance(node, ast.AST):
-        return (
-            node.__class__.__name__,
-            tuple(
-                (
-                    (field_name, _normalized_ast_key(value))
-                    for field_name, value in ast.iter_fields(node)
-                )
-            ),
-        )
-    if isinstance(node, list):
-        return tuple((_normalized_ast_key(item) for item in node))
-    if isinstance(node, tuple):
-        return tuple((_normalized_ast_key(item) for item in node))
-    return node
-
-
-@lru_cache(maxsize=None)
-def fingerprint_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    return repr(_normalized_ast_key(node))
 
 
 def _builder_value_key(node: AstFingerprintInput) -> str:
@@ -3807,120 +3753,6 @@ def statements_without_docstring(body: Sequence[ast.stmt]) -> list[ast.stmt]:
     return statements
 
 
-def _projection_outer_inner_calls(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ast.Call] | None:
-    outer_call = (
-        Maybe.of(statements_without_docstring(function.body))
-        .project(single_return_call)
-        .filter(lambda call: len(call.args) == 1)
-        .filter(
-            lambda call: (
-                AstExpressionProjection.terminal_name(call.func)
-                in BuiltinCallName.sequence_wrapper_names()
-            )
-        )
-        .unwrap_or_none()
-    )
-    return (
-        Maybe.of(outer_call)
-        .combine(
-            lambda call: as_ast(single_call_arg(call), ast.Call),
-            lambda call, inner_call: (
-                (call, inner_call) if len(inner_call.args) == 1 else None
-            ),
-        )
-        .combine(
-            lambda context: AstExpressionProjection.terminal_name(context[0].func),
-            lambda context, outer_call_name: (outer_call_name, context[1]),
-        )
-        .unwrap_or_none()
-    )
-
-
-@dataclass(frozen=True)
-class _ProjectionGeneratorMatch:
-    node: ast.GeneratorExp
-    comprehension: ast.comprehension
-
-    @classmethod
-    def from_node(cls, node: ast.AST) -> "_ProjectionGeneratorMatch | None":
-        return (
-            Maybe.of(as_ast(node, ast.GeneratorExp))
-            .with_projection(lambda generator: single_item(generator.generators))
-            .map(lambda match: cls(*match))
-            .unwrap_or_none()
-        )
-
-    @property
-    def has_plain_name_target(self) -> bool:
-        return (
-            not self.comprehension.is_async
-            and not self.comprehension.ifs
-            and isinstance(self.comprehension.target, ast.Name)
-        )
-
-    def projected_attribute_name(self) -> str | None:
-        attribute = as_ast(self.node.elt, ast.Attribute)
-        target = as_ast(self.comprehension.target, ast.Name)
-        owner = as_ast(attribute.value if attribute else None, ast.Name)
-        if (
-            attribute is None
-            or target is None
-            or owner is None
-            or owner.id != target.id
-        ):
-            return None
-        return attribute.attr
-
-
-def _projection_generator_attribute(node: ast.AST) -> str | None:
-    return (
-        Maybe.of(_ProjectionGeneratorMatch.from_node(node))
-        .filter(lambda match: match.has_plain_name_target)
-        .project(lambda match: match.projected_attribute_name())
-        .unwrap_or_none()
-    )
-
-
-def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:
-    return (
-        Maybe.of(AstExpressionProjection.terminal_name(inner_call.func))
-        .combine(
-            lambda _aggregator_name: _projection_generator_attribute(
-                inner_call.args[0]
-            ),
-            lambda aggregator_name, projected_attribute: (
-                aggregator_name,
-                projected_attribute,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _projection_helper_shape_from_function(
-    parsed_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> ProjectionHelperShape | None:
-    return (
-        Maybe.of(_projection_outer_inner_calls(function))
-        .combine(
-            lambda call_pair: _projection_inner_shape(call_pair[1]),
-            lambda call_pair, inner_shape: ProjectionHelperShape(
-                file_path=parsed_module.file_path,
-                function_name=function.name,
-                lineno=function.lineno,
-                outer_call_name=call_pair[0],
-                aggregator_name=inner_shape[0],
-                iterable_fingerprint=fingerprint_function(function),
-                projected_attribute=inner_shape[1],
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
 def _sentinel_type_observation(
     parsed_module: ParsedModule,
     node: ast.Assign,
@@ -4192,8 +4024,6 @@ from .observation_families import (
     NumericLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationSpec,
     ObservationFamily,
-    ProjectionHelperObservationFamily,
-    ProjectionHelperObservationSpec,
     RegistrationShapeFamily,
     RegistrationShapeSpec,
     SentinelTypeAssignmentObservationSpec,
@@ -4202,7 +4032,6 @@ from .observation_families import (
     SentinelTypeUsageObservationSpec,
     ShapeFamily,
     StandardDynamicMethodInjectionObservationSpec,
-    StandardProjectionHelperObservationSpec,
     StringLiteralDispatchObservationFamily,
     StringLiteralDispatchObservationSpec,
     TypedLiteralObservationFamily,
