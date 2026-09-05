@@ -1100,41 +1100,6 @@ class DerivedWrapperSpecShadowDetector(
         )
 
 
-declare_candidate_rule_detector(
-    ModuleKeyedSelectionHelperCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Local keyed-selection helper should collapse into the generic keyed-record table",
-        "The docs push reusable table/index machinery into one authoritative substrate. When a module defines a local selection-rule dataclass, a dict-index builder, and a keyed lookup helper that power multiple rule tables, it is reintroducing a second keyed-table framework instead of reusing the generic keyed-record helper.",
-        "single authoritative keyed-record table substrate reused across module-level selector tables",
-        "module-local selection helper framework powers multiple keyed rule tables",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
-    ),
-    summary=lambda helper_candidate: (
-        f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and `{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for {', '.join(helper_candidate.rule_table_names[:4])} and indexes {', '.join(helper_candidate.index_table_names[:4])}."
-    ),
-    evidence=lambda helper_candidate: helper_candidate.evidence,
-    metrics=lambda helper_candidate: MappingMetrics(
-        mapping_site_count=len(helper_candidate.rule_table_names),
-        field_count=1,
-        mapping_name=helper_candidate.rule_class_name,
-        field_names=(helper_candidate.selected_field_name,),
-        source_name=helper_candidate.helper_function_name,
-        identity_field_names=("key",),
-    ),
-    candidate_collector=_module_keyed_selection_helper_candidates,
-)
-
-
 def _compact_keyed_family_axis_specs_from_context(
     context: object | None,
 ) -> tuple[_KeyedFamilyAxisSpec, ...]:
@@ -2995,16 +2960,16 @@ declare_candidate_rule_detector(
 )
 
 
-class ManualKeyedRecordTableDetector(
-    ConfiguredModuleCollectorCandidateDetector[ManualKeyedRecordTableGroupCandidate]
+class KeyedRecordInfrastructureDetector(
+    ConfiguredModuleCollectorCandidateDetector[KeyedRecordInfrastructureCandidate]
 ):
-    candidate_collector = _manual_keyed_record_table_group_candidates
+    candidate_collector = _keyed_record_infrastructure_candidates
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual keyed record tables should collapse into one authoritative spec table",
-        "When several frozen record classes repeat `_registry`, `register`, and `for_*` lookup around closed keys, the code is hand-maintaining multiple writable tables. The docs prefer one authoritative spec tuple or generic keyed-record table with derived indexes.",
-        "single authoritative keyed-record table or derived index",
-        "same manual record registration and keyed lookup shell repeated across data classes",
+        "Manual keyed-record infrastructure should derive from one substrate",
+        "Repeated keyed records, indexes, and lookup mechanics create writable mapping authorities beside their record declarations. The docs prefer one typed keyed-record substrate whose indexes and lookup behavior are derived from declared records.",
+        "single authoritative typed keyed-record substrate with derived indexes",
+        "manual keyed-record construction or registration and lookup mechanics repeat across tables",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -3018,24 +2983,12 @@ class ManualKeyedRecordTableDetector(
     )
 
     def _finding_for_candidate(
-        self, group_candidate: ManualKeyedRecordTableGroupCandidate
+        self, candidate: KeyedRecordInfrastructureCandidate
     ) -> RefactorFinding:
-        class_names = ", ".join(
-            (item.class_name for item in group_candidate.classes[:6])
-        )
-        key_fields = ", ".join(
-            sorted({item.key_field_name for item in group_candidate.classes[:6]})
-        )
-        lookup_names = ", ".join(
-            sorted({item.lookup_method_name for item in group_candidate.classes[:6]})
-        )
-        evidence = tuple(item.evidence for item in group_candidate.classes[:6])
         return self.build_finding(
-            (
-                f"Record tables {class_names} each repeat `_registry`, `{group_candidate.classes[0].register_method_name}`, "
-                f"and `{lookup_names}` around key fields {key_fields}."
-            ),
-            evidence,
+            candidate.finding_summary,
+            candidate.finding_evidence,
+            metrics=candidate.finding_metrics,
         )
 
 

@@ -5097,6 +5097,16 @@ def _manual_keyed_record_table_group_candidates(
     )
 
 
+def _keyed_record_infrastructure_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[KeyedRecordInfrastructureCandidate, ...]:
+    return (
+        *_module_keyed_selection_helper_candidates(module),
+        *_manual_keyed_record_table_group_candidates(module, config),
+    )
+
+
 def _returns_tuple_of_self_attributes(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
@@ -7210,8 +7220,30 @@ class ManualCompanionDataclassSurfaceCandidate(EvidenceLocationsWitnessCandidate
     witness_name = AliasProperty[str]("companion_class_name")
 
 
+class KeyedRecordInfrastructureCandidate(ABC):
+    """Candidate that owns its keyed-record surface presentation."""
+
+    @property
+    @abstractmethod
+    def finding_summary(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def finding_evidence(self) -> tuple[SourceLocation, ...]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def finding_metrics(self) -> MappingMetrics:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class ModuleKeyedSelectionHelperCandidate(EvidenceLocationsWitnessCandidate):
+class ModuleKeyedSelectionHelperCandidate(
+    EvidenceLocationsWitnessCandidate,
+    KeyedRecordInfrastructureCandidate,
+):
     rule_class_name: str
     selected_field_name: str
     helper_function_name: str
@@ -7219,6 +7251,30 @@ class ModuleKeyedSelectionHelperCandidate(EvidenceLocationsWitnessCandidate):
     rule_table_names: tuple[str, ...]
     index_table_names: tuple[str, ...]
     witness_name = AliasProperty[str]("rule_class_name")
+
+    @property
+    def finding_summary(self) -> str:
+        return (
+            f"`{self.rule_class_name}`, `{self.helper_function_name}`, and "
+            f"`{self.lookup_function_name}` implement a local keyed-selection "
+            f"substrate for {', '.join(self.rule_table_names[:4])} and indexes "
+            f"{', '.join(self.index_table_names[:4])}."
+        )
+
+    @property
+    def finding_evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence
+
+    @property
+    def finding_metrics(self) -> MappingMetrics:
+        return MappingMetrics(
+            mapping_site_count=len(self.rule_table_names),
+            field_count=1,
+            mapping_name=self.rule_class_name,
+            field_names=(self.selected_field_name,),
+            source_name=self.helper_function_name,
+            identity_field_names=("key",),
+        )
 
 
 @dataclass(frozen=True)
@@ -7595,9 +7651,40 @@ class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ManualKeyedRecordTableGroupCandidate:
+class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
     file_path: str
     classes: tuple[ManualKeyedRecordTableClassCandidate, ...]
+
+    @property
+    def finding_summary(self) -> str:
+        class_names = ", ".join(item.class_name for item in self.classes[:6])
+        key_fields = ", ".join(
+            sorted({item.key_field_name for item in self.classes[:6]})
+        )
+        lookup_names = ", ".join(
+            sorted({item.lookup_method_name for item in self.classes[:6]})
+        )
+        return (
+            f"Record tables {class_names} each repeat `_registry`, "
+            f"`{self.classes[0].register_method_name}`, and `{lookup_names}` "
+            f"around key fields {key_fields}."
+        )
+
+    @property
+    def finding_evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(item.evidence for item in self.classes[:6])
+
+    @property
+    def finding_metrics(self) -> MappingMetrics:
+        field_names = sorted_tuple(
+            {item.key_field_name for item in self.classes}
+        )
+        return MappingMetrics.from_field_names(
+            mapping_site_count=len(self.classes),
+            mapping_name="keyed_record_table",
+            field_names=field_names,
+            identity_field_names=field_names,
+        )
 
 
 @dataclass(frozen=True)

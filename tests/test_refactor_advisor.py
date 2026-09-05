@@ -13514,7 +13514,9 @@ def test_ignores_explicit_public_measurement_companion_dataclass(
     )
 
 
-def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
+def test_keyed_record_infrastructure_detects_module_selection_helper(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -13525,7 +13527,7 @@ def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
         (
             finding
             for finding in findings
-            if finding.detector_id == "module_keyed_selection_helper"
+            if finding.detector_id == "keyed_record_infrastructure"
         )
     )
     assert "SelectionRule" in finding.summary
@@ -14210,7 +14212,9 @@ def test_registry_lookup_shape_has_no_parallel_detector_authority() -> None:
     assert all(not hasattr(class_index_module, name) for name in removed_index_helpers)
 
 
-def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
+def test_keyed_record_infrastructure_detects_record_owned_tables(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -14221,7 +14225,7 @@ def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
         (
             finding
             for finding in findings
-            if finding.detector_id == "manual_keyed_record_table"
+            if finding.detector_id == "keyed_record_infrastructure"
         )
     )
     assert "MetalChargeCompatibility" in finding.summary
