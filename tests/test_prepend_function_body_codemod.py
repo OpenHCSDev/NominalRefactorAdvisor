@@ -45,7 +45,7 @@ def test_prepend_statements_preserves_existing_runtime(
 ) -> None:
     path = tmp_path / "probe.py"
     original = "EVENTS = []\n" + source
-    path.write_text(original)
+    path.write_text(original, newline="")
     call = "asyncio.run(fn(4))" if asynchronous else "fn(4)"
     command = [
         sys.executable, "-c",

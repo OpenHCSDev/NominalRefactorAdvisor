@@ -43,6 +43,7 @@ from .finding_counts import FindingSummary
 from .implementation_identity import declaration_implementation_module_names
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
+from .source_geometry import read_source_text
 
 @dataclass(frozen=True)
 class AnalysisCacheSchema:
@@ -58,7 +59,7 @@ analysis_cache_schema = AnalysisCacheSchema()
 class SourceFileSignatureCacheSchema:
     """Nominal schema identity for persisted source-content signature entries."""
 
-    version: int = 3
+    version: int = 4
 
 
 source_file_signature_cache_schema = SourceFileSignatureCacheSchema()
@@ -1759,7 +1760,7 @@ class SourceFileSignatureCache:
         ):
             return cached_signature.semantic_hash
         if source is None:
-            source = path.read_text(encoding="utf-8")
+            source = read_source_text(path)
         semantic_hash = semantic_python_source_hash(source)
         source_hash = (
             cached_signature.source_hash

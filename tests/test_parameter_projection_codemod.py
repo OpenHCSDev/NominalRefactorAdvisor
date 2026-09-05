@@ -58,7 +58,7 @@ def test_parameter_projection_preserves_runtime_and_shadowed_bindings(
         "def render(candidate, witness):\n" + body
         + "print(json.dumps(render(7, Witness(7))))\n"
     )
-    path.write_text(source)
+    path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
     modules = parse_python_modules(tmp_path)
     (module,) = modules
@@ -98,7 +98,7 @@ def test_parameter_projection_rejects_capture_rebinding_and_unresolved_roots(
 ) -> None:
     path = tmp_path / "probe.py"
     source = "def render(candidate, witness):\n" + body
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=error):
         _document(path, projection=projection).simulate(snapshot)
@@ -107,7 +107,7 @@ def test_parameter_projection_rejects_capture_rebinding_and_unresolved_roots(
 
 def test_saved_projection_plan_reproves_lexical_ownership(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
-    path.write_text("def render(candidate, witness):\n    return candidate\n")
+    path.write_text("def render(candidate, witness):\n    return candidate\n", newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = _document(path)
     assert document.simulate(snapshot).is_clean

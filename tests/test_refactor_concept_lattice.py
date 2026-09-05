@@ -885,7 +885,7 @@ def _repeated_builder_evaluation_for_source(
 ) -> codemod.FindingRecipeEvaluation:
     module_path = tmp_path / "pkg" / "mod.py"
     module_path.parent.mkdir(parents=True)
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding

@@ -28,7 +28,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 
@@ -100,7 +100,7 @@ def test_renames_class_authority_without_touching_shadowed_names(
         "    after = Legacy"
     ) in rewritten
 
-    module_path.write_text(rewritten, encoding="utf-8")
+    module_path.write_text(rewritten, encoding="utf-8", newline="")
     completed = subprocess.run(
         [
             sys.executable,
@@ -184,7 +184,7 @@ def test_renames_function_authority_across_repository_consumers(
     )
 
     for file_path, source in rewritten.items():
-        Path(file_path).write_text(source, encoding="utf-8")
+        Path(file_path).write_text(source, encoding="utf-8", newline="")
     completed = subprocess.run(
         [sys.executable, "-c", "from pkg.consumer import RESULT; print(RESULT)"],
         cwd=tmp_path,
@@ -285,7 +285,7 @@ def test_renames_assignment_authority_across_repository_consumers(
     assert "from .api import AstTargetNode" in rewritten[consumer_path.as_posix()]
     assert "api.AstTargetNode" in rewritten[consumer_path.as_posix()]
     for file_path, source in rewritten.items():
-        Path(file_path).write_text(source, encoding="utf-8")
+        Path(file_path).write_text(source, encoding="utf-8", newline="")
     completed = subprocess.run(
         [
             sys.executable,
@@ -521,7 +521,7 @@ def test_renames_repository_imports_aliases_and_annotations(tmp_path: Path) -> N
     assert "def consume(value: 'Canonical') -> Canonical:" in rewritten
 
     for file_path, source in result.simulation.rewritten_sources.items():
-        Path(file_path).write_text(source, encoding="utf-8")
+        Path(file_path).write_text(source, encoding="utf-8", newline="")
     completed = subprocess.run(
         [
             sys.executable,
@@ -677,7 +677,7 @@ def test_renames_transitive_repository_consumers(tmp_path: Path) -> None:
     assert "VALUE = exported.Canonical(2)" in rewritten[qualified_path.as_posix()]
 
     for file_path, source in rewritten.items():
-        Path(file_path).write_text(source, encoding="utf-8")
+        Path(file_path).write_text(source, encoding="utf-8", newline="")
     completed = subprocess.run(
         [
             sys.executable,

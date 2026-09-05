@@ -26,7 +26,7 @@ from nominal_refactor_advisor.deadline import (
 def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
 
 
 def test_cross_module_preparation_reuses_exact_candidate_snapshot(

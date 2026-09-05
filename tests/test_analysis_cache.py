@@ -206,7 +206,7 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "module.py"
-    module_path.write_text("class Example:\n    pass\n", encoding="utf-8")
+    module_path.write_text("class Example:\n    pass\n", encoding="utf-8", newline="")
     modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
     identity = AnalysisCacheIdentity.from_modules(
         (tmp_path,),
@@ -400,7 +400,7 @@ def test_function_body_consumers_share_bounded_projection_authority(
         '    """Interpret one environment flag."""\n'
         "    normalized = value.strip().lower()\n"
         "    return normalized in {'1', 'true'}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
     scope = environment_detectors._function_scopes(module)[0]
@@ -428,7 +428,7 @@ def test_class_and_detector_collectors_share_named_function_projection(
         "    class Inner:\n"
         "        def build(self):\n"
         "            return Result(value=1)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
@@ -471,7 +471,7 @@ def test_context_semantic_supplements_use_indexed_call_projection(
     package_root.mkdir()
     (package_root / "module.py").write_text(
         "class Presenter:\n    def build(self):\n        return Result()\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
@@ -494,7 +494,7 @@ def test_module_detector_shard_cache_reuses_exact_focused_findings(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     source_path = package_root / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    source_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     module = parse_python_modules(package_root)[0]
 
     class FocusedShardDetector(PerModuleIssueDetector):
@@ -537,7 +537,7 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package_root / "module.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
     calls = {"stable": 0, "first": 0, "second": 0}
     finding_spec = FindingSpec(
@@ -626,7 +626,7 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_path = tmp_path / "module.py"
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
     identity_type = analysis_cache_module.PerModuleAnalysisCacheFamilyIdentity
     baseline = identity_type.from_module(module, DetectorConfig(), (tmp_path,))
@@ -868,7 +868,7 @@ def test_semantic_graph_cache_loads_nearest_incremental_predecessor(
 ) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()
-    (source_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    (source_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
     cache = SemanticDescentGraphCache(tmp_path / "cache")
     predecessor_identity = SemanticDescentGraphCacheIdentity.from_roots(
         (source_root,)
@@ -876,7 +876,7 @@ def test_semantic_graph_cache_loads_nearest_incremental_predecessor(
     predecessor_graph = _empty_semantic_descent_graph("Predecessor")
     cache.store(predecessor_identity, predecessor_graph)
 
-    (source_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8")
+    (source_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
     requested_identity = SemanticDescentGraphCacheIdentity.from_roots((source_root,))
     lookup = cache.load_incremental_predecessor(requested_identity)
 
@@ -927,7 +927,7 @@ def test_semantic_graph_cache_retains_only_recent_exact_generations(
     cache = SemanticDescentGraphCache(cache_root, max_exact_entry_count=2)
     identities = []
     for index in range(4):
-        source_path.write_text(f"VALUE = {index}\n", encoding="utf-8")
+        source_path.write_text(f"VALUE = {index}\n", encoding="utf-8", newline="")
         identity = SemanticDescentGraphCacheIdentity.from_roots((source_root,))
         identities.append(identity)
         cache.store(identity, _empty_semantic_descent_graph(f"Graph{index}"))
@@ -996,8 +996,8 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     source_text = "class StableAuthority:\n    pass\n"
     source_a = checkout_a / "module.py"
     source_b = checkout_b / "module.py"
-    source_a.write_text(source_text, encoding="utf-8")
-    source_b.write_text(source_text, encoding="utf-8")
+    source_a.write_text(source_text, encoding="utf-8", newline="")
+    source_b.write_text(source_text, encoding="utf-8", newline="")
 
     graph_cache = SemanticDescentGraphCache(tmp_path / "shared-graph-cache")
     graph_identity_a = SemanticDescentGraphCacheIdentity.from_roots((checkout_a,))
@@ -1091,7 +1091,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     assert detector_calls == 1
     assert second.findings[0].evidence[0].file_path == source_b.as_posix()
 
-    source_b.write_text("VALUE = 'foreign content'\n", encoding="utf-8")
+    source_b.write_text("VALUE = 'foreign content'\n", encoding="utf-8", newline="")
     foreign_identity = SemanticDescentGraphCacheIdentity.from_roots((checkout_b,))
     assert foreign_identity.cache_token != graph_identity_a.cache_token
     assert graph_cache.load(foreign_identity).graph is None
@@ -1101,7 +1101,7 @@ def test_analysis_cache_identity_preserves_typed_detector_config(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    source_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     config = DetectorConfig(min_string_cases=5)
 
     identity = AnalysisCacheIdentity.from_roots((tmp_path,), config)
@@ -1118,7 +1118,7 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    source_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     finding = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Stable",
@@ -1195,7 +1195,7 @@ def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
 ) -> None:
     assert AnalysisCacheStorage(tmp_path / "default-cache").finding_chunk_size == 64
     source_path = tmp_path / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    source_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     identity = AnalysisCacheIdentity.from_roots((tmp_path,), DetectorConfig())
     findings = [
         FindingSpec(
@@ -1265,7 +1265,7 @@ def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
     nested_root = checkout / "nested"
     nested_root.mkdir(parents=True)
     source_path = nested_root / "module.py"
-    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    source_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
 
     with pytest.raises(CacheCheckoutPathError, match="unsafe"):
         checkout_relative_path("../escape.py", (checkout,))
@@ -1296,7 +1296,7 @@ def test_checkout_cache_identity_accepts_cwd_relative_file_root(
 ) -> None:
     module_path = tmp_path / "pkg" / "module.py"
     module_path.parent.mkdir()
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     monkeypatch.chdir(tmp_path)
     relative_module_path = Path("pkg/module.py")
 
@@ -1319,7 +1319,7 @@ def test_checkout_cache_identity_preserves_in_root_source_symlink(
     generated.mkdir(parents=True)
     provenance = tmp_path / ".provenance" / "generated.py"
     provenance.parent.mkdir()
-    provenance.write_text("VALUE = 1\n")
+    provenance.write_text("VALUE = 1\n", newline="")
     source_link = generated / "generated.py"
     source_link.symlink_to(provenance)
 
@@ -1337,7 +1337,7 @@ def test_analysis_identity_preserves_in_root_source_symlink(
     generated.mkdir(parents=True)
     provenance = tmp_path / ".provenance" / "generated.py"
     provenance.parent.mkdir()
-    provenance.write_text("VALUE = 1\n")
+    provenance.write_text("VALUE = 1\n", newline="")
     source_link = generated / "generated.py"
     source_link.symlink_to(provenance)
 
@@ -1355,7 +1355,7 @@ def test_source_signature_cache_keys_in_root_symlink_lexically(
     checkout.mkdir()
     provenance = tmp_path / ".provenance" / "generated.py"
     provenance.parent.mkdir()
-    provenance.write_text("VALUE = 1\n")
+    provenance.write_text("VALUE = 1\n", newline="")
     source_link = checkout / "generated.py"
     source_link.symlink_to(provenance)
     storage = AnalysisFindingCache(tmp_path / "cache").storage()
@@ -1382,7 +1382,7 @@ def test_relocated_cache_identity_rebases_in_root_source_symlink_logically(
     ):
         (checkout / "pkg").mkdir(parents=True)
         provenance = tmp_path / f".{checkout.name}-provenance.py"
-        provenance.write_text("VALUE = 1\n")
+        provenance.write_text("VALUE = 1\n", newline="")
         source_path.symlink_to(provenance)
 
     assert rebase_checkout_path(
@@ -1462,7 +1462,7 @@ def test_detector_registry_signature_tracks_detector_module_source(
             "    def _collect_findings(self, modules, config):\n"
             "        del modules, config\n"
             "        return []\n",
-            encoding="utf-8",
+            encoding="utf-8", newline="",
         )
 
     try:
@@ -1496,7 +1496,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "mod.py"
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "analysis"
     CountingSemanticCacheDetector.call_count = 0
 
@@ -1514,7 +1514,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
     assert first_result.cache_status is AnalysisCacheStatus.MISS
     assert CountingSemanticCacheDetector.call_count == 1
 
-    module_path.write_text("VALUE = 1\n# trailing comment\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n# trailing comment\n", encoding="utf-8", newline="")
     second_result = analyze_modules_with_cache(
         (package_root,),
         parse_python_module_roots((package_root,)),
@@ -1531,7 +1531,7 @@ def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
     identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
 
@@ -1558,7 +1558,7 @@ def test_analysis_cache_rejects_malformed_finding_evidence(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
     identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
     storage = cache.storage()
@@ -1592,8 +1592,8 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
-    (package_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8")
+    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
+    (package_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "analysis"
     candidate_calls = 0
     finding_calls = 0
@@ -1643,7 +1643,7 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
     )
     (package_root / "b.py").write_text(
         "class Beta:\n    pass\n\nclass Changed:\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     second_result = analyze_modules_with_cache(
         (package_root,),
@@ -1664,7 +1664,7 @@ def test_contextual_global_graph_detectors_share_semantic_descent_graph(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "mod.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    (package_root / "mod.py").write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "analysis"
     graph_cache_finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1757,8 +1757,8 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
-    (package_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8")
+    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
+    (package_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
     graph_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
     cached_graph = SemanticDescentGraph(
         authorities=(
@@ -1862,7 +1862,7 @@ def test_uncached_analysis_preserves_cached_repo_graph_source(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
     graph_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
     cached_graph = SemanticDescentGraph(
         authorities=(
@@ -1969,7 +1969,7 @@ def test_global_detector_shard_survives_detector_registry_expansion(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "mod.py"
-    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "analysis"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -2061,7 +2061,7 @@ def test_collected_family_items_are_persisted_beside_parse_cache(
         "class Payload: pass\n"
         "def build(item):\n"
         "    return Payload(name=item.name, score=item.score, label=item.label)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
@@ -2089,7 +2089,7 @@ def test_uncertified_family_cache_payload_is_invalidated(
         "class Payload: pass\n"
         "def build(item):\n"
         "    return Payload(name=item.name, score=item.score, label=item.label)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
@@ -2126,7 +2126,7 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
         "class Payload: pass\n"
         "def build(item):\n"
         "    return Payload(name=item.name, score=item.score, label=item.label)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     schema = ast_tools_module.CollectedFamilyCacheSchema(
@@ -2161,7 +2161,7 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
     package_root.mkdir()
     (package_root / "generated_catalog.py").write_text(
         "# generated file\nSEMANTIC_MODE = 'canonical'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     first_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
@@ -2206,7 +2206,7 @@ def test_warm_compact_projection_stream_skips_ast_deserialization(
     package_root.mkdir()
     (package_root / "generated_catalog.py").write_text(
         "# generated file\nSEMANTIC_MODE = 'canonical'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     detector_types = (
@@ -2246,7 +2246,7 @@ def test_warm_bounded_projection_load_skips_revalidating_ast_free_cache(
     package_root.mkdir()
     (package_root / "generated_catalog.py").write_text(
         "# generated file\nSEMANTIC_MODE = 'canonical'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     detector_types = (
@@ -2288,11 +2288,11 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
     runtime_path = package_root / "runtime.py"
     generated_path.write_text(
         "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     runtime_path.write_text(
         "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_type = runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
     accumulator = accumulate_compact_global_projections_for_roots(
@@ -2319,11 +2319,11 @@ def test_parallel_compact_root_analysis_returns_uncached_projection_fallbacks(
     package_root.mkdir()
     (package_root / "generated_policy.py").write_text(
         "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "runtime.py").write_text(
         "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_type = runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
     modules = parse_python_modules(package_root, use_parse_cache=False)
@@ -2366,7 +2366,7 @@ def test_native_registration_projection_matches_registered_ast_specs(
         "\n"
         "REGISTRY['alpha'] = Alpha\n"
         "registry.register(Beta, 'beta')\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
@@ -2404,7 +2404,7 @@ def test_native_builder_projection_matches_canonical_ast_family(
         "        else Request(name=value.name, score=value.score, "
         "label=value.label)\n"
         "    )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
@@ -2460,7 +2460,7 @@ def test_native_constant_projection_matches_ast_family(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "generated_policy.py"
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
         path=parsed_module.path,
@@ -2508,7 +2508,7 @@ def test_native_sparse_systemic_projection_matches_ast_family(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "systemic.py"
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
         path=parsed_module.path,
@@ -2535,7 +2535,7 @@ def test_native_grouped_report_demands_match_ast_views(tmp_path: Path) -> None:
         "def ignored(source):\n"
         "    payload = Payload(other_a=source.alpha, other_b=source.beta, other_c=source.gamma)\n"
         "    return {'other_a': source.alpha, 'other_b': source.beta, 'other_c': source.gamma}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
@@ -2585,7 +2585,7 @@ def test_native_environment_projection_matches_ast_family(
         "        return declared_environment_flag_decision(\n"
         "            FeatureEnvironmentAuthority.FEATURE_ENV\n"
         "        )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     source_module = SourceModule(
@@ -2623,7 +2623,7 @@ def test_source_native_projection_shard_skips_python_ast_construction(
         "    return {'name': item.name, 'score': item.score, "
         "'label': item.label}\n"
     )
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     projection_source = analysis_module.CompactProjectionCacheSource(
         path=module_path,
         module_name="registrations",
@@ -2681,7 +2681,7 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
     package_root.mkdir()
     (package_root / "family.py").write_text(
         "class Handler:\n    pass\n\nclass Alpha(Handler):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     def unexpected_content_identity(items: tuple[object, ...]) -> str:
@@ -2715,7 +2715,7 @@ def test_source_local_detector_requests_ast_fallback_for_carrier_syntax(
         "def capture(pair):\n"
         "    return Maybe.of(pair).map(lambda current: pair[0][1])\n"
     )
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     result = analysis_module.build_compact_projection_shard(
         analysis_module.CompactProjectionBuildRequest(
             source=analysis_module.CompactProjectionCacheSource(
@@ -2750,7 +2750,7 @@ def test_uncached_compact_ast_fallback_skips_semantic_hash(
     (package_root / "carrier.py").write_text(
         "def capture(pair):\n"
         "    return Maybe.of(pair).map(lambda current: pair[0][1])\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     hash_call_count = 0
     semantic_hash = ast_tools_module.semantic_python_source_hash
@@ -2792,7 +2792,7 @@ def test_source_local_detector_does_not_switch_mixed_families_to_native(
     package_root.mkdir()
     module_path = package_root / "mixed.py"
     source = "REGISTRY = {}\nclass Alpha: pass\nREGISTRY['alpha'] = Alpha\n"
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
 
     def unexpected_source_family(cls, source_module, syntax_index):
         del cls, source_module, syntax_index
@@ -2839,7 +2839,7 @@ def test_report_presence_demand_skips_context_only_single_family_facts(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "context.py"
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     family = runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily
 
@@ -2862,14 +2862,14 @@ def test_report_context_witness_skips_detector_without_target_projection(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     target_path = package_root / "target.py"
-    target_path.write_text("VALUE = 1\n", encoding="utf-8")
+    target_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     (package_root / "generated.py").write_text(
         "# generated from policy schema\nPOLICY_ID = 'shared'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "runtime.py").write_text(
         "POLICY_ID = 'shared'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     family = runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily
     original_collect = family.collect.__func__
@@ -2904,10 +2904,10 @@ def test_report_context_witness_retains_context_promotion_for_target_projection(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     target_path = package_root / "target.py"
-    target_path.write_text("POLICY_ID = 'shared'\n", encoding="utf-8")
+    target_path.write_text("POLICY_ID = 'shared'\n", encoding="utf-8", newline="")
     (package_root / "generated.py").write_text(
         "# generated from policy schema\nPOLICY_ID = 'shared'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     result = analyze_compact_roots_with_cache(
         (package_root,),
@@ -3084,7 +3084,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         "    pass\n\n"
         "def consume():\n"
         "    return ContextRegistry.__registry__\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     family = class_index_module.CompactModuleClassProjectionFamily
@@ -3375,7 +3375,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         "    class Nested(ImportedParent):\n"
         "        pass\n"
     )
-    source_path.write_text(source, encoding="utf-8")
+    source_path.write_text(source, encoding="utf-8", newline="")
     parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
     family = class_index_module.CompactModuleClassProjectionFamily
     demand = class_index_module.CompactClassProjectionDemand(
@@ -3474,11 +3474,11 @@ def test_grouped_report_demands_preserve_target_findings_and_drop_other_groups(
             f"'{field_prefix}gamma': source.gamma}}\n"
         )
 
-    target_path.write_text(module_source("Target"), encoding="utf-8")
-    context_path.write_text(module_source("Context"), encoding="utf-8")
+    target_path.write_text(module_source("Target"), encoding="utf-8", newline="")
+    context_path.write_text(module_source("Context"), encoding="utf-8", newline="")
     irrelevant_path.write_text(
         module_source("Irrelevant", "other_"),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(package_root, use_parse_cache=False)
     scope = AnalysisPathScope(
@@ -3531,7 +3531,7 @@ def test_cold_focused_semantic_scan_omits_only_context_presentations(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "__init__.py").write_text("", encoding="utf-8", newline="")
     context_path = package_root / "context.py"
     target_path = package_root / "target.py"
     context_path.write_text(
@@ -3541,12 +3541,12 @@ def test_cold_focused_semantic_scan_omits_only_context_presentations(
         "    step_id = 'load'\n"
         "class SaveStep(Step):\n"
         "    step_id = 'save'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     target_path.write_text(
         "from .context import LoadStep, SaveStep\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     report_scope = AnalysisPathScope(
         analysis_roots=(package_root,),
@@ -3614,7 +3614,7 @@ def test_mixed_projection_shard_uses_only_python_ast(
         "def export(item):\n"
         "    return {'name': item.name, 'score': item.score}\n"
     )
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     family_cache_dir = tmp_path / "family-cache"
     projection_source = analysis_module.CompactProjectionCacheSource(
         path=module_path,
@@ -3687,11 +3687,11 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     package_root.mkdir()
     (package_root / "generated_policy.py").write_text(
         "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "runtime.py").write_text(
         "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
@@ -3739,11 +3739,11 @@ def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
     package_root.mkdir()
     (package_root / "generated_policy.py").write_text(
         "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     runtime_path = package_root / "runtime.py"
     runtime_source = "POLICY_PROFILE_ID = 'axis_policy_profile'\n"
-    runtime_path.write_text(runtime_source, encoding="utf-8")
+    runtime_path.write_text(runtime_source, encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "ast"
     analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
 
@@ -3759,7 +3759,7 @@ def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
 
     runtime_path.write_text(
         f"{runtime_source}# comment-only edit\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     def unexpected_individual_signature_load(self, family, demand_signature=""):
@@ -3819,7 +3819,7 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
     package_root.mkdir()
     module_path = package_root / "mod.py"
     source = "class Example:\n    pass\n"
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "ast"
     analyze_compact_roots_with_cache(
         (package_root,),
@@ -3880,7 +3880,7 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
 ) -> None:
     source_path = tmp_path / "context.py"
     source = "VALUE = 1\n"
-    source_path.write_text(source, encoding="utf-8")
+    source_path.write_text(source, encoding="utf-8", newline="")
     family_cache_dir = tmp_path / "collected-family"
     family = runtime_detectors.RepeatedBuilderCallShapeProjectionFamily
     demand = runtime_detectors.RepeatedBuilderCallProjectionDemand(
@@ -3918,7 +3918,7 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
 def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> None:
     source_path = tmp_path / "mod.py"
     source = "VALUE = 1\n"
-    source_path.write_text(source, encoding="utf-8")
+    source_path.write_text(source, encoding="utf-8", newline="")
     family_cache_dir = tmp_path / "collected-family"
     family_cache_dir.mkdir()
     family = BuilderCallShapeFamily
@@ -4032,11 +4032,11 @@ def test_compact_global_detector_shards_reuse_across_report_targets(
     runtime_path = package_root / "runtime.py"
     generated_path.write_text(
         "# generated from policy schema\nPOLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     runtime_path.write_text(
         "POLICY_PROFILE_ID = 'axis_policy_profile'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
@@ -4079,7 +4079,7 @@ def test_compact_root_analysis_consumes_global_detector_shards_without_aggregate
     package_root.mkdir()
     (package_root / "generated.py").write_text(
         "# generated file\nSEMANTIC_MODE = 'canonical'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector,
@@ -4169,7 +4169,7 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
         "REGISTRY['alpha'] = Alpha\n"
         "REGISTRY['beta'] = Beta\n"
         "REGISTRY['gamma'] = Gamma\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         runtime_detectors.RepeatedBuilderCallDetector,
@@ -4199,7 +4199,7 @@ def test_compact_class_index_detectors_match_full_ast_detection(
         "class RegisteredStrategy:\n"
         "    __registry_key__ = 'method'\n"
         "    __skip_if_no_key__ = True\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "implementation.py").write_text(
         "from .base import RegisteredStrategy\n"
@@ -4214,7 +4214,7 @@ def test_compact_class_index_detectors_match_full_ast_detection(
         "        ConcreteStrategy.__registry__.values(),\n"
         "        key=lambda strategy: strategy.priority,\n"
         "    )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
@@ -4258,7 +4258,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         "    Mode.ALPHA: ModeConfig(),\n"
         "    Mode.BETA: ModeConfig(),\n"
         "}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "runtime.py").write_text(
         "from .specs import Mode, KeyedNominalFamily\n"
@@ -4272,7 +4272,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         "\n"
         "class BetaModeRuntime(ModeRuntimePolicy):\n"
         "    mode = Mode.BETA\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "consumer.py").write_text(
         "from .specs import Mode\n"
@@ -4296,7 +4296,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         "        if candidate == Mode.BETA:\n"
         "            return 'beta'\n"
         "    return nested(mode)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     projections = (
@@ -4397,7 +4397,7 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
         "            gamma=namespace.gamma,\n"
         "            delta=namespace.delta,\n"
         "        )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "cli.py").write_text(
         "RUN_ARGUMENTS = (\n"
@@ -4406,7 +4406,7 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
         "    ArgumentSpec(flags=('--gamma',)),\n"
         "    ArgumentSpec(flags=('--delta',)),\n"
         ")\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     projections = systemic_detectors.DataclassNamespaceCliMirrorDetector.compact_module_projections(
@@ -4452,7 +4452,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     package_root.mkdir()
     (package_root / "family.py").write_text(
         "class Boundary:\n    pass\n\nclass ConcreteBoundary(Boundary):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "consumer.py").write_text(
         "from .family import Boundary as ImportedBoundary\n"
@@ -4476,7 +4476,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         "    def nested(candidate):\n"
         "        assert type(candidate) is ImportedBoundary\n"
         "    return nested(value)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     detector = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector()
@@ -4543,7 +4543,7 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
         "        Exporter.for_format(name)\n"
         "        return AutoRegisterMeta(name, (Exporter,), body)\n"
         "    return build(*spec)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -4607,14 +4607,14 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
         "\n"
         "class MissingKeyHandler(Handler):\n"
         "    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "consumers.py").write_text(
         "from .family import Handler\n"
         "\n"
         "def first(kind): return Handler.for_kind(kind)\n"
         "def second(kind): return Handler.type_for_kind(kind)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -4685,7 +4685,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         "    def run(self): return 'gamma'\n"
         "def run_alpha(): return ModeRunner.for_mode(Mode.ALPHA).run()\n"
         "def run_beta(): return ModeRunner.for_mode(Mode.BETA).run()\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "config.py").write_text(
         "from core import (\n"
@@ -4696,7 +4696,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         "DUAL_MODE_SURFACE = (ModeKey.ALPHA, ModeKey.BETA)\n"
         "DUAL_MODE_SURFACE = {ModeKey.ALPHA: Alpha, ModeKey.BETA: Beta}\n"
         "ALIAS_NAME_STRINGS = ('Alpha', 'Beta')\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -4770,7 +4770,7 @@ def test_keyed_registry_detectors_share_one_compact_repository_context(
         "\n"
         "class BetaHandler(Handler):\n"
         "    kind = 'beta'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         systemic_detectors.NonInjectiveTypeRegistryDetector,
@@ -4825,7 +4825,7 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         "\n"
         "class BetaHandler(Handler):\n"
         "    def run(self): return 'beta'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         runtime_detectors.ManualConcreteSubclassRosterDetector,
@@ -4892,7 +4892,7 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
         "\n"
         "class BetaHandler(Handler):\n"
         "    def run(self): return 'beta'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
@@ -4939,7 +4939,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         "\n"
         "class AlphaHandler(Handler):\n"
         "    def run(self): return 'alpha'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     detector_types = (
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
@@ -5034,7 +5034,7 @@ def test_compact_repeated_keyed_family_preserves_grouping_semantics(
             "            raise ValueError(key) from error\n"
             "    @abstractmethod\n"
             "    def run(self): ...\n",
-            encoding="utf-8",
+            encoding="utf-8", newline="",
         )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -5126,7 +5126,7 @@ def test_compact_concrete_family_candidates_preserve_semantics(
         "    def emit(self, artifact): return artifact.beta\n"
         "class ReceiptGammaEmitter(ReceiptFieldEmitter):\n"
         "    def emit(self, artifact): return artifact.gamma\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -5216,7 +5216,7 @@ def test_compact_roster_candidates_preserve_semantics(
         "    def emit(self, rows): ...\n"
         "\n"
         "EXPORT_FORMATS = ('csv', 'json')\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "implementations.py").write_text(
         "from .base import Exporter, RoutedRequest\n"
@@ -5231,14 +5231,14 @@ def test_compact_roster_candidates_preserve_semantics(
         "    def emit(self, rows): return rows\n"
         "\n"
         "DEFAULT_EXPORTERS = (CsvExporter(), JsonExporter())\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "a_shadow.py").write_text(
         "def hidden_duplicate_names():\n"
         "    class CsvExporter(Local): pass\n"
         "    class JsonExporter(Local): pass\n"
         "    return CsvExporter, JsonExporter\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     config = DetectorConfig()
@@ -5291,7 +5291,7 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     assert not hasattr(base_detectors, "require_compact_class_repository_context")
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8")
+    (package_root / "mod.py").write_text("class Root: pass\n", encoding="utf-8", newline="")
     detector_types = (
         runtime_detectors.ManualConcreteSubclassRosterDetector,
         runtime_detectors.LatentImplementationRosterDetector,
@@ -5423,7 +5423,7 @@ def _write_compact_method_family_fixture(package_root: Path) -> None:
         "        return value\n"
         "    def poison(self, rows):\n"
         "        return rows\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
 
@@ -5432,7 +5432,7 @@ def _compact_class_methods_for_source(
     source: str,
 ) -> tuple[class_index_module.CompactClassMethod, ...]:
     package_root.mkdir()
-    (package_root / "methods.py").write_text(source, encoding="utf-8")
+    (package_root / "methods.py").write_text(source, encoding="utf-8", newline="")
     parsed_module = parse_python_modules(
         package_root,
         use_parse_cache=False,
@@ -5500,7 +5500,7 @@ def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache
         "    def cache_token(self) -> str:\n"
         "        payload = repr(self).encode('utf-8')\n"
         "        return digest(payload)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
     family = class_index_module.CompactModuleClassProjectionFamily
@@ -5951,7 +5951,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
             "REQUEST = Request(title='example', status='ready')\n\n"
             "REQUEST_FIELDS = ('title', 'status')\n"
         "REQUEST_COLUMNS = ('title', 'status')\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
     detector = semantic_descent_detectors.SemanticMirrorWithoutDescentDetector()
@@ -6116,7 +6116,7 @@ def test_compact_analysis_returns_semantic_graph_on_cold_and_aggregate_hits(
         "class BetaHandler(Handler):\n"
         "    handler_id = 'beta'\n\n"
         "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / "cache"
     analysis_cache_dir = tmp_path / "analysis"
@@ -6275,7 +6275,7 @@ def test_parse_cache_persists_semantic_source_hash(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "ast"
     original_hash = ast_tools_module.semantic_python_source_hash
     hash_calls = 0
@@ -6306,12 +6306,12 @@ def test_single_source_parser_rejects_stale_semantic_hash_identity(
     module_path = package_root / "mod.py"
     original_source = "VALUE = 1\n"
     changed_source = "VALUE = 2\n"
-    module_path.write_text(original_source, encoding="utf-8")
+    module_path.write_text(original_source, encoding="utf-8", newline="")
     source_semantic_hash = ast_tools_module.PythonSourceSemanticHash(
         ast_tools_module.python_source_cache_signature(original_source),
         ast_tools_module.semantic_python_source_hash(original_source),
     )
-    module_path.write_text(changed_source, encoding="utf-8")
+    module_path.write_text(changed_source, encoding="utf-8", newline="")
     parser = ast_tools_module.PythonModuleRootParser.for_root(
         package_root,
         use_parse_cache=False,
@@ -6336,8 +6336,8 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
     package_root.mkdir()
     first_path = package_root / "a.py"
     second_path = package_root / "b.py"
-    first_path.write_text("VALUE = 1\n", encoding="utf-8")
-    second_path.write_text("VALUE = 2\n", encoding="utf-8")
+    first_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
+    second_path.write_text("VALUE = 2\n", encoding="utf-8", newline="")
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
     source_signature_cache = cache.source_signature_cache()
     assert source_signature_cache is not None
@@ -6369,7 +6369,7 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
         read_paths.append(path.resolve())
         return original_read_bytes(path)
 
-    second_path.write_text("VALUE = 200\n", encoding="utf-8")
+    second_path.write_text("VALUE = 200\n", encoding="utf-8", newline="")
     monkeypatch.setattr(Path, "read_bytes", count_read_bytes)
     invalidated_source_signature_cache = cache.source_signature_cache()
     assert invalidated_source_signature_cache is not None
@@ -6388,7 +6388,7 @@ def test_source_signature_cache_reuses_lazy_semantic_hash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_path = tmp_path / "mod.py"
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     cache = AnalysisFindingCache(tmp_path / "analysis")
     source_cache = cache.source_signature_cache()
     assert source_cache is not None
@@ -6417,7 +6417,7 @@ def test_changed_path_root_assignment_returns_absolute_owner_for_relative_root(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     changed_file = package_root / "mod.py"
-    changed_file.write_text("VALUE = 1\n", encoding="utf-8")
+    changed_file.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     monkeypatch.chdir(tmp_path)
 
     paths_by_root = ChangedPathRootAssignment(
@@ -6436,17 +6436,17 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     package_root.mkdir()
     (package_root / "authority.py").write_text(
         "class Step:\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "members.py").write_text(
         "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "registry.py").write_text(
         "from members import LoadStep, SaveStep\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
@@ -6470,7 +6470,7 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
         "\n"
         "class SaveStep(Step):\n"
         "    step_id = 'save'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     updated_findings = analyze_path(
@@ -6495,16 +6495,16 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     authority_path = package_root / "authority.py"
     members_path = package_root / "members.py"
     registry_path = package_root / "registry.py"
-    authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
+    authority_path.write_text("class Step:\n    pass\n", encoding="utf-8", newline="")
     members_path.write_text(
         "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     registry_path.write_text(
         "from members import LoadStep, SaveStep\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
@@ -6528,7 +6528,7 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
         "\n"
         "class SaveStep(Step):\n"
         "    step_id = 'save'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     partial_result = FastCachedPathAnalysisAuthority(
@@ -6578,17 +6578,17 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     package_root.mkdir()
     members_path = package_root / "members.py"
     (package_root / "authority.py").write_text(
-        "class Step:\n    pass\n", encoding="utf-8"
+        "class Step:\n    pass\n", encoding="utf-8", newline=""
     )
     members_path.write_text(
         "from authority import Step\n\nclass LoadStep(Step):\n    step_id = 'load'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "registry.py").write_text(
         "from members import LoadStep, SaveStep\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
@@ -6620,7 +6620,7 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
         "\n"
         "class SaveStep(Step):\n"
         "    step_id = 'save'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     partial_result = FastCachedPathAnalysisAuthority(
@@ -6653,7 +6653,7 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     authority_path = package_root / "authority.py"
     members_path = package_root / "members.py"
     registry_path = package_root / "registry.py"
-    authority_path.write_text("class Step:\n    pass\n", encoding="utf-8")
+    authority_path.write_text("class Step:\n    pass\n", encoding="utf-8", newline="")
     members_path.write_text(
         "from authority import Step\n"
         "\n"
@@ -6662,9 +6662,9 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
         "\n"
         "class SaveStep(Step):\n"
         "    step_id = 'save'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
-    registry_path.write_text("NO_REGISTRY = None\n", encoding="utf-8")
+    registry_path.write_text("NO_REGISTRY = None\n", encoding="utf-8", newline="")
     cache_dir = tmp_path / ".nra-cache" / "ast"
 
     initial_findings = analyze_path(
@@ -6683,7 +6683,7 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
         "from members import LoadStep, SaveStep\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     partial_result = FastCachedPathAnalysisAuthority(

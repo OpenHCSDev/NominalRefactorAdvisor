@@ -36,7 +36,6 @@ from .codemod_paths import SourcePathResolutionAuthority
 from .codemod_payload import (
     OptionalStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
-    RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
@@ -47,7 +46,7 @@ from .codemod_preflight import (
 from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
+from .codemod_selector_models import SourcePathPayloadValueCodec
 from .codemod_semantics import CodemodPreflightStatus
 from .codemod_source_edits import (
     NominalSourceEdit,
@@ -546,13 +545,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     """Repository-proved destination contract for module-symbol moves."""
 
-    destination_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (
-            *super().referenced_source_targets(),
-            SourceRewriteTarget(file_path=self.destination_path),
-        )
+    destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
 
     def dependency_report(
         self,

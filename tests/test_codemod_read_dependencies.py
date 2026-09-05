@@ -22,10 +22,10 @@ from nominal_refactor_advisor.codemod_source_edits import CodemodSourceRevisionE
 
 def test_apply_rejects_changed_read_only_callee_before_writing(tmp_path: Path) -> None:
     library = tmp_path / "library.py"
-    library.write_text("def render(value): return value\n")
+    library.write_text("def render(value): return value\n", newline="")
     caller = tmp_path / "caller.py"
     source = "from library import render\ndef run(): return render(1)\n"
-    caller.write_text(source)
+    caller.write_text(source, newline="")
     operation = ReplaceDeclaredCallArgumentsOperation(
         target=SourceRewriteTarget(file_path=str(caller), qualname="run"),
         callee=SourceRewriteTarget(file_path=str(library), qualname="render"),
@@ -34,7 +34,7 @@ def test_apply_rejects_changed_read_only_callee_before_writing(tmp_path: Path) -
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = CodemodPlanSequence.from_operations((operation,)).simulate(snapshot)
     assert simulation.is_clean
-    library.write_text("def render(other): return other\n")
+    library.write_text("def render(other): return other\n", newline="")
     with pytest.raises(CodemodSourceRevisionError, match="library.py"):
         simulation.apply()
     assert caller.read_text() == source
@@ -68,9 +68,9 @@ def test_composed_reports_reject_a_changed_read_dependency(tmp_path: Path) -> No
 
 def test_read_only_source_is_validated_but_never_written(tmp_path: Path) -> None:
     path = tmp_path / "caller.py"
-    path.write_text("def run(): return 1\n")
+    path.write_text("def run(): return 1\n", newline="")
     dependency = tmp_path / "library.py"
-    dependency.write_text("value = 1\n")
+    dependency.write_text("value = 1\n", newline="")
     original_stat = dependency.stat()
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ReplaceFunctionBodyOperation(
@@ -88,7 +88,7 @@ def test_read_only_source_is_validated_but_never_written(tmp_path: Path) -> None
 def test_created_file_can_be_read_and_changed_in_later_stages(tmp_path: Path) -> None:
     caller = tmp_path / "caller.py"
     caller.write_text(
-        "from generated import render\ndef run(): return render(1)\nprint(run())\n"
+        "from generated import render\ndef run(): return render(1)\nprint(run())\n", newline=""
     )
     generated = tmp_path / "generated.py"
     generated_target = SourceRewriteTarget(file_path=str(generated), qualname="render")

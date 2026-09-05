@@ -74,9 +74,9 @@ def modes_for_name(name: str) -> tuple[Mode, ...]:
 def _write_package_module(tmp_path: Path, source: str) -> Path:
     package = tmp_path / "pkg"
     package.mkdir()
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("", newline="")
     module_path = package / "mod.py"
-    module_path.write_text(source)
+    module_path.write_text(source, newline="")
     return module_path
 
 
@@ -295,13 +295,13 @@ def test_enum_keyed_facade_star_import_uses_declared_export_contract(
         ),
     )
     support_path = module_path.with_name("support.py")
-    support_path.write_text('__all__ = ("HELPER",)\n\nHELPER = object()\n')
+    support_path.write_text('__all__ = ("HELPER",)\n\nHELPER = object()\n', newline="")
 
     _modules, findings = _findings(tmp_path)
 
     assert len(findings) == 1
 
-    support_path.write_text('__all__ = ("dict",)\n')
+    support_path.write_text('__all__ = ("dict",)\n', newline="")
     _modules, findings = _findings(tmp_path)
     assert not findings
 
@@ -319,13 +319,13 @@ def test_enum_keyed_facade_derives_aliased_binding_exclusion(
         .replace("class Mode(StrEnum):", "class Mode(EnumBase):"),
     )
     support_path = module_path.with_name("support.py")
-    support_path.write_text('__all__ = ("StrEnum",)\n')
+    support_path.write_text('__all__ = ("StrEnum",)\n', newline="")
 
     _modules, findings = _findings(tmp_path)
 
     assert len(findings) == 1
 
-    support_path.write_text('__all__ = ("EnumBase",)\n')
+    support_path.write_text('__all__ = ("EnumBase",)\n', newline="")
     _modules, findings = _findings(tmp_path)
     assert not findings
 

@@ -117,7 +117,7 @@ def test_renderer_and_detector_collapse_preserve_runtime(
     tmp_path: Path, payload: str, expected: dict[str, object],
 ) -> None:
     module_path = tmp_path / "probe.py"
-    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", payload))
+    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", payload), newline="")
     assert _execute(module_path) == expected
 
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
@@ -163,7 +163,7 @@ def test_detector_collapse_keeps_class_dependent_renderers(
             "    candidate_collector = retain('collector', staticmethod(lambda module: ()))\n",
             "",
         ).replace('if __name__ == "__main__":', collector + '\nif __name__ == "__main__":')
-    module_path.write_text(source)
+    module_path.write_text(source, newline="")
     expected = _execute(module_path)
 
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
@@ -214,7 +214,7 @@ def test_detector_rewrites_require_nominal_base_identity(
         "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):\n"
         "    detector_id = 'probe'\n"
         "    finding_spec = object()\n" + body +
-        "print(json.dumps({'name': ProbeDetector.__name__}))\n"
+        "print(json.dumps({'name': ProbeDetector.__name__}))\n", newline=""
     )
     assert _execute(module_path) == {"name": "ProbeDetector"}
     findings = tuple(
@@ -259,7 +259,7 @@ def test_detector_rewrites_follow_nominal_base_aliases(
         "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):",
         f"class ProbeDetector({base_source}[ProbeCandidate]):",
     )
-    module_path.write_text(source)
+    module_path.write_text(source, newline="")
     expected = _execute(module_path)
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
         findings = tuple(
@@ -312,7 +312,7 @@ def test_detector_rewrite_retains_unresolved_binding_evidence(
     module_path.write_text(
         prefix + "class ProbeCandidate:\n    pass\n"
         "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):\n"
-        "    finding_spec = SPEC\n    finding_renderer = RENDERER\n" + suffix
+        "    finding_spec = SPEC\n    finding_renderer = RENDERER\n" + suffix, newline=""
     )
     findings = tuple(
         finding for finding in analyze_path(tmp_path)
@@ -330,7 +330,7 @@ def test_saved_detector_plan_reproves_imports_on_execution(
     tmp_path: Path, detector_id: str,
 ) -> None:
     module_path = tmp_path / "probe.py"
-    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", "'summary', ()"))
+    module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", "'summary', ()"), newline="")
     expected = _execute(module_path)
     for current_id in ("direct_build_finding_renderer", "declarative_detector_class"):
         findings = tuple(
@@ -365,7 +365,7 @@ def test_authored_detector_sequence_is_one_runtime_checked_batch(
 ) -> None:
     module_path = tmp_path / "probe.py"
     source = _RUNTIME_SOURCE.replace("PAYLOAD", payload)
-    module_path.write_text(source)
+    module_path.write_text(source, newline="")
     expected = _execute(module_path)
     plan_path = Path(__file__).parents[1] / "docs/examples/detector_declaration_sequence.json"
     sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))

@@ -85,7 +85,7 @@ def test_body_replacement_executes_with_preserved_identity_and_literals(
         "import asyncio\nimport json\n" + source + sibling
         + f"\nprint(json.dumps([{call}, untouched()]))\n"
     )
-    module_path.write_text(original)
+    module_path.write_text(original, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument.from_payload_fields({
         "recipes": [{
@@ -133,7 +133,7 @@ def test_simulation_backend_rejects_parsable_but_uncompilable_source(source: str
 def test_invalid_body_plan_does_not_write_source(tmp_path: Path, body: str) -> None:
     module_path = tmp_path / "probe.py"
     original = "def run():\n    return 1\n"
-    module_path.write_text(original)
+    module_path.write_text(original, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument.from_payload_fields({
         "recipes": [{

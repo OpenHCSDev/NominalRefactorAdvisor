@@ -206,6 +206,43 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     single_line_header_limit: ClassVar[int] = 88
 
     @cached_property
+    def signature_span(self) -> SourceTextSpan:
+        """Resolve the header suffix, including generic parameters, through the colon."""
+
+        start, end = self.geometry.required_node_offsets(self.node)
+        for token in self.geometry.unenclosed_tokens(SourceTextSpan(start, end)):
+            if token.type == tokenize.OP and token.string == ":":
+                return SourceTextSpan(
+                    self.name_span.end_offset,
+                    self.geometry.token_position_offset(token.end),
+                )
+        raise ValueError(f"Cannot resolve class header colon for {self.node.name!r}")
+
+    @cached_property
+    def declaration_prefix(self) -> str:
+        """Retain the exact name and generic parameters before the base list."""
+
+        for token in self.geometry.unenclosed_tokens(self.signature_span):
+            if token.type == tokenize.OP and token.string in {"(", ":"}:
+                end = self.geometry.token_position_offset(token.start)
+                start = self.geometry.required_node_offsets(self.node)[0]
+                return self.source[start:end].rstrip()
+        raise ValueError(f"Cannot resolve class base-list boundary for {self.node.name!r}")
+
+    def header_replacement(self, lines: tuple[str, ...]) -> SourceTextSpanReplacement:
+        """Replace only the header, retaining inline suites and trailing comments."""
+
+        start = self.geometry.required_node_offsets(self.node)[0]
+        span = SourceTextSpan(start, self.signature_span.end_offset)
+        if self.geometry.span_contains_comment(span):
+            raise ValueError("Class header replacement would discard comments")
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=span.start_offset,
+            end_offset=span.end_offset,
+            replacement_source="".join(lines).removeprefix(self.indentation).rstrip("\r\n"),
+        )
+
+    @cached_property
     def source_span(self) -> ClassHeaderSourceSpan:
         return ClassHeaderSourceSpan.from_source(self.node, self.source)
 
@@ -288,6 +325,10 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
                 f"Class header requires one base {old_base_name!r}; "
                 f"found {len(matching_indexes)}"
             )
+        if old_base_name == new_base_name:
+            return self.current_header_lines
+        if new_base_name in self.base_items:
+            raise ValueError(f"Class header already contains base {new_base_name!r}")
         replacement_index = matching_indexes[0]
         return self.with_base_items(
             tuple(
@@ -326,13 +367,13 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
         )
         items = (*base_items, *resolved_keyword_items)
         if items:
-            header = f"class {self.node.name}({', '.join(items)}):"
+            header = f"{self.declaration_prefix}({', '.join(items)}):"
         else:
-            header = f"class {self.node.name}:"
+            header = f"{self.declaration_prefix}:"
         if len(f"{indentation}{header}") <= self.single_line_header_limit:
             return (f"{indentation}{header}\n",)
         return (
-            f"{indentation}class {self.node.name}(\n",
+            f"{indentation}{self.declaration_prefix}(\n",
             *(f"{indentation}    {item},\n" for item in items),
             f"{indentation}):\n",
         )

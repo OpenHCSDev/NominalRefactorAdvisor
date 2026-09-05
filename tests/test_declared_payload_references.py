@@ -9,7 +9,9 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     DeleteFunctionAssignmentsOperation,
+    ExtractSymbolsToNewModuleOperation,
     PrependFunctionBodyOperation,
+    PromoteClassMembersToAncestorOperation,
     ReplaceDeclaredCallArgumentsOperation,
     SourceRewriteTarget,
 )
@@ -22,6 +24,10 @@ from nominal_refactor_advisor.codemod_payload import (
     codemod_payload_field,
 )
 from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+from nominal_refactor_advisor.codemod_selector_models import (
+    SourcePathPayloadValueCodec,
+    SourceRewriteReferences,
+)
 from nominal_refactor_advisor.json_reports import JsonObject, json_report_object
 
 
@@ -76,6 +82,66 @@ def test_caller_plan_derives_its_callee_reference_and_repository_scope() -> None
     assert sequence.referenced_source_targets() == (caller, callee)
     assert sequence.explicit_source_paths() == ("caller.py", "library.py")
     assert sequence.source_dependency_scope is CodemodSourceDependencyScope.REPOSITORY
+
+
+def test_class_promotion_reports_each_declared_target_once() -> None:
+    source = SourceRewriteTarget(file_path="leaf.py", qualname="Leaf")
+    destination = SourceRewriteTarget(file_path="base.py", qualname="Base")
+    operation = PromoteClassMembersToAncestorOperation(
+        target=source, destination=destination, member_names=("render",)
+    )
+    sequence = CodemodPlanSequence.from_operations((operation,))
+    assert operation.referenced_source_targets() == (source, destination)
+    assert sequence.referenced_source_targets() == (source, destination)
+
+
+@dataclass(frozen=True)
+class PathRecord(CodemodPayloadRecord):
+    location: str = codemod_payload_field(SourcePathPayloadValueCodec())
+
+
+@dataclass(frozen=True)
+class PathReferences(SourceRewriteReferences):
+    locations: tuple[PathRecord, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(PathRecord)
+    )
+
+
+def test_path_reference_meaning_is_owned_by_the_codec_not_the_field_name() -> None:
+    record = PathReferences((PathRecord("a.py"), PathRecord("b.py")))
+    assert record.referenced_source_targets() == (
+        SourceRewriteTarget(file_path="a.py"),
+        SourceRewriteTarget(file_path="b.py"),
+    )
+    assert PathReferences.from_json_value(json_report_object(record)) == record
+    assert json_report_object(record) == {
+        "locations": ({"location": "a.py"}, {"location": "b.py"})
+    }
+
+
+@pytest.mark.parametrize("value", (None, 3, ""))
+def test_path_reference_traversal_enforces_the_declared_value_contract(value) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        PathReferences((PathRecord(value),)).referenced_source_targets()
+
+
+def test_module_destination_is_derived_at_every_plan_boundary() -> None:
+    source = SourceRewriteTarget(file_path="source.py")
+    operation = ExtractSymbolsToNewModuleOperation(
+        target=source, destination_path="destination.py", symbol_qualnames=("Worker",)
+    )
+    sequence = CodemodPlanSequence.from_operations((operation,))
+    document = sequence.documents[0]
+    recipe = document.recipes[0]
+    for record in (operation, recipe, document, sequence):
+        assert record.referenced_source_targets() == (
+            source,
+            SourceRewriteTarget(file_path="destination.py"),
+        )
+        assert type(record).referenced_source_targets is (
+            SourceRewriteReferences.referenced_source_targets
+        )
+    assert sequence.explicit_source_paths() == ("source.py", "destination.py")
 
 
 def test_operation_sequence_reproves_each_step_and_composes_existing_documents() -> (

@@ -30,8 +30,8 @@ def test_focused_scan_benchmark_records_cold_and_warm_payloads(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     focused_path = package_root / "alpha.py"
-    focused_path.write_text("VALUE = 'alpha'\n", encoding="utf-8")
-    (package_root / "beta.py").write_text("VALUE = 'beta'\n", encoding="utf-8")
+    focused_path.write_text("VALUE = 'alpha'\n", encoding="utf-8", newline="")
+    (package_root / "beta.py").write_text("VALUE = 'beta'\n", encoding="utf-8", newline="")
     benchmark = FocusedScanBenchmark(
         python_executable=Path(sys.executable),
         advisor_root=repo_root,
@@ -60,8 +60,8 @@ def test_benchmark_cli_emits_json_and_enforces_budget(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     focused_path = package_root / "alpha.py"
-    focused_path.write_text("VALUE = 'alpha'\n", encoding="utf-8")
-    (package_root / "beta.py").write_text("VALUE = 'beta'\n", encoding="utf-8")
+    focused_path.write_text("VALUE = 'alpha'\n", encoding="utf-8", newline="")
+    (package_root / "beta.py").write_text("VALUE = 'beta'\n", encoding="utf-8", newline="")
 
     exit_code = main(
         [

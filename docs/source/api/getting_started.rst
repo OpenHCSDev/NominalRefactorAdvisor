@@ -228,6 +228,22 @@ Use ``CodemodPlanDocument`` when multiple operations must resolve against the
 same snapshot, then combine documents or sequences with ``CodemodPlanSequence.compose``.
 ``from_operations`` intentionally gives each operation its own projected state.
 
+To replace one direct base while retaining the declared base order, use
+``ReplaceClassBaseOperation``:
+
+.. code-block:: python
+
+   ReplaceClassBaseOperation(
+       target=SourceRewriteTarget(file_path="package/worker.py", qualname="Worker"),
+       base_name="LegacyContext",
+       replacement_base_name="SharedContext",
+   )
+
+Declare or import the replacement first. The operation preserves the other bases,
+class keywords, generic parameters and body. Check MRO-dependent behaviour in the
+affected tests. Use ``replace_direct_class_base`` when the intended scope is an
+authority's complete direct-child cohort instead of one selected class.
+
 ``replace_function_signature`` accepts a single-line replacement suffix for
 either a single-line or multiline original signature. It retains the function
 name, generic type parameters, decorators, body, and comments outside the

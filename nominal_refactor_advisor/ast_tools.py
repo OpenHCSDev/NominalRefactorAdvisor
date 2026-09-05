@@ -63,7 +63,7 @@ from .observation_shapes import (
     SentinelTypeObservation,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from .source_geometry import SourceLineSegmentAuthority
+from .source_geometry import SourceLineSegmentAuthority, read_source_text
 from .source_identity import SourceFileIdentity, resolved_source_path_text
 from .semantic_match import (
     GuardedEffectStep,
@@ -763,7 +763,7 @@ def _parse_source_module(
     context: PythonModuleParseContext,
     source_semantic_hash: PythonSourceSemanticHash | None = None,
 ) -> ParsedModule:
-    source = path.read_text(encoding="utf-8")
+    source = read_source_text(path)
     source_signature = _source_signature(source)
     cached_payload = (
         _load_cached_ast(path, source_signature, cache_dir=context.parse_cache_dir)

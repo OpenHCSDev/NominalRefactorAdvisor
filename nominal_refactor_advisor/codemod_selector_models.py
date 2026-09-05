@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import (
     ClassVar,
     Self,
+    cast,
 )
 
 from .codemod_paths import SourcePathResolutionAuthority
@@ -23,6 +24,7 @@ from .codemod_payload import (
     OptionalStringPayloadValueCodec,
     PayloadRecordValueCodec,
     PayloadValueCodec,
+    RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
 from .json_reports import (
@@ -163,6 +165,21 @@ class SourceRewriteTarget(
         )
 
 
+class SourcePathPayloadValueCodec(RequiredStringPayloadValueCodec):
+    """Declare a required path string as a source-reference projection."""
+
+    def nested_records(self, value: object) -> tuple[SourceRewriteTarget, ...]:
+        return (SourceRewriteTarget(file_path=cast(str, self.serialize(value))),)
+
+
+@dataclass(frozen=True)
+class SourceRewriteReferences(CodemodPayloadRecord):
+    """Derive source references from the complete declared payload tree."""
+
+    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
+        return self.records_of_type(SourceRewriteTarget)
+
+
 @dataclass(frozen=True)
 class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
     """Typed source target retained by a failed operation preflight."""
@@ -173,16 +190,13 @@ class SourceRewriteTargetPreflightDetail(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceRewriteTargetReference(CodemodPayloadRecord):
+class SourceRewriteTargetReference(SourceRewriteReferences):
     """Shared owner for DSL records that reference source-index targets."""
 
     target: SourceRewriteTarget = codemod_payload_field(
         FlattenedPayloadRecordValueCodec(SourceRewriteTarget),
         default_factory=SourceRewriteTarget,
     )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return self.records_of_type(SourceRewriteTarget)
 
 
 @dataclass(frozen=True, kw_only=True)

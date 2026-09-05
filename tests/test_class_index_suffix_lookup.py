@@ -140,10 +140,10 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
-    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (package_root / "__init__.py").write_text("", encoding="utf-8", newline="")
     (package_root / "base.py").write_text(
         "class Root:\n    pass\n\nclass Mid(Root):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "leaf.py").write_text(
         "from pkg.base import Mid as ImportedMid\n"
@@ -153,18 +153,18 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
         "\n"
         "class GenericLeaf(ImportedMid[int]):\n"
         "    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "qualified.py").write_text(
         "import pkg.base as base_alias\n"
         "\n"
         "class Qualified(base_alias.Root):\n"
         "    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "unique.py").write_text(
         "class UniqueLeaf(Root):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path, use_parse_cache=False)
     full_index = build_class_family_index(modules)

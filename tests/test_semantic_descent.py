@@ -84,7 +84,7 @@ from nominal_refactor_advisor.semantic_refactor_gate import (
 def _write_module(root: Path, source: str) -> Path:
     path = root / "pkg" / "mod.py"
     path.parent.mkdir(parents=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 
@@ -642,7 +642,7 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
         if projection.label == "STEP_TABLE"
     )
 
-    module_path.write_text(f"\n{source}", encoding="utf-8")
+    module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     overlay = SemanticDescentGraphModuleOverlay(
         base_graph,
         tuple(parse_python_modules(tmp_path)),
@@ -685,7 +685,7 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
         if isinstance(certificate, SemanticDerivationCertificate)
     )
 
-    module_path.write_text(f"\n{source}", encoding="utf-8")
+    module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     updated_graph = base_graph.overlay_modules(
         tuple(parse_python_modules(tmp_path, use_parse_cache=False))
     )
@@ -828,7 +828,7 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
         "    step_id = 'save'\n"
         "\n"
         "ALPHA_STEPS = {'load': LoadAlphaStep, 'save': SaveAlphaStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_root / "beta.py").write_text(
         "class BetaStep:\n"
@@ -841,7 +841,7 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
         "    step_id = 'save'\n"
         "\n"
         "BETA_STEPS = {'load': LoadBetaStep, 'save': SaveBetaStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     graph = build_semantic_descent_graph(modules, use_cache=False)
@@ -1434,8 +1434,8 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
     )
     alpha_path = tmp_path / "alpha.py"
     beta_path = tmp_path / "beta.py"
-    alpha_path.write_text("import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8")
-    beta_path.write_text("class Beta:\n    pass\n", encoding="utf-8")
+    alpha_path.write_text("import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8", newline="")
+    beta_path.write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
     modules = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
     alpha_finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
@@ -1553,7 +1553,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "class RegisteredStrategy:\n"
         "    __registry_key__ = 'kind'\n"
         "    __skip_if_no_key__ = True\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     strategy_path = package_path / "strategy.py"
     strategy_path.write_text(
@@ -1566,7 +1566,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "\n"
         "    def run(self):\n"
         "        return None\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     initial_modules = parse_python_modules(tmp_path)
     finding = next(
@@ -1589,7 +1589,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "class RegisteredStrategy:\n"
         "    __registry_key__ = 'strategy_kind'\n"
         "    __skip_if_no_key__ = False\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     current_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path, use_parse_cache=False)
@@ -1763,7 +1763,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
             "    priority = 20\n",
             "    priority = 10\n",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     reprioritized_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -1789,7 +1789,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
 
     module_path.write_text(
         source.replace("    priority = 20\n", "    priority = 10\n"),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     duplicate_priority_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -2980,7 +2980,7 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
         "class PhaseRecord:\n"
         "    run_id: str\n"
         "    seconds: float\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_path / "report.py").write_text(
         "from typing import TYPE_CHECKING\n"
@@ -2991,7 +2991,7 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
         "def field_names():\n"
         "    phase_record_fields = ('run_id', 'seconds')\n"
         "    return phase_record_fields\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -3117,7 +3117,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         ("command_action_ids", ("prepare", "run")),
         ("default_next_action_id", "run"),
     )
-    module_path.write_text(rewritten_source, encoding="utf-8")
+    module_path.write_text(rewritten_source, encoding="utf-8", newline="")
     migrated_graph = build_semantic_descent_graph(
         parse_python_modules(tmp_path),
         use_cache=False,
@@ -3204,7 +3204,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text("", encoding="utf-8", newline="")
     (package_dir / "model.py").write_text(
         "from dataclasses import dataclass\n"
         "\n"
@@ -3213,7 +3213,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         "    kind: str\n"
         "    description: str\n"
         "    confidence: str\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "report.py").write_text(
         "from __future__ import annotations\n"
@@ -3232,7 +3232,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         "            'confidence': self.action.confidence,\n"
         "            'emitted': self.emitted,\n"
         "        }\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3275,7 +3275,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
             "from dataclasses import dataclass\n",
             "from dataclasses import dataclass\nfrom .model import RefactorAction\n",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     imported_modules = parse_python_modules(tmp_path)
     imported_finding = next(
@@ -3311,7 +3311,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
             "from .model import RefactorAction\n",
             "from .model import RefactorAction\nRefactorAction = object\n",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     shadowed_modules = parse_python_modules(tmp_path)
     shadowed_finding = next(
@@ -3340,7 +3340,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text("", encoding="utf-8", newline="")
     (package_dir / "model.py").write_text(
         "from dataclasses import dataclass\n"
         "from .report import ActionReport\n"
@@ -3350,7 +3350,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         "    kind: str\n"
         "    description: str\n"
         "    confidence: str\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "report.py").write_text(
         "from __future__ import annotations\n"
@@ -3373,7 +3373,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         "            'confidence': self.action.confidence,\n"
         "            'emitted': self.emitted,\n"
         "        }\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3737,7 +3737,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
 ) -> None:
     package_path = tmp_path / "pkg"
     package_path.mkdir()
-    (package_path / "__init__.py").write_text("", encoding="utf-8")
+    (package_path / "__init__.py").write_text("", encoding="utf-8", newline="")
     for module_name in ("left", "right"):
         (package_path / f"{module_name}.py").write_text(
             "from dataclasses import dataclass\n\n"
@@ -3745,7 +3745,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
             "class Replacement:\n"
             "    start_line: int\n"
             "    end_line: int\n",
-            encoding="utf-8",
+            encoding="utf-8", newline="",
         )
     model_path = package_path / "model.py"
     model_path.write_text(
@@ -3760,7 +3760,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
         "            start_line=self.start_line,\n"
         "            end_line=self.end_line,\n"
         "        )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     report_path = package_path / "report.py"
     report_path.write_text(
@@ -3771,7 +3771,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
         "        start_line=start_line,\n"
         "        end_line=end_line,\n"
         "    )\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
@@ -3859,14 +3859,14 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n"
         "    LOW = 'low'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3976,8 +3976,8 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
         "from .taxonomy import ConfidenceLevel\n\n"
         "ACTIONABLE = frozenset(('high', 'medium'))\n"
     )
-    taxonomy_path.write_text(taxonomy_source, encoding="utf-8")
-    projection_path.write_text(projection_source, encoding="utf-8")
+    taxonomy_path.write_text(taxonomy_source, encoding="utf-8", newline="")
+    projection_path.write_text(projection_source, encoding="utf-8", newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
@@ -4070,13 +4070,13 @@ def test_enum_subset_operation_rejects_shadowed_frozenset(
         "class ConfidenceLevel(StrEnum):\n"
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     projection_path.write_text(
         "from .taxonomy import ConfidenceLevel\n"
         + (shadow_source if shadow_module == "projection" else "")
         + "\nACTIONABLE = frozenset(('high', 'medium'))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
@@ -4118,7 +4118,7 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         "    MEDIUM = 'medium'\n"
         "    actionable = None\n\n"
         "ACTIONABLE = frozenset(('high', 'medium'))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     collision_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -4181,14 +4181,14 @@ def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
         "    @classmethod\n"
         "    def actionable_confidence_levels(cls):\n"
         "        return frozenset((cls.HIGH.value,))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -4217,7 +4217,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text("", encoding="utf-8", newline="")
     (package_dir / "taxonomy.py").write_text(
         "from enum import StrEnum\n"
         "\n"
@@ -4230,14 +4230,14 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
         "\n"
         "class ObservationMode(LabeledMode):\n"
         "    SLOW = 'slow'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "detector.py").write_text(
         "from .taxonomy import CapabilityMode, ObservationMode\n"
         "\n"
         "ModeEnum = type[CapabilityMode] | type[ObservationMode]\n"
         "MODE_ENUMS: tuple[ModeEnum, ...] = (CapabilityMode, ObservationMode)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -4315,7 +4315,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text("", encoding="utf-8", newline="")
     (package_dir / "taxonomy.py").write_text(
         "from enum import StrEnum\n"
         "\n"
@@ -4328,13 +4328,13 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         "\n"
         "class ObservationMode(LabeledMode):\n"
         "    SLOW = 'slow'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "detector.py").write_text(
         "from .taxonomy import CapabilityMode, ObservationMode\n"
         "\n"
         "OWNER_NAMES = frozenset({'ObservationMode', 'CapabilityMode'})\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -4412,8 +4412,8 @@ def test_class_family_collection_operation_rederives_current_source(
         "    pass\n"
     )
     projection_source = "from .taxonomy import Alpha, Beta\n\nMEMBERS = (Alpha, Beta)\n"
-    taxonomy_path.write_text(taxonomy_source, encoding="utf-8")
-    projection_path.write_text(projection_source, encoding="utf-8")
+    taxonomy_path.write_text(taxonomy_source, encoding="utf-8", newline="")
+    projection_path.write_text(projection_source, encoding="utf-8", newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
     payload = json_report_object(operation)
@@ -4513,21 +4513,21 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "root.py").write_text("class Root:\n    pass\n", encoding="utf-8")
+    (package_dir / "root.py").write_text("class Root:\n    pass\n", encoding="utf-8", newline="")
     (package_dir / "alpha.py").write_text(
         "from .root import Root\n\nclass Alpha(Root):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "beta.py").write_text(
         "from .root import Root\n\nclass Beta(Root):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     projection_path = package_dir / "projection.py"
     projection_path.write_text(
         "from .alpha import Alpha\n"
         "from .beta import Beta\n\n"
         f"MEMBERS = {collection_source}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
@@ -4585,11 +4585,11 @@ def test_class_family_collection_operation_rejects_authority_name_collision(
         "    pass\n\n"
         "class Beta(Root):\n"
         "    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     projection_path.write_text(
         "from .taxonomy import Alpha, Beta\n\nRoot = object\nMEMBERS = (Alpha, Beta)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
@@ -4646,7 +4646,7 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
         "    pass\n"
         "\n"
         "ALL_MEMBERS = (Intermediate, Alpha, Beta)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -5124,14 +5124,14 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n"
         "    LOW = 'low'\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     monkeypatch.chdir(tmp_path)
     snapshot = CodemodSourceSnapshot.from_source_mapping(
@@ -6213,7 +6213,7 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
         "    step_id = 'save'\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     second_graph = build_semantic_descent_graph(

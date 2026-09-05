@@ -926,7 +926,7 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
         .simulate(snapshot)
     )
     intervening_source = "class Alpha:\n    value = 99\n"
-    module_path.write_text(intervening_source)
+    module_path.write_text(intervening_source, newline="")
 
     with pytest.raises(CodemodSourceRevisionError, match="changed after simulation"):
         simulation.apply()
@@ -951,7 +951,7 @@ def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
         )
     ).simulate(snapshot)
     intervening_source = "USER_FILE = 1\n"
-    generated_path.write_text(intervening_source)
+    generated_path.write_text(intervening_source, newline="")
 
     with pytest.raises(CodemodSourceRevisionError, match="changed after simulation"):
         simulation.apply()
@@ -2973,7 +2973,7 @@ def test_patch_target_operation_allows_empty_json_replacement(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -3030,7 +3030,7 @@ def test_patch_target_operation_can_target_module_source(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
@@ -11081,7 +11081,7 @@ def test_lean_export_cli_reports_schema_failure_without_traceback(
                     }
                 ],
             }
-        )
+        ), newline=""
     )
     monkeypatch.setattr(
         sys,
@@ -11735,7 +11735,7 @@ STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
 def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
 
 
 def _write_candidate_collector_base_module(root: Path) -> None:
@@ -11958,7 +11958,7 @@ def test_calibration_manifest_certifies_detector_expectations(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     report = run_calibration_manifest(manifest_path)
@@ -11991,7 +11991,7 @@ def test_calibration_manifest_names_missing_and_forbidden_detectors(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     report = run_calibration_manifest(manifest_path)
@@ -12215,7 +12215,7 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
     assert first_lookup.status is AnalysisCacheStatus.HIT
     assert first_lookup.findings == (finding,)
 
-    module_path.write_text("\nclass Cached:\n    pass\n\nclass Changed:\n    pass\n")
+    module_path.write_text("\nclass Cached:\n    pass\n\nclass Changed:\n    pass\n", newline="")
     changed_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
 
     assert changed_identity != first_identity
@@ -12455,7 +12455,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     assert local_calls == {"a.py": 1, "b.py": 1}
     assert global_calls == 1
 
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
     changed_modules = parse_python_module_roots((root,))
     changed_result = analyze_modules_with_cache(
         (root,),
@@ -12697,7 +12697,7 @@ def test_analyze_paths_partial_cache_parses_changed_file_only(
         DetectorConfig(),
         cache_dir=cache_dir,
     )
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
     second_findings = analyze_paths(
         (root,),
         DetectorConfig(),
@@ -12792,7 +12792,7 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         DetectorConfig(),
         cache_dir=cache_dir,
     )
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
 
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
@@ -12896,7 +12896,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     )
 
     first_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
             roots=(root,),
@@ -13025,7 +13025,7 @@ def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
         cache_dir=cache_dir,
     )
     (root_b / "b.py").write_text(
-        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n"
+        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline=""
     )
     second_findings = analyze_paths(
         (root_a, root_b),
@@ -16743,7 +16743,7 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 ],
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     second_plan_path.write_text(
         json.dumps(
@@ -16774,7 +16774,7 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 ],
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     composed_plan_path = tmp_path / "composed-plan.json"
 
@@ -16855,7 +16855,7 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     second_sequence_path.write_text(
         json.dumps(
@@ -16901,7 +16901,7 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     compose_result = subprocess.run(
@@ -17785,7 +17785,7 @@ def test_module_cli_simulates_staged_codemod_plan(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -18501,7 +18501,7 @@ def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
                 "qualnames": ["Alpha.run"],
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -18590,7 +18590,7 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
                 "qualnames": ["Alpha.run"],
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -18764,7 +18764,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                 ],
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     document = load_codemod_plan_document(plan_path)
@@ -18856,7 +18856,7 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     document = load_codemod_plan_document(plan_path)
     modules = parse_python_modules(tmp_path)
@@ -19030,7 +19030,7 @@ def test_delete_selected_targets_rejects_selection_count_overflow(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     document = load_codemod_plan_document(plan_path)
     modules = parse_python_modules(tmp_path)
@@ -19068,7 +19068,7 @@ def test_selected_targets_rejects_invalid_selection_count_contract(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     with pytest.raises(ValueError, match="selection_count min cannot exceed max"):
@@ -19229,7 +19229,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     module_path = package_root / "mod.py"
-    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8", newline="")
     semantic_cache_dir = tmp_path / ".nra-cache" / "semantic_descent"
     cached_graph = SemanticDescentGraph(
         authorities=(
@@ -19252,7 +19252,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
     )
     module_path.write_text(
         "class Alpha:\n    pass\n\nclass Changed:\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     cache_context = SemanticDescentGraphCacheContext(
         storage_root=semantic_cache_dir,
@@ -19319,7 +19319,7 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -20963,7 +20963,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -21082,7 +21082,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -21706,7 +21706,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -21955,7 +21955,7 @@ def test_module_cli_recipe_only_codemod_apply_without_structural_overlap(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -22032,7 +22032,7 @@ def test_module_cli_recipe_only_extract_authority_apply(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -22095,7 +22095,7 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     result = subprocess.run(
@@ -23360,7 +23360,7 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
             "    def emit(self, artifact):\n"
             "        return artifact.receipt_gamma",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path),
@@ -24425,7 +24425,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
         "    handler_id = 'beta'\n\n"
         "    def run(self):\n"
         "        return 'beta-changed'\n\n\n"
-        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n"
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n", newline=""
     )
     third_result = subprocess.run(
         command,
@@ -26272,7 +26272,7 @@ def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     lean_path.parent.mkdir(parents=True)
     lean_path.write_text(
         '\ndef requestProfileId := "selection_replay_repair_audit_request"\ndef reuseProfileId := "selection_replay_repair_audit_reuse"\ndef finalProfileId := "selection_replay_repair_final_bound"\n',
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -26322,7 +26322,7 @@ def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifac
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(
         '{"default_profiles": [{"profile_id": "selection_replay_repair_audit_request"}, {"profile_id": "selection_replay_repair_audit_reuse"}, {"profile_id": "selection_replay_repair_final_bound"}]}',
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     findings = analyze_path(tmp_path)
     finding = next(

@@ -1731,9 +1731,6 @@ class PromoteClassMembersToAncestorOperation(RepositorySourceReprovedOperation):
         ):
             raise ValueError("Class-member promotion requires Python identifiers")
 
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return (*super().referenced_source_targets(), self.destination)
-
     def selection(self, snapshot: CodemodSourceSnapshot) -> ClassMemberMoveSelection:
         return ClassMemberMoveSelection.require(
             snapshot,

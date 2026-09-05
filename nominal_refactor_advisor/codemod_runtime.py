@@ -62,7 +62,6 @@ from .codemod_authority_claims import (
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_operations import RefactorRecipeOperation
 from .codemod_payload import (
-    CodemodPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
@@ -74,7 +73,7 @@ from .codemod_preflight import (
     CodemodPlanPreflightReport,
 )
 from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
+from .codemod_selector_models import SourceRewriteReferences
 from .codemod_semantics import (
     CodemodBackend,
     CodemodPreflightStatus,
@@ -707,7 +706,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
 
 
 @dataclass(frozen=True)
-class RefactorRecipe(CodemodPayloadRecord):
+class RefactorRecipe(SourceRewriteReferences):
     """Executable batch of source rewrites and post-refactor invariants."""
 
     recipe_id: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -728,13 +727,6 @@ class RefactorRecipe(CodemodPayloadRecord):
         PayloadRecordArrayValueCodec(AuthorityClaim),
         default=(),
     )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return tuple(
-            target
-            for operation in self.operations
-            for target in operation.referenced_source_targets()
-        )
 
     def has_effective_rewrites(
         self,
@@ -979,7 +971,7 @@ class CodemodPlanRoot(JsonReport, ABC):
 
 
 @dataclass(frozen=True)
-class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
+class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     """Caller-supplied codemod plan plus post-refactor guard invariants."""
 
     recipes: tuple[RefactorRecipe, ...] = codemod_payload_field(
@@ -1034,13 +1026,6 @@ class CodemodPlanDocument(CodemodPayloadRecord, CodemodPlanRoot):
                 recipe.with_declared_architecture_guards(context)
                 for recipe in self.recipes
             ),
-        )
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return tuple(
-            target
-            for recipe in self.recipes
-            for target in recipe.referenced_source_targets()
         )
 
     def source_rewrite_batch(
@@ -1160,7 +1145,7 @@ class CodemodPlanDocumentPreflight:
 
 
 @dataclass(frozen=True)
-class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
+class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = codemod_payload_field(
@@ -1227,13 +1212,6 @@ class CodemodPlanSequence(CodemodPayloadRecord, CodemodPlanRoot):
     @property
     def has_multiple_stages(self) -> bool:
         return len(self.documents) > 1
-
-    def referenced_source_targets(self) -> tuple[SourceRewriteTarget, ...]:
-        return tuple(
-            target
-            for document in self.documents
-            for target in document.referenced_source_targets()
-        )
 
     def referenced_authority_claims(self) -> tuple[AuthorityClaim, ...]:
         return tuple(

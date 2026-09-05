@@ -22,7 +22,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 

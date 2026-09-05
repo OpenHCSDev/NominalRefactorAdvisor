@@ -164,7 +164,7 @@ def test_deletion_preserves_surviving_runtime(
     names: tuple[str, ...],
 ) -> None:
     path = tmp_path / "probe.py"
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     command = [
         sys.executable,
         "-c",
@@ -198,7 +198,7 @@ def test_deletion_rejects_ambiguous_or_incomplete_assignment_selection(
 ) -> None:
     path = tmp_path / "probe.py"
     source = f"def run():\n    {assignment}\n    return 2\n"
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=error):
         _document(path, "function", "run", ("drop",)).simulate(snapshot)
@@ -215,7 +215,7 @@ def test_explicit_deletion_removes_evaluation_without_touching_other_calls(
         "def run(): drop = mark('removed'); keep = mark('retained'); return keep\n"
         "print(run(), events)\n"
     )
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = _document(path, "function", "run", ("drop",)).simulate(snapshot)
     simulation.apply()

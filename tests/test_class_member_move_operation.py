@@ -26,7 +26,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 
@@ -107,7 +107,7 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     assert "    @classmethod\n    def describe(cls) -> str:" in rewritten
     assert "class Intermediate(Authority, ABC):\n    pass" in rewritten
 
-    module_path.write_text(rewritten, encoding="utf-8")
+    module_path.write_text(rewritten, encoding="utf-8", newline="")
     assert json.loads(_runtime_output(tmp_path)) == ["shared", 3, 3]
 
 
@@ -167,7 +167,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     assert "class CanonicalAuthority(ABC):" in rewritten
     assert "class Leaf(CanonicalAuthority):" in rewritten
 
-    module_path.write_text(rewritten, encoding="utf-8")
+    module_path.write_text(rewritten, encoding="utf-8", newline="")
     completed = subprocess.run(
         [
             sys.executable,
@@ -206,7 +206,7 @@ def test_rejects_destination_outside_source_ancestry(tmp_path: Path) -> None:
     module_path.write_text(
         module_path.read_text(encoding="utf-8")
         + "\n\nclass Unrelated(ABC):\n    pass\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = PromoteClassMembersToAncestorOperation(
@@ -248,7 +248,7 @@ def test_rejects_class_local_declaration_dependency(tmp_path: Path) -> None:
             "    default_payload = 3\n"
             "    payload: ClassVar[int] = default_payload",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 

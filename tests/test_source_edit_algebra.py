@@ -48,7 +48,7 @@ from nominal_refactor_advisor.codemod_spacing import (
 def _snapshot(tmp_path: Path, source: str) -> tuple[Path, CodemodSourceSnapshot]:
     module_path = tmp_path / "pkg/mod.py"
     module_path.parent.mkdir(parents=True)
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     return module_path, CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
     )

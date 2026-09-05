@@ -22,6 +22,7 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .source_geometry import read_source_text
 from .analysis import (
     AnalysisPathScope,
     CachedPathAnalysisRequest,
@@ -2798,7 +2799,7 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
             return None
         return (
             self.requested_path,
-            Path(file_path).read_text(encoding="utf-8"),
+            read_source_text(Path(file_path)),
         )
 
     def unique_existing_file_path(self) -> str | None:

@@ -7,6 +7,13 @@ import io
 import tokenize
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
+
+
+def read_source_text(path: Path, *, encoding: str = "utf-8") -> str:
+    """Decode exact source bytes without newline translation."""
+
+    return path.read_bytes().decode(encoding)
 
 
 @dataclass(frozen=True)

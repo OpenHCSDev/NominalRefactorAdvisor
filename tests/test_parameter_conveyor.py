@@ -71,7 +71,7 @@ def _base_source(*, callee_body: str = "    return left, right\n") -> str:
 def _write_source(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 

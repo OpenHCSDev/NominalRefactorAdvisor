@@ -32,7 +32,7 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     source = (root / "tests/fixtures/renderer_helper_before.py").read_text()
     module_path = tmp_path / "nominal_refactor_advisor/codemod.py"
     module_path.parent.mkdir()
-    module_path.write_text(source)
+    module_path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(module_path)], text=True)
     plan_path = root / "docs/examples/renderer_refactor.py"
     authored = runpy.run_path(str(plan_path))
@@ -104,7 +104,7 @@ def test_saved_signature_plan_preserves_runtime_and_untouched_source(
         f"    {before_header} return value  # keep café's inline suite\n"
         f"print(json.dumps({call}))\n"
     )
-    module_path.write_text(source, encoding="utf-8")
+    module_path.write_text(source, encoding="utf-8", newline="")
     expected = subprocess.check_output([sys.executable, str(module_path)], text=True)
     document = CodemodPlanDocument.from_payload_fields(json.loads(json.dumps({
         "recipes": [{

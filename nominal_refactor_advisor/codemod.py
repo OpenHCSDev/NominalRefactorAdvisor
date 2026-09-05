@@ -995,15 +995,10 @@ class ClassBaseMutationOperationABC(SourceReprovedOperation, ABC):
         replacement_lines = self.replacement_header_lines(header_authority)
         if replacement_lines == header_authority.current_header_lines:
             return ()
-        return (
-            SourceSpanReplacement(
-                file_path=target.file_path,
-                start_line=header_authority.start_line,
-                end_line=header_authority.end_line,
-                replacement_lines=replacement_lines,
-                rationale=self.rationale
-                or f"Update direct bases of {target.qualname!r}.",
-            ),
+        return header_authority.geometry.physical_edits(
+            file_path=target.file_path,
+            replacements=(header_authority.header_replacement(replacement_lines),),
+            rationale=self.rationale or f"Update direct bases of {target.qualname!r}.",
         )
 
     @abstractmethod
@@ -2630,6 +2625,19 @@ class RemoveClassBaseOperation(ClassBaseMutationOperationABC):
         header_authority: ClassHeaderSpanSourceAuthority,
     ) -> tuple[str, ...]:
         return header_authority.without_base(self.base_name)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceClassBaseOperation(ClassBaseMutationOperationABC):
+    """Replace one authored direct base while preserving direct-base precedence."""
+
+    replacement_base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def replacement_header_lines(
+        self,
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> tuple[str, ...]:
+        return header_authority.with_replaced_base(self.base_name, self.replacement_base_name)
 
 
 @dataclass(frozen=True, kw_only=True)

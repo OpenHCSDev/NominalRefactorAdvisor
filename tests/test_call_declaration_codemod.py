@@ -32,7 +32,7 @@ def test_module_call_declaration_operation_round_trips_and_deletes_exact_call(
         "declare_rule(BetaCandidate, summary=beta_summary)\n\n"
         "def retain():\n"
         "    declare_rule(AlphaCandidate)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     operation = DeleteModuleCallDeclarationsOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
@@ -71,7 +71,7 @@ def test_module_call_declaration_operation_fails_closed_on_ambiguous_selection(
     module_path = tmp_path / "rules.py"
     module_path.write_text(
         "registry.declare(Alpha)\nregistry.declare(Alpha, enabled=True)\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     operation = DeleteModuleCallDeclarationsOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),

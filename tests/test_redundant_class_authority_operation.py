@@ -22,7 +22,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 
@@ -125,7 +125,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
     assert "asdict" not in rewritten
 
     for file_path, rewritten_source in result.simulation.rewritten_sources.items():
-        Path(file_path).write_text(rewritten_source, encoding="utf-8")
+        Path(file_path).write_text(rewritten_source, encoding="utf-8", newline="")
     assert json.loads(_runtime_output(tmp_path)) == json.loads(expected_runtime_output)
 
 
@@ -151,7 +151,7 @@ def test_rejects_matching_method_syntax_with_different_global_binding(
             "from dataclasses import asdict, dataclass",
             "from alternate_records import asdict\nfrom dataclasses import dataclass",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
@@ -171,7 +171,7 @@ def test_rejects_different_neutral_base_mechanics(tmp_path: Path) -> None:
             "class SourceIndexRecord(ABC):",
             "class SourceIndexRecord(object):",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
@@ -194,14 +194,14 @@ def test_rejects_equivalent_source_that_depends_on_defining_class(
             "        record: Any = self\n        return asdict(record)",
             "        return super().__repr__()",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     source_index_path.write_text(
         source_index_path.read_text(encoding="utf-8").replace(
             "        return asdict(self)",
             "        return super().__repr__()",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
@@ -228,7 +228,7 @@ def test_rejects_import_cleanup_that_would_remove_a_retained_alias(
             "class SourceIndexRecord(ABC):",
             "RETAINED_SERIALIZER = retained_asdict\n\nclass SourceIndexRecord(ABC):",
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 

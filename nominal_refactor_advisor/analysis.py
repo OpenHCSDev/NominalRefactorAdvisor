@@ -31,6 +31,7 @@ from .analysis_cache import (
     PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
+from .source_geometry import read_source_text
 from .ast_tools import (
     CollectedFamily,
     CollectedFamilyCacheContext,
@@ -898,7 +899,7 @@ def accumulate_compact_global_projections_for_roots(
             family_cache_dir = parser.collected_family_cache_dir
             if family_cache_dir is not None:
                 try:
-                    source = path.read_text(encoding="utf-8")
+                    source = read_source_text(path)
                 except OSError:
                     source = ""
                 if source:
@@ -1074,7 +1075,7 @@ def build_compact_projection_shard(
     )
     if source_native_shard:
         try:
-            source_text = source.path.read_text(encoding="utf-8")
+            source_text = read_source_text(source.path)
         except OSError:
             source_text = ""
         if (
@@ -2003,7 +2004,7 @@ def analyze_compact_roots_with_cache(
             source: str | None = None
             source_signature = source_signature_by_path.get(normalized_path)
             if source_signature is None:
-                source = path.read_text(encoding="utf-8")
+                source = read_source_text(path)
                 source_signature = python_source_cache_signature(source)
             module_identity = PythonModulePathIdentity.from_path(
                 path,
@@ -2023,7 +2024,7 @@ def analyze_compact_roots_with_cache(
                     )
                 else:
                     if source is None:
-                        source = path.read_text(encoding="utf-8")
+                        source = read_source_text(path)
                     local_semantic_hash = semantic_python_source_hash(source)
                 local_identity = PerModuleAnalysisCacheFamilyIdentity.from_source(
                     path=path,

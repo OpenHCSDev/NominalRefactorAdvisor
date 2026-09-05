@@ -15,6 +15,7 @@ from abc import (
 from collections import defaultdict
 from collections.abc import (
     Iterable,
+    Iterator,
     Mapping,
 )
 from dataclasses import (
@@ -52,6 +53,7 @@ from .json_reports import (
 from .source_geometry import (
     SourceByteSpan,
     SourceLineSegmentAuthority,
+    read_source_text,
 )
 from .source_index import (
     AstTargetDigest,
@@ -987,6 +989,19 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             for line_number, line in enumerate(self.lines, start=1)
         )
 
+    def unenclosed_tokens(self, span: SourceTextSpan) -> Iterator[tokenize.TokenInfo]:
+        """Yield tokens outside brackets, including each opening delimiter."""
+
+        depth = 0
+        for token in self.tokens_in_span(span):
+            if depth == 0:
+                yield token
+            if token.type == tokenize.OP:
+                if token.string in "([{":
+                    depth += 1
+                elif token.string in ")]}":
+                    depth -= 1
+
     def call_argument_span(self, node: ast.Call) -> SourceTextSpan:
         """Locate the final call parentheses, retaining a parenthesised callee."""
 
@@ -1774,7 +1789,7 @@ class CodemodSourceRevision(DataclassJsonReport):
         if not source_path.exists():
             current_source = None
         elif source_path.is_file():
-            current_source = source_path.read_text(encoding=encoding)
+            current_source = read_source_text(source_path, encoding=encoding)
         else:
             raise CodemodSourceRevisionError(
                 f"Codemod source path is not a file: {source_path}"

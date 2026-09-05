@@ -59,7 +59,7 @@ def test_inherited_call_migration_preserves_runtime_and_other_calls(
         f"    return {callee_source}(\n        4,\n        offset=2,\n    ), Other.render(4)  # retain\n"
         "print(run())\n"
     )
-    path.write_text(source)
+    path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = _document(path, "4").simulate(snapshot)
@@ -86,7 +86,7 @@ def test_replacement_rejects_unproved_argument_binding(
 ) -> None:
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=error):
         _document(path, arguments, "render").simulate(snapshot)
@@ -98,7 +98,7 @@ def test_saved_call_edit_rejects_shadowed_authority_and_comment_loss(
 ) -> None:
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = _document(path, "2", "render")
     assert document.simulate(snapshot).is_clean
@@ -115,7 +115,7 @@ def test_import_alias_resolves_declaring_module_and_retains_argument_order(
     tmp_path: Path,
 ) -> None:
     library = tmp_path / "library.py"
-    library.write_text("def render(first, *, second): return first, second\n")
+    library.write_text("def render(first, *, second): return first, second\n", newline="")
     path = tmp_path / "probe.py"
     source = (
         "from library import render as chosen\n"
@@ -124,7 +124,7 @@ def test_import_alias_resolves_declaring_module_and_retains_argument_order(
         "def run(): return chosen(mark(1), second=mark(2))\n"
         "print(run(), events)\n"
     )
-    path.write_text(source)
+    path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument.from_payload_fields(
@@ -183,7 +183,7 @@ def test_argument_replacement_rejects_signature_changing_decorator(
         "@decorate\ndef render(value): return value\n"
         "def run(): return render(1)\n"
     )
-    path.write_text(source)
+    path.write_text(source, newline="")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match="signature_decorator_hazard"):
         _document(path, "2", "render").simulate(snapshot)

@@ -26,7 +26,7 @@ from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="")
     return path
 
 
@@ -359,7 +359,7 @@ def test_cli_repository_reproof_skips_unrequested_finding_analysis(
                 ]
             }
         ),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
 
     def reject_analysis(*args: object, **kwargs: object) -> object:

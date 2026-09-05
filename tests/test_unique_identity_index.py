@@ -86,7 +86,7 @@ def test_source_index_rejects_forced_target_handle_collision(
 ) -> None:
     (tmp_path / "module.py").write_text(
         "def alpha():\n    return 1\n\ndef beta():\n    return 2\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     monkeypatch.setattr(
         StableIdAuthority,
@@ -104,8 +104,8 @@ def test_source_index_rejects_forced_file_handle_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "alpha.py").write_text("ALPHA = 1\n", encoding="utf-8")
-    (tmp_path / "beta.py").write_text("BETA = 2\n", encoding="utf-8")
+    (tmp_path / "alpha.py").write_text("ALPHA = 1\n", encoding="utf-8", newline="")
+    (tmp_path / "beta.py").write_text("BETA = 2\n", encoding="utf-8", newline="")
     monkeypatch.setattr(
         StableIdAuthority,
         "file_id",
