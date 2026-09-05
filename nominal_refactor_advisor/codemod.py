@@ -5450,20 +5450,19 @@ class TargetDeletionOperationABC(RefactorRecipeOperation, ABC):
             target_span = SourceNodeSpan(
                 target_node,
                 SourceNodeDecoratorPolicy.INCLUDE,
-            )
-            return (
-                SourceSpanDeletion(
-                    file_path=target_digest.file_path,
-                    start_line=target_span.start_line,
-                    end_line=target_span.end_line,
-                    rationale=self.rationale
-                    or f"Delete target {target_digest.qualname!r}.",
-                ),
+            ).line_span
+        else:
+            target_span = SourceLineSpan(
+                target_digest.line,
+                target_digest.end_line,
             )
         return (
-            SourceSpanDeletion.for_target(
-                target_digest,
-                rationale=self.rationale,
+            SourceTextGeometry(
+                context.sources_by_file_path[target_digest.file_path]
+            ).statement_deletion_span(target_span).line_deletion(
+                file_path=target_digest.file_path,
+                rationale=self.rationale
+                or f"Delete target {target_digest.qualname!r}.",
             ),
         )
 

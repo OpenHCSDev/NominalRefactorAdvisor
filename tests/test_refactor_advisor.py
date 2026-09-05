@@ -5358,6 +5358,54 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
     assert second_simulation.simulation.applied_rewrite_count == 0
 
 
+@pytest.mark.parametrize(
+    ("source", "target_qualname", "expected_source"),
+    (
+        (
+            "class Retained:\n    pass\n\n\nclass Removed:\n    pass\n",
+            "Removed",
+            "class Retained:\n    pass\n",
+        ),
+        (
+            "class First:\n    pass\n\n\n"
+            "class Removed:\n    pass\n\n\n"
+            "class Last:\n    pass\n",
+            "Removed",
+            "class First:\n    pass\n\n\nclass Last:\n    pass\n",
+        ),
+        (
+            "from dataclasses import dataclass\n\n\n"
+            "@dataclass\n"
+            "class Removed:\n    value: int\n",
+            "Removed",
+            "from dataclasses import dataclass\n",
+        ),
+    ),
+)
+def test_target_deletion_owns_its_source_separator(
+    tmp_path: Path,
+    source: str,
+    target_qualname: str,
+    expected_source: str,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    simulation = RefactorRecipe("delete-target-separator").with_operation(
+        DeleteTargetOperation(
+            target=SourceRewriteTarget(
+                qualname=target_qualname,
+                file_path=module_path.as_posix(),
+            )
+        )
+    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+
+    assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
+        expected_source
+    )
+
+
 def test_refactor_recipe_ensure_import_merges_existing_from_import(
     tmp_path: Path,
 ) -> None:
@@ -5729,6 +5777,53 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
         alpha_path.as_posix()
     ][1].target_id
     assert alpha_target_id in projected_from_partial_cache.ast_target_nodes_by_id
+
+
+def test_virtual_source_overlay_derives_changes_from_canonical_path_identity(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    source_alias = (tmp_path / "pkg/../pkg/mod.py").as_posix()
+    original_source = module_path.read_text()
+
+    assert snapshot.with_virtual_sources({source_alias: original_source}) is snapshot
+
+    projected = snapshot.with_virtual_sources(
+        {source_alias: "class Beta:\n    pass\n"}
+    )
+
+    assert projected.sources_by_file_path[module_path.as_posix()] == (
+        "class Beta:\n    pass\n"
+    )
+    assert "pkg.mod.Beta" in projected.required_class_family_index.classes_by_symbol
+    assert "pkg.mod.Alpha" not in projected.required_class_family_index.classes_by_symbol
+    with pytest.raises(
+        ValueError,
+        match="Multiple source overlay paths resolve to the same file",
+    ):
+        snapshot.with_virtual_sources(
+            {
+                module_path.as_posix(): original_source,
+                source_alias: original_source,
+            }
+        )
+
+
+def test_virtual_source_overlay_reuses_class_index_without_class_changes(
+    tmp_path: Path,
+) -> None:
+    value_path = tmp_path / "pkg/value.py"
+    _write_module(tmp_path, "pkg/base.py", "class Base:\n    pass\n")
+    _write_module(tmp_path, "pkg/value.py", "VALUE = 1\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    projected = snapshot.with_virtual_sources({value_path.as_posix(): "VALUE = 2\n"})
+
+    assert projected.required_class_family_index is (
+        snapshot.required_class_family_index
+    )
 
 
 def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(

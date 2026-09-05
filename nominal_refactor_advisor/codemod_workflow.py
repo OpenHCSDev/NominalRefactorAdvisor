@@ -23,7 +23,7 @@ from .analysis import (
 )
 from .ast_tools import (
     ParsedModule,
-    PythonModulePathAuthority,
+    ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
 from .codemod import (
@@ -1819,64 +1819,9 @@ class ProjectedScanModuleSet:
     simulation: CodemodSimulationReport
     roots: tuple[Path, ...] = ()
 
-    @cached_property
-    def module_path_authority(self) -> PythonModulePathAuthority:
-        return PythonModulePathAuthority.from_parsed_modules(
-            self.modules,
-            self.roots,
-        )
-
     def modules_after_projection(self) -> tuple[ParsedModule, ...]:
-        return (
-            *self.projected_existing_modules(),
-            *self.created_modules(),
-        )
-
-    def projected_existing_modules(self) -> tuple[ParsedModule, ...]:
-        return tuple(self.projected_module(module) for module in self.modules)
-
-    def projected_module(self, module: ParsedModule) -> ParsedModule:
-        projection = ProjectedModuleSource(
-            module=module,
-            simulation=self.simulation,
-        )
-        if not projection.has_rewrite:
-            return module
-        return module.with_source(projection.source)
-
-    def created_modules(self) -> tuple[ParsedModule, ...]:
-        known_paths = self.known_resolved_paths()
-        return tuple(
-            self.created_module(file_path, source)
-            for file_path, source in sorted(self.simulation.rewritten_sources.items())
-            if Path(file_path).resolve() not in known_paths
-        )
-
-    def known_resolved_paths(self) -> frozenset[Path]:
-        return frozenset(module.path.resolve() for module in self.modules)
-
-    def created_module(self, file_path: str, source: str) -> ParsedModule:
-        path = Path(file_path)
-        return self.module_path_authority.source_module(path, source).parse()
-
-
-@dataclass(frozen=True)
-class ProjectedModuleSource:
-    """Resolve one module's source in a simulated post-rewrite snapshot."""
-
-    module: ParsedModule
-    simulation: CodemodSimulationReport
-
-    @property
-    def module_path(self) -> str:
-        return self.module.file_path
-
-    @property
-    def has_rewrite(self) -> bool:
-        return self.module_path in self.simulation.rewritten_sources
-
-    @property
-    def source(self) -> str:
-        if self.has_rewrite:
-            return self.simulation.rewritten_sources[self.module_path]
-        return self.module.source
+        return ParsedModuleSourceProjection(
+            modules=self.modules,
+            source_overlay_by_file_path=self.simulation.rewritten_sources,
+            analysis_roots=self.roots,
+        ).projected_modules

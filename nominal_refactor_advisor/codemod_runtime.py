@@ -36,6 +36,7 @@ from typing import (
 
 from .ast_tools import (
     ParsedModule,
+    ParsedModuleSourceProjection,
     PythonModulePathAuthority,
     SourceModule,
 )
@@ -323,28 +324,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         source_overlay: Mapping[str, str],
     ) -> "CodemodSourceSnapshot":
-        effective_overlay = {
-            file_path: source
-            for file_path, source in source_overlay.items()
-            if self.sources_by_file_path.get(file_path) != source
-        }
-        if not effective_overlay:
+        if not source_overlay:
             return self
-        projected_modules = self.modules_with_source_overlay(effective_overlay)
-        changed_modules = tuple(
-            module
-            for module in projected_modules
-            if module.file_path in effective_overlay
-        )
+        projection = self.source_projection(source_overlay)
+        if not projection.changed_modules:
+            return self
         return type(self)._from_modules_with_indexes(
-            projected_modules,
+            projection.projected_modules,
             self.required_class_family_index.projected_with_module_overlay(
-                projected_modules,
-                changed_modules,
+                projection.projected_modules,
+                projection.changed_modules,
             ),
             self._source_index_build_artifacts.projected_with_module_overlay(
-                projected_modules,
-                changed_modules,
+                projection.projected_modules,
+                projection.changed_modules,
             ),
         )
 
@@ -395,43 +388,32 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         source_overlay: Mapping[str, str],
     ) -> tuple[ParsedModule, ...]:
-        existing_paths = frozenset(
-            source_file.file_path for source_file in self.source_index.files
-        )
-        existing_modules = tuple(
-            self.module_with_source_overlay(source_file, source_overlay)
-            for source_file in self.source_index.files
-        )
-        new_modules = tuple(
-            self.source_index.module_path_authority.source_module(
-                Path(file_path),
-                source_overlay[file_path],
-            ).parse()
-            for file_path in sorted(source_overlay)
-            if file_path not in existing_paths
-        )
-        return (*existing_modules, *new_modules)
+        return self.source_projection(source_overlay).projected_modules
 
-    def module_with_source_overlay(
+    def source_projection(
         self,
-        source_file: SourceFileDigest,
         source_overlay: Mapping[str, str],
-    ) -> ParsedModule:
+    ) -> ParsedModuleSourceProjection:
+        return ParsedModuleSourceProjection(
+            modules=self.parsed_modules,
+            source_overlay_by_file_path=source_overlay,
+        )
+
+    def indexed_module(self, source_file: SourceFileDigest) -> ParsedModule:
         file_path = source_file.file_path
-        source = source_overlay.get(file_path, self.sources_by_file_path[file_path])
         source_module = SourceModule.from_path_identity(
             source_file.module_path_identity,
-            source,
+            self.sources_by_file_path[file_path],
         )
-        if file_path in source_overlay:
-            return source_module.parse()
         if self.module_node_cache is not None and file_path in self.module_node_cache:
             return source_module.parsed_module(self.module_node_cache[file_path])
         return source_module.parse()
 
-    @property
+    @cached_property
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
-        return self.modules_with_source_overlay({})
+        return tuple(
+            self.indexed_module(source_file) for source_file in self.source_index.files
+        )
 
     def simulate_rewrites(
         self,

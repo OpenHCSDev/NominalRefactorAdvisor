@@ -21,7 +21,7 @@ import pickle
 import sys
 import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
@@ -69,7 +69,7 @@ from .observation_shapes import (
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .source_geometry import SourceLineSegmentAuthority
-from .source_identity import SourceFileIdentity
+from .source_identity import SourceFileIdentity, resolved_source_path_text
 from .semantic_match import (
     GuardedEffectStep,
     Maybe,
@@ -1102,6 +1102,95 @@ class PythonModulePathAuthority:
         if not matching_roots:
             return None
         return max(matching_roots, key=lambda root: len(root.resolve().parts))
+
+
+@dataclass(frozen=True)
+class ParsedModuleSourceProjection:
+    """Project one exact module set through an in-memory source overlay."""
+
+    modules: tuple[ParsedModule, ...]
+    source_overlay_by_file_path: Mapping[str, str]
+    analysis_roots: tuple[Path, ...] = ()
+
+    @cached_property
+    def module_path_authority(self) -> PythonModulePathAuthority:
+        return PythonModulePathAuthority.from_parsed_modules(
+            self.modules,
+            self.analysis_roots,
+        )
+
+    @cached_property
+    def source_overlay_by_resolved_file_path(
+        self,
+    ) -> dict[str, tuple[str, str]]:
+        overlay_by_resolved_path: dict[str, tuple[str, str]] = {}
+        for file_path, source in self.source_overlay_by_file_path.items():
+            resolved_file_path = resolved_source_path_text(file_path)
+            if resolved_file_path in overlay_by_resolved_path:
+                previous_path, _previous_source = overlay_by_resolved_path[
+                    resolved_file_path
+                ]
+                raise ValueError(
+                    "Multiple source overlay paths resolve to the same file: "
+                    f"{previous_path!r} and {file_path!r}"
+                )
+            overlay_by_resolved_path[resolved_file_path] = (file_path, source)
+        return overlay_by_resolved_path
+
+    @cached_property
+    def known_resolved_file_paths(self) -> frozenset[str]:
+        resolved_paths = tuple(module.resolved_file_path for module in self.modules)
+        if len(resolved_paths) != len(frozenset(resolved_paths)):
+            raise ValueError("Parsed module source identities must be unique")
+        return frozenset(resolved_paths)
+
+    @cached_property
+    def projected_modules(self) -> tuple[ParsedModule, ...]:
+        """Reuse unchanged modules and parse only changed or created source."""
+
+        return (*self.projected_existing_modules, *self.created_modules)
+
+    @cached_property
+    def projected_existing_modules(self) -> tuple[ParsedModule, ...]:
+        return tuple(self.projected_existing_module(module) for module in self.modules)
+
+    def projected_existing_module(self, module: ParsedModule) -> ParsedModule:
+        resolved_file_path = module.resolved_file_path
+        if resolved_file_path not in self.source_overlay_by_resolved_file_path:
+            return module
+        _file_path, source = self.source_overlay_by_resolved_file_path[
+            resolved_file_path
+        ]
+        if source == module.source:
+            return module
+        return module.with_source(source)
+
+    @cached_property
+    def created_modules(self) -> tuple[ParsedModule, ...]:
+        return tuple(
+            self.module_path_authority.source_module(Path(file_path), source).parse()
+            for resolved_file_path, (file_path, source) in sorted(
+                self.source_overlay_by_resolved_file_path.items()
+            )
+            if resolved_file_path not in self.known_resolved_file_paths
+        )
+
+    @cached_property
+    def changed_modules(self) -> tuple[ParsedModule, ...]:
+        """Return exactly the parsed modules whose source state changed."""
+
+        return (
+            *(
+                projected
+                for original, projected in zip(
+                    self.modules,
+                    self.projected_existing_modules,
+                    strict=True,
+                )
+                if projected is not original
+            ),
+            *self.created_modules,
+        )
 
 
 @dataclass(frozen=True)

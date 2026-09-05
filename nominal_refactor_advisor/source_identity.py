@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import Mapping
+from functools import cached_property
 from os import PathLike, fspath
 from pathlib import Path
 
@@ -13,13 +14,13 @@ class SourceFileIdentity(ABC):
 
     path: Path
 
-    @property
+    @cached_property
     def file_path(self) -> str:
         """Canonical slash-normalized source identity for cross-platform joins."""
 
         return source_path_text(self.path)
 
-    @property
+    @cached_property
     def resolved_file_path(self) -> str:
         """Canonical absolute source identity for filesystem comparisons."""
 

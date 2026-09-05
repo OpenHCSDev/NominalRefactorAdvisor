@@ -2571,6 +2571,8 @@ class ClassFamilyIndex:
                 changed_module_tuple
             ).module_class_records()
         )
+        if not replaced_symbols and not projected_symbols:
+            return self
         if replaced_symbols != projected_symbols:
             return build_class_family_index(list(projected_module_tuple))
         return ClassFamilyIndexBuilder(

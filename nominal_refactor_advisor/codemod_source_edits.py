@@ -936,6 +936,25 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
         return self._line_span_offsets(span.start_line, span.end_line)
 
+    def statement_deletion_span(self, span: "SourceLineSpan") -> "SourceLineSpan":
+        """Include the separator owned by one deleted statement."""
+
+        if not 1 <= span.start_line <= span.end_line <= len(self.lines):
+            raise ValueError("Statement deletion span is outside source geometry")
+        has_following_statement = any(
+            line.strip() for line in self.lines[span.end_line :]
+        )
+        if has_following_statement:
+            end_line = span.end_line
+            while end_line < len(self.lines) and not self.lines[end_line].strip():
+                end_line += 1
+            return SourceLineSpan(span.start_line, end_line)
+
+        start_line = span.start_line
+        while start_line > 1 and not self.lines[start_line - 2].strip():
+            start_line -= 1
+        return SourceLineSpan(start_line, len(self.lines))
+
     def node_offsets(self, node: ast.AST) -> tuple[int, int] | None:
         span = SourceByteSpan.from_node(node)
         if span is None or not span.fits_lines(self.lines):
