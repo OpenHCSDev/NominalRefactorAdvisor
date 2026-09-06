@@ -71,6 +71,15 @@ class SourceNodeDecoratorPolicy(StrEnum):
     EXCLUDE = ("exclude", False)
     INCLUDE = ("include", True)
 
+    def validate_replacement(
+        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        """Require authored decorators to belong to the selected source region."""
+        if node.decorator_list and not self.includes_decorators:
+            raise ValueError(
+                "Replacement decorators require a decorator-inclusive source region"
+            )
+
     def __new__(
         cls,
         value: str,

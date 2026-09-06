@@ -435,7 +435,14 @@ Function-signature replacements carry only their parameter and return suffix;
 the targeted declaration supplies its function name and sync or async kind.
 Whole-target replacements parse exactly one class or function declaration and
 re-prove its concrete declaration kind and name against the current indexed
-target before producing a physical edit.
+target before producing a physical edit. ``ReplaceTargetOperation`` replaces
+the header and body, preserving the existing decorator block. Its default
+``decorator_policy`` excludes decorators, so a replacement payload containing
+decorators fails preflight. ``ReplaceDeclarationDecoratorsOperation`` edits the
+decorator block independently; both operations can compose on one snapshot.
+A nominal operation refinement can select the inclusive decorator policy.
+The same policy then validates the payload and selects the complete decorated
+source span, including multiline decorator markers.
 ``SourceTextPatch`` owns a non-empty ordered sequence of exact old/new source
 transformations and applies each transformation to the preceding result.
 ``PatchTargetOperation`` composes that declaration with the source-reproved

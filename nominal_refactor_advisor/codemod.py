@@ -796,6 +796,10 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         default=(),
     )
 
+    decorator_policy: ClassVar[SourceNodeDecoratorPolicy] = (
+        SourceNodeDecoratorPolicy.EXCLUDE
+    )
+
     @cached_property
     def replacement_declaration(self) -> AstTargetNode:
         """Parse the one declaration represented by the replacement source."""
@@ -816,6 +820,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
                 "Replacement source must contain exactly one class or function "
                 "declaration"
             )
+        self.decorator_policy.validate_replacement(replacement_module.body[0])
         return replacement_module.body[0]
 
     def source_edits_from_snapshot(
@@ -835,11 +840,14 @@ class ReplaceTargetOperation(SourceReprovedOperation):
                 f"{type(target_node).__name__} {target_node.name!r}; got "
                 f"{type(replacement_node).__name__} {replacement_node.name!r}"
             )
+        span = SourceTextGeometry(
+            snapshot.sources_by_file_path[target.file_path]
+        ).node_line_span(SourceNodeSpan(target_node, self.decorator_policy))
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
-                start_line=target.line,
-                end_line=target.end_line,
+                start_line=span.start_line,
+                end_line=span.end_line,
                 replacement_lines=SourceTargetEditor.source_lines(
                     self.replacement_source
                 ),

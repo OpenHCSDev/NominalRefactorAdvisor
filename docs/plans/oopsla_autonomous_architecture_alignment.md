@@ -1316,3 +1316,38 @@ docstring edit uses the existing exact, target-owned text-patch operation.
 Sphinx built the reference
 with its two existing duplicate-description warnings. Receipts are under
 `/tmp/nra-constructor-bindings-*`; the unrelated `uv.lock` remains excluded.
+
+## Decorator policy governs validation and geometry (2026-09-06)
+
+Closed the preflight gap found while bootstrapping constructor lookup.
+`ReplaceTargetOperation` previously accepted a decorated replacement while
+editing only the original header and body. Existing decorators stayed in place,
+so a replacement could duplicate `@dataclass(frozen=True)` and produce a module
+that failed to import despite a clean simulation.
+
+The operation now declares its `SourceNodeDecoratorPolicy` once. That policy
+validates authored decorators and supplies the source span through the existing
+`SourceTextGeometry`/`SourceNodeSpan` machinery. The default excludes decorators:
+the original decorator block is preserved and decorated payloads fail preflight.
+A nominal refinement selecting the inclusive policy owns the complete decorated
+span, including a multiline decorator's opening `@`. No separate validation
+flag, mirrored span rule or additional dispatch registry was introduced.
+
+The nine regressions cover classes, synchronous and asynchronous functions,
+decorated and undecorated originals, actual frozen-dataclass execution, a policy
+provided through MI, and simultaneous header/body and decorator edits on one
+snapshot. Seven cases failed before the change. The 34-case focused run passes.
+The CLI also rejects the original frozen-dataclass payload with exit status 1
+and `applied: false`; the fixture SHA-256 is unchanged.
+
+`docs/examples/replacement_decorator_policy.py` performs the production change
+in four DSL stages. Replaying from `0e53046` reproduces both complete module
+ASTs. All 81 detectors complete the touched-code audit with zero findings.
+Sphinx builds the API reference with its two existing duplicate-description
+warnings. Receipts use `/tmp/nra-decorator-policy-*`; the CLI fixture is in
+`/tmp/nra-decorator-cli.u1x4tU`. The unrelated `uv.lock` remains excluded.
+
+Full validation passes 2,381 tests with 15 skipped on Python 3.11 and 2,396
+tests on Python 3.14, with eight workers per suite. Python 3.14 retains the
+existing 96 fork/thread lifecycle warnings. Ruff and the whitespace check pass.
+Receiver-lifetime proof remains the next implementation task.
