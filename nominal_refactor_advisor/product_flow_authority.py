@@ -31,6 +31,7 @@ from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,
 )
+from .descriptor_algebra import AliasProperty
 from .product_flow import (
     CompactCallArguments,
     CompactCallTargetReference,
@@ -56,6 +57,7 @@ from .value_expression import LexicalValueReference
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 
+
 @dataclass(frozen=True)
 class CompactProductFlowContext:
     """One execution flow joined to its module and optional declaration."""
@@ -63,7 +65,10 @@ class CompactProductFlowContext:
     module_name: str
     file_path: str
     flow: CompactFunctionFlow
-    declaration: CompactFunctionDeclaration | None
+
+    declaration = AliasProperty[CompactFunctionDeclaration | None](
+        "flow.owner.declaration"
+    )
 
     @property
     def owner_symbol(self) -> str:
@@ -571,27 +576,15 @@ class CompactProductFlowRepository(
 
     @cached_property
     def flow_contexts(self) -> tuple[CompactProductFlowContext, ...]:
-        contexts: list[CompactProductFlowContext] = []
-        for projection in self.product_projections:
-            declarations_by_qualname = {
-                declaration.identity.qualname: declaration
-                for declaration in projection.function_declarations
-            }
-            for flow in projection.flows:
-                declaration = (
-                    declarations_by_qualname.get(flow.owner.qualname)
-                    if flow.owner.kind.is_function_scope
-                    else None
-                )
-                contexts.append(
-                    CompactProductFlowContext(
-                        module_name=projection.module_name,
-                        file_path=projection.file_path,
-                        flow=flow,
-                        declaration=declaration,
-                    )
-                )
-        return tuple(contexts)
+        return tuple(
+            CompactProductFlowContext(
+                module_name=projection.module_name,
+                file_path=projection.file_path,
+                flow=flow,
+            )
+            for projection in self.product_projections
+            for flow in projection.flows
+        )
 
     @cached_property
     def module_flow_contexts(self) -> dict[str, CompactProductFlowContext]:

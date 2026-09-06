@@ -16,9 +16,11 @@ from nominal_refactor_advisor.product_flow import (
     CompactControlBranchKind,
     CompactFunctionBindingKind,
     CompactFunctionSignature,
+    CompactFlowOwner,
     CompactFlowOwnerKind,
     CompactFunctionTargetResolutionViolation,
     CompactMutationKind,
+    CompactNamespaceFlowOwner,
     CompactKeywordArgument,
     CompactParameterKind,
     CompactProductFlowModuleProjectionFamily,
@@ -697,6 +699,43 @@ def test_loaded_names_are_derived_from_reference_facts(
     empty = replace(flow, calls=(), callable_reference_uses=())
     assert empty.loaded_value_root_names == ()
     assert pickle.loads(pickle.dumps(flow)).loaded_value_root_names == expected
+
+
+def test_function_declaration_is_the_flow_owner_and_module_view_is_derived() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module("def run(value):\n    return value\n")
+    )
+    declaration = projection.function_declarations[0]
+    flow = next(flow for flow in projection.flows if flow.owner.qualname == "run")
+    assert flow.owner is declaration
+    assert flow.owner.declaration is declaration
+    assert flow.owner.kind is CompactFlowOwnerKind.FUNCTION
+    assert flow.owner.qualname == declaration.identity.qualname
+    assert "function_declarations" not in {field.name for field in fields(projection)}
+    namespace_flows = tuple(
+        flow for flow in projection.flows if flow.owner.declaration is None
+    )
+    assert replace(projection, flows=namespace_flows).function_declarations == ()
+    restored = pickle.loads(pickle.dumps(projection))
+    restored_flow = next(
+        flow for flow in restored.flows if flow.owner.qualname == "run"
+    )
+    assert restored_flow.owner is restored.function_declarations[0]
+
+
+def test_function_flow_ownership_requires_a_declaration() -> None:
+    with pytest.raises(TypeError):
+        CompactFlowOwner()
+    with pytest.raises(ValueError, match="owned by their declaration"):
+        CompactNamespaceFlowOwner(CompactFlowOwnerKind.FUNCTION, "run")
+    for kind, qualname in (
+        (CompactFlowOwnerKind.MODULE, ""),
+        (CompactFlowOwnerKind.CLASS_BODY, "Owner"),
+    ):
+        owner = CompactNamespaceFlowOwner(kind, qualname)
+        assert owner.declaration is None
+        assert owner.kind is kind
+        assert owner.qualname == qualname
 
 
 def test_opaque_attribute_reads_remain_explicit_flow_evidence() -> None:

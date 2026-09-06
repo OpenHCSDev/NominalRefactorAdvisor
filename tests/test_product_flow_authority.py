@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -474,6 +475,33 @@ def test_unresolved_noncall_uses_keep_their_resolution_evidence() -> None:
     assert resolution.target_resolution.declaration is None
     assert resolution.target_resolution.possible_symbols == ()
     assert resolution in repository.callable_escapes
+
+
+def test_duplicate_function_flows_retain_their_own_declarations() -> None:
+    repository = _repository(
+        _module(
+            "pkg.redefined",
+            "def run(left):\n    return left\n" "def run(right):\n    return right\n",
+        )
+    )
+    contexts = tuple(
+        context
+        for context in repository.flow_contexts
+        if context.owner_symbol == "pkg.redefined.run"
+    )
+    assert tuple(
+        context.declaration.signature.parameters[0].name for context in contexts
+    ) == (
+        "left",
+        "right",
+    )
+    assert tuple(context.declaration.line for context in contexts) == (1, 3)
+    assert all(context.declaration is context.flow.owner for context in contexts)
+    assert all(
+        "declaration" not in {field.name for field in fields(context)}
+        for context in contexts
+    )
+    assert "pkg.redefined.run" in repository.ambiguous_function_declaration_symbols
 
 
 @pytest.mark.parametrize(

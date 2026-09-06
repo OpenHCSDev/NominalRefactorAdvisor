@@ -277,6 +277,18 @@ an unresolved declaration does not erase the escape. The
 :download:`escape-evidence refactor <../../examples/escape_resolution_evidence.py>`
 applies the declaration rename and its consumers through the DSL.
 
+``CompactFlowOwner`` is the nominal scope-owner contract.
+``CompactFunctionDeclaration`` implements it directly: a function flow owns
+that declaration object, and its qualified name derives from the declaration's
+identity. ``CompactNamespaceFlowOwner`` represents module and class-body scopes
+and rejects function scope construction without a declaration.
+``CompactProductFlowModuleProjection.function_declarations`` and
+``CompactProductFlowContext.declaration`` derive from flow owners. Repeated
+function names therefore retain their individual signatures and source sites;
+repository ambiguity checks remain separate. The :download:`flow ownership
+refactor <../../examples/flow_declaration_ownership.py>` removes the former
+name-based declaration join through the DSL.
+
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``
 resolves at that position. Opaque expressions return an explicit

@@ -1674,3 +1674,50 @@ body events, while the existing function declaration already owns the signature.
 Pretending parameters are ordinary mutations would force unrelated consumers
 to filter those fake writes; initial-binding evidence should instead derive from
 the declaration and join the shared selection contract explicitly.
+
+## Function declarations own their flow scopes (2026-09-06)
+
+The initial-binding investigation found that flows did not retain their function
+declaration. Instead they stored a copied scope kind and qualified name. The
+repository then rebuilt a declaration lookup by that name. Two definitions of
+`run`, with parameters `left` and `right`, consequently attached the second
+signature to both flow contexts. Both new ownership regressions failed before
+the refactor.
+
+`CompactFunctionDeclaration` now implements the `CompactFlowOwner` ABC and is
+the actual owner object supplied to its flow. Qualified names derive from the
+declaration identity; function scope kind belongs to the declaration class.
+`CompactNamespaceFlowOwner` represents module/class-body scopes and rejects
+function scope construction. The module's declaration sequence derives from
+its flows, and the repository context projects its declaration through the
+owner contract. The former name-indexed join and independently supplied context
+declaration are removed. Duplicate-name ambiguity is still reported by the
+existing declaration-multiplicity authority.
+
+The 13-stage `docs/examples/flow_declaration_ownership.py` plan simulates and
+applies through the CLI. Class-member insertion expects one declaration per
+operation, so the two class attributes and declaration property are separate
+stages in that batch. Tests preserve owner identity across pickle round-trips
+and show that replacing module flow facts derives a new declaration view.
+The focused suite passes 247 cases; the additional namespace-construction
+contract case passes separately. Receipts use `/tmp/nra-flow-owner-*`.
+
+This establishes declaration-owned signature access for initial-binding proof.
+It does not yet change binding selection or fix receiver reassignment; those
+remain the next obligations, now without needing a second parameter table or
+treating parameters as ordinary mutation events.
+
+The all-production comparison covers 131 modules, 8,190 flows and 6,082
+function declarations. Declaration payloads and scope identities are unchanged,
+and every function declaration is its flow's exact owner object. Raw serialised
+projections decrease from 25,172,678 to 19,520,779 bytes before derived views
+are accessed. A paired collection pass takes 4.07/5.85 seconds during concurrent
+full suites; this is not evidence of a collection speedup.
+
+Full suites pass 2,419 tests with 15 skipped on Python 3.11 and 2,434 tests on
+Python 3.14, with eight workers each (218/221 seconds). Python 3.14 retains
+96 existing warnings. The 13-stage plan reproduces both complete production
+module ASTs from `81596d9`. All 81 detectors complete the touched-source audit
+with zero findings. Ruff and whitespace checks pass; Sphinx retains its two
+existing duplicate-description warnings. Diataxis keeps the ownership contract
+in the API reference and this investigation/measurement record here.

@@ -1104,8 +1104,36 @@ class CompactProductConstruction:
         return tuple(self.field_values)
 
 
+class CompactFlowOwner(ABC):
+    """Nominal scope owner, retaining its declaration when it is a function."""
+
+    kind: CompactFlowOwnerKind
+    qualname: str
+
+    @property
+    @abstractmethod
+    def declaration(self) -> CompactFunctionDeclaration | None:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CompactFunctionDeclaration:
+class CompactNamespaceFlowOwner(CompactFlowOwner):
+    """Module or class-body scope without a function signature."""
+
+    kind: CompactFlowOwnerKind
+    qualname: str
+
+    def __post_init__(self) -> None:
+        if self.kind.is_function_scope:
+            raise ValueError("Function flows must be owned by their declaration")
+
+    @property
+    def declaration(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class CompactFunctionDeclaration(CompactFlowOwner):
     identity: CompactFunctionIdentity
     line: int
     end_line: int
@@ -1113,6 +1141,14 @@ class CompactFunctionDeclaration:
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
     return_annotation_expression: str | None = None
+
+    kind = CompactFlowOwnerKind.FUNCTION
+
+    qualname = AliasProperty[str]("identity.qualname")
+
+    @property
+    def declaration(self) -> CompactFunctionDeclaration:
+        return self
 
     @property
     def return_annotation_reference_parts(self) -> tuple[str, ...] | None:
@@ -1209,12 +1245,6 @@ class CompactFunctionDeclaration:
         signature = self.signature_for_access(access)
         assert signature is not None
         return signature.bind(positional_arguments, keyword_arguments)
-
-
-@dataclass(frozen=True)
-class CompactFlowOwner:
-    kind: CompactFlowOwnerKind
-    qualname: str
 
 
 @dataclass(frozen=True)
@@ -1400,8 +1430,15 @@ class CompactFunctionFlow:
 class CompactProductFlowModuleProjection(CompactModuleIdentity):
     """AST-free function declarations and source-ordered product-flow facts."""
 
-    function_declarations: tuple[CompactFunctionDeclaration, ...]
     flows: tuple[CompactFunctionFlow, ...]
+
+    @cached_property
+    def function_declarations(self) -> tuple[CompactFunctionDeclaration, ...]:
+        return tuple(
+            declaration
+            for flow in self.flows
+            if (declaration := flow.owner.declaration) is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -1965,7 +2002,7 @@ def compact_product_flow_projection(
     declarations.visit(parsed_module.module)
     flows = [
         _CompactFlowCollector(
-            owner=CompactFlowOwner(CompactFlowOwnerKind.MODULE, ""),
+            owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
             module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=("",),
             current_class_qualname=None,
@@ -1974,7 +2011,7 @@ def compact_product_flow_projection(
     ]
     flows.extend(
         _CompactFlowCollector(
-            owner=CompactFlowOwner(
+            owner=CompactNamespaceFlowOwner(
                 CompactFlowOwnerKind.CLASS_BODY,
                 context.qualname,
             ),
@@ -1987,10 +2024,7 @@ def compact_product_flow_projection(
     )
     flows.extend(
         _CompactFlowCollector(
-            owner=CompactFlowOwner(
-                CompactFlowOwnerKind.FUNCTION,
-                context.declaration.identity.qualname,
-            ),
+            owner=context.declaration,
             module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
@@ -2001,9 +2035,6 @@ def compact_product_flow_projection(
     return CompactProductFlowModuleProjection(
         module_name=parsed_module.module_name,
         file_path=parsed_module.file_path,
-        function_declarations=tuple(
-            context.declaration for context in declarations.function_contexts
-        ),
         flows=tuple(flows),
     )
 
