@@ -2107,3 +2107,46 @@ under concurrent measurement; these are local cost observations, not a
 throughput guarantee. The added geometry buys an exact expression-site join
 that line numbers cannot supply. Receipts are
 `/tmp/nra-read-site-cost-{before,after}.json`.
+
+### 2026-09-06: Binding-source dispatch on nominal declarations
+
+An 18-stage authored DSL sequence moves selected-source dispatch out of the
+repository's nullable-field branch and onto `CompactBindingSource`.
+`CompactBindingResolverABC` defines the selected and possible projections.
+Exact sources pass their retained mutation and current use position; open
+mutations and entry parameters share `UnresolvedCompactBindingSource` behaviour
+through native inheritance. Diagnostics belong to the unresolved family.
+Aliases and constant diagnostics use existing descriptors and declaration
+values instead of forwarding properties.
+
+The repository keeps its star-import exposure gate and uses the existing flow
+selection. Its exact-source continuation is moved, not copied into a second
+binder. Cycle, alias, import and class/member rules remain unchanged. In
+particular, this is not yet the shared captured-object relation: both existing
+alias paths still append later suffixes at capture time, and definition lookup
+still lacks post-decorator/metaclass object identity. The 12 native failures
+remain the next semantic obligations, with their positive controls retained.
+
+Focused dispatch, flow, product-safety and conveyor checks pass 198 cases. New
+checks preserve actual mutation/context/position/pending-set object identity,
+entry-parameter value-origin evidence and the shared inherited unresolved
+implementation. `docs/examples/binding_source_dispatch.json` is a generated
+projection of the typed authored plan, based on `1880376`; it is not a second
+hand-maintained operation schema.
+
+Both API replay and actual CLI simulation complete all 18 stages from
+`1880376`; the generated ASTs match both production modules. All 81 detectors
+complete the touched-source audit with zero findings and omissions. Ruff,
+whitespace and Sphinx checks pass, with the same two pre-existing Sphinx
+duplicate-description warnings. Full suites pass 2,547 cases with 15 skipped
+on Python 3.11 and 2,562 on Python 3.14. Both retain exactly the same 12 pending
+native failures; no tests are excluded or marked as expected failures.
+Receipts are `/tmp/nra-binding-source-dispatch-{311,314}.log`,
+`/tmp/nra-binding-source-cli-replay.json` and
+`/tmp/nra-binding-source-audit.json`.
+
+A five-sample comparison of 30,000 identical alias, local and entry-parameter
+queries returns the same resolution types and candidate symbols. Median times
+are 0.402 seconds before and 0.399 seconds after, under concurrent measurement.
+This shows no material cost change in that bounded query mix, not a general
+performance guarantee. Receipts are `/tmp/nra-binding-projection-{before,after}.json`.

@@ -39,6 +39,7 @@ from .collection_algebra import (
 )
 from .descriptor_algebra import AliasProperty
 from .product_flow import (
+    CompactBindingResolverABC,
     CompactBindingVisit,
     CompactCallArguments,
     CompactCallTargetReference,
@@ -514,11 +515,101 @@ class CompactProductFlowRepository(
         CompactProductFlowContext, CompactCallTargetResolution
     ],
     CompactMutationResolverABC[CompactProductFlowContext, CompactCallTargetResolution],
+    CompactBindingResolverABC[CompactProductFlowContext, CompactCallTargetResolution],
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
+
+    def _selected_binding_resolution(
+        self,
+        context: CompactProductFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> CompactCallTargetResolution:
+        root_name = reference.root_name
+        binding_visit = (context.owner_symbol, binding)
+        if binding_visit in pending_bindings:
+            return OpenCompactFunctionTarget(
+                tuple(
+                    sorted(
+                        {
+                            f"{owner}.{mutation.target.bound_name}"
+                            for owner, mutation in pending_bindings
+                        }
+                    )
+                ),
+                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
+            )
+        if not binding.kind.is_definition_binding:
+            pending_bindings = pending_bindings | {binding_visit}
+
+        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
+        if alias is not None:
+            resolution = alias.source_use.resolve(
+                self,
+                context,
+                pending_bindings=pending_bindings,
+                attribute_path=reference.attribute_path,
+            )
+            return resolution.through_alias(alias, context)
+
+        if binding.kind.is_import_binding:
+            alias_target = binding.imported_origin
+            if alias_target is None:
+                return self._possible_binding_resolution(
+                    context,
+                    reference,
+                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+                    pending_bindings,
+                )
+            return self._function_resolution_for_symbol(
+                ".".join((alias_target, *reference.attribute_path)),
+                pending_bindings,
+            )
+
+        if not binding.kind.is_definition_binding:
+            return self._possible_binding_resolution(
+                context,
+                reference,
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+                pending_bindings,
+            )
+
+        binding_symbol = f"{context.owner_symbol}.{root_name}"
+        if reference.attribute_path:
+            owner = self.class_index.class_for(binding_symbol)
+            if owner is None or owner.line != binding.line:
+                return OpenCompactFunctionTarget(
+                    (".".join((binding_symbol, *reference.attribute_path)),),
+                    CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+                )
+            if len(reference.attribute_path) == 1:
+                return self._class_method_resolution(
+                    owner,
+                    reference.attribute_path[0],
+                    pending_bindings,
+                )
+            class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
+            if class_context is not None:
+                resolution = self._scope_binding_resolution(
+                    class_context,
+                    LexicalValueReference(
+                        reference.attribute_path[0], reference.attribute_path[1:]
+                    ),
+                    None,
+                    pending_bindings,
+                )
+                if resolution is not None:
+                    return resolution
+            return OpenCompactFunctionTarget(
+                (".".join((binding_symbol, *reference.attribute_path)),),
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
+        return binding.kind.resolve_definition(self, binding_symbol, binding)
 
     @cached_property
     def declared_product_authorities_by_symbol(
@@ -1325,94 +1416,13 @@ class CompactProductFlowRepository(
         selection = context.flow.binding_resolution_for(root_name, use_position)
         if selection is None:
             return None
-        if selection.target_lookup_violation is not None:
-            return self._possible_binding_resolution(
-                context,
-                reference,
-                selection.target_lookup_violation,
-                pending_bindings,
-            )
-        binding = selection.mutation
-        assert binding is not None
-        binding_visit = (context.owner_symbol, binding)
-        if binding_visit in pending_bindings:
-            return OpenCompactFunctionTarget(
-                tuple(
-                    sorted(
-                        {
-                            f"{owner}.{mutation.target.bound_name}"
-                            for owner, mutation in pending_bindings
-                        }
-                    )
-                ),
-                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
-            )
-        if not binding.kind.is_definition_binding:
-            pending_bindings = pending_bindings | {binding_visit}
-
-        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
-        if alias is not None:
-            resolution = alias.source_use.resolve(
-                self,
-                context,
-                pending_bindings=pending_bindings,
-                attribute_path=reference.attribute_path,
-            )
-            return resolution.through_alias(alias, context)
-
-        if binding.kind.is_import_binding:
-            alias_target = binding.imported_origin
-            if alias_target is None:
-                return self._possible_binding_resolution(
-                    context,
-                    reference,
-                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-                    pending_bindings,
-                )
-            return self._function_resolution_for_symbol(
-                ".".join((alias_target, *reference.attribute_path)),
-                pending_bindings,
-            )
-
-        if not binding.kind.is_definition_binding:
-            return self._possible_binding_resolution(
-                context,
-                reference,
-                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-                pending_bindings,
-            )
-
-        binding_symbol = f"{context.owner_symbol}.{root_name}"
-        if reference.attribute_path:
-            owner = self.class_index.class_for(binding_symbol)
-            if owner is None or owner.line != binding.line:
-                return OpenCompactFunctionTarget(
-                    (".".join((binding_symbol, *reference.attribute_path)),),
-                    CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
-                )
-            if len(reference.attribute_path) == 1:
-                return self._class_method_resolution(
-                    owner,
-                    reference.attribute_path[0],
-                    pending_bindings,
-                )
-            class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
-            if class_context is not None:
-                resolution = self._scope_binding_resolution(
-                    class_context,
-                    LexicalValueReference(
-                        reference.attribute_path[0], reference.attribute_path[1:]
-                    ),
-                    None,
-                    pending_bindings,
-                )
-                if resolution is not None:
-                    return resolution
-            return OpenCompactFunctionTarget(
-                (".".join((binding_symbol, *reference.attribute_path)),),
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-            )
-        return (binding.kind.resolve_definition(self, binding_symbol, binding))
+        return selection.resolve_binding(
+            self,
+            context,
+            reference,
+            use_position,
+            pending_bindings,
+        )
 
     def _possible_binding_resolution(
         self,

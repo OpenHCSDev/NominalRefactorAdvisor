@@ -982,20 +982,49 @@ class CompactFunctionTargetResolutionViolation(StrEnum):
     CYCLIC_BINDING = "cyclic_binding"
 
 
+class CompactBindingResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
+    """Consumer projections of an already-selected nominal binding source."""
+
+    @abstractmethod
+    def _selected_binding_resolution(
+        self,
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _possible_binding_resolution(
+        self,
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        violation: CompactFunctionTargetResolutionViolation,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
 class CompactBindingSource(ABC):
     """Selected source evidence, with distinct value and callable projections."""
+
+    @abstractmethod
+    def resolve_binding(
+        self,
+        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        """Project this source without nullable-field dispatch in the consumer."""
+        raise NotImplementedError
 
     @property
     def mutation(self) -> CompactMutation | None:
         return None
-
-    @property
-    @abstractmethod
-    def target_lookup_violation(
-        self,
-    ) -> CompactFunctionTargetResolutionViolation | None:
-        """Whether this source cannot select a callable through a body write."""
-        raise NotImplementedError
 
     @abstractmethod
     def value_origin(
@@ -1010,6 +1039,24 @@ class CompactBindingSource(ABC):
 @dataclass(frozen=True)
 class ExactCompactBindingMutation(CompactBindingSource):
     selected_mutation: CompactMutation
+
+    mutation = AliasProperty[CompactMutation]("selected_mutation")
+
+    def resolve_binding(
+        self,
+        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        return resolver._selected_binding_resolution(
+            context,
+            reference,
+            self.selected_mutation,
+            use_position,
+            pending_bindings,
+        )
 
     def value_origin(
         self,
@@ -1035,18 +1082,38 @@ class ExactCompactBindingMutation(CompactBindingSource):
         )
         return source_resolution.through_alias(reference.attribute_path, mutation)
 
-    @property
-    def mutation(self) -> CompactMutation:
-        return self.selected_mutation
+
+class UnresolvedCompactBindingSource(CompactBindingSource, ABC):
+    """Sources whose callable identity remains an explicit obligation."""
 
     @property
-    def target_lookup_violation(self) -> None:
-        return None
+    @abstractmethod
+    def target_lookup_violation(self) -> CompactFunctionTargetResolutionViolation:
+        raise NotImplementedError
+
+    def resolve_binding(
+        self,
+        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        return resolver._possible_binding_resolution(
+            context,
+            reference,
+            self.target_lookup_violation,
+            pending_bindings,
+        )
 
 
 @dataclass(frozen=True)
-class OpenCompactBindingMutation(CompactBindingSource):
+class OpenCompactBindingMutation(UnresolvedCompactBindingSource):
     failure: CompactFunctionTargetResolutionViolation
+
+    target_lookup_violation = AliasProperty[CompactFunctionTargetResolutionViolation](
+        "failure"
+    )
 
     def value_origin(
         self,
@@ -1061,20 +1128,14 @@ class OpenCompactBindingMutation(CompactBindingSource):
             CompactValueOriginViolation.AMBIGUOUS_BINDING,
         )
 
-    @property
-    def target_lookup_violation(self) -> CompactFunctionTargetResolutionViolation:
-        return self.failure
-
 
 @dataclass(frozen=True)
-class InitialCompactParameterBinding(CompactBindingSource):
+class InitialCompactParameterBinding(UnresolvedCompactBindingSource):
     """The entry value of the exact parameter declared by the flow owner."""
 
     parameter: CompactFunctionParameter
 
-    @property
-    def target_lookup_violation(self) -> CompactFunctionTargetResolutionViolation:
-        return CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+    target_lookup_violation = CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
 
     def value_origin(
         self,

@@ -310,6 +310,15 @@ refactor <../../examples/flow_declaration_ownership.py>` removes the former
 name-based declaration join through the DSL.
 
 ``CompactBindingSource`` separates value-origin evidence from callable lookup.
+Its ``resolve_binding`` method dispatches to ``CompactBindingResolverABC``
+through the selected source declaration. Exact sources pass their retained
+mutation; unresolved sources share the inherited possible-binding projection.
+``target_lookup_violation`` belongs to unresolved sources only. This dispatch
+preserves the existing source-selection and callable-resolution rules; it does
+not yet establish captured-object or native namespace integrity. The
+:download:`binding-source dispatch refactor
+<../../examples/binding_source_dispatch.json>` applies the extraction and
+diagnostic cleanup in 18 authored stages.
 ``InitialCompactParameterBinding`` retains the exact parameter object from the
 owning signature and has no mutation event. Its value origin is that entry
 parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an
