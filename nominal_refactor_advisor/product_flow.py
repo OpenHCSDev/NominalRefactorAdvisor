@@ -52,6 +52,7 @@ from .value_expression import (
     LexicalValueReference as LexicalValueReference,
     OpaqueValueExpression as OpaqueValueExpression,
 )
+from .value_graph import DataclassGraphValue
 
 SourcePositionedNode: TypeAlias = ast.expr | ast.stmt | ast.ExceptHandler | ast.pattern
 
@@ -514,8 +515,8 @@ class CompactValueDestination:
         self.use.validate_binding(self.binding)
 
 
-@dataclass(frozen=True)
-class CompactCallArguments(Generic[CallValueT]):
+@dataclass(frozen=True, eq=False)
+class CompactCallArguments(Generic[CallValueT], DataclassGraphValue):
     """One argument list, shared by collected calls and authored call edits."""
 
     positional: tuple[CompactCallArgument[CallValueT], ...]
@@ -1507,8 +1508,8 @@ class CompactExactValueAlias:
         )
 
 
-@dataclass(frozen=True)
-class CompactValueUse:
+@dataclass(frozen=True, eq=False)
+class CompactValueUse(DataclassGraphValue):
     """One evaluated expression value, retaining its source event."""
 
     value: CompactValueExpression
@@ -1541,8 +1542,8 @@ class CompactValueUse:
         )
 
 
-@dataclass(frozen=True)
-class CompactEvaluatedResult:
+@dataclass(frozen=True, eq=False)
+class CompactEvaluatedResult(DataclassGraphValue):
     """An evaluated value and its immediate disposition, not a completed path proof.
 
     A missing value use denotes the implicit None of a bare return.
@@ -1588,8 +1589,8 @@ class CompactCallableReferenceUse:
         )
 
 
-@dataclass(frozen=True)
-class CompactFunctionCall:
+@dataclass(frozen=True, eq=False)
+class CompactFunctionCall(DataclassGraphValue):
     target_use: CompactCallableReferenceUse
     arguments: CompactCallArguments[CompactValueUse]
     result: CompactValueDestination
@@ -1630,6 +1631,13 @@ class CompactFunctionCall:
             position=self.position,
             line=self.line,
         )
+
+
+@dataclass(frozen=True, eq=False)
+class CallResultValue(DataclassGraphValue, OpaqueValueExpression):
+    """A retained source call's value, without claiming completed execution."""
+
+    invocation: CompactFunctionCall
 
 
 class CompactLocalSignatureObserver(StrEnum):
@@ -1889,8 +1897,8 @@ class CompactFunctionDeclaration(CompactFlowOwner):
         return signature.bind(positional_arguments, keyword_arguments)
 
 
-@dataclass(frozen=True)
-class CompactFunctionFlow:
+@dataclass(frozen=True, eq=False)
+class CompactFunctionFlow(DataclassGraphValue):
     owner: CompactFlowOwner
     lexical_scope_qualnames: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
@@ -2282,10 +2290,13 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_mutation(self.mutation_targets.visit(node), node, kind)
 
     def _capture_value(self, expression: ast.expr) -> CompactValueUse:
-        self.visit(expression)
-        return CompactValueUse(
-            CompactValueExpression.project(expression), self._position()
+        invocation: CompactFunctionCall | None = self.visit(expression)
+        value = (
+            CompactValueExpression.project(expression)
+            if invocation is None
+            else CallResultValue(invocation)
         )
+        return CompactValueUse(value, self._position())
 
     def __init__(
         self,
@@ -2410,7 +2421,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             source_span=SourceByteSpan.require_node(node),
         )
 
-    def visit_Call(self, node: ast.Call) -> None:
+    def visit_Call(self, node: ast.Call) -> CompactFunctionCall:
         self._visit_reference_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
         arguments = CompactCallArguments[CompactValueUse].from_call(
@@ -2419,15 +2430,15 @@ class _CompactFlowCollector(ast.NodeVisitor):
         result = self.call_results.get(
             id(node), CompactValueDestination(CompactValueDestinationKind.EMBEDDED)
         )
-        self.calls.append(
-            CompactFunctionCall(
-                target_use=target_use,
-                arguments=arguments,
-                result=result,
-                position=self._position(),
-                source_span=SourceByteSpan.require_node(node),
-            )
+        invocation = CompactFunctionCall(
+            target_use=target_use,
+            arguments=arguments,
+            result=result,
+            position=self._position(),
+            source_span=SourceByteSpan.require_node(node),
         )
+        self.calls.append(invocation)
+        return invocation
 
     def _visit_reference_evaluation(self, expression: ast.expr) -> None:
         """Evaluate a reference's receiver and indices before its terminal access."""

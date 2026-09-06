@@ -2398,3 +2398,112 @@ the clean simulation changes native output. The reproducer is
 `/var/tmp/nra_registry_prescription_probe.py`. This points to another consumer
 needing the shared native-binding relation, rather than a separate terminal-name
 or module-name exception. It is not claimed repaired by this capture batch.
+
+### 2026-09-06: Native compilation, retained invocations and registry claim audit
+
+`ParsedModule.native_compilation` now owns lazy native compilation over the
+original module context. Compiler flags supply raw execution mode, including
+unreachable yields and yields in nested defaults. Exact source spans select
+compact receipts; missing ranges, eliminated code and ambiguous generated
+scopes remain explicit unresolved outcomes. Successful and rejected compilation
+share a nominal outcome contract. No executable code is cached or serialised,
+and queried modules pass real multiprocessing-spawn transfer tests. The raw
+source-signature function moved to `source_identity`; analysis and compilation
+derive the same existing blake2s signature, and `ast_tools` reexports that exact
+function rather than retaining a wrapper or a second algorithm.
+
+The native batch passes 163 integration tests with one version-specific skip on
+Python 3.11 and 18 native tests on Python 3.14. Its 11-stage authored artifact is
+`docs/examples/native_compilation.json`, based on `22afe9f`. API and actual CLI
+replays match all five production ASTs. On the 132-module source corpus, median
+native compilation is 0.456 seconds; compilation, indexing and 6,184 first
+queries take 1.520 seconds, while repeated cached queries take 0.00704 seconds.
+These measurements describe the added evidence layer, not completed invocation
+analysis or a general analysis speedup.
+
+The registry audit also retires `PrematureRegistryInfrastructureDetector` and
+its exclusive candidate, detector base and metric renderer, removing 84
+production lines. Minimum case and consumer counts do not prove an architectural
+obligation. An exact alias hides live consumers from the old spelling index
+without changing native behaviour. Registration and generated documentation
+derive retirement from the missing declaration; shared registry evidence and
+supported type-keyed refactoring remain. The four-stage artifact is
+`docs/examples/retire_registry_maturity.json`, also based on `22afe9f`; replay
+matches both production files, and 247 related acceptance tests pass.
+
+Two additional native controls expose unresolved registry claims. A counterfeit
+same-named lookup helper is accepted by type-keyed descent even though the
+transformed native output differs. Separately, enum aliases collapse two
+symbolically different key expressions to one native object while the detector
+still calls the mapping injective. The dedicated integrity run now has 14
+failures and eight passing controls across the native binding, definition-result
+and registry files. These remain unsuppressed proof obligations. A full import
+path alone would not settle post-import namespace mutation or call-time binding.
+
+Immediate expression capture now retains the actual `CompactFunctionCall` in a
+`CallResultValue`. Nested arguments and computed mutation receivers and indices
+share those existing call objects. Other enclosing expressions retain their own
+opaque value. This introduces a shared graph: an independent depth-100 probe
+found that generated dataclass equality and hashing recursively revisit calls,
+overflowing for independent parse and pickle comparisons. Excluding arguments
+from hashing improves hashing alone but leaves equality broken. The next
+correction is one opt-in, field-derived graph comparison owner, preserving
+argument distinctions and native custom leaf semantics. This section does not
+claim that correction or the full batch gates are complete.
+
+A temporary authoring helper also compared simulated output to a changing live
+worktree and briefly generated inverse hunks for a concurrent agent's unrelated
+edits. Those exact hunks were restored and focused tests passed. The helper now
+diffs the captured initial and final snapshots and rejects changed planned files
+before emitting a patch. This repairs the temporary workflow helper; it is not
+a new production transaction guarantee. The existing production writer already
+has source-revision checks.
+
+The call-graph correction is now implemented through `DataclassGraphValue`.
+Eight participating declarations inherit one iterative equality and hash owner;
+native dataclass fields and their flags determine the traversed values. MRO puts
+that implementation before `OpaqueValueExpression`'s generated equality for
+`CallResultValue`, so invocation fields are not silently ignored. Traversal-local
+memos retain actual objects to prevent temporary descriptor values from being
+collected and their identities reused during an operation. Custom leaf semantics
+and overrides remain native; explicit base-method calls also support overrides
+that delegate with `super()`. A small hash-value leaf feeds already calculated
+child hashes into Python's native tuple hash without copying its algorithm.
+
+The generic and deep-call controls pass 33 tests on both Python 3.11 and 3.14;
+the wider flow/capture/binding run passes 138. Tests preserve inherited fields,
+hash/compare flags, custom equality, equal tuple subclasses, NaN identity,
+argument differences at equal source geometry, physical sharing differences,
+descriptor temporaries, pickle/spawn and explicit cycle rejection. Complexity
+instrumentation counts field reads instead of replacing `__hash__`, because
+overriding that method would change the nominal boundary being tested.
+`docs/examples/captured_call_graph.json` replays 22 authored stages against
+`22afe9f` to matching production ASTs across three files.
+
+The new comparison is linear on the tested nested-call graphs and resolves the
+depth-100 overflows without changing recursion limits or discarding fields.
+Whole-corpus costs remain higher than the earlier flat representation: for
+8,297 flows, median hashing rises from 0.233 to 1.545 seconds and comparison with
+a pickle round-trip rises from 0.394 to 1.993 seconds. Collection timing and
+pickle size remain effectively unchanged by the comparison owner. The lower
+cost of excluding call arguments from hashing alone is not an equivalent fix,
+because deep equality would remain broken. No global GC changes or persistent
+object-hash caches are introduced. A small class-field-cache prototype is
+recorded for later measurement rather than included during the frozen full gates.
+
+Frozen full suites finish with 2,686 passed and 16 skipped on Python 3.11, and
+2,702 passed on Python 3.14. Both retain exactly the same 14 integrity failure
+IDs as the pre-integration control run. The five newly exposed graph regression
+failures are repaired; no integrity tests are excluded, marked as expected
+failures or weakened. Receipts are `/var/tmp/nra-native-graph-final-{311,314}.log`.
+The final current-implementation CLI simulation of the 22-stage call-graph plan
+is clean. The touched-source audit retains automatic package context and
+completes all 79 detectors with zero omitted detectors or findings. Sphinx builds
+with the two existing duplicate-description warnings. API, worklog and replay
+artifacts keep their reference/explanation roles under Diataxis.
+
+Registry maturity retirement is committed as `eb0b8b4`. Native compilation and
+call capture remain prerequisites for the next shared invocation and selected
+object relation: raw-code execution mode still needs to be retained by function
+declarations, and call activation/effects must establish result identity before
+any of the pending native-identity gates can claim equivalence.

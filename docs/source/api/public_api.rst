@@ -126,6 +126,24 @@ retain their own destinations. Assignment destination selection belongs to
 ``CompactValueDestination.for_assignment``. Exact alias recording derives its
 lexical reference from the captured result instead of projecting the RHS again.
 
+An immediately evaluated call also retains its actual ``CompactFunctionCall``
+in ``CallResultValue.invocation``. Arguments and computed mutation receivers or
+indices share those captured call objects. An enclosing container, operator or
+``await`` expression retains its own opaque value rather than adopting a nested
+call's result. Capturing an invocation does not establish its returned object or
+successful completion.
+
+Captured call records use ``DataclassGraphValue`` for structural equality and
+hashing. Participating immutable dataclasses inherit this owner with ``eq=False``;
+their native field declarations, including inherited fields and ``compare`` and
+``hash`` options, select the compared and hashed values. Shared subgraphs are
+visited once within each operation, independently of their physical sharing
+topology. Non-participating values and custom comparison or hashing overrides
+retain their native semantics. Traversal state is temporary and is not pickled;
+cycles reached by the traversal raise ``ValueError``. The
+:download:`captured-call graph refactor <../../examples/captured_call_graph.json>`
+applies 22 authored DSL stages against ``22afe9f``.
+
 ``CompactFlowPosition.may_precede`` excludes proved future events within one
 flow. ``CompactControlBranchKind`` owns repeating-suite and try-stage ordering.
 Shared loop bodies and repeated header evaluations remain conservative across
@@ -134,6 +152,25 @@ paths: a later ``finally`` return can replace an earlier return, and unresolved
 calls or definition execution still need their own proof. The
 :download:`evaluated-result refactor <../../examples/evaluated_flow_results.json>`
 applies 22 authored DSL stages against ``ebb6476``.
+
+``ParsedModule.native_compilation`` lazily provides native compiler evidence over
+the original module source. ``NativePythonCompilation.compile()`` returns a
+transient code object without executing the module. ``execution_for`` accepts a
+``SourceByteSpan`` and returns a ``NativeFunctionExecution`` receipt. Exact
+receipts retain compiler flags; ``NativeFunctionExecutionMode`` derives ordinary,
+generator, coroutine or async-generator execution from those flags. The evidence
+describes raw function code, not an object subsequently returned by a decorator.
+
+Rejected compilation, missing debug ranges, absent emitted code and ambiguous
+source spans produce explicit open receipts. Definitions are not recovered by
+name or first line. The cached index contains compact receipts and shared source
+and interpreter provenance, not executable code; queried modules remain
+pickleable. AST-span validation uses the same compilation owner and preserves
+the compiler's syntax error. Exact source signatures are owned by
+``source_identity.python_source_cache_signature``; the existing ``ast_tools``
+import reexports the same function. The
+:download:`native-compilation refactor <../../examples/native_compilation.json>`
+applies 11 authored DSL stages against ``22afe9f``.
 
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.

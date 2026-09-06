@@ -1,0 +1,448 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-create_file",
+          "operations": [
+            {
+              "operation": "create_file",
+              "file_path": "nominal_refactor_advisor/value_graph.py",
+              "rationale": "",
+              "source": "\"\"\"Declaration-derived value comparison for immutable dataclass DAGs.\"\"\"\n\nfrom abc import ABC\nfrom collections.abc import Callable\nfrom dataclasses import Field, fields\nfrom functools import partial\nfrom typing import Any\n\n\ndef _children(\n    value: object,\n    include_field: Callable[[Field[Any]], bool],\n    inherits_operation: Callable[[type], bool],\n    root: object,\n) -> tuple[object, ...] | None:\n    if type(value) is tuple:\n        return value\n    if isinstance(value, DataclassGraphValue) and (\n        value is root or inherits_operation(type(value))\n    ):\n        return tuple(\n            (\n                getattr(value, declaration.name)\n                for declaration in fields(value)\n                if include_field(declaration)\n            )\n        )\n    return None\n\n\nclass _HashValue:\n    \"\"\"Feed an already derived child hash into native tuple hashing.\"\"\"\n\n    __slots__ = (\"value\",)\n\n    def __init__(self, value: int) -> None:\n        self.value = value\n\n    def __hash__(self) -> int:\n        return self.value\n\n\nclass DataclassGraphValue(ABC):\n    \"\"\"Opt-in field equality and hashing with traversal-local DAG memoization.\n\n    Participants are immutable dataclasses declared with eq=False. Inherited\n    fields and their compare/hash flags remain the authority. Exact tuples\n    are traversed structurally; other values keep native leaf semantics.\n    Custom comparison/hash overrides form opaque boundaries. Cycles reached\n    during traversal raise ValueError; cyclic values are outside this contract.\n    No derived hashes or traversal state are retained on values.\n    \"\"\"\n\n    def __eq__(self, other: object) -> bool:\n        if type(self) is not type(other):\n            return NotImplemented\n        pending = [(self, other, False)]\n        complete: dict[tuple[int, int], tuple[object, object]] = {}\n        active: set[tuple[int, int]] = set()\n        children_for = partial(\n            _children,\n            include_field=lambda declaration: declaration.compare,\n            inherits_operation=lambda cls: cls.__eq__ is DataclassGraphValue.__eq__,\n        )\n        while pending:\n            left, right, finishing = pending.pop()\n            pair = (id(left), id(right))\n            if finishing:\n                active.remove(pair)\n                complete[pair] = (left, right)\n                continue\n            if left is right or pair in complete:\n                continue\n            if pair in active:\n                raise ValueError(\"DataclassGraphValue requires an acyclic value graph\")\n            children = children_for(left, root=self)\n            if children is None or type(left) is not type(right):\n                if not left == right:\n                    return False\n                complete[pair] = (left, right)\n                continue\n            other_children = children_for(right, root=other)\n            assert other_children is not None\n            if len(children) != len(other_children):\n                return False\n            active.add(pair)\n            pending.append((left, right, True))\n            pending.extend(\n                (\n                    (left_child, right_child, False)\n                    for left_child, right_child in reversed(\n                        tuple(zip(children, other_children))\n                    )\n                )\n            )\n        return True\n\n    def __hash__(self) -> int:\n        pending: list[tuple[object, tuple[object, ...] | None]] = [(self, None)]\n        derived: dict[int, tuple[object, int]] = {}\n        active: set[int] = set()\n        children_for = partial(\n            _children,\n            include_field=lambda declaration: (\n                declaration.compare if declaration.hash is None else declaration.hash\n            ),\n            inherits_operation=lambda cls: cls.__hash__ is DataclassGraphValue.__hash__,\n            root=self,\n        )\n        while pending:\n            value, finishing_children = pending.pop()\n            identity = id(value)\n            if finishing_children is not None:\n                derived[identity] = (\n                    value,\n                    hash(\n                        tuple(\n                            (\n                                _HashValue(derived[id(child)][1])\n                                for child in finishing_children\n                            )\n                        )\n                    ),\n                )\n                active.remove(identity)\n                continue\n            if identity in derived:\n                continue\n            if identity in active:\n                raise ValueError(\"DataclassGraphValue requires an acyclic value graph\")\n            children = children_for(value)\n            if children is None:\n                derived[identity] = (value, hash(value))\n                continue\n            active.add(identity)\n            pending.append((value, children))\n            pending.extend(((child, None) for child in reversed(children)))\n        return derived[id(self)][1]\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactLocalSignatureObserver",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass CallResultValue(OpaqueValueExpression):\n    \"\"\"A retained source call's value, without claiming completed execution.\"\"\"\n\n    invocation: CompactFunctionCall\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Call",
+              "rationale": "",
+              "replacement_source": "def visit_Call(self, node: ast.Call) -> CompactFunctionCall:\n    self._visit_reference_evaluation(node.func)\n    target_use = self._callable_reference_use(node.func)\n    arguments = CompactCallArguments[CompactValueUse].from_call(\n        node, self._capture_value\n    )\n    result = self.call_results.get(\n        id(node), CompactValueDestination(CompactValueDestinationKind.EMBEDDED)\n    )\n    invocation = CompactFunctionCall(\n        target_use=target_use,\n        arguments=arguments,\n        result=result,\n        position=self._position(),\n        source_span=SourceByteSpan.require_node(node),\n    )\n    self.calls.append(invocation)\n    return invocation\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._capture_value",
+              "rationale": "",
+              "replacement_source": "def _capture_value(self, expression: ast.expr) -> CompactValueUse:\n    invocation: CompactFunctionCall | None = self.visit(expression)\n    value = (\n        CompactValueExpression.project(expression)\n        if invocation is None\n        else CallResultValue(invocation)\n    )\n    return CompactValueUse(value, self._position())\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "rationale": "",
+              "import_source": "from .value_graph import DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "rationale": "",
+              "import_source": "from .value_graph import DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactCallArgument",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactCallArgument",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactKeywordArgument",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactKeywordArgument",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallArguments",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallArguments",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueUse",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueUse",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactEvaluatedResult",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactEvaluatedResult",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionCall",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionCall",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CallResultValue",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "class CallResultValue(OpaqueValueExpression):",
+                  "new_source": "class CallResultValue(DataclassGraphValue, OpaqueValueExpression):"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CallResultValue",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-replace_declaration_decorators",
+          "operations": [
+            {
+              "operation": "replace_declaration_decorators",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow",
+              "rationale": "",
+              "decorators_source": "@dataclass(frozen=True, eq=False)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow",
+              "rationale": "",
+              "base_name": "DataclassGraphValue"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

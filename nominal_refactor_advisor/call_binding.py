@@ -19,6 +19,7 @@ from .value_expression import (
     LexicalValueReference as LexicalValueReference,
     OpaqueValueExpression as OpaqueValueExpression,
 )
+from .value_graph import DataclassGraphValue
 
 CallValueT = TypeVar("CallValueT")
 
@@ -72,14 +73,14 @@ class CompactCallBindingViolation(StrEnum):
     INVALID_DESCRIPTOR_ACCESS = "invalid_descriptor_access"
 
 
-@dataclass(frozen=True)
-class CompactCallArgument(Generic[CallValueT]):
+@dataclass(frozen=True, eq=False)
+class CompactCallArgument(Generic[CallValueT], DataclassGraphValue):
     value: CallValueT
     is_unpacked: bool = False
 
 
-@dataclass(frozen=True)
-class CompactKeywordArgument(Generic[CallValueT]):
+@dataclass(frozen=True, eq=False)
+class CompactKeywordArgument(Generic[CallValueT], DataclassGraphValue):
     name: str | None
     value: CallValueT
 
