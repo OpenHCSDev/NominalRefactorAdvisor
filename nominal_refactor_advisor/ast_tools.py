@@ -41,13 +41,16 @@ from .implementation_identity import (
     declaration_implementation_module_names,
 )
 from .lexical_bindings import (
-    FunctionDefaultVisitor,
+    FunctionAnnotationVisitor,
     ImportBoundNameProjection as ImportBoundNameProjection,
     ImportedNameOrigin as ImportedNameOrigin,
     LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
     LexicalScopeBindingAuthority as LexicalScopeBindingAuthority,
 )
-from .native_compilation import NativePythonCompilation
+from .native_compilation import (
+    NativeCreationBackend,
+    NativePythonCompilation,
+)
 from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
@@ -1293,7 +1296,14 @@ class ModuleAnnotationEvaluationMode(StrEnum):
         return self is self.EAGER
 
 
-class EagerNameLoadCollector(FunctionDefaultVisitor):
+class EagerFunctionAnnotationVisitor(FunctionAnnotationVisitor):
+    """Use native root ordering only after the module admits eager annotations."""
+
+    def visit_function_annotations(self, node: FunctionDefinitionNode) -> None:
+        NativeCreationBackend.current().annotation_order().visit_in(self, node)
+
+
+class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
     """Collect name loads evaluated while a syntax tree is declared."""
 
     def __init__(
@@ -1339,9 +1349,7 @@ class EagerNameLoadCollector(FunctionDefaultVisitor):
             self.visit(decorator)
         self.visit_argument_defaults(node.args)
         if self.annotation_mode.annotations_execute_at_declaration:
-            self.visit_argument_annotations(node.args)
-            if node.returns is not None:
-                self.visit(node.returns)
+            self.visit_function_annotations(node)
         handled_children = (
             node.args,
             *node.decorator_list,
@@ -1351,19 +1359,6 @@ class EagerNameLoadCollector(FunctionDefaultVisitor):
         for child in ast.iter_child_nodes(node):
             if not any(child is handled for handled in handled_children):
                 self.visit(child)
-
-    def visit_argument_annotations(self, arguments: ast.arguments) -> None:
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        ):
-            if argument.annotation is not None:
-                self.visit(argument.annotation)
-        if arguments.vararg is not None and arguments.vararg.annotation is not None:
-            self.visit(arguments.vararg.annotation)
-        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
-            self.visit(arguments.kwarg.annotation)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self.visit(node.target)

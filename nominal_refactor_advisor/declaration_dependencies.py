@@ -32,7 +32,7 @@ from .lexical_scopes import (
     TypeParameterScope,
 )
 from .lexical_bindings import (
-    FunctionDefaultVisitor,
+    FunctionAnnotationVisitor,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ScopeBindingCollector,
@@ -451,8 +451,20 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
-class _DeclarationDependencyCollector(FunctionDefaultVisitor, LexicalScopeContext):
+class _DeclarationDependencyCollector(FunctionAnnotationVisitor, LexicalScopeContext):
     """Resolve names against the lexical scopes carried by moved declarations."""
+
+    def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
+        """Inventory cannot choose class bindings from an unknown root order."""
+        scope = self._active_class_scope
+        if scope is None:
+            super().visit_unordered_annotations(roots)
+            return
+        bindings = ScopeBindingCollector()
+        for expression in roots:
+            bindings.visit(expression)
+        with scope.unproved_execution(bindings.bound_names):
+            super().visit_unordered_annotations(roots)
 
     def __init__(self) -> None:
         super().__init__()
@@ -579,9 +591,7 @@ class _DeclarationDependencyCollector(FunctionDefaultVisitor, LexicalScopeContex
         self.visit_argument_defaults(node.args)
         with self._type_parameter_scope(node):
             self._visit_type_parameters(node)
-            self._visit_argument_annotations(node.args)
-            if node.returns is not None:
-                self._visit_annotation(node.returns)
+            self.visit_function_annotations(node)
             with self._scope(FunctionBindingProjection.from_function(node)):
                 with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
                     self._visit_nodes(node.body)
@@ -599,19 +609,6 @@ class _DeclarationDependencyCollector(FunctionDefaultVisitor, LexicalScopeContex
             with self._scope(ClassNamespaceScope(node=node)):
                 self._visit_nodes(node.body)
         self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
-
-    def _visit_argument_annotations(self, arguments: ast.arguments) -> None:
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        ):
-            if argument.annotation is not None:
-                self._visit_annotation(argument.annotation)
-        if arguments.vararg is not None and arguments.vararg.annotation is not None:
-            self._visit_annotation(arguments.vararg.annotation)
-        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
-            self._visit_annotation(arguments.kwarg.annotation)
 
     def _visit_type_parameters(
         self,
@@ -642,6 +639,8 @@ class _DeclarationDependencyCollector(FunctionDefaultVisitor, LexicalScopeContex
             for surface in stringized_surfaces:
                 if surface.expression is not None:
                     self._visit_deferred_annotation(surface.expression)
+
+    visit_annotation = _visit_annotation
 
     def _visit_deferred_annotation(self, expression: ast.expr) -> None:
         """Visit names recursively encoded by one annotation string."""

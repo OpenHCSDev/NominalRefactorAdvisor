@@ -1,0 +1,803 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass CompactEvaluationBranch:\n    \"\"\"One unordered member within a reserved parent event slot.\n\n    Member indices identify sibling expressions; they never order execution.\n    Each member owns a local event sequence and can contain further regions.\n    \"\"\"\n\n    parent_event_index: int\n    member_index: int\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition",
+              "rationale": "",
+              "source": "evaluation_path: tuple[CompactEvaluationBranch, ...] = ()\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition",
+              "rationale": "",
+              "source": "def _comparison_indices(\n    self, other: CompactFlowPosition\n) -> tuple[int, int] | None:\n    \"\"\"Project same-suite order without ordering unordered sibling members.\"\"\"\n    if self.statement_index != other.statement_index:\n        return self.statement_index, other.statement_index\n    for source, destination in zip(self.evaluation_path, other.evaluation_path):\n        if source != destination:\n            if source.parent_event_index != destination.parent_event_index:\n                return source.parent_event_index, destination.parent_event_index\n            return None\n    common_depth = min(len(self.evaluation_path), len(other.evaluation_path))\n    return (\n        self.evaluation_path[common_depth].parent_event_index\n        if len(self.evaluation_path) > common_depth\n        else self.event_index,\n        other.evaluation_path[common_depth].parent_event_index\n        if len(other.evaluation_path) > common_depth\n        else other.event_index,\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        return (self.statement_index, self.event_index) <= (\n            other.statement_index,\n            other.event_index,\n        )",
+                  "new_source": "        indices = self._comparison_indices(other)\n        return indices is None or indices[0] <= indices[1]"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition.may_precede",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            return (self.statement_index, self.event_index) < (\n                other.statement_index,\n                other.event_index,\n            )",
+                  "new_source": "            indices = self._comparison_indices(other)\n            return indices is not None and indices[0] < indices[1]"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition.dominates",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        if self.statement_index != other.statement_index:\n            return self.statement_index, other.statement_index\n        for source, destination in zip(self.evaluation_path, other.evaluation_path):",
+                  "new_source": "        if self.statement_index != other.statement_index:\n            return self.statement_index, other.statement_index\n        if self.evaluation_path == other.evaluation_path:\n            return self.event_index, other.event_index\n        for source, destination in zip(self.evaluation_path, other.evaluation_path):"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition._comparison_indices",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionParameterSource",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass FunctionArgumentSource:\n    \"\"\"Actual argument nodes and kinds, independent of default alignment.\"\"\"\n\n    argument: ast.arg\n    kind: CompactParameterKind\n\n    @classmethod\n    def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:\n        parameters = [\n            cls(argument, CompactParameterKind.POSITIONAL_ONLY)\n            for argument in arguments.posonlyargs\n        ]\n        parameters.extend(cls(argument, CompactParameterKind.POSITIONAL_OR_KEYWORD)\n                          for argument in arguments.args)\n        if arguments.vararg is not None:\n            parameters.append(cls(arguments.vararg, CompactParameterKind.VAR_POSITIONAL))\n        parameters.extend(cls(argument, CompactParameterKind.KEYWORD_ONLY)\n                          for argument in arguments.kwonlyargs)\n        if arguments.kwarg is not None:\n            parameters.append(cls(arguments.kwarg, CompactParameterKind.VAR_KEYWORD))\n        return tuple(parameters)\n\n    @staticmethod\n    def annotation_roots(parameters: Iterable[FunctionArgumentSource], returns: ast.expr | None) -> tuple[ast.expr, ...]:\n        \"\"\"Project expressions, preserving the supplied argument-root order.\"\"\"\n        return tuple(parameter.argument.annotation for parameter in parameters\n                     if parameter.argument.annotation is not None) + (() if returns is None else (returns,))\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-add_class_base",
+          "operations": [
+            {
+              "operation": "add_class_base",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionParameterSource",
+              "rationale": "",
+              "base_name": "FunctionArgumentSource"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    argument: ast.arg\n    kind: CompactParameterKind\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionParameterSource",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionParameterSource.from_arguments",
+              "rationale": "",
+              "body_source": "positional = (*arguments.posonlyargs, *arguments.args)\ndefaults = dict(zip(positional, (None,) * (len(positional) - len(arguments.defaults)) + tuple(arguments.defaults), strict=True))\ndefaults.update(zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True))\nreturn tuple(cls(parameter.argument, parameter.kind, defaults.get(parameter.argument))\n             for parameter in FunctionArgumentSource.from_arguments(arguments))\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "import ast"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from functools import lru_cache"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import CompactParameterKind, FunctionArgumentSource, FunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from .collection_algebra import UniqueIdentityIndexAuthority"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-insert_after_target",
+          "operations": [
+            {
+              "operation": "insert_after_target",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "SpanOnlyCreationBackend",
+              "rationale": "",
+              "source": "class NativeAnnotationOrderUnavailable(StrEnum):\n    UNSUPPORTED_COMPILER = \"unsupported_annotation_compiler\"\n    COMPILATION_REJECTED = \"annotation_probe_rejected\"\n    INCOMPLETE_EMISSION = \"incomplete_annotation_emission\"\n    NONUNIFORM_GROUPS = \"nonuniform_annotation_groups\"\n\n\n@dataclass(frozen=True)\nclass NativeAnnotationOrder(ABC):\n    \"\"\"Compiler-conditioned annotation-root order, not expression-effect proof.\"\"\"\n\n    compilation: NativeCompilationIdentity\n\n    @staticmethod\n    def probe_compilation() -> NativePythonCompilation:\n        return NativePythonCompilation(\n            \"def probe(a: first, b: second, /, c: third, d: fourth, \"\n            \"*rest: fifth, e: sixth, f: seventh, **kw: eighth) -> ninth: pass\\n\",\n            \"<native-annotation-order>\",\n        )\n\n    def parameter_sources(self, arguments: ast.arguments) -> tuple[FunctionArgumentSource, ...]:\n        return FunctionArgumentSource.from_arguments(arguments)\n\n    def visit_in(self, visitor: FunctionAnnotationVisitor,\n                 node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:\n        roots = FunctionArgumentSource.annotation_roots(self.parameter_sources(node.args), node.returns)\n        self.visit_roots(visitor, roots)\n\n    @abstractmethod\n    def visit_roots(self, visitor: FunctionAnnotationVisitor,\n                    roots: tuple[ast.expr, ...]) -> None:\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ExactNativeAnnotationOrder(NativeAnnotationOrder):\n    parameter_kinds: tuple[CompactParameterKind, ...]\n\n    def __post_init__(self) -> None:\n        if len(self.parameter_kinds) != len(CompactParameterKind) or set(self.parameter_kinds) != set(CompactParameterKind):\n            raise ValueError(\"Annotation order must include every parameter kind once\")\n\n    def parameter_sources(self, arguments: ast.arguments) -> tuple[FunctionArgumentSource, ...]:\n        parameters = super().parameter_sources(arguments)\n        return tuple(parameter for kind in self.parameter_kinds\n                     for parameter in parameters if parameter.kind is kind)\n\n    def visit_roots(self, visitor: FunctionAnnotationVisitor,\n                    roots: tuple[ast.expr, ...]) -> None:\n        visitor.visit_ordered_annotations(roots)\n\n\n@dataclass(frozen=True)\nclass OpenNativeAnnotationOrder(NativeAnnotationOrder):\n    reason: NativeAnnotationOrderUnavailable\n\n    def visit_roots(self, visitor: FunctionAnnotationVisitor,\n                    roots: tuple[ast.expr, ...]) -> None:\n        visitor.visit_unordered_annotations(roots)\n\n\nclass EagerAnnotationOrderBackend(NativeCreationBackend):\n    \"\"\"Admitted compiler's uniform kind-group emission, checked without execution.\"\"\"\n\n    @classmethod\n    @lru_cache(maxsize=None)\n    def annotation_order(cls) -> NativeAnnotationOrder:\n        compilation = NativeAnnotationOrder.probe_compilation()\n        try:\n            code = compilation.compile()\n        except SyntaxError:\n            return OpenNativeAnnotationOrder(compilation.identity, NativeAnnotationOrderUnavailable.COMPILATION_REJECTED)\n        function = ast.parse(compilation.source).body[0]\n        parameters = FunctionArgumentSource.from_arguments(function.args)\n        roots = tuple(parameter.argument.annotation for parameter in parameters) + (function.returns,)\n        offsets = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(\n            (instruction for instruction in cls().instructions(code)\n             if None not in instruction.positions),\n            lambda instruction: SourceByteSpan(\n                instruction.positions.lineno - 1,\n                instruction.positions.end_lineno - 1,\n                instruction.positions.col_offset,\n                instruction.positions.end_col_offset,\n            ),\n        )\n        spans = tuple(SourceByteSpan.require_node(root) for root in roots)\n        if any(span not in offsets for span in spans):\n            return OpenNativeAnnotationOrder(compilation.identity, NativeAnnotationOrderUnavailable.INCOMPLETE_EMISSION)\n        order = tuple(sorted(range(len(spans)), key=lambda index: offsets[spans[index]].offset))\n        groups = tuple(dict.fromkeys(parameters[index].kind for index in order if index < len(parameters)))\n        expected = tuple(index for kind in groups for index, parameter in enumerate(parameters) if parameter.kind is kind) + (len(parameters),)\n        if order != expected or set(groups) != set(CompactParameterKind):\n            return OpenNativeAnnotationOrder(compilation.identity, NativeAnnotationOrderUnavailable.NONUNIFORM_GROUPS)\n        return ExactNativeAnnotationOrder(compilation.identity, groups)\n\n\nclass CPython311CreationBackend(EagerAnnotationOrderBackend, SpanOnlyCreationBackend):\n    compiler_identity = (\"cpython\", (3, 11))\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "NativeCreationBackend",
+              "rationale": "",
+              "source": "@classmethod\n@lru_cache(maxsize=None)\ndef annotation_order(cls) -> NativeAnnotationOrder:\n    return OpenNativeAnnotationOrder(\n        NativeAnnotationOrder.probe_compilation().identity,\n        NativeAnnotationOrderUnavailable.UNSUPPORTED_COMPILER,\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-insert_after_target",
+          "operations": [
+            {
+              "operation": "insert_after_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionDefaultVisitor",
+              "rationale": "",
+              "source": "class FunctionAnnotationVisitor(FunctionDefaultVisitor):\n    \"\"\"Shared annotation inventory; iteration alone asserts no evaluation order.\"\"\"\n\n    def visit_function_annotations(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:\n        roots = FunctionArgumentSource.annotation_roots(\n            FunctionArgumentSource.from_arguments(node.args), node.returns)\n        self.visit_unordered_annotations(roots)\n\n    def visit_annotation(self, expression: ast.expr) -> None:\n        self.visit(expression)\n\n    def visit_ordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:\n        for expression in roots:\n            self.visit_annotation(expression)\n\n    def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:\n        # Inventory consumers retain all roots without asserting execution order.\n        self.visit_ordered_annotations(roots)\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "rationale": "",
+              "module_name": ".lexical_bindings",
+              "import_names": [
+                "FunctionDefaultVisitor"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "rationale": "",
+              "import_source": "from .native_compilation import NativeCreationBackend"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector",
+              "rationale": "",
+              "source": "class EagerFunctionAnnotationVisitor(FunctionAnnotationVisitor):\n    \"\"\"Use native root ordering only after the module admits eager annotations.\"\"\"\n\n    def visit_function_annotations(self, node: FunctionDefinitionNode) -> None:\n        NativeCreationBackend.current().annotation_order().visit_in(self, node)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector",
+              "rationale": "",
+              "base_name": "FunctionDefaultVisitor",
+              "replacement_base_name": "EagerFunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            self.visit_argument_annotations(node.args)\n            if node.returns is not None:\n                self.visit(node.returns)",
+                  "new_source": "            self.visit_function_annotations(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector.visit_function_header",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector.visit_argument_annotations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-19-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-20-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector",
+              "rationale": "",
+              "base_name": "FunctionDefaultVisitor",
+              "replacement_base_name": "FunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-21-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "rationale": "",
+              "module_name": ".lexical_bindings",
+              "import_names": [
+                "FunctionDefaultVisitor"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-22-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            self._visit_argument_annotations(node.args)\n            if node.returns is not None:\n                self._visit_annotation(node.returns)",
+                  "new_source": "            self.visit_function_annotations(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector._visit_function",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-23-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector._visit_argument_annotations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-24-insert_after_target",
+          "operations": [
+            {
+              "operation": "insert_after_target",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector._visit_annotation",
+              "rationale": "",
+              "source": "    visit_annotation = _visit_annotation\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-25-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector",
+              "rationale": "",
+              "source": "def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:\n    \"\"\"Inventory cannot choose class bindings from an unknown root order.\"\"\"\n    scope = self._active_class_scope\n    if scope is None:\n        super().visit_unordered_annotations(roots)\n        return\n    bindings = ScopeBindingCollector()\n    for expression in roots:\n        bindings.visit(expression)\n    with scope.unproved_execution(bindings.bound_names):\n        super().visit_unordered_annotations(roots)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-26-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "rationale": "",
+              "import_source": "from .ast_tools import EagerFunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-27-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "base_name": "FunctionDefaultVisitor",
+              "replacement_base_name": "EagerFunctionAnnotationVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-28-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "rationale": "",
+              "module_name": ".lexical_bindings",
+              "import_names": [
+                "FunctionDefaultVisitor"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-29-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._visit_definition_expressions",
+              "rationale": "",
+              "body_source": "decorator_uses = self._capture_decorators(node)\nself.visit_argument_defaults(node.args)\nif self.annotation_mode.annotations_execute_at_declaration:\n    self.visit_function_annotations(node)\nreturn decorator_uses\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-30-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        self.event_index = 0",
+                  "new_source": "        self.event_index = 0\n        self.evaluation_path: tuple[CompactEvaluationBranch, ...] = ()"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-31-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            self.event_index,",
+                  "new_source": "            self.event_index,\n            self.evaluation_path,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._position",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-32-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "source": "def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:\n    \"\"\"Preserve each root's order without ordering sibling root evaluations.\"\"\"\n    parent_path = self.evaluation_path\n    parent_slot = self.event_index\n    try:\n        for member, expression in enumerate(roots):\n            self.evaluation_path = (*parent_path, CompactEvaluationBranch(parent_slot, member))\n            self.event_index = 0\n            self.visit_annotation(expression)\n    finally:\n        self.evaluation_path = parent_path\n        self.event_index = parent_slot + 1\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

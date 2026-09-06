@@ -154,6 +154,13 @@ applies 22 authored DSL stages against ``22afe9f``.
 
 ``CompactFlowPosition.may_precede`` excludes proved future events within one
 flow. ``CompactControlBranchKind`` owns repeating-suite and try-stage ordering.
+``CompactFlowPosition.evaluation_path`` retains nested unordered expression
+regions through ``CompactEvaluationBranch``. Each region reserves one parent
+event slot; member indices identify expressions without ordering them. Sibling
+members may precede each other and neither dominates the other. Events within
+one member, before the region and after it retain their own ordering. The empty
+path preserves ordinary event coordinates. Both position queries consume the
+same coordinate comparison.
 Shared loop bodies and repeated header evaluations remain conservative across
 iterations. These receipts describe captured values, not completed function
 paths: a later ``finally`` return can replace an earlier return, and unresolved
@@ -456,9 +463,10 @@ activation. The :download:`nominal import evidence refactor
 <../../examples/nominal_import_evidence.json>` applies 31 authored DSL stages
 against ``2c1fa56``.
 
-``FunctionParameterSource.from_arguments`` in ``lexical_bindings`` retains each
-actual ``ast.arg``, its ``CompactParameterKind`` and its default expression in
-signature order. Missing defaults remain ``None``; an explicit ``=None`` retains
+``FunctionArgumentSource.from_arguments`` in ``lexical_bindings`` retains each
+actual ``ast.arg`` and its ``CompactParameterKind`` in signature order, without
+requiring default alignment. ``FunctionParameterSource`` extends this source
+with the default expression. Missing defaults remain ``None``; an explicit ``=None`` retains
 its ``ast.Constant`` node. Positional default-tail alignment and keyword-only
 default pairing belong to this projection. ``CompactFunctionParameter.from_source``
 derives the persisted, AST-free parameter used by ``CompactFunctionSignature``.
@@ -468,10 +476,34 @@ derives the persisted, AST-free parameter used by ``CompactFunctionSignature``.
 name reads, declaration dependencies and compact flow collection. Creating a
 lambda visits its defaults without entering its body. Declaration dependency
 collection additionally retains body references in their deferred lexical scope.
-Signature order describes parameter binding; native annotation evaluation order
-and captured default values require separate execution evidence. The
+Signature order describes parameter binding; annotation evaluation order and
+captured default values require separate execution evidence. The
 :download:`parameter-source refactor <../../examples/parameter_source_defaults.json>`
 applies 19 authored DSL stages against ``2ae5a55``.
+
+``FunctionAnnotationVisitor`` shares annotation-root traversal with a leaf hook
+for each expression. Inventory retains argument and return annotations even in
+partial binding-removal projections whose defaults no longer align with their
+remaining parameters. Stateful class dependency collection uses the existing
+``ClassNamespaceScope.unproved_execution`` boundary for bindings affected by an
+unordered annotation batch; iteration cannot choose their ownership.
+
+``EagerFunctionAnnotationVisitor`` obtains a ``NativeAnnotationOrder`` only when
+``ModuleAnnotationEvaluationMode`` admits eager evaluation. The CPython 3.11
+backend derives its uniform parameter-kind grouping from a cached, compile-only
+fixture. Unique native instruction spans must cover every marker, retain order
+within each contiguous kind group and place the return annotation last.
+``ExactNativeAnnotationOrder`` retains the resulting kind permutation and
+compiler/source identity. Unsupported compilers, rejected compilation and
+incomplete or nonuniform emission produce ``OpenNativeAnnotationOrder``.
+Compact flow retains all roots of an open batch in the shared unordered region;
+it does not substitute signature order. Lazy and stringised modes do not query
+this eager capability. Receipts contain no AST or executable code.
+
+The :download:`annotation-order batch <../../examples/native_annotation_order.json>`
+replays the authored source changes against ``6f0aef0``. This capability orders
+annotation roots; it does not prove their effects, successful completion or the
+identity of the resulting definition.
 
 ``CompactDefinitionTarget`` retains the exact ``CompactDefinitionFlowOwner``
 shared with its separate body flow. Its lexical binding name derives from that
@@ -515,8 +547,8 @@ as body expressions. Lazy and stringised annotations are excluded from immediate
 variable and function-header evaluation, while declaration metadata remains
 available. Evaluation derives from ``ModuleAnnotationEvaluationMode`` and the
 actual flow owner's scope policy.
-These are retained source events, not a proof that evaluation reached them;
-native eager function-annotation order still needs separate compiler evidence.
+These are retained source events, not a proof that evaluation reached them.
+Eager function-annotation root order uses the separate compiler capability above.
 
 ``ImportOriginResolverABC`` in ``lexical_bindings`` receives the actual
 ``ImportedNameOrigin`` and consumer-owned execution context. Existing module-

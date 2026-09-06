@@ -3036,3 +3036,80 @@ duplicate-object warnings. Receipts are
 `/var/tmp/nra-gate-binding-{replay,cli,audit}.json` and
 `/var/tmp/nra-gate-binding-sphinx.log`. The preceding `a398f6c` CI run
 `34053752637` passed Linux, macOS, Windows and documentation jobs.
+
+### 2026-09-06: Derive eager annotation order and preserve unordered regions
+
+Eight controlled native executions exposed incorrect annotation binding on
+CPython 3.11: ordinary parameter annotations precede positional-only annotations,
+and varargs precede keyword-only annotations. All three collectors previously
+walked their own argument fields; compact flow turned that visitation order into
+binding evidence. Ordinary and async walrus/read cases now agree with native
+execution through one shared annotation traversal and a compiler-owned ordering
+capability. The backend compiles an inert fixture once, without executing it,
+and joins actual instruction spans to the existing argument-kind declarations.
+Missing, duplicate or nonuniform evidence retains an explicit open result.
+
+Unknown order uses the existing position authority, extended with a nested
+evaluation path. Each batch reserves one parent event, each root owns local
+events, and sibling member numbers identify rather than order roots. One shared
+comparison serves may-precede and dominance. This retains ordinary statement,
+loop and try-stage rules, before/after boundaries and within-root order without
+flattening uncertainty into a source-order assertion. A 24-permutation execution
+oracle, nested depth 1,500 and actual spawned-process transfer validate the
+compact relation.
+
+Independent review found two integration obligations before application. Class
+dependency inventory also changes lexical ownership; it now reuses the existing
+scope's unproved-execution boundary for affected annotation bindings. Binding
+removal intentionally retains original default ASTs after removing a parameter,
+so annotation traversal cannot demand default alignment. FunctionArgumentSource
+now owns argument/kind identity; FunctionParameterSource adds aligned defaults.
+The shared inventory visitor stays in lexical_bindings, avoiding an upward
+compiler dependency on ast_tools. The eager visitor adds native ordering through
+inheritance; no separate argument-role roster or annotation scanner was added.
+
+Focused validation passes 134 cases with two skips on Python 3.11 and 114 with
+22 skips on Python 3.14. The skipped eager cases are exercised on the admitted
+3.11 backend; 3.14 checks that deferred mode does not request eager evidence.
+Fresh-process no-debug-range, probe rejection, missing/duplicate marker,
+nonuniform group, cache and partial-signature controls are included. Pre-change
+native failures are in `/var/tmp/nra-annotation-order-before.log`; focused logs
+are `/var/tmp/nra-annotation-focused-{311,314}.log`.
+
+The batch is authored through `docs/examples/native_annotation_order.json`
+against `6f0aef0`. Diataxis keeps the API's reference contracts separate from this
+design/validation record. Native class-entry and execution-prefix admission,
+captured native-slot authentication and final class-result identity remain the
+next load-bearing integration work; annotation ordering does not discharge them.
+
+Frozen full suites pass 3,059 cases with 35 skips on Python 3.11 and 3,072 with
+22 skips on Python 3.14, in 216 and 219 seconds. Both retain exactly the same
+thirty pending integrity failure IDs as `6f0aef0`; none were weakened or newly
+skipped. The three pending integrity suites remain untracked. Full logs are
+`/var/tmp/nra-annotation-full-{311,314}.log`.
+
+The 38-stage API replay reproduces all five integrated production ASTs from the
+frozen baseline; the actual CLI also completes every stage with valid output.
+The automatic-package-context audit runs all 79 detectors without omissions or
+findings. Black passes all eight source/test files. Ruff passes seven; the
+ast_tools source retains exactly its 42 pre-existing diagnostics, compared by
+code and message against the baseline. Sphinx builds with the same two existing
+duplicate-object warnings. Receipts are `/var/tmp/nra-annotation-order-replay.json`,
+`/var/tmp/nra-annotation-cli.json`, `/var/tmp/nra-annotation-audit.json` and
+`/var/tmp/nra-annotation-sphinx.log`. Preceding commit `6f0aef0` CI run
+`34055115446` is fully green across Linux, macOS, Windows and documentation.
+
+On the same frozen 134-module corpus, both implementations retain 8,434 flow
+contexts and 26,569 calls. Projection timings are 4.745/3.198 seconds before and
+4.803/3.195 after over two successive runs; these samples support no speedup
+claim. Cold flow pickle size increases from 25,761,040 to 26,557,287 bytes
+(3.09%) with the additional position field. The empty-path query microbenchmark
+is approximately 0.0494 seconds before versus 0.0616 after per 100,000 query
+pairs, following elimination of a redundant equal-path traversal. Cost receipts:
+`/var/tmp/nra-annotation-cost-{baseline,current}.jsonl` and
+`/var/tmp/nra_evaluation_regions_handoff.md`.
+
+Final independent producer review confirms the reserved-slot and nested-path
+contract. Lambda defaults remain inside their expression region; lambda bodies
+and statement suites are not entered. Existing comprehension scope, repetition
+and expression-effect limits remain separate obligations.

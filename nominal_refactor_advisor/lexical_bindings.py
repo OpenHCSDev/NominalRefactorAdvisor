@@ -58,46 +58,68 @@ class CompactParameterKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class FunctionParameterSource:
-    """Actual argument/default nodes in signature order, not execution evidence."""
+class FunctionArgumentSource:
+    """Actual argument nodes and kinds, independent of default alignment."""
 
     argument: ast.arg
     kind: CompactParameterKind
-    default: ast.expr | None = None
 
     @classmethod
     def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:
-        positional = (*arguments.posonlyargs, *arguments.args)
-        defaults = (None,) * (len(positional) - len(arguments.defaults)) + tuple(
-            arguments.defaults
-        )
         parameters = [
-            cls(
-                argument,
-                (
-                    CompactParameterKind.POSITIONAL_ONLY
-                    if index < len(arguments.posonlyargs)
-                    else CompactParameterKind.POSITIONAL_OR_KEYWORD
-                ),
-                default,
-            )
-            for index, (argument, default) in enumerate(
-                zip(positional, defaults, strict=True)
-            )
+            cls(argument, CompactParameterKind.POSITIONAL_ONLY)
+            for argument in arguments.posonlyargs
         ]
+        parameters.extend(
+            cls(argument, CompactParameterKind.POSITIONAL_OR_KEYWORD)
+            for argument in arguments.args
+        )
         if arguments.vararg is not None:
             parameters.append(
                 cls(arguments.vararg, CompactParameterKind.VAR_POSITIONAL)
             )
         parameters.extend(
-            cls(argument, CompactParameterKind.KEYWORD_ONLY, default)
-            for argument, default in zip(
-                arguments.kwonlyargs, arguments.kw_defaults, strict=True
-            )
+            cls(argument, CompactParameterKind.KEYWORD_ONLY)
+            for argument in arguments.kwonlyargs
         )
         if arguments.kwarg is not None:
             parameters.append(cls(arguments.kwarg, CompactParameterKind.VAR_KEYWORD))
         return tuple(parameters)
+
+    @staticmethod
+    def annotation_roots(
+        parameters: Iterable[FunctionArgumentSource], returns: ast.expr | None
+    ) -> tuple[ast.expr, ...]:
+        """Project expressions, preserving the supplied argument-root order."""
+        return tuple(
+            parameter.argument.annotation
+            for parameter in parameters
+            if parameter.argument.annotation is not None
+        ) + (() if returns is None else (returns,))
+
+
+@dataclass(frozen=True)
+class FunctionParameterSource(FunctionArgumentSource):
+    """Actual argument/default nodes in signature order, not execution evidence."""
+
+    default: ast.expr | None = None
+
+    @classmethod
+    def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:
+        positional = (*arguments.posonlyargs, *arguments.args)
+        defaults = dict(
+            zip(
+                positional,
+                (None,) * (len(positional) - len(arguments.defaults))
+                + tuple(arguments.defaults),
+                strict=True,
+            )
+        )
+        defaults.update(zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True))
+        return tuple(
+            cls(parameter.argument, parameter.kind, defaults.get(parameter.argument))
+            for parameter in FunctionArgumentSource.from_arguments(arguments)
+        )
 
 
 class FunctionDefaultVisitor(ast.NodeVisitor):
@@ -110,6 +132,29 @@ class FunctionDefaultVisitor(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self.visit_argument_defaults(node.args)
+
+
+class FunctionAnnotationVisitor(FunctionDefaultVisitor):
+    """Shared annotation inventory; iteration alone asserts no evaluation order."""
+
+    def visit_function_annotations(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        roots = FunctionArgumentSource.annotation_roots(
+            FunctionArgumentSource.from_arguments(node.args), node.returns
+        )
+        self.visit_unordered_annotations(roots)
+
+    def visit_annotation(self, expression: ast.expr) -> None:
+        self.visit(expression)
+
+    def visit_ordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
+        for expression in roots:
+            self.visit_annotation(expression)
+
+    def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
+        # Inventory consumers retain all roots without asserting execution order.
+        self.visit_ordered_annotations(roots)
 
 
 @dataclass(frozen=True)

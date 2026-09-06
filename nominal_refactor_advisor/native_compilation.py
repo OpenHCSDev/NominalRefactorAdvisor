@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+
 from abc import ABC, abstractmethod
 from collections.abc import (
     Iterable,
@@ -13,7 +15,10 @@ from dataclasses import (
 )
 import dis
 from enum import IntEnum, StrEnum
-from functools import cached_property
+from functools import (
+    cached_property,
+    lru_cache,
+)
 import inspect
 import sys
 from types import CodeType
@@ -25,7 +30,15 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .collection_algebra import IdentityHandleMultiplicityProjection
+from .collection_algebra import (
+    IdentityHandleMultiplicityProjection,
+    UniqueIdentityIndexAuthority,
+)
+from .lexical_bindings import (
+    CompactParameterKind,
+    FunctionAnnotationVisitor,
+    FunctionArgumentSource,
+)
 from .source_geometry import SourceByteSpan
 from .source_identity import (
     python_source_cache_signature,
@@ -260,6 +273,14 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
     compiler_identity: ClassVar[tuple[str, tuple[int, int]]]
 
     @classmethod
+    @lru_cache(maxsize=None)
+    def annotation_order(cls) -> NativeAnnotationOrder:
+        return OpenNativeAnnotationOrder(
+            NativeAnnotationOrder.probe_compilation().identity,
+            NativeAnnotationOrderUnavailable.UNSUPPORTED_COMPILER,
+        )
+
+    @classmethod
     def current(cls) -> NativeCreationBackend:
         native_identity = (sys.implementation.name, sys.version_info[:2])
         return cls.__registry__.get(native_identity, SpanOnlyCreationBackend)()
@@ -356,6 +377,149 @@ class SpanOnlyCreationBackend(NativeCreationBackend):
 
     def proves_body(self, emission: NativeCodeEmission) -> bool:
         return False
+
+
+class NativeAnnotationOrderUnavailable(StrEnum):
+    UNSUPPORTED_COMPILER = "unsupported_annotation_compiler"
+    COMPILATION_REJECTED = "annotation_probe_rejected"
+    INCOMPLETE_EMISSION = "incomplete_annotation_emission"
+    NONUNIFORM_GROUPS = "nonuniform_annotation_groups"
+
+
+@dataclass(frozen=True)
+class NativeAnnotationOrder(ABC):
+    """Compiler-conditioned annotation-root order, not expression-effect proof."""
+
+    compilation: NativeCompilationIdentity
+
+    @staticmethod
+    def probe_compilation() -> NativePythonCompilation:
+        return NativePythonCompilation(
+            "def probe(a: first, b: second, /, c: third, d: fourth, "
+            "*rest: fifth, e: sixth, f: seventh, **kw: eighth) -> ninth: pass\n",
+            "<native-annotation-order>",
+        )
+
+    def parameter_sources(
+        self, arguments: ast.arguments
+    ) -> tuple[FunctionArgumentSource, ...]:
+        return FunctionArgumentSource.from_arguments(arguments)
+
+    def visit_in(
+        self,
+        visitor: FunctionAnnotationVisitor,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        roots = FunctionArgumentSource.annotation_roots(
+            self.parameter_sources(node.args), node.returns
+        )
+        self.visit_roots(visitor, roots)
+
+    @abstractmethod
+    def visit_roots(
+        self, visitor: FunctionAnnotationVisitor, roots: tuple[ast.expr, ...]
+    ) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExactNativeAnnotationOrder(NativeAnnotationOrder):
+    parameter_kinds: tuple[CompactParameterKind, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.parameter_kinds) != len(CompactParameterKind) or set(
+            self.parameter_kinds
+        ) != set(CompactParameterKind):
+            raise ValueError("Annotation order must include every parameter kind once")
+
+    def parameter_sources(
+        self, arguments: ast.arguments
+    ) -> tuple[FunctionArgumentSource, ...]:
+        parameters = super().parameter_sources(arguments)
+        return tuple(
+            parameter
+            for kind in self.parameter_kinds
+            for parameter in parameters
+            if parameter.kind is kind
+        )
+
+    def visit_roots(
+        self, visitor: FunctionAnnotationVisitor, roots: tuple[ast.expr, ...]
+    ) -> None:
+        visitor.visit_ordered_annotations(roots)
+
+
+@dataclass(frozen=True)
+class OpenNativeAnnotationOrder(NativeAnnotationOrder):
+    reason: NativeAnnotationOrderUnavailable
+
+    def visit_roots(
+        self, visitor: FunctionAnnotationVisitor, roots: tuple[ast.expr, ...]
+    ) -> None:
+        visitor.visit_unordered_annotations(roots)
+
+
+class EagerAnnotationOrderBackend(NativeCreationBackend):
+    """Admitted compiler's uniform kind-group emission, checked without execution."""
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def annotation_order(cls) -> NativeAnnotationOrder:
+        compilation = NativeAnnotationOrder.probe_compilation()
+        try:
+            code = compilation.compile()
+        except SyntaxError:
+            return OpenNativeAnnotationOrder(
+                compilation.identity,
+                NativeAnnotationOrderUnavailable.COMPILATION_REJECTED,
+            )
+        function = ast.parse(compilation.source).body[0]
+        parameters = FunctionArgumentSource.from_arguments(function.args)
+        roots = tuple(parameter.argument.annotation for parameter in parameters) + (
+            function.returns,
+        )
+        offsets = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                instruction
+                for instruction in cls().instructions(code)
+                if None not in instruction.positions
+            ),
+            lambda instruction: SourceByteSpan(
+                instruction.positions.lineno - 1,
+                instruction.positions.end_lineno - 1,
+                instruction.positions.col_offset,
+                instruction.positions.end_col_offset,
+            ),
+        )
+        spans = tuple(SourceByteSpan.require_node(root) for root in roots)
+        if any(span not in offsets for span in spans):
+            return OpenNativeAnnotationOrder(
+                compilation.identity,
+                NativeAnnotationOrderUnavailable.INCOMPLETE_EMISSION,
+            )
+        order = tuple(
+            sorted(range(len(spans)), key=lambda index: offsets[spans[index]].offset)
+        )
+        groups = tuple(
+            dict.fromkeys(
+                parameters[index].kind for index in order if index < len(parameters)
+            )
+        )
+        expected = tuple(
+            index
+            for kind in groups
+            for index, parameter in enumerate(parameters)
+            if parameter.kind is kind
+        ) + (len(parameters),)
+        if order != expected or set(groups) != set(CompactParameterKind):
+            return OpenNativeAnnotationOrder(
+                compilation.identity, NativeAnnotationOrderUnavailable.NONUNIFORM_GROUPS
+            )
+        return ExactNativeAnnotationOrder(compilation.identity, groups)
+
+
+class CPython311CreationBackend(EagerAnnotationOrderBackend, SpanOnlyCreationBackend):
+    compiler_identity = ("cpython", (3, 11))
 
 
 class CPython314CreationBackend(NativeCreationBackend):

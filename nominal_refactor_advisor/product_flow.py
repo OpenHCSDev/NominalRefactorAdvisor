@@ -27,6 +27,7 @@ from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
+    EagerFunctionAnnotationVisitor,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
@@ -46,7 +47,6 @@ from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
-    FunctionDefaultVisitor,
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
@@ -929,12 +929,51 @@ class CompactControlBranch:
 
 
 @dataclass(frozen=True)
+class CompactEvaluationBranch:
+    """One unordered member within a reserved parent event slot.
+
+    Member indices identify sibling expressions; they never order execution.
+    Each member owns a local event sequence and can contain further regions.
+    """
+
+    parent_event_index: int
+    member_index: int
+
+
+@dataclass(frozen=True)
 class CompactFlowPosition:
     """One event position in a typed statement-suite tree."""
 
     branch_path: tuple[CompactControlBranch, ...]
     statement_index: int
     event_index: int
+
+    evaluation_path: tuple[CompactEvaluationBranch, ...] = ()
+
+    def _comparison_indices(self, other: CompactFlowPosition) -> tuple[int, int] | None:
+        """Project same-suite order without ordering unordered sibling members."""
+        if self.statement_index != other.statement_index:
+            return self.statement_index, other.statement_index
+        if self.evaluation_path == other.evaluation_path:
+            return self.event_index, other.event_index
+        for source, destination in zip(self.evaluation_path, other.evaluation_path):
+            if source != destination:
+                if source.parent_event_index != destination.parent_event_index:
+                    return source.parent_event_index, destination.parent_event_index
+                return None
+        common_depth = min(len(self.evaluation_path), len(other.evaluation_path))
+        return (
+            (
+                self.evaluation_path[common_depth].parent_event_index
+                if len(self.evaluation_path) > common_depth
+                else self.event_index
+            ),
+            (
+                other.evaluation_path[common_depth].parent_event_index
+                if len(other.evaluation_path) > common_depth
+                else other.event_index
+            ),
+        )
 
     def may_precede(self, other: CompactFlowPosition) -> bool:
         """Exclude proved future events, retaining loop and header ambiguity."""
@@ -959,17 +998,13 @@ class CompactFlowPosition:
                 self.statement_index
                 <= other.branch_path[common_depth].parent_statement_index
             )
-        return (self.statement_index, self.event_index) <= (
-            other.statement_index,
-            other.event_index,
-        )
+        indices = self._comparison_indices(other)
+        return indices is None or indices[0] <= indices[1]
 
     def dominates(self, other: "CompactFlowPosition") -> bool:
         if self.branch_path == other.branch_path:
-            return (self.statement_index, self.event_index) < (
-                other.statement_index,
-                other.event_index,
-            )
+            indices = self._comparison_indices(other)
+            return indices is not None and indices[0] < indices[1]
         if len(self.branch_path) >= len(other.branch_path):
             return False
         if other.branch_path[: len(self.branch_path)] != self.branch_path:
@@ -2462,8 +2497,24 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
         )
 
 
-class _CompactFlowCollector(FunctionDefaultVisitor):
+class _CompactFlowCollector(EagerFunctionAnnotationVisitor):
     """Collect one source scope without descending into nested scope bodies."""
+
+    def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
+        """Preserve each root's order without ordering sibling root evaluations."""
+        parent_path = self.evaluation_path
+        parent_slot = self.event_index
+        try:
+            for member, expression in enumerate(roots):
+                self.evaluation_path = (
+                    *parent_path,
+                    CompactEvaluationBranch(parent_slot, member),
+                )
+                self.event_index = 0
+                self.visit_annotation(expression)
+        finally:
+            self.evaluation_path = parent_path
+            self.event_index = parent_slot + 1
 
     def _capture_result(
         self,
@@ -2536,6 +2587,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
         self.branch_path: tuple[CompactControlBranch, ...] = ()
         self.statement_index = 0
         self.event_index = 0
+        self.evaluation_path: tuple[CompactEvaluationBranch, ...] = ()
         self.call_results: dict[int, CompactValueDestination] = {}
         self.mutation_kind = CompactMutationKind.ASSIGNMENT
         self.mutation_targets = _CompactMutationTargetCollector(self)
@@ -2583,6 +2635,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             self.branch_path,
             self.statement_index,
             self.event_index,
+            self.evaluation_path,
         )
         self.event_index += 1
         return position
@@ -2831,18 +2884,8 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
     ) -> tuple[CompactValueUse, ...]:
         decorator_uses = self._capture_decorators(node)
         self.visit_argument_defaults(node.args)
-        if not self.annotation_mode.annotations_execute_at_declaration:
-            return decorator_uses
-        for annotation in (
-            *(argument.annotation for argument in node.args.posonlyargs),
-            *(argument.annotation for argument in node.args.args),
-            *(argument.annotation for argument in node.args.kwonlyargs),
-            None if node.args.vararg is None else node.args.vararg.annotation,
-            None if node.args.kwarg is None else node.args.kwarg.annotation,
-            node.returns,
-        ):
-            if annotation is not None:
-                self.visit(annotation)
+        if self.annotation_mode.annotations_execute_at_declaration:
+            self.visit_function_annotations(node)
         return decorator_uses
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
