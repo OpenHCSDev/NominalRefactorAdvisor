@@ -66,16 +66,22 @@ def test_body_only_replacement_preserves_the_existing_decorator_once(
 
 def test_nominal_policy_controls_both_payload_and_complete_decorator_geometry(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class DecoratorInclusivePolicy:
-        decorator_policy = SourceNodeDecoratorPolicy.INCLUDE
+    production_registry = RefactorRecipeOperation.__registry__
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            RefactorRecipeOperation, "__registry__", production_registry.copy()
+        )
 
-    class DecoratorInclusiveProbeOperation(
-        DecoratorInclusivePolicy, ReplaceTargetOperation
-    ):
-        pass
+        class DecoratorInclusivePolicy:
+            decorator_policy = SourceNodeDecoratorPolicy.INCLUDE
 
-    try:
+        class DecoratorInclusiveProbeOperation(
+            DecoratorInclusivePolicy, ReplaceTargetOperation
+        ):
+            pass
+
         path = tmp_path / "sample.py"
         path.write_text(
             "calls = []\n"
@@ -97,10 +103,11 @@ def test_nominal_policy_controls_both_payload_and_complete_decorator_geometry(
         exec(path.read_text(), namespace)
         assert namespace["calls"] == ["new"]
         assert namespace["Value"].number == 2
-    finally:
-        del RefactorRecipeOperation.__registry__[
-            DecoratorInclusiveProbeOperation.operation_key()
-        ]
+    assert RefactorRecipeOperation.__registry__ is production_registry
+    assert (
+        production_registry[ReplaceTargetOperation.operation_key()]
+        is ReplaceTargetOperation
+    )
 
 
 def test_body_and_decorator_edits_compose_on_the_same_source_snapshot(

@@ -1405,3 +1405,18 @@ Full validation passed 2,390 tests with 15 skipped on Python 3.11 and 2,405
 tests on Python 3.14, using eight workers per suite. Python 3.14 retains the
 existing 96 fork/thread warnings. Both suites completed in about 217 seconds.
 Ruff and the whitespace check pass; the unrelated `uv.lock` remains excluded.
+
+## Isolate nominal probe registration in the decorator test (2026-09-06)
+
+The Python 3.14 Ubuntu job in CI run `34018639002` reported 70 registered
+operations against 71 concrete production descendants. The new decorator-policy
+probe inherited `replace_target`, temporarily replaced the production entry,
+and then deleted it in cleanup. The failure depended on which tests shared a
+worker. Running the probe followed by the catalogue check in one Python 3.14
+process reproduced the exact failure; the same ordered Python 3.11 run passed.
+
+The probe now runs against a copied registry installed through pytest's scoped
+monkeypatch, and explicitly verifies restoration of the original registry and
+`ReplaceTargetOperation` entry. Production key inheritance is unchanged. The
+catalogue assertion compares the complete declaration-derived mapping, so a
+future failure identifies the missing or incorrect entry instead of only counts.

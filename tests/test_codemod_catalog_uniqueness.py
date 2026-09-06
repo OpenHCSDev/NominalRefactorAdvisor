@@ -161,17 +161,13 @@ def test_architecture_guard_constraint_registry_owns_the_complete_family() -> No
 def test_operation_registry_covers_each_concrete_nominal_descendant_once() -> None:
     registered_operations = dict(RefactorRecipeOperation.__registry__.items())
     concrete_operation_types = _production_concrete_descendants(RefactorRecipeOperation)
-    operation_keys = {
-        operation_type: operation_type.operation_key()
+    expected_operations = {
+        operation_type.operation_key(): operation_type
         for operation_type in concrete_operation_types
     }
 
-    assert len(frozenset(operation_keys.values())) == len(concrete_operation_types)
-    assert len(registered_operations) == len(concrete_operation_types)
-    assert all(
-        registered_operations.get(operation_key) is operation_type
-        for operation_type, operation_key in operation_keys.items()
-    )
+    assert len(expected_operations) == len(concrete_operation_types)
+    assert registered_operations == expected_operations
 
 
 def test_registered_operation_payloads_are_owned_by_constructor_fields() -> None:
