@@ -35,6 +35,7 @@ from .codemod_paths import (
     SourcePathResolutionAuthority,
 )
 from .codemod_selector_models import SourceRewriteTarget
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 from .source_geometry import SourceLineSegmentAuthority
 from .source_index import (
@@ -271,6 +272,11 @@ class ResolvedClassTarget:
 
     target: AstTargetDigest
     node: ast.ClassDef
+
+    @cached_property
+    def bound_names(self) -> frozenset[str]:
+        """Derive lexical bindings from this class declaration."""
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.node.body)
 
     @classmethod
     def from_rewrite_target(

@@ -337,6 +337,12 @@ member syntax, declaration order, insertion and deletion geometry, ancestry,
 and ownership-sensitive promotion checks.  The operation rejects cross-module
 moves, destination collisions, class-local field dependencies, name mangling,
 and hazardous method forms rather than asking the plan to carry derived source.
+Header capture checks include bindings in both the source and destination
+classes. ``ResolvedClassTarget.bound_names`` derives those bindings from the
+current declaration; the move context carries no separately supplied copy.
+Quoted field annotations use the shared annotation-syntax parser, which keeps
+type references distinct from ``Literal`` values and ``Annotated`` metadata.
+Ordinary method-body globals remain separate from class-header lookup.
 It also checks member lookup throughout the destination's descendant cohort.
 The projected lookup must retain each existing owner, except where the selected
 member moves from the source to the destination. Native C3 supplies precedence;

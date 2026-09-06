@@ -1008,3 +1008,62 @@ authority-boundary and semantic-mirror roles. These are native contract
 memberships, not empirical successful-refactor counts. A clean whole-package
 scan therefore still needs comparison with concrete manual factoring decisions
 to distinguish absent debt from discovery or synthesis gaps.
+
+### Destination Binding Proof Before Extending Member Transfer
+
+Manual review found a one-use `FindingDetectorCountsAuthority` aggregation
+wrapper. Its only repository caller is `FindingSummary.from_findings`; no
+separate lifecycle or independent state was identified. Moving its behaviour
+onto a count-record declaration would currently require re-authoring the
+method source or adding source-derived member transfer between unrelated
+owners. The existing ancestor-promotion operation is not permission to invent
+a temporary inheritance relation merely to route that edit through the DSL.
+The count refactor and unrelated-owner transfer remain unfinished.
+
+Review of the reusable movement machinery exposed a load-bearing proof gap
+first. Promotion checked source-class capture and destination member-name
+collisions, but not capture of the moved header by destination bindings. Two
+native subprocess probes simulated as clean: moving a method into a class
+with `int = 3` changed its annotation from the builtin type to `3`; moving a
+`@staticmethod` into a class with `staticmethod = 3` made module execution fail
+with `TypeError`. Further failing regressions cover ordinary and quoted field
+annotations. Earlier probes using class-level type aliases were already
+rejected by creation-effect checks; literal shadowing isolated the missing
+destination relation without weakening those checks.
+
+`ResolvedClassTarget.bound_names` now derives and caches lexical bindings from
+its retained class AST. The move context derives the union of source and
+destination bindings and no longer accepts a separately supplied source-name
+set. Existing method-header checks consume this union. Field checks also reuse
+`StringizedAnnotationSurface` for deferred type names, leaving `Literal` value
+strings and `Annotated` metadata separate from type references. Destination
+collision checks reuse the same resolved-class projection.
+
+`docs/examples/member_move_scope_binding.py` expresses all ten production
+rewrites. The initial eight-stage plan was simulated before mutation, then
+extended for the quoted-field counterexample and simulated again before
+application. Both projected finding reports were evidence-local partial and
+offered no automatic continuation. The final production edits were applied
+through the DSL; only formatting followed outside it.
+
+The 30 focused cases exercise capture rejection, unchanged source on failure,
+safe method-body globals, unrelated quoted type names, quoted `Literal` and
+`Annotated` values, C3 lookup and native execution after promotion. Eager
+`Literal`/`Annotated` subscriptions remain unproved in the Python 3.11
+creation-effect gate. The same syntax is deferred on Python 3.14 and can move
+without that eager obligation. The tests distinguish these native evaluation
+modes and execute the accepted result rather than imposing the older runtime's
+rejection on both interpreters. Final focused checks also pass under the ASCII
+locale. The touched-source audit ran all 81 detectors without omissions or
+findings. The reference describes the strengthened header boundary separately
+from this implementation and verification record.
+
+Full validation passed 2,328 tests with 15 skipped on Python 3.11 and 2,343
+tests on Python 3.14. The Python 3.11 full run preceded the final test-only
+annotation-mode clarification; the subsequent 30-case ASCII run validates that
+final fixture on 3.11, and the 3.14 full run includes it. Replaying the saved
+ten-stage plan from the committed baseline reproduces both complete working
+module ASTs. Ruff and the whitespace check passed. The rendered reference
+contains the new header-boundary description; Sphinx retained its two existing
+duplicate-description warnings. The preceding commit `9bacb9a` completed CI on
+all platforms. `uv.lock` remains unrelated and excluded.

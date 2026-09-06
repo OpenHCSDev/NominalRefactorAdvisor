@@ -15,6 +15,8 @@ from dataclasses import (
 )
 from functools import cached_property
 
+from .annotation_semantics import StringizedAnnotationSurface
+
 from .ast_tools import (
     EagerNameLoadCollector,
     statements_without_docstring,
@@ -1414,6 +1416,11 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
         self,
         context: "ClassMemberMoveProofContext",
     ) -> None:
+        annotation_surfaces = (
+            StringizedAnnotationSurface.from_annotation(self.statement.annotation)
+            if isinstance(self.statement, ast.AnnAssign)
+            else ()
+        )
         super().require_safe_move(context)
         member_name = self.name
         if member_name is None:
@@ -1427,7 +1434,12 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
             for node in ast.walk(self.statement)
             if isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
-            and node.id in context.source_class_bound_names
+            and node.id in context.class_bound_names
+        ) | frozenset(
+            name
+            for surface in annotation_surfaces
+            for name in context.class_bound_names
+            if surface.reference_count(name)
         )
         if class_local_references:
             raise ValueError(
@@ -1456,7 +1468,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
         profile = ClassMethodPromotionSafetyProfile.from_method(
             self.statement,
             context.module_bound_names,
-            context.source_class_bound_names,
+            context.class_bound_names,
             source_lines=context.source_lines,
         )
         if profile.hazards:
@@ -1473,7 +1485,11 @@ class ClassMemberMoveProofContext(SourceTextGeometry):
     source_class: ResolvedClassTarget
     destination_class: ResolvedClassTarget
     module_bound_names: frozenset[str]
-    source_class_bound_names: frozenset[str]
+
+    @cached_property
+    def class_bound_names(self) -> frozenset[str]:
+        """Names that can capture a header at either move owner."""
+        return self.source_class.bound_names | self.destination_class.bound_names
 
     @property
     def source_lines(self) -> tuple[str, ...]:
@@ -1535,9 +1551,6 @@ class ClassMemberMoveSelection:
             destination_class=destination_class,
             source=source,
             module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body),
-            source_class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                source_class.node.body
-            ),
         )
         requested_names = frozenset(member_names)
         available_members: list[ClassMemberPromotionStatement] = []
@@ -1556,9 +1569,7 @@ class ClassMemberMoveSelection:
         if len(resolved_names) != len(frozenset(resolved_names)):
             raise ValueError("Class-member promotion found rebound member declarations")
         members = tuple(available_members)
-        destination_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            destination_class.node.body
-        )
+        destination_names = destination_class.bound_names
         collisions = destination_names.intersection(member_names)
         if collisions:
             raise ValueError(
