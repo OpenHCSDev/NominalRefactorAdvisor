@@ -619,7 +619,7 @@ wildcard imports whose export declarations exclude the name can establish the
 required binding.
 
 .. automodule:: nominal_refactor_advisor.native_declarations
-   :members: NativeDeclaration
+   :members: QualifiedDeclaration, ClassNamespaceDeclaration, NativeDeclaration
 
 ``NativeDeclaration`` derives a qualified name from a Python declaration and
 lazily inspects its source. Source matching compares declaration ASTs without
@@ -639,10 +639,32 @@ This is a source-declaration contract, not a proof of arbitrary live monkeypatch
 
 Collector migration resolves the original and replacement bases by their native
 qualified identities and requires their source declarations to match. The
-original base reference must resolve at class creation, and competing registered
-collector bases, including imported aliases, prevent the rewrite. A same-named
+original base reference must resolve at class creation. A same-named
 class in another module or an altered declaration under the canonical name does
 not establish native authority.
+
+``SourceNativeClassMro`` projects reachable source bases and authenticated native
+ancestors into the shared ``DeclarationMroType`` carrier. Python derives the C3
+order; a topological traversal only schedules carrier construction. Migration
+requires the first inherited binding of the removed method to belong to the
+replacement collector's native implementation. This accounts for indirect bases
+and earlier competing branches while admitting independent branches. Source and
+native classes expose their member names through ``ClassNamespaceDeclaration``.
+Custom native MRO implementations, unresolved bases and unproved source class
+creation prevent the rewrite. Native generic applications require the inherited
+``typing.Generic`` subscription implementation.
+
+``ClassNamespaceExecutionEvidence`` derives final member bindings and creation
+effects from the existing ordered lexical traversal. Deleted methods and
+annotation-only names do not become inherited method bindings. Native decorator
+references require an external binding at their evaluation point; deleting a
+shadowing name later does not establish that proof. Calls, operators, imports,
+iteration and other executable forms require creation-effect evidence. Native
+method descriptors, literal values and sequence construction have dedicated
+conditions; arbitrary custom decorators and constructors remain unproved.
+Annotation effects follow the module's annotation evaluation mode, including
+deferred annotations on Python 3.14. Deferred function and generator bodies are
+separate from their immediately evaluated defaults and outer iterables.
 
 These checks establish declaration identity, forwarding and capture conditions.
 They do not establish arbitrary multiple-inheritance replacement equivalence,
@@ -650,6 +672,12 @@ class-creation hook equivalence or unchanged annotation introspection. The
 recorded plans in ``docs/examples/collector_base_authority_refactor.py`` and
 ``docs/examples/native_declaration_consumers_refactor.py`` migrate consumers
 after the shared native-source proof declarations have been authored.
+``docs/examples/mro_declaration_carrier_refactor.py`` records the shared carrier
+and binding-consumer migration. ``docs/examples/collector_mro_proof_refactor.py``
+records the operation's inherited-method gate. These plans consume the authored
+namespace and native/source MRO modules. The four-stage
+``docs/examples/class_namespace_effect_projection_refactor.py`` records the
+separation of node-effect selection from ordered scope traversal.
 
 Generated detector classes expose collector options through ``ClassAliasProperty``
 descriptors pointing to their retained ``DetectorDeclaration.options``. The option

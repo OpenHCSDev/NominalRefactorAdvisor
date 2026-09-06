@@ -6,7 +6,13 @@ from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import (
+    Generic,
+    TYPE_CHECKING,
+    TypeVar,
+)
+
+from .native_declarations import QualifiedDeclaration
 
 if TYPE_CHECKING:
     from .class_index import CompactIndexedClass
@@ -30,20 +36,29 @@ class NativeMroBase(StrEnum):
     def for_qualified_name(cls, qualified_name: str) -> NativeMroBase | None:
         return next((member for member in cls if member.value == qualified_name), None)
 
+    @classmethod
+    def for_python_type(cls, python_type: type) -> NativeMroBase | None:
+        return next(
+            (member for member in cls if member.python_type is python_type), None
+        )
 
-class DeclarationMroType(ABCMeta):
+
+MroDeclarationT = TypeVar("MroDeclarationT", bound=QualifiedDeclaration)
+
+
+class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
     """An inert class carrying its source declaration; Python owns its C3 order."""
 
-    declaration: CompactIndexedClass
+    declaration: MroDeclarationT
 
     @classmethod
     def from_declaration(
-        cls, declaration: CompactIndexedClass, bases: tuple[type, ...]
-    ) -> DeclarationMroType:
-        return cls(declaration.symbol, bases, {"declaration": declaration})
+        cls, declaration: MroDeclarationT, bases: tuple[type, ...]
+    ) -> DeclarationMroType[MroDeclarationT]:
+        return cls(declaration.qualified_name, bases, {"declaration": declaration})
 
     @property
-    def declarations(self) -> tuple[CompactIndexedClass, ...]:
+    def declarations(self) -> tuple[MroDeclarationT, ...]:
         return tuple(
             owner.declaration
             for owner in self.__mro__
@@ -65,16 +80,16 @@ class ClassMroResolution(ABC):
 
     @property
     @abstractmethod
-    def mro_type(self) -> DeclarationMroType | None:
+    def mro_type(self) -> DeclarationMroType[CompactIndexedClass] | None:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
 class ResolvedClassMro(ClassMroResolution):
-    declaration_type: DeclarationMroType
+    declaration_type: DeclarationMroType[CompactIndexedClass]
 
     @property
-    def mro_type(self) -> DeclarationMroType:
+    def mro_type(self) -> DeclarationMroType[CompactIndexedClass]:
         return self.declaration_type
 
 

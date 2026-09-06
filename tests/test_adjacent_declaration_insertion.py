@@ -213,8 +213,9 @@ def test_inserting_before_dataclass_cannot_move_its_generated_constructor(
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
+@pytest.mark.parametrize("decorator", ("classmethod", "traced"))
 def test_collector_declaration_preserves_decorated_findings_anchor(
-    tmp_path: Path, newline: str, native_collector_module: ParsedModule
+    tmp_path: Path, newline: str, native_collector_module: ParsedModule, decorator: str
 ) -> None:
     path = tmp_path / "probe.py"
     source = (
@@ -228,7 +229,7 @@ def test_collector_declaration_preserves_decorated_findings_anchor(
         "    def _candidate_items(self, modules, config):\n"
         "        del config\n"
         "        return collect(modules)\n"
-        "    @(\n        traced\n    )\n"
+        f"    @(\n        {decorator}\n    )\n"
         "    def _collect_findings(self): return 'findings'\n"
         "print(Owner()._candidate_items([], None), Owner()._collect_findings(), events)\n"
     ).replace("\n", newline)
@@ -243,11 +244,17 @@ def test_collector_declaration_preserves_decorated_findings_anchor(
             ),
         )
     )
-    simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(
-            (*parse_python_modules(tmp_path), native_collector_module)
-        )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        (*parse_python_modules(tmp_path), native_collector_module)
     )
+    if decorator == "traced":
+        # Arbitrary decorators can alter the containing namespace. Placement alone
+        # does not prove the inherited-method relation required by this operation.
+        with pytest.raises(ValueError, match="Class namespace execution"):
+            plan.simulate(snapshot)
+        assert path.read_bytes() == source.encode("utf-8")
+        return
+    simulation = plan.simulate(snapshot)
     assert simulation.is_clean
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before

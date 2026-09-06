@@ -29,6 +29,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import NativeDeclaration
 from .codemod_declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
@@ -746,6 +747,10 @@ from .codemod_selection_context import (
     ClassDirectDeclarationIndex as ClassDirectDeclarationIndex,
     CodemodSelectorContext as CodemodSelectorContext,
     ResolvedClassTarget as ResolvedClassTarget,
+)
+from .source_native_mro import (
+    NativeClassBaseSubstitution,
+    SourceNativeClassMro,
 )
 
 
@@ -3150,18 +3155,6 @@ class DeriveCandidateCollectorOperation(
         bindings = ModuleNominalBindingAuthority(
             snapshot.parsed_module_for_source_path(owner.file_path)
         )
-        collector_symbols = {
-            NativeDeclaration(declaration).qualified_name
-            for declaration in DerivedCandidateCollectorMixin.registered_collector_base_types()
-        }
-        if any(
-            bindings.qualified_name_at(base, line=owner.node.lineno)
-            in collector_symbols
-            for base in owner.node.bases
-        ):
-            raise ValueError(
-                "Collector migration has a competing native collector base"
-            )
         replaced_bases = tuple(
             base
             for base in owner.node.bases
@@ -3172,6 +3165,19 @@ class DeriveCandidateCollectorOperation(
             raise ValueError(
                 "Collector migration requires one exact native forwarding base"
             )
+        SourceNativeClassMro(
+            snapshot,
+            DerivedCandidateCollectorMixin.registered_collector_base_types(),
+        ).require_inherited_method(
+            NativeClassBaseSubstitution(
+                snapshot.required_class_family_index.classes_by_symbol[
+                    owner.required_symbol(snapshot)
+                ],
+                replaced_bases[0],
+                NativeClassMroDeclaration(candidate.recommended_base_type),
+            ),
+            candidate.method_name,
+        )
         return CandidateCollectorMigration(
             candidate=candidate,
             target=owner.target,

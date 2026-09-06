@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -11,8 +12,26 @@ from textwrap import dedent
 from typing import cast
 
 
+class QualifiedDeclaration(ABC):
+    """A declaration with a qualified source name, independent of representation."""
+
+    @property
+    @abstractmethod
+    def qualified_name(self) -> str:
+        raise NotImplementedError
+
+
+class ClassNamespaceDeclaration(QualifiedDeclaration):
+    """Names whose class-level binding must be accounted for in member lookup."""
+
+    @property
+    @abstractmethod
+    def member_binding_names(self) -> frozenset[str]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True, eq=False)
-class NativeDeclaration:
+class NativeDeclaration(QualifiedDeclaration):
     """Keep native identity and lazily inspected source on one declaration."""
 
     declaration: type | Callable[..., object]

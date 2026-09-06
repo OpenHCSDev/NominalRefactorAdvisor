@@ -717,3 +717,56 @@ migration regressions remain: indirect configured ancestry and an earlier MRO
 branch overriding `_candidate_items`. The migration must prove the selected
 method after replacement and removal; the runtime cleanup does not claim to
 establish that proof. The user-owned `uv.lock` remains untouched.
+
+### Collector Migration Through Native C3 and Closed Namespace Evidence
+
+Collector migration now proves the inherited method selected after replacing the
+forwarding base and removing the forwarding method. `QualifiedDeclaration` owns
+the representation-independent name contract, and `ClassNamespaceDeclaration`
+provides the member-binding contract. Source and authenticated native declarations
+share `DeclarationMroType`; Python derives C3 order. The source traversal schedules
+construction without inventing precedence or rerunning repository class hooks.
+Indirect configured ancestors and earlier overriding branches are accounted for;
+independent branches and later overridden branches remain admissible.
+
+Class namespace evidence comes from the existing ordered lexical scope traversal.
+An effect selector observes each visited node without traversing its children or
+maintaining another binding state. The scope traversal owns evaluation order,
+branch joins, deletion, annotation phases and deferred bodies. Native references
+capture their use-point resolution rather than consult the final class namespace.
+Source creation effects require explicit evidence, including operators, hashing,
+iteration, decorators and constructors. Unknown executable forms remain unproved.
+Native descriptor declarations also supply the existing promotion-name projection.
+
+Native-process regressions cover inherited dispatch, class-body `exec`, a decorator
+shadowed then deleted, condition and iteration hooks, operator/hash effects in
+defaults, deleted methods, annotation-only names, native generic annotations and
+deferred function/generator execution. Thirteen of the 26 cases fail against
+`bfb8c53`; all pass with this change. Python 3.14 tests also exercise the difference
+between eager and deferred custom annotation subscriptions. Two decorated-anchor
+tests now retain a native-decorator success case and explicitly reject the custom
+decorator whose creation effects were previously assumed safe. General adjacent
+insertion still tests custom decorators and their native evaluation order.
+
+The 26-stage `mro_declaration_carrier_refactor.py` and three-stage
+`collector_mro_proof_refactor.py` replay against `bfb8c53` with the three new proof
+modules supplied as authored prerequisites. All four edited module ASTs match the
+working implementation. The four-stage
+`class_namespace_effect_projection_refactor.py` was also replayed against the
+intermediate implementation and reproduces its complete module AST. It replaces
+repeated forwarding visitors with one traversal hook and an effect selector.
+An initial replay selected the named-scope assignment operation for a module
+assignment; using the existing `ReplaceModuleAssignmentOperation` resolved that
+authoring error without changing the DSL runtime.
+
+Validation: 2,284 passed and 15 skipped on Python 3.11; 2,299 passed on Python 3.14.
+The focused ASCII-locale suite passed 105 tests. All 81 architecture detectors ran
+without omissions or findings. Sphinx retains only its two existing duplicate
+description warnings. These results establish the supported relation proofs,
+not arbitrary Python equivalence or equivalence under live monkeypatching and
+class introspection. The user-owned `uv.lock` is unchanged by this batch.
+
+The next leverage target remains expressing recurring semantic refactors with
+fewer authored replacement bodies, using these shared proof boundaries rather
+than repeating checks in each operation. The current DSL plans demonstrate
+execution and replay; their length still exposes that semantic-vocabulary gap.

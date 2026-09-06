@@ -116,7 +116,7 @@ def test_competing_collector_base_does_not_change_forwarded_arguments(
             ),
         )
     )
-    with pytest.raises(ValueError, match="competing native collector"):
+    with pytest.raises(ValueError, match="competing.*method"):
         plan.simulate(snapshot)
     assert path.read_bytes() == source.encode()
 

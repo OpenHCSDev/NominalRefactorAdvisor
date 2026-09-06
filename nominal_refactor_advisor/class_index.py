@@ -47,6 +47,7 @@ from .ast_tools import (
     module_syntax_index,
     named_function_nodes,
 )
+from .class_namespace import ClassNamespaceExecutionEvidence, NATIVE_METHOD_DECORATORS
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,
@@ -54,13 +55,18 @@ from .collection_algebra import (
 )
 from .class_mro import ClassMroAuthority
 from .declaration_dependencies import ClassScopeDependency
+from .descriptor_algebra import AliasProperty
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from .native_declarations import NativeDeclaration
+from .native_declarations import (
+    ClassNamespaceDeclaration,
+    NativeDeclaration,
+    QualifiedDeclaration,
+)
 from .native_syntax import NativePythonSyntaxIndex
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
@@ -68,7 +74,7 @@ from .source_identity import resolved_source_path_text
 
 
 @dataclass(frozen=True)
-class ClassDeclaration:
+class ClassDeclaration(QualifiedDeclaration):
     """Source-form-independent identity shared by repository class indexes."""
 
     symbol: str
@@ -85,6 +91,8 @@ class ClassDeclaration:
     )
     class_decorators_are_promotion_safe: bool = field(default=True, kw_only=True)
 
+    qualified_name = AliasProperty[str]("symbol")
+
     def with_resolved_base_symbols(
         self,
         resolved_base_symbols: tuple[str, ...],
@@ -93,8 +101,16 @@ class ClassDeclaration:
 
 
 @dataclass(frozen=True)
-class IndexedClass(ClassDeclaration):
+class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
     node: ast.ClassDef
+
+    member_binding_names = AliasProperty[frozenset[str]](
+        "namespace_execution.binding_names"
+    )
+
+    @cached_property
+    def namespace_execution(self) -> ClassNamespaceExecutionEvidence:
+        return ClassNamespaceExecutionEvidence.from_class(self.node)
 
     @property
     def is_final(self) -> bool:
@@ -1275,7 +1291,7 @@ MethodPromotionHazardPredicate: TypeAlias = Callable[[MethodPromotionInspection]
 
 
 _PROMOTABLE_METHOD_DECORATOR_NAMES = frozenset(
-    ("classmethod", "property", "staticmethod")
+    declaration.__name__ for declaration in NATIVE_METHOD_DECORATORS
 )
 
 
@@ -3042,6 +3058,27 @@ def nominal_reference_root_name(reference: ast.AST) -> str | None:
 class ModuleNominalBindingView(ABC):
     """Representation-independent nominal bindings at one module position."""
 
+    def reference_or_builtin_witness_at(
+        self,
+        module: ParsedModule,
+        reference: ast.expr,
+        *,
+        line: int,
+        preceding_class_bound_names: frozenset[str] = frozenset(),
+    ) -> ModuleNominalBindingWitness | None:
+        root = nominal_reference_root_name(reference)
+        if root in preceding_class_bound_names:
+            return None
+        witness = self.reference_witness_at(module, reference, line=line)
+        if witness is None and isinstance(reference, ast.Name):
+            return self.unshadowed_builtin_witness(
+                module,
+                reference.id,
+                line=line,
+                preceding_class_bound_names=preceding_class_bound_names,
+            )
+        return witness
+
     def require_native_type_in_class(
         self,
         module: ParsedModule,
@@ -3054,24 +3091,14 @@ class ModuleNominalBindingView(ABC):
         class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
         if name in class_names:
             raise ValueError(f"Class namespace shadows native type {name!r}")
-        witnesses = (
-            self.unshadowed_builtin_witness(
-                module,
-                name,
-                line=owner.lineno,
-                preceding_class_bound_names=class_names,
-            ),
-            self.reference_witness_at(
-                module,
-                ast.Name(id=name, ctx=ast.Load()),
-                line=owner.lineno,
-            ),
+        witness = self.reference_or_builtin_witness_at(
+            module,
+            ast.Name(id=name, ctx=ast.Load()),
+            line=owner.lineno,
+            preceding_class_bound_names=class_names,
         )
         qualified_name = NativeDeclaration(declaration).qualified_name
-        if not any(
-            witness is not None and witness.qualified_name == qualified_name
-            for witness in witnesses
-        ):
+        if witness is None or witness.qualified_name != qualified_name:
             raise ValueError(
                 f"Class creation does not prove native type binding {qualified_name!r}"
             )
