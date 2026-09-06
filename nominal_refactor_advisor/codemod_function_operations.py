@@ -26,13 +26,12 @@ from .codemod_declaration_source import (
     FunctionBodyPrefixSourceAuthority,
     FunctionBodySourceAuthority,
     FunctionDecoratorsSourceAuthority,
-    FunctionLocalProjectionSourceAuthority,
-    FunctionParameterProjectionSourceAuthority,
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
 from .codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
+    OptionalStringArrayPayloadValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -48,6 +47,11 @@ from .codemod_selector_models import (
     SourceRewriteTarget,
 )
 from .codemod_source_edits import PhysicalSourceEdit
+from .declaration_dependencies import (
+    FunctionBindingABC,
+    FunctionLocalBinding,
+    FunctionParameterBinding,
+)
 from .descriptor_algebra import AliasProperty
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
@@ -250,7 +254,11 @@ class FunctionBindingProjectionOperationABC(SourceReprovedOperation, ABC):
     """Rewrite owned reads through the selected lexical binding authority."""
 
     projection_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    source_authority: ClassVar[type[FunctionBindingProjectionSourceAuthority]]
+    binding_type: ClassVar[type[FunctionBindingABC]]
+
+    attribute_path: tuple[str, ...] = codemod_payload_field(
+        OptionalStringArrayPayloadValueCodec(), default=()
+    )
 
     @property
     @abstractmethod
@@ -263,7 +271,7 @@ class FunctionBindingProjectionOperationABC(SourceReprovedOperation, ABC):
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         _identifier, target, node = self.target_node_from_context(snapshot)
-        authority = type(self).source_authority(
+        authority = FunctionBindingProjectionSourceAuthority(
             node=node,
             source=snapshot.sources_by_file_path[target.file_path],
         )
@@ -273,7 +281,11 @@ class FunctionBindingProjectionOperationABC(SourceReprovedOperation, ABC):
             raise ValueError("Binding projection requires a Name/Attribute access path")
         return authority.geometry.physical_edits(
             file_path=target.file_path,
-            replacements=authority.replacements_for(self.binding_name, reference),
+            replacements=authority.replacements_for(
+                type(self).binding_type(node, self.binding_name),
+                reference,
+                attribute_path=self.attribute_path,
+            ),
             rationale=self.rationale
             or f"Project binding {self.binding_name!r} in {target.qualname!r}.",
         )
@@ -284,7 +296,7 @@ class ProjectFunctionParameterOperation(FunctionBindingProjectionOperationABC):
     """Rewrite parameter reads; signature and caller migrations remain explicit."""
 
     parameter_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    source_authority = FunctionParameterProjectionSourceAuthority
+    binding_type = FunctionParameterBinding
     binding_name = AliasProperty[str]("parameter_name")
 
 
@@ -293,5 +305,5 @@ class ProjectFunctionLocalOperation(FunctionBindingProjectionOperationABC):
     """Rewrite a single-assignment local's reads onto a parameter access path."""
 
     local_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    source_authority = FunctionLocalProjectionSourceAuthority
+    binding_type = FunctionLocalBinding
     binding_name = AliasProperty[str]("local_name")

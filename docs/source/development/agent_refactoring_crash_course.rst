@@ -668,11 +668,14 @@ Refactor into:
 Bucket C: Orthogonal Concern
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Use only when a concern truly crosses the domain concepts without being a subtype relation.
+Establish whether the concern participates in the nominal capability family
+or belongs to a separately identified contained object.
 
 Refactor into:
 
-- composition
+- multiple inheritance for shared capabilities and native MRO resolution
+- held references and delegation when the contained object has independent
+  identity, lifecycle or invariants
 
 Examples:
 
@@ -893,8 +896,10 @@ Use mixins / multiple inheritance when:
 - the concern still needs nominal identity, MRO precedence, or reusable class-level behavior
 - the concern should remain inside the declared inheritance family rather than becoming an external wrapper
 
-Avoid composition as the default refactor target when nominal inheritance can express the concern more
-faithfully.
+Multiple inheritance composes capabilities. Do not replace it with held
+references and delegation when native inheritance already derives the required
+relation. Generic consumers should use the ABC contract; repeated concrete-class
+checks distribute implementation selection outside its owner.
 
 Use enums when:
 

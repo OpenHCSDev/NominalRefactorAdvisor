@@ -445,16 +445,24 @@ Use mixins / multiple inheritance when:
 
 - a concern is orthogonal but still belongs inside the nominal hierarchy
 - MRO precedence is part of the semantics
-- the concern should be reusable without being externalized into a composition wrapper
+- the concern should be reusable without being externalized into a delegation wrapper
 - you need class-level or method-resolution participation from more than one reusable concern
 
 Implementation reuse is not evidence against inheritance.  When the declared
 types satisfy the required nominal relations and substitution, inherited
 implementation is native derivation from those declarations.  Replacing that
 family with delegates only manufactures another identity and forwarding
-surface.  Composition requires positive evidence for a contained object with
-its own identity, lifecycle, or invariants; orthogonality alone does not prove
-that boundary.
+surface. Object composition through held references requires positive evidence
+for a contained object with its own identity, lifecycle, or invariants;
+orthogonality alone does not prove that boundary.
+
+Multiple inheritance is itself composition of capabilities. The choice is
+between ways of expressing the required relation, not between inheritance and
+composition. Classes do not establish correct factoring merely by existing:
+parallel classes can restate the same semantic distinction. Inspect a class
+named after another class for a duplicated ownership rule, and derive that
+rule from its existing owner wherever possible. Class and line counts are
+consequences of factoring, not correctness criteria.
 
 Use an enum when:
 

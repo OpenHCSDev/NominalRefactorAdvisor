@@ -9,6 +9,7 @@ from nominal_refactor_advisor.codemod import (
     EnsureImportOperation,
     InsertClassMemberOperation,
     PrependFunctionBodyOperation,
+    ProjectFunctionParameterOperation,
     ReplaceScopeAssignmentOperation,
     SourceRewriteTarget,
 )
@@ -71,19 +72,13 @@ PLAN = CodemodPlanSequence.from_operations(
             assignment_name="destination_names",
             source="destination_names = destination_class.bound_names",
         ),
-        ReplaceScopeAssignmentOperation(
+        ProjectFunctionParameterOperation(
             target=replace(
                 movement, qualname="ClassMethodPromotionStatement.require_safe_move"
             ),
-            assignment_name="profile",
-            source=(
-                "profile = ClassMethodPromotionSafetyProfile.from_method(\n"
-                "    self.statement,\n"
-                "    context.module_bound_names,\n"
-                "    context.class_bound_names,\n"
-                "    source_lines=context.source_lines,\n"
-                ")"
-            ),
+            parameter_name="context",
+            attribute_path=("source_class_bound_names",),
+            projection_source="context.class_bound_names",
         ),
         PrependFunctionBodyOperation(
             target=replace(

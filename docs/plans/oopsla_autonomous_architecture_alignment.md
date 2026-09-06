@@ -115,6 +115,55 @@ its outputs retain their derivation source.
 
 ## Operational Decision Procedure
 
+### Active refactoring objective (6 September 2026)
+
+Make the cost of expressing a refactor track its semantic decisions rather
+than its affected lines or files. Correct maintenance requires complete
+derivation of the task's answers and recovery of their selected source.
+Behavioural agreement alone does not discharge those obligations.
+
+Factor repeated implementation into its declaration owners and compose
+overlapping capabilities through multiple inheritance and native MRO. Shared
+algorithms belong upstream; concrete implementations supply the irreducible
+hooks. Generic consumers use the ABC contract without rediscovering concrete
+implementations. Classes can still mirror one another: class count and line
+count are not optimisation targets. A class named after another class is an
+ownership-audit trigger, not an automatic diagnosis.
+
+The DSL should make existing declarations selectable operands, derive syntax
+and import changes, and expose further moves in the projected state so an
+agent or practitioner can chain decisions before applying a coherent batch.
+Evaluate progress by eliminated independent semantics, preserved source
+evidence, and reduced mechanical authoring. Preserve explicit unresolved
+obligations; neither a clean detector report nor simulation alone proves
+complete correctness. Full autonomous semantic discovery is not a prerequisite
+for a useful refactoring language.
+
+The first resumed increment removes mirrored binding-projection variants and
+selects owned attribute reads without copying enclosing statements. The
+22-stage plan in `docs/examples/access_path_projection.py` reconstructs the
+change from its pre-edit source. The earlier member-move plan now uses the new
+selector and reproduces the same two module ASTs from its original baseline.
+
+The attempt to use `ReplaceDeclaredCallArgumentsOperation` exposed an unresolved
+receiver boundary: a method invoked through a local constructed instance was
+not recovered as the selected declaration. The plan uses an explicit body edit
+for that caller; it does not claim that the narrower operation succeeded.
+Next, trace existing product-flow construction and method-resolution evidence,
+factor caller-side concrete dispatch into the nominal contracts, and make that
+call edit source-selected without adding a parallel receiver registry. The
+source-derived transfer of members between unrelated owners remains another
+gap; introducing temporary inheritance merely to enable a move is not a repair.
+
+Validation for this increment: 57 focused tests; 13 new access-path cases also
+run under an ASCII locale; full suites of 2,341 passed and 15 skipped on Python
+3.11, and 2,356 passed on Python 3.14, using eight workers per suite. All 81
+detectors completed with no findings in the touched-source/context audit.
+Both saved-plan replays matched the expected module ASTs. The Sphinx build
+retained its two existing duplicate-object warnings.
+
+### Review questions
+
 Before introducing a semantic change, ask:
 
 1. Which declaration already owns this fact?

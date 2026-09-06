@@ -5,6 +5,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
 
@@ -29,6 +30,26 @@ class LexicalValueReference(CompactValueExpression):
 
     root_name: str
     attribute_path: tuple[str, ...] = ()
+
+    def select_expression(
+        self,
+        root: ast.Name,
+        parent_by_node: Mapping[ast.AST, ast.AST],
+    ) -> ast.expr | None:
+        """Select this exact access prefix from an already-owned root."""
+        if root.id != self.root_name:
+            return None
+        expression: ast.expr = root
+        for attribute_name in self.attribute_path:
+            parent = parent_by_node[expression]
+            if not (
+                isinstance(parent, ast.Attribute)
+                and parent.value is expression
+                and parent.attr == attribute_name
+            ):
+                return None
+            expression = parent
+        return expression
 
     @classmethod
     def from_expression(cls, expression: ast.expr) -> Self | None:

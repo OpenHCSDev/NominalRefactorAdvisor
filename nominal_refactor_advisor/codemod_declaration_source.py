@@ -23,6 +23,7 @@ from typing import (
 
 from .ast_tools import (
     AstKeywordSourceProjection,
+    AstParentIndex,
     FunctionDefinitionNode,
     is_docstring_statement,
 )
@@ -40,7 +41,6 @@ from .codemod_source_edits import (
 from .codemod_statement_source import StatementSource
 from .declaration_dependencies import (
     FunctionBindingABC,
-    FunctionLocalBinding,
     FunctionParameterBinding,
 )
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -906,61 +906,84 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
 
 
 @dataclass(frozen=True)
-class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority, ABC):
+class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority):
     """Project owned binding reads onto an existing parameter's access path."""
 
-    @property
-    @abstractmethod
-    def binding_type(self) -> type[FunctionBindingABC]:
-        """Nominal binding declaration selected by this projection."""
-        raise NotImplementedError
+    def selected_reads(
+        self,
+        binding: FunctionBindingABC,
+        attribute_path: tuple[str, ...],
+    ) -> tuple[ast.expr, ...]:
+        """Narrow owned roots, rejecting writes and discarded comments."""
+        roots = binding.required_references()
+        if not attribute_path:
+            return roots
+        selector = LexicalValueReference(binding.binding_name, attribute_path)
+        parents = AstParentIndex(self.node).parent_by_node
+        reads = tuple(
+            expression
+            for root in roots
+            if (expression := selector.select_expression(root, parents)) is not None
+        )
+        for read in reads:
+            if not isinstance(read.ctx, ast.Load):
+                raise ValueError(
+                    "Access projection cannot migrate a direct write or delete"
+                )
+            span = SourceTextSpan.from_offsets(
+                self.geometry.required_node_offsets(read)
+            )
+            if self.geometry.span_contains_comment(span):
+                raise ValueError("Access projection would discard a comment")
+        return reads
 
     def replacements_for(
         self,
-        binding_name: str,
+        binding: FunctionBindingABC,
         reference: LexicalValueReference,
+        *,
+        attribute_path: tuple[str, ...] = (),
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        reads = self.binding_type(self.node, binding_name).required_references()
+        reads = self.selected_reads(binding, attribute_path)
         if not reads:
-            raise ValueError(f"Binding {binding_name!r} has no owned reads to project")
+            raise ValueError(
+                f"Binding {binding.binding_name!r} has no owned reads to project"
+            )
         expressions = tuple(
-            ast.fix_missing_locations(ast.copy_location(reference.as_expression(), read))
+            ast.fix_missing_locations(
+                ast.copy_location(reference.as_expression(), read)
+            )
             for read in reads
         )
         projected_function = copy.deepcopy(
-            self.node, {id(read): expression for read, expression in zip(reads, expressions)},
+            self.node,
+            {id(read): expression for read, expression in zip(reads, expressions)},
         )
-        carrier_reads = frozenset(FunctionParameterBinding(
-            projected_function, reference.root_name,
-        ).required_references())
+        carrier_reads = frozenset(
+            FunctionParameterBinding(
+                projected_function,
+                reference.root_name,
+            ).required_references()
+        )
         projected_roots = tuple(
-            node for expression in expressions for node in ast.walk(expression)
+            node
+            for expression in expressions
+            for node in ast.walk(expression)
             if isinstance(node, ast.Name)
         )
         if not all(root in carrier_reads for root in projected_roots):
-            raise ValueError(f"Projection root {reference.root_name!r} is captured by another scope")
+            raise ValueError(
+                f"Projection root {reference.root_name!r} is captured by another scope"
+            )
         replacement_source = ast.unparse(reference.as_expression())
         return tuple(
             SourceTextSpanReplacement.from_offsets(
-                start_offset=span.start_offset, end_offset=span.end_offset,
+                start_offset=span.start_offset,
+                end_offset=span.end_offset,
                 replacement_source=replacement_source,
             )
             for read in reads
-            for span in (SourceTextSpan.from_offsets(self.geometry.required_node_offsets(read)),)
+            for span in (
+                SourceTextSpan.from_offsets(self.geometry.required_node_offsets(read)),
+            )
         )
-
-
-@dataclass(frozen=True)
-class FunctionParameterProjectionSourceAuthority(
-    FunctionBindingProjectionSourceAuthority
-):
-    """Project an unchanged parameter's reads; its signature remains author-owned."""
-
-    binding_type = FunctionParameterBinding
-
-
-@dataclass(frozen=True)
-class FunctionLocalProjectionSourceAuthority(FunctionBindingProjectionSourceAuthority):
-    """Project a single-assignment local's reads; initializer removal stays explicit."""
-
-    binding_type = FunctionLocalBinding

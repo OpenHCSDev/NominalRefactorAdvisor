@@ -214,6 +214,25 @@ A raw classmethod descriptor retains declaration identity but reports
 different explicit lookup form.
 
 The codemod surface models source-anchored candidate rewrites and simulations.
+
+``ProjectFunctionParameterOperation`` and ``ProjectFunctionLocalOperation``
+select reads owned by their lexical binding declaration. Their optional
+``attribute_path`` narrows the selection to an exact access prefix: for example,
+``parameter_name="context", attribute_path=("old_field",),
+projection_source="context.new_field"`` rewrites those field reads without
+replacing their enclosing statements. The empty path selects whole binding
+reads as before. Longer suffixes remain intact, and shadowed roots are excluded.
+
+``FunctionBindingProjectionSourceAuthority`` consumes ``FunctionBindingABC``;
+the existing parameter and local binding implementations own lexical scope
+resolution. The shared rewriter checks replacement-root capture and rejects
+direct writes, deletes and comments inside the selected access span. An access
+prefix used to reach a deeper write is a read: replacing ``context.old`` in
+``context.old.value = 3`` retains the assignment to ``value``. The operation
+proves source selection and lexical ownership, not equivalence of the old and
+new attribute values, descriptors or their effects. Signature, caller and
+initializer changes remain explicit operations in the enclosing plan.
+
 ``DeclarationDecoratorsSourceAuthority`` owns the decorator region independently
 of a class or function's header and suite. ``FunctionDecoratorsSourceAuthority``
 is its function-only refinement, sharing the same rendering implementation.

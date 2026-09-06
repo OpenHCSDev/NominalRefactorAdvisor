@@ -303,8 +303,6 @@ from .codemod_declaration_source import (
     ClassMemberSource as ClassMemberSource,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
     FunctionBindingProjectionSourceAuthority as FunctionBindingProjectionSourceAuthority,
-    FunctionLocalProjectionSourceAuthority as FunctionLocalProjectionSourceAuthority,
-    FunctionParameterProjectionSourceAuthority as FunctionParameterProjectionSourceAuthority,
     FunctionRegionSourceAuthority as FunctionRegionSourceAuthority,
     FunctionSuiteLayout as FunctionSuiteLayout,
     FunctionSuiteSourceAuthority as FunctionSuiteSourceAuthority,
