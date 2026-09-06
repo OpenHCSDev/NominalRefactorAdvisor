@@ -1663,7 +1663,7 @@ class CodemodPlanSequenceContinuationReport(DataclassJsonReport):
     """Executable continuation plan synthesized from a staged final source state."""
 
     sequence: CodemodPlanSequence
-    source_index: SourceIndex
+    source_index: SourceIndex = json_report_field(included=False)
     findings: tuple[RefactorFinding, ...]
     plan: "FindingRecipePlan" = json_report_field(
         field_name="finding_recipe_plan"

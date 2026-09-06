@@ -753,6 +753,13 @@ navigation locations rather than complete declaration boundaries.
 .. automodule:: nominal_refactor_advisor.codemod_runtime
    :members: CodemodSourceSnapshot, RefactorRecipeOperationCompiler, RefactorRecipe, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodPlanDocumentSimulation, CodemodPlanSequenceSimulation, CodemodSimulationReport, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, codemod_plan_from_findings
 
+``CodemodPlanSequenceContinuationReport`` retains the projected ``source_index``
+as typed provenance. Its default JSON projection includes continuation plans
+and finding evidence without serialising that index. In the CLI,
+``--codemod-project-source-index`` includes the index once, under
+``projected_findings.projected_source_index``. Requesting a continuation plan
+does not implicitly request source-index output.
+
 .. automodule:: nominal_refactor_advisor.codemod
    :members: CreateFileOperation, ModuleImportBinding, ModuleMoveImportDependency, ModuleMoveDependencyReport, MoveSymbolsToModuleOperation, MoveSymbolClosureToModuleOperation, ExtractSymbolsToNewModuleOperation, ExtractSymbolClosureToNewModuleOperation, ReplaceTargetOperation, PatchTargetOperation, InsertBeforeTargetOperation, InsertAfterTargetOperation, DeleteTargetOperation, EraseDeadCompatibilityOperation, DeleteModuleCallDeclarationsOperation, RenameTopLevelBindingAuthorityOperation, RenameTopLevelDeclarationAuthorityOperation, ReplaceDirectClassBaseOperation, CollapseRedundantClassAuthorityOperation, CollapseIntermediateClassAuthorityOperation, PromoteClassMembersToAncestorOperation, CarrierFieldProjection, ReplaceFieldsWithCarrierOperation, FactorExactDataclassFieldAuthorityOperation, PromoteExactDataclassFieldsToExistingAuthorityOperation, FactorExactMethodRoleOperation, PromoteExactLeafMethodsToAncestorOperation, CollapseClosedParameterConveyorOperation, CollapseDeclaredCarrierExpansionOperation, DeriveClassFamilyCollectionOperation, DeriveEnumSubsetOperation, DeriveDataclassPayloadProjectionOperation, DeriveDataclassFieldNameCollectionProjectionOperation, DeriveDataclassKeyValueSequenceProjectionOperation, DeriveDataclassConstructorProjectionOperation
 

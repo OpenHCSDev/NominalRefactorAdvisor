@@ -17734,6 +17734,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         continuation_report.plan.document.recipes[0].operations[0]
     )["operation"] == "convert_manual_registry_to_autoregister"
     continuation_payload = json_report_object(continuation_report)
+    assert "source_index" not in continuation_payload
     assert continuation_payload["has_continuation_stage"] is True
     assert (
         continuation_payload["continuation_sequence"]["stages"][0]["recipes"][0][
@@ -17747,6 +17748,23 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
         ][0]["operation"]
         == "convert_manual_registry_to_autoregister"
     )
+    extended = continuation_report.extended_sequence.simulate(snapshot)
+    assert extended.is_clean
+    assert extended.stage_count == 2
+    assert generated_path.exists() is False
+    extended.apply()
+    native_result = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "import json, runpy, sys; "
+            "run = runpy.run_path(sys.argv[1])['run_handler']; "
+            "print(json.dumps([run('alpha', 10), run('beta', 10)]))",
+            str(generated_path),
+        ],
+        text=True,
+    )
+    assert json.loads(native_result) == [11, 9]
 
 
 def test_module_cli_simulates_staged_codemod_plan(
@@ -21697,8 +21715,10 @@ def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
         assert module_path.read_text() == original_source
 
 
+@pytest.mark.parametrize("include_source_index", (False, True))
 def test_module_cli_simulates_projected_findings_with_executable_continuation(
     tmp_path: Path,
+    include_source_index: bool,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
@@ -21738,6 +21758,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
             "--codemod-project-findings",
             "--codemod-continuation-plan-out",
             continuation_plan_path.as_posix(),
+            *(["--codemod-project-source-index"] if include_source_index else []),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -21749,7 +21770,13 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
     projected_continuation = projected_findings["projected_finding_continuation"]
 
     assert result.returncode == 0, result.stderr
-    assert "projected_source_index" not in projected_findings
+    assert ("projected_source_index" in projected_findings) is include_source_index
+    if include_source_index:
+        assert any(
+            source["file_path"] == created_path.as_posix()
+            for source in projected_findings["projected_source_index"]["files"]
+        )
+    assert "source_index" not in projected_continuation
     assert created_path.exists() is False
     assert any(
         finding["detector_id"] == "manual_class_registration"

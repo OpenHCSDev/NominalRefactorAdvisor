@@ -962,3 +962,49 @@ The completed full runs passed 2,317 tests with 15 skipped on Python 3.11 and
 mode and locale coercion disabled. Ruff and the whitespace check passed; a
 fresh Sphinx build retained its two existing duplicate-description warnings.
 The unrelated `uv.lock` changes remain excluded.
+
+### Continuation Projection Without Implicit Index Export
+
+`CodemodPlanSequenceContinuationReport.source_index` retains its typed reference
+to the projected source index, but now declares `included=False` through the
+existing JSON field policy. The explicit CLI source-index flag remains the
+single opt-in output surface. No extra serialiser, projection wrapper or
+caller-side removal pass was introduced.
+
+Three failing regressions established the previous behaviour: direct report
+projection and CLI continuation output with the index flag both off and on.
+The declaration change was simulated and applied through
+`docs/examples/continuation_report_projection.py`. Its projected scan was
+evidence-local partial, with no findings or automatic continuation. A repeated
+repository forecast emitted 90,279 bytes after the change, compared with
+4,944,228 bytes before it. The later forecast is an idempotent application of
+the same assignment operation, so its edit evidence also differs; the omitted
+index accounts for the large reduction. This measures payload size, not a
+runtime speedup.
+
+The direct continuation test still verifies index identity. It now also
+simulates the extended two-stage sequence, applies the original file creation
+and discovered registry conversion together, and executes both resulting
+handlers in a fresh Python process. CLI tests verify that the opt-in index
+contains the newly projected file, remains absent from the nested continuation
+report, and leaves the emitted continuation plan loadable and executable.
+Five focused cases and seven JSON/continuation cases under an ASCII locale pass.
+
+Both the touched runtime-module audit and a fresh whole-package audit ran all
+81 detectors without omissions or findings. The whole-package report exposes
+raw findings and has caches disabled. It supplies no next-edit candidates;
+that observation is not evidence that the broader architectural goal is
+complete. Manual boundary review and detector contribution coverage remain
+necessary. The public API reference now distinguishes typed provenance from
+opt-in JSON output, separately from the executable example.
+
+Full validation passed 2,318 tests with 15 skipped on Python 3.11 and 2,333
+tests on Python 3.14. Ruff and the whitespace check passed. Sphinx retained its
+two existing duplicate-description warnings.
+
+The refreshed capability inventory reports 81 required-relation observers,
+21 recipe evaluators and 15 recipe synthesis providers, with overlapping
+authority-boundary and semantic-mirror roles. These are native contract
+memberships, not empirical successful-refactor counts. A clean whole-package
+scan therefore still needs comparison with concrete manual factoring decisions
+to distinguish absent debt from discovery or synthesis gaps.
