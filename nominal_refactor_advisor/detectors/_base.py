@@ -1722,34 +1722,12 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-        detector_declaration = vars(cls).get("detector_declaration")
-        declaration_owns_collector = (
-            detector_declaration is not None
-            and isinstance(detector_declaration, DetectorDeclaration)
-            and detector_declaration.options.candidate_collector is not None
-        )
-        if (
-            _has_finding_spec_contract(cls)
-            and "candidate_collector" not in vars(cls)
-            and not declaration_owns_collector
+        if _has_finding_spec_contract(cls) and (
+            "candidate_collector" not in vars(cls) or cls.candidate_collector is None
         ):
             raise TypeError(
                 f"{cls.__name__} must own its candidate_collector declaration"
             )
-
-    @classmethod
-    def required_candidate_collector(cls) -> DetectorCollector[CandidateItemT]:
-        detector_declaration = cast(
-            type[IssueDetector], cls
-        ).resolved_detector_declaration()
-        if detector_declaration is not None:
-            collector = detector_declaration.options.candidate_collector
-            if collector is None:
-                raise TypeError(
-                    f"{cls.__name__}'s declaration has no candidate collector"
-                )
-            return cast(DetectorCollector[CandidateItemT], collector)
-        return cls.candidate_collector
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
@@ -1852,7 +1830,7 @@ class ModuleCollectorCandidateDetector(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
-        return type(self).required_candidate_collector()(module)
+        return type(self).candidate_collector(module)
 
 
 class ConfiguredModuleCollectorCandidateDetector(
@@ -1872,7 +1850,7 @@ class ConfiguredModuleCollectorCandidateDetector(
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
-        return type(self).required_candidate_collector()(module, config)
+        return type(self).candidate_collector(module, config)
 
 
 class SourceModuleCollectorCandidateDetector(
@@ -1885,29 +1863,13 @@ class SourceModuleCollectorCandidateDetector(
 
     source_candidate_collector: ClassVar[SourceModuleCandidateCollector[CandidateItemT]]
 
-    @classmethod
-    def required_source_candidate_collector(
-        cls,
-    ) -> SourceModuleCandidateCollector[CandidateItemT]:
-        detector_declaration = cast(
-            type[IssueDetector], cls
-        ).resolved_detector_declaration()
-        if detector_declaration is not None:
-            collector = detector_declaration.options.source_candidate_collector
-            if collector is None:
-                raise TypeError(
-                    f"{cls.__name__}'s declaration has no source candidate collector"
-                )
-            return cast(SourceModuleCandidateCollector[CandidateItemT], collector)
-        return cls.source_candidate_collector
-
     def _findings_for_source(
         self,
         module: SourceModule,
         syntax_index: NativePythonSyntaxIndex,
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
-        candidates = type(self).required_source_candidate_collector()(
+        candidates = type(self).source_candidate_collector(
             module, syntax_index, config
         )
         if candidates is None:
@@ -2013,7 +1975,7 @@ class CrossModuleCollectorCandidateDetector(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
-        return type(self).required_candidate_collector()(modules)
+        return type(self).candidate_collector(modules)
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
@@ -2035,7 +1997,7 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
-        return type(self).required_candidate_collector()(modules, config)
+        return type(self).candidate_collector(modules, config)
 
 
 CompactCandidateContextT = TypeVar("CompactCandidateContextT")
@@ -2250,7 +2212,7 @@ class FlattenedModuleCollectorCandidateDetector(
             tuple(
                 item
                 for module in modules
-                for item in type(self).required_candidate_collector()(module)
+                for item in type(self).candidate_collector(module)
             )
         )
 
@@ -2277,7 +2239,7 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
             tuple(
                 item
                 for module in modules
-                for item in type(self).required_candidate_collector()(module, config)
+                for item in type(self).candidate_collector(module, config)
             )
         )
 
@@ -2391,8 +2353,15 @@ class DetectorDeclaration(Generic[CandidateItemT]):
             "__firstlineno__": self.source_line,
             "detector_declaration": self,
             **{
-                name: ClassAliasProperty(f"detector_declaration.{name}")
-                for name in self.required_class_shell_field_names()
+                name: ClassAliasProperty(f"{source_path}.{name}")
+                for source_path, names in (
+                    ("detector_declaration", self.required_class_shell_field_names()),
+                    (
+                        "detector_declaration.options",
+                        self.optional_class_shell_field_names(),
+                    ),
+                )
+                for name in names
             },
         }
 

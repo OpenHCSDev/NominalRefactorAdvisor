@@ -677,3 +677,43 @@ rewrite raises `TypeError`. The next relation proof must account for inherited
 member ownership through indirect bases, rather than extend direct-name checks.
 This probe used an in-memory source snapshot and separate native subprocesses;
 it did not write source files or change the repository.
+
+### Collector Execution Through One Native Attribute Relation
+
+The inherited-dispatch investigation exposed a separate runtime authority split:
+`required_candidate_collector` selected retained declaration options before
+considering the receiver's field. An explicit subclass collector override was
+ignored for all six registered collector base families. The source-collector
+fast path used the same competing lookup. Seven native override regressions
+failed against the preceding implementation; the missing-collector validation
+case already passed.
+
+Generated classes now expose their existing optional class-shell fields through
+`ClassAliasProperty`, pointing into the retained declaration's options. Values
+remain owned by the declaration. Execution reads the collector attribute through
+ordinary Python lookup; both collector-selection helpers were removed. Subclass
+overrides therefore have the same meaning for generated and authored parents.
+The class-creation check validates the projected field without inspecting a
+second representation. This also removes the helper-override collision from
+the pending collector migration counterexamples.
+
+`docs/examples/collector_attribute_projection_refactor.py` expresses the whole
+production change in 11 DSL stages. Replaying it against `1931322` produced an
+identical module AST. In that isolated replay, the full suites passed 2,245 tests
+on Python 3.11 (15 skipped) and 2,260 on Python 3.14. Three old cache-test assertions
+that prohibited a collector attribute were removed; their native/compact result
+comparisons remain. Repository architecture tests now verify projected descriptor
+identity and value provenance centrally. The focused ASCII run passed 82 tests,
+all 81 architecture detectors ran without omissions or findings, and the docs
+build retained only the two existing duplicate-description warnings.
+
+A diagnostic empty-collector microbenchmark under concurrent test load measured
+median times of 1.50 seconds before and 0.61 seconds after for 300,000 calls,
+across five repetitions. This measures the lookup path, not analysis throughput.
+
+The source/native C3 carrier work remains uncommitted and unintegrated into
+collector migration. Its 48 focused tests pass on Python 3.14. Two native
+migration regressions remain: indirect configured ancestry and an earlier MRO
+branch overriding `_candidate_items`. The migration must prove the selected
+method after replacement and removal; the runtime cleanup does not claim to
+establish that proof. The user-owned `uv.lock` remains untouched.

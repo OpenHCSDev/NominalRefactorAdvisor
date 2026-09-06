@@ -93,7 +93,13 @@ def test_concrete_candidate_detectors_have_one_collector_authority() -> None:
             assert "candidate_collector" in vars(detector_type)
         else:
             assert declaration.options.candidate_collector is not None
-            assert "candidate_collector" not in vars(detector_type)
+            assert isinstance(
+                vars(detector_type)["candidate_collector"], ClassAliasProperty
+            )
+            assert (
+                detector_type.candidate_collector
+                is declaration.options.candidate_collector
+            )
 
 
 def test_generated_detector_types_retain_their_nominal_declaration() -> None:
@@ -108,16 +114,18 @@ def test_generated_detector_types_retain_their_nominal_declaration() -> None:
         declaration = detector_type.resolved_detector_declaration()
         assert declaration is not None
         assert vars(detector_type)["detector_declaration"] is declaration
-        assert {
-            "candidate_type",
-            "candidate_collector",
-            "source_candidate_collector",
-        }.isdisjoint(vars(detector_type))
+        assert "candidate_type" not in vars(detector_type)
         for name in declaration.required_class_shell_field_names():
             assert isinstance(vars(detector_type)[name], ClassAliasProperty)
             assert getattr(detector_type, name) is getattr(declaration, name)
             assert getattr(detector_type(), name) is getattr(declaration, name)
-        assert detector_type.required_relation_finding_spec() is declaration.finding_spec
+        for name in declaration.optional_class_shell_field_names():
+            assert isinstance(vars(detector_type)[name], ClassAliasProperty)
+            assert getattr(detector_type, name) is getattr(declaration.options, name)
+            assert getattr(detector_type(), name) is getattr(declaration.options, name)
+        assert (
+            detector_type.required_relation_finding_spec() is declaration.finding_spec
+        )
         assert detector_type.required_relation_source() == declaration.source
         assert detector_type.__module__ == declaration.module_name
         assert vars(detector_type)["__firstlineno__"] == declaration.source_line

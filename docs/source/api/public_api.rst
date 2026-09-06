@@ -651,6 +651,18 @@ recorded plans in ``docs/examples/collector_base_authority_refactor.py`` and
 ``docs/examples/native_declaration_consumers_refactor.py`` migrate consumers
 after the shared native-source proof declarations have been authored.
 
+Generated detector classes expose collector options through ``ClassAliasProperty``
+descriptors pointing to their retained ``DetectorDeclaration.options``. The option
+names derive from the declaration's existing class-shell field projection; the
+generated class does not copy their values. Collector execution reads
+``type(self).candidate_collector`` or ``type(self).source_candidate_collector``.
+Authored subclass overrides follow native attribute lookup and MRO, including
+when the parent class was generated. There is no separate helper selecting
+between a declaration's options and a class field at execution time.
+
+``docs/examples/collector_attribute_projection_refactor.py`` records the runtime
+projection and call-site migration as an executable DSL plan.
+
 .. automodule:: nominal_refactor_advisor.codemod_source_edits
    :members: SourceNodeDecoratorPolicy, ReplacementSource, SourceEditOrigin, SourceRewriteContributor, NominalSourceEdit, PhysicalSourceEdit, PhysicalSourceEditConflictError, SourceSpanEdit, SourceSpanReplacement, SourceSpanDeletion, SourceInsertion, SourceFileCreation, SourceTextSpanReplacement, SourceTextSpan, SourceTextReplacement, SourceTextPatch, SourceNodeSpan, SourceTextGeometry, SourceTargetEditor, SourceLineSpan, CodemodSourceRevision, CodemodSourceRevisionError
 

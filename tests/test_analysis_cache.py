@@ -4350,7 +4350,6 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     assert detectors_and_candidates[0][1]
     for detector, candidates in detectors_and_candidates:
         assert detector._candidate_items(list(modules), config) == candidates
-        assert "candidate_collector" not in type(detector).__dict__
     for removed_name in (
         "_compact_keyed_family_axis_specs",
         "_parallel_keyed_axis_family_candidates",
@@ -4430,9 +4429,6 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
     assert not hasattr(
         systemic_detectors,
         "_dataclass_namespace_cli_mirror_candidates",
-    )
-    assert "candidate_collector" not in (
-        systemic_detectors.DataclassNamespaceCliMirrorDetector.__dict__
     )
 
 
@@ -5734,7 +5730,6 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         assert detector._findings_from_compact_context(
             projections, context, config
         ) == detector._findings_for_candidates(compact_candidates, config)
-        assert "candidate_collector" not in detector_type.__dict__
     with pytest.raises(TypeError, match="declares 0 candidate families"):
         context.candidates_for(object)
     method_candidates = context.candidates_for(
