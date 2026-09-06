@@ -21,6 +21,7 @@ from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionTargetResolutionViolation,
     CompactOpenFunctionCall,
     CompactProductFlowRepository,
+    ResolvedCompactClassTarget,
 )
 
 
@@ -408,8 +409,45 @@ def test_repository_joins_local_calls_constructions_and_callable_escapes() -> No
     assert escapes[0].context.owner_symbol == "pkg.sample"
 
 
+@pytest.mark.parametrize(
+    "outer_header,shadow_source,outer_arguments",
+    (
+        ("def outer(Payload):", "", (lambda **kwargs: "shadow",)),
+        ("def outer():", "    Payload = lambda **kwargs: 'shadow'\n", ()),
+        ("def outer():", "    def Payload(**kwargs):\n        return 'shadow'\n", ()),
+        (
+            "def outer():",
+            "    class Payload:\n        def __new__(cls, **kwargs):\n            return 'shadow'\n",
+            (),
+        ),
+    ),
+)
+def test_constructor_proof_respects_enclosing_lexical_bindings(
+    outer_header: str, shadow_source: str, outer_arguments: tuple
+) -> None:
+    source = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class Payload:\n    left: int\n    right: int\n"
+        f"{outer_header}\n{shadow_source}"
+        "    def run(value):\n"
+        "        result = Payload(left=value, right=value)\n"
+        "        return result\n"
+        "    return run\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["outer"](*outer_arguments)(3) == "shadow"
+
+    repository = _repository(_module("pkg.sample", source))
+    assert "pkg.sample.Payload" in repository.product_authorities_by_symbol
+    assert repository.resolved_product_constructions == ()
+
+
 @pytest.mark.parametrize("attribute_path", ("__call__", "metadata.callback"))
-def test_function_attribute_reads_retain_the_function_escape(attribute_path: str) -> None:
+def test_function_attribute_reads_retain_the_function_escape(
+    attribute_path: str,
+) -> None:
     repository = _repository(
         _module(
             "pkg.sample",
@@ -421,6 +459,64 @@ def test_function_attribute_reads_retain_the_function_escape(attribute_path: str
     escapes = repository.callable_escapes_for("pkg.sample.consume")
     assert len(escapes) == 1
     assert escapes[0].context.owner_symbol == "pkg.sample"
+
+
+@pytest.mark.parametrize(
+    "binding_source",
+    (
+        "from pkg.models import Payload\n    result = Payload(left=value, right=value)",
+        "import pkg.models as models\n    result = models.Payload(left=value, right=value)",
+    ),
+)
+def test_constructor_proof_resolves_function_local_imports(binding_source: str) -> None:
+    repository = _repository(
+        _module(
+            "pkg.models",
+            "from dataclasses import dataclass\n"
+            "@dataclass(frozen=True)\n"
+            "class Payload:\n    left: int\n    right: int\n",
+        ),
+        _module(
+            "pkg.consumer",
+            f"def run(value):\n    {binding_source}\n    return result\n",
+        ),
+    )
+
+    constructions = repository.resolved_product_constructions
+    assert len(constructions) == 1
+    assert constructions[0].context.owner_symbol == "pkg.consumer.run"
+    assert constructions[0].authority.class_symbol == "pkg.models.Payload"
+
+
+def test_constructor_does_not_substitute_module_class_for_unindexed_local_class() -> (
+    None
+):
+    repository = _repository(
+        _module(
+            "pkg.sample",
+            "from dataclasses import dataclass\n"
+            "@dataclass(frozen=True)\n"
+            "class Payload:\n    left: int\n    right: int\n"
+            "def outer():\n"
+            "    @dataclass(frozen=True)\n"
+            "    class Payload:\n        left: int\n        right: int\n"
+            "    def run(value):\n"
+            "        result = Payload(left=value, right=value)\n"
+            "        return result\n"
+            "    return run\n",
+        )
+    )
+
+    constructions = repository.resolved_product_constructions
+    assert constructions == ()
+    context = repository.flow_contexts_by_owner_symbol["pkg.sample.outer.run"]
+    call = context.flow.calls[0]
+    resolution = repository.resolve_function_target(context, call.target, call.position)
+    assert resolution.possible_symbols == ("pkg.sample.outer.Payload",)
+    assert (
+        resolution.violation
+        is CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+    )
 
 
 def test_repository_resolves_imported_and_qualified_function_authorities() -> None:
@@ -874,13 +970,13 @@ def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
         ("    del consume\n", CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING),
         (
             "    class consume: pass\n",
-            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            None,
         ),
     ),
 )
 @pytest.mark.parametrize("base", ("Owner", "Child"))
 def test_method_selection_respects_class_body_writes(
-    write: str, violation: CompactFunctionTargetResolutionViolation, base: str
+    write: str, violation: CompactFunctionTargetResolutionViolation | None, base: str
 ) -> None:
     repository = _repository(
         _module(
@@ -899,7 +995,14 @@ def test_method_selection_respects_class_body_writes(
         if r.context.owner_symbol == "probe.run"
     )
     assert resolution.resolved_call is None
-    assert resolution.target_resolution.violation is violation
+    if violation is None:
+        assert isinstance(resolution.target_resolution, ResolvedCompactClassTarget)
+        assert (
+            resolution.target_resolution.resolved_declaration.symbol
+            == "probe.Owner.consume"
+        )
+    else:
+        assert resolution.target_resolution.violation is violation
     assert "probe.Owner.consume" in resolution.target_resolution.possible_symbols
 
 

@@ -84,6 +84,21 @@ member-lookup behaviour. ``CompactProductFlowRepository`` implements
 ``CompactCallTargetResolverABC`` with its concrete context and resolution types.
 Unknown and ambiguous targets retain their nominal unresolved results.
 
+``CompactMutationKind`` distinguishes function and class definitions. Each
+definition member selects its resolution behaviour; import and definition
+identity flags are derived from those declarations. ``CompactCallTargetResolution``
+represents the resulting callable target. Its ``declaration`` property is the
+function projection; a ``ResolvedCompactClassTarget`` instead supplies a
+construction projection through ``resolve_construction``.
+
+Constructor lookup uses the same lexical scopes, reaching bindings, aliases
+and imports as function lookup. Enclosing parameters and local definitions
+therefore take precedence over a same-named module class. Function-local classes
+absent from the class index remain unresolved under their own qualified name.
+A resolved class definition does not establish the type or unchanged lookup
+behaviour of an instance returned by its constructor. Plain-product schema and
+runtime checks remain required for product-construction proofs.
+
 ``CompactFunctionFlow.callable_reference_uses`` retains lexical reads outside
 call-target positions, including names whose callable identity is unknown.
 Attribute reads retain their lexical subexpressions in evaluation order, so

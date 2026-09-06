@@ -270,35 +270,70 @@ class CompactControlBranchKind(StrEnum):
 
 
 class CompactMutationKind(StrEnum):
-    """Source operations which may change lexical value identity."""
+    """Source operations and their nominal declaration lookup behaviour."""
 
-    ASSIGNMENT = "assignment", False, False, False
-    AUGMENTED_ASSIGNMENT = "augmented_assignment", False, False, False
-    DELETION = "deletion", False, False, False
-    DEFINITION = "definition", True, False, True
-    IMPORT = "import", True, True, False
-    ITERATION_BINDING = "iteration_binding", False, False, False
-    CONTEXT_BINDING = "context_binding", False, False, False
-    EXCEPTION_BINDING = "exception_binding", False, False, False
-    PATTERN_BINDING = "pattern_binding", False, False, False
-
-    preserves_nominal_identity: bool
-    is_import_binding: bool
-    is_definition_binding: bool
+    ASSIGNMENT = "assignment"
+    AUGMENTED_ASSIGNMENT = "augmented_assignment"
+    DELETION = "deletion"
+    FUNCTION_DEFINITION = (
+        "function_definition",
+        lambda resolver, symbol, binding: resolver._selected_function_resolution(
+            symbol, binding
+        ),
+    )
+    CLASS_DEFINITION = (
+        "class_definition",
+        lambda resolver, symbol, binding: resolver._selected_class_resolution(
+            symbol, binding
+        ),
+    )
+    IMPORT = "import"
+    ITERATION_BINDING = "iteration_binding"
+    CONTEXT_BINDING = "context_binding"
+    EXCEPTION_BINDING = "exception_binding"
+    PATTERN_BINDING = "pattern_binding"
 
     def __new__(
         cls,
         value: str,
-        preserves_nominal_identity: bool,
-        is_import_binding: bool,
-        is_definition_binding: bool,
+        declaration_resolution: (
+            Callable[
+                [
+                    CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+                    str,
+                    CompactLexicalMutation,
+                ],
+                TargetResolutionT,
+            ]
+            | None
+        ) = None,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
-        member.preserves_nominal_identity = preserves_nominal_identity
-        member.is_import_binding = is_import_binding
-        member.is_definition_binding = is_definition_binding
+        member._declaration_resolution = declaration_resolution
         return member
+
+    @property
+    def is_import_binding(self) -> bool:
+        return self is type(self).IMPORT
+
+    @property
+    def is_definition_binding(self) -> bool:
+        return self._declaration_resolution is not None
+
+    @property
+    def preserves_nominal_identity(self) -> bool:
+        return self.is_import_binding or self.is_definition_binding
+
+    def resolve_definition(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        symbol: str,
+        binding: CompactLexicalMutation,
+    ) -> TargetResolutionT:
+        if self._declaration_resolution is None:
+            raise ValueError("Only definition mutations resolve a declaration")
+        return self._declaration_resolution(resolver, symbol, binding)
 
     def validate_import_origin(self, origin: str | None) -> None:
         if origin is not None and not self.is_import_binding:
@@ -388,6 +423,20 @@ TargetResolutionT = TypeVar("TargetResolutionT")
 
 class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
     """Repository obligations selected by nominal call-target syntax."""
+
+    @abstractmethod
+    def _selected_class_resolution(
+        self, symbol: str, binding: CompactLexicalMutation
+    ) -> TargetResolutionT:
+        """Resolve a selected class definition at its exact source site."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _selected_function_resolution(
+        self, symbol: str, binding: CompactLexicalMutation
+    ) -> TargetResolutionT:
+        """Resolve a selected function definition at its exact source site."""
+        raise NotImplementedError
 
     @abstractmethod
     def _local_function_target_resolution(
@@ -1733,7 +1782,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_mutation(
             LexicalValueReference(node.name),
             node,
-            CompactMutationKind.DEFINITION,
+            CompactMutationKind.FUNCTION_DEFINITION,
         )
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -1766,9 +1815,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
         self._record_mutation(
-            LexicalValueReference(node.name),
-            node,
-            CompactMutationKind.DEFINITION,
+            LexicalValueReference(node.name), node, CompactMutationKind.CLASS_DEFINITION
         )
 
     def visit_If(self, node: ast.If) -> None:

@@ -1259,3 +1259,60 @@ the same 96 fork/thread lifecycle warnings. Sphinx builds the updated reference
 with its two existing duplicate-description warnings. Ruff and the whitespace
 check pass. Constructed-instance method resolution remains the next task;
 this batch supplies source-use evidence, not that resolution proof.
+
+## Shared constructor and function binding lookup (2026-09-06)
+
+Four runtime-backed regressions exposed an unsound constructor proof. A
+closure-local parameter, assignment, function or class named `Payload` could
+replace the module dataclass at runtime, while constructor lookup still
+reported that module dataclass as the product authority. The separate
+`_has_dynamic_local_binding` algorithm checked the immediate function and
+module but skipped the enclosing lexical scopes.
+
+Constructor lookup now consumes the ordinary target resolution. Function and
+class definition mutations select their own leaf resolution behaviour through
+`CompactMutationKind`; the import/definition identity flags are derived from
+those declarations rather than repeated Boolean columns. The common result
+family is `CompactCallTargetResolution`. Its resolved-class refinement supplies
+the product-construction projection, while its function refinement retains the
+existing descriptor and argument-binding behaviour. Shared no-op projections
+live on the base. The constructor-only binding algorithm is deleted. There is
+no new receiver-state cache or separately maintained constructor namespace.
+
+The four original failures now pass. Function-local imports also resolve to
+their declared class. Classes declared inside functions are currently absent
+from the class index: their qualified local identity stays unresolved rather
+than being replaced with a same-named module class. A class that overwrites a
+method is now represented as a class target, not as an unresolved function.
+
+The sixteen-stage `docs/examples/constructor_binding_lookup.py` plan replays
+from `013af1d` and reproduces both complete edited module ASTs. The actual
+`FunctionBindingProjectionSourceAuthority` constructor in NRA now resolves to
+its class declaration. This establishes the constructor's selected source
+definition, not the class or lookup behaviour of the returned instance. Custom
+construction, receiver escape and later method replacement remain the next
+proof obligations before enabling instance-selected DSL calls.
+
+The first authored replacement accidentally included the existing dataclass
+decorator. `ReplaceTargetOperation` preserves that surrounding decorator, so
+the payload duplicated it and the resulting module failed to import. The plan
+was corrected to omit it and the local import seam repaired before testing;
+the final replay independently verifies the complete source. The DSL should
+reject that ambiguous decorated payload during preflight rather than report a
+clean source simulation. This is a concrete follow-up validation gap.
+
+On 1,000 unchanged constructor calls over the same collected facts, seven
+alternating repetitions measured median lookup times of 40.97 ms for the old
+constructor algorithm and 9.58 ms for shared lookup. This measures removal of
+the repeated mutation rescan, not end-to-end scan throughput. All 81 detectors
+completed the touched-source audit with zero findings. The preceding `013af1d`
+commit completed CI successfully.
+
+Full suites passed 2,372 tests with 15 skipped on Python 3.11 and 2,387 tests on
+Python 3.14. The latter retained the existing 96 fork/thread warnings. A final
+docstring-only clarification of the non-function call projection was followed
+by the 162-case focused suite, 142 cache tests and complete AST replay. The
+docstring edit uses the existing exact, target-owned text-patch operation.
+Sphinx built the reference
+with its two existing duplicate-description warnings. Receipts are under
+`/tmp/nra-constructor-bindings-*`; the unrelated `uv.lock` remains excluded.

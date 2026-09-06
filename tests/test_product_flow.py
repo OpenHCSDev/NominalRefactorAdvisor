@@ -152,7 +152,7 @@ def test_binding_selection_distinguishes_source_position_and_final_namespace() -
     deferred = flow.binding_resolution_for("consume")
     assert immediate is not None and immediate.mutation is not None
     assert deferred is not None and deferred.mutation is not None
-    assert immediate.mutation.kind is CompactMutationKind.DEFINITION
+    assert immediate.mutation.kind is CompactMutationKind.FUNCTION_DEFINITION
     assert deferred.mutation.kind is CompactMutationKind.ASSIGNMENT
     assert flow.binding_resolution_for("absent") is None
     assert pickle.loads(pickle.dumps(immediate)) == immediate
