@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import keyword
 from dataclasses import dataclass
+from importlib.util import resolve_name
 from pathlib import Path
 
 from .source_identity import SourceFileIdentity
@@ -57,20 +58,18 @@ class PythonModulePathIdentity(SourceFileIdentity):
         imported_module: str | None,
         level: int,
     ) -> str | None:
-        """Resolve one ``from`` import against this module's package identity."""
-
+        """Use Python's package-boundary rules without importing analysed modules."""
         if level == 0:
             return imported_module
-        package_parts = self.import_name.split(".")
-        if not self.is_package_init:
-            package_parts = package_parts[:-1]
-        if level > 1:
-            if level - 1 > len(package_parts):
-                return None
-            package_parts = package_parts[: len(package_parts) - (level - 1)]
-        if imported_module:
-            return ".".join((*package_parts, *imported_module.split(".")))
-        return ".".join(package_parts)
+        package = (
+            self.import_name
+            if self.is_package_init
+            else self.import_name.rpartition(".")[0]
+        )
+        try:
+            return resolve_name("." * level + (imported_module or ""), package)
+        except ImportError:
+            return None
 
     @staticmethod
     def analysis_root_for_scan_root(root: Path) -> Path:

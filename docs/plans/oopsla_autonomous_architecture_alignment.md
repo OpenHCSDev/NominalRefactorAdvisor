@@ -2150,3 +2150,77 @@ queries returns the same resolution types and candidate symbols. Median times
 are 0.402 seconds before and 0.399 seconds after, under concurrent measurement.
 This shows no material cost change in that bounded query mix, not a general
 performance guarantee. Receipts are `/tmp/nra-binding-projection-{before,after}.json`.
+
+### 2026-09-06: Shared exact-source interpretation and native import boundaries
+
+The existing context moves to `product_flow.CompactFlowContext` through the DSL;
+consumer imports and references are updated automatically. The binding resolver
+now fixes that actual context type and varies only its result, removing unused
+generic-context freedom. Its concrete exact-source algorithm owns cycle checks,
+pending continuation, alias selection and mutation-operation dispatch. The
+product repository no longer overrides that algorithm.
+
+One operation payload on each `CompactMutationKind` owns value/import/definition
+behaviour. Shared value operations add pending visits and retain dynamic-source
+obligations; imports own origin validation; definition operations preserve the
+declaration recursion rule and carry the existing class/function selector.
+Flags derive from those declarations rather than a parallel table. The narrow
+`CompactDefinitionResolverABC` replaces the definition hooks formerly embedded
+in the callable contract. The runtime observation filter's syntactic category
+is named `introduces_nominal_binding`; it is not an object-identity certificate.
+
+Exact and alternative aliases share one captured-reference hook. The previous
+installation distinction remains: exact aliases apply the installation
+projection, while alternatives retain their earlier raw captured projection.
+The callable implementation still appends suffixes at capture time; correcting
+that timing needs the actual access context and object/slot relation. The
+imported-name hook likewise still lacks the import activation receipt. Neither
+limitation is hidden by this unchanged ownership extraction.
+
+An independent result consumer exercises the inherited shared algorithm without
+inheriting the callable resolver. Its eight checks cover value/import/class/
+function selection, missing import origin, actual alias and context receipts,
+pending-set identity, cycle early exit and non-definition rejection. The first
+missing-origin check exposed a real pre-existing package-boundary error:
+`PythonModulePathIdentity` could manufacture names for relative imports Python
+rejects. Two corrective DSL stages replace manual package slicing with
+`importlib.util.resolve_name`, which resolves names without importing analysed
+code. Package-boundary errors remain `None`; five added identity cases and three
+native-execution comparisons retain that distinction.
+
+The generated `docs/examples/shared_binding_interpretation.json` combines the
+two context stages, 19 ownership stages and two relative-import corrections,
+based on `e5b06b2`. A read-only forked review found no new ownership or behavioural
+blocker and confirmed the remaining capture/import evidence limits. The first
+focused ownership run passed 198 cases; the import-corrected flow/identity run
+passed 191 before the final three native-execution comparisons were added.
+
+The first full gates exposed four existing fixtures whose package-relative
+imports had no package identity. Each fixture now declares its intended package;
+the header comparison derives its module name from the parsed source and retains
+the same native/minimal projection equality. All four focused checks pass without
+weakening the candidate or cache assertions. The initial full runs recorded
+2,559/2,574 passes and 16 failures, including these four fixture failures and the
+12 pending native-identity counterexamples.
+
+API replay and real CLI simulation complete all 23 stages against `e5b06b2`;
+the generated ASTs match all five changed production modules. The touched-source
+audit completes all 81 detectors with zero findings and omissions. Ruff,
+whitespace and Sphinx checks pass, with the same two existing Sphinx
+duplicate-description warnings. Receipts are
+`/tmp/nra-shared-binding-cli-replay.json`,
+`/tmp/nra-shared-binding-audit.json` and
+`/tmp/nra-shared-binding-sphinx.log`.
+
+Five samples of the same 30,000 alias, local and entry-parameter queries retain
+identical resolution types and candidate symbols. Median times are 0.7163 seconds
+before and 0.7283 seconds after under concurrent load. This is a bounded local
+cost observation, not a general throughput guarantee. Receipts are
+`/tmp/nra-shared-binding-cost-{before,after}.json`.
+
+Final full reruns pass 2,563 cases with 15 skipped on Python 3.11 and 2,578
+on Python 3.14, retaining exactly the same 12 pending native-identity failures.
+No cases are excluded or marked as expected failures. The four package fixtures
+now pass in both full runs. Receipts are
+`/tmp/nra-shared-binding-final2-{311,314}.log`. The previous `e5b06b2` hosted
+integration run also completed successfully (`34033165074`).

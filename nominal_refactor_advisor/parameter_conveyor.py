@@ -24,6 +24,7 @@ from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
     CompactMutationKind,
+    CompactFlowContext,
     CompactProductFlowModuleProjection,
     CompactValueUse,
 )
@@ -32,7 +33,6 @@ from .product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactFunctionCallResolution,
     CompactProductAuthority,
-    CompactProductFlowContext,
     CompactProductFlowRepository,
     CompactResolvedFunctionCall,
     CompactResolvedProductConstruction,
@@ -1012,7 +1012,7 @@ class ClosedParameterConveyorComponentBuilder:
 
     @staticmethod
     def _raw_call_identity(
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactFunctionCallIdentity:
         return CompactFunctionCallIdentity(context.owner_symbol, call.position)

@@ -1,0 +1,503 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-move_symbols_to_module",
+          "operations": [
+            {
+              "operation": "move_symbols_to_module",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "rationale": "",
+              "destination_path": "nominal_refactor_advisor/product_flow.py",
+              "symbol_qualnames": [
+                "CompactProductFlowContext"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-rename_top_level_declaration_authority",
+          "operations": [
+            {
+              "operation": "rename_top_level_declaration_authority",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactProductFlowContext",
+              "rationale": "",
+              "new_name": "CompactFlowContext"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutationKind",
+              "rationale": "",
+              "source": "class CompactBindingOperationABC(ABC):\n    \"\"\"Source-kind behaviour owned by the mutation declaration.\"\"\"\n\n    is_import_binding = False\n    is_definition_binding = False\n\n    def pending_after(\n        self, context: CompactFlowContext, binding: CompactMutation,\n        pending: frozenset[CompactBindingVisit],\n    ) -> frozenset[CompactBindingVisit]:\n        return pending | {(context.owner_symbol, binding)}\n\n    def validate_import_origin(self, origin: str | None) -> None:\n        if origin is not None:\n            raise ValueError(\"Only import mutations carry an imported origin\")\n\n    @abstractmethod\n    def resolve_source(\n        self, resolver: CompactBindingResolverABC[TargetResolutionT],\n        context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    def resolve_definition(\n        self, resolver: CompactDefinitionResolverABC[TargetResolutionT],\n        symbol: str, binding: CompactMutation,\n    ) -> TargetResolutionT:\n        raise ValueError(\"Only definition mutations resolve a declaration\")\n\n\nclass CompactValueBindingOperation(CompactBindingOperationABC):\n    def resolve_source(\n        self, resolver: CompactBindingResolverABC[TargetResolutionT],\n        context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        return resolver._possible_binding_resolution(\n            context, reference, CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING, pending,\n        )\n\n\nclass CompactImportBindingOperation(CompactBindingOperationABC):\n    is_import_binding = True\n\n    def validate_import_origin(self, origin: str | None) -> None:\n        pass\n\n    def resolve_source(\n        self, resolver: CompactBindingResolverABC[TargetResolutionT],\n        context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        origin = binding.imported_origin\n        if origin is None:\n            return resolver._possible_binding_resolution(\n                context, reference, CompactFunctionTargetResolutionViolation.MISSING_DECLARATION, pending,\n            )\n        return resolver._imported_name_resolution(origin, reference.attribute_path, pending)\n\n\nclass CompactDefinitionBindingOperation(CompactBindingOperationABC):\n    is_definition_binding = True\n\n    def __init__(\n        self,\n        selector: Callable[[CompactDefinitionResolverABC[TargetResolutionT], str, CompactMutation], TargetResolutionT],\n    ) -> None:\n        self._selector = selector\n\n    def pending_after(\n        self, context: CompactFlowContext, binding: CompactMutation,\n        pending: frozenset[CompactBindingVisit],\n    ) -> frozenset[CompactBindingVisit]:\n        return pending\n\n    def resolve_source(\n        self, resolver: CompactBindingResolverABC[TargetResolutionT],\n        context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        return resolver._definition_binding_resolution(context, reference, binding, pending)\n\n    def resolve_definition(\n        self, resolver: CompactDefinitionResolverABC[TargetResolutionT],\n        symbol: str, binding: CompactMutation,\n    ) -> TargetResolutionT:\n        return self._selector(resolver, symbol, binding)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutationKind",
+              "rationale": "",
+              "replacement_source": "class CompactMutationKind(StrEnum):\n    \"\"\"Source operations with one declaration-owned binding interpretation.\"\"\"\n\n    ASSIGNMENT = \"assignment\"\n    AUGMENTED_ASSIGNMENT = \"augmented_assignment\"\n    DELETION = \"deletion\"\n    FUNCTION_DEFINITION = \"function_definition\", CompactDefinitionBindingOperation(\n        lambda resolver, symbol, binding: resolver._selected_function_resolution(symbol, binding)\n    )\n    CLASS_DEFINITION = \"class_definition\", CompactDefinitionBindingOperation(\n        lambda resolver, symbol, binding: resolver._selected_class_resolution(symbol, binding)\n    )\n    IMPORT = \"import\", CompactImportBindingOperation()\n    ITERATION_BINDING = \"iteration_binding\"\n    CONTEXT_BINDING = \"context_binding\"\n    EXCEPTION_BINDING = \"exception_binding\"\n    PATTERN_BINDING = \"pattern_binding\"\n\n    def __new__(\n        cls, value: str, binding_operation: CompactBindingOperationABC = CompactValueBindingOperation(),\n    ) -> Self:\n        member = str.__new__(cls, value)\n        member._value_ = value\n        member.binding_operation = binding_operation\n        return member\n\n    is_import_binding = AliasProperty[bool](\"binding_operation.is_import_binding\")\n    is_definition_binding = AliasProperty[bool](\"binding_operation.is_definition_binding\")\n\n    @property\n    def introduces_nominal_binding(self) -> bool:\n        \"\"\"A syntactic binding category, not a runtime identity guarantee.\"\"\"\n        return self.is_import_binding or self.is_definition_binding\n\n    def resolve_definition(\n        self, resolver: CompactDefinitionResolverABC[TargetResolutionT],\n        symbol: str, binding: CompactMutation,\n    ) -> TargetResolutionT:\n        return self.binding_operation.resolve_definition(resolver, symbol, binding)\n\n    def validate_import_origin(self, origin: str | None) -> None:\n        self.binding_operation.validate_import_origin(origin)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallTargetResolverABC",
+              "rationale": "",
+              "source": "class CompactDefinitionResolverABC(ABC, Generic[TargetResolutionT]):\n    \"\"\"Select source definitions independently of callable-use projection.\"\"\"\n\n    @abstractmethod\n    def _selected_class_resolution(self, symbol: str, binding: CompactMutation) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _selected_function_resolution(self, symbol: str, binding: CompactMutation) -> TargetResolutionT:\n        raise NotImplementedError\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallTargetResolverABC",
+              "rationale": "",
+              "base_name": "ABC",
+              "replacement_base_name": "CompactDefinitionResolverABC[TargetResolutionT]"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallTargetResolverABC._selected_class_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallTargetResolverABC._selected_function_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingResolverABC",
+              "rationale": "",
+              "replacement_source": "class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):\n    \"\"\"Shared interpretation of a source selected in its actual flow.\"\"\"\n\n    def _selected_binding_resolution(\n        self, context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, use_position: CompactFlowPosition | None,\n        pending_bindings: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        visit = (context.owner_symbol, binding)\n        if visit in pending_bindings:\n            return self._cyclic_binding_resolution(pending_bindings)\n        operation = binding.kind.binding_operation\n        pending = operation.pending_after(context, binding, pending_bindings)\n        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)\n        if alias is not None:\n            resolution = self._captured_alias_resolution(alias, context, reference, use_position, pending)\n            return self._installed_alias_resolution(resolution, alias, context)\n        return operation.resolve_source(self, context, reference, binding, pending)\n\n    @abstractmethod\n    def _cyclic_binding_resolution(self, pending: frozenset[CompactBindingVisit]) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _captured_alias_resolution(\n        self, alias: CompactExactValueAlias, context: CompactFlowContext,\n        reference: LexicalValueReference, use_position: CompactFlowPosition | None,\n        pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _installed_alias_resolution(\n        self, resolution: TargetResolutionT, alias: CompactExactValueAlias, context: CompactFlowContext,\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _imported_name_resolution(\n        self, origin: str, attribute_path: tuple[str, ...], pending: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _definition_binding_resolution(\n        self, context: CompactFlowContext, reference: LexicalValueReference,\n        binding: CompactMutation, pending_bindings: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _possible_binding_resolution(\n        self, context: CompactFlowContext, reference: LexicalValueReference,\n        violation: CompactFunctionTargetResolutionViolation,\n        pending_bindings: frozenset[CompactBindingVisit],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "CompactBindingResolverABC[ResolutionContextT, TargetResolutionT]",
+                  "new_source": "CompactBindingResolverABC[TargetResolutionT]"
+                },
+                {
+                  "old_source": "context: ResolutionContextT",
+                  "new_source": "context: CompactFlowContext"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingSource.resolve_binding",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "CompactBindingResolverABC[ResolutionContextT, TargetResolutionT]",
+                  "new_source": "CompactBindingResolverABC[TargetResolutionT]"
+                },
+                {
+                  "old_source": "context: ResolutionContextT",
+                  "new_source": "context: CompactFlowContext"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "ExactCompactBindingMutation.resolve_binding",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "CompactBindingResolverABC[ResolutionContextT, TargetResolutionT]",
+                  "new_source": "CompactBindingResolverABC[TargetResolutionT]"
+                },
+                {
+                  "old_source": "context: ResolutionContextT",
+                  "new_source": "context: CompactFlowContext"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "UnresolvedCompactBindingSource.resolve_binding",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "base_name": "CompactBindingResolverABC[CompactFlowContext, CompactCallTargetResolution]",
+              "replacement_base_name": "CompactBindingResolverABC[CompactCallTargetResolution]"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._selected_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _definition_binding_resolution(\n    self, context: CompactFlowContext, reference: LexicalValueReference,\n    binding: CompactMutation, pending_bindings: frozenset[CompactBindingVisit],\n) -> CompactCallTargetResolution:\n    binding_symbol = f\"{context.owner_symbol}.{reference.root_name}\"\n    if reference.attribute_path:\n        owner = self.class_index.class_for(binding_symbol)\n        if owner is None or owner.line != binding.line:\n            return OpenCompactFunctionTarget(\n                (\".\".join((binding_symbol, *reference.attribute_path)),),\n                CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,\n            )\n        if len(reference.attribute_path) == 1:\n            return self._class_method_resolution(\n                owner,\n                reference.attribute_path[0],\n                pending_bindings,\n            )\n        class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)\n        if class_context is not None:\n            resolution = self._scope_binding_resolution(\n                class_context,\n                LexicalValueReference(\n                    reference.attribute_path[0], reference.attribute_path[1:]\n                ),\n                None,\n                pending_bindings,\n            )\n            if resolution is not None:\n                return resolution\n        return OpenCompactFunctionTarget(\n            (\".\".join((binding_symbol, *reference.attribute_path)),),\n            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,\n        )\n    return binding.kind.resolve_definition(self, binding_symbol, binding)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _cyclic_binding_resolution(self, pending: frozenset[CompactBindingVisit]) -> CompactCallTargetResolution:\n    return OpenCompactFunctionTarget(\n        tuple(sorted({f\"{owner}.{mutation.target.bound_name}\" for owner, mutation in pending})),\n        CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _captured_alias_resolution(\n    self, alias: CompactExactValueAlias, context: CompactFlowContext,\n    reference: LexicalValueReference, use_position: CompactFlowPosition | None,\n    pending: frozenset[CompactBindingVisit],\n) -> CompactCallTargetResolution:\n    return alias.source_use.resolve(\n        self, context, pending_bindings=pending, attribute_path=reference.attribute_path,\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _installed_alias_resolution(\n    self, resolution: CompactCallTargetResolution, alias: CompactExactValueAlias, context: CompactFlowContext,\n) -> CompactCallTargetResolution:\n    return resolution.through_alias(alias, context)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _imported_name_resolution(\n    self, origin: str, attribute_path: tuple[str, ...], pending: frozenset[CompactBindingVisit],\n) -> CompactCallTargetResolution:\n    return self._function_resolution_for_symbol(\".\".join((origin, *attribute_path)), pending)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "alias.source_use.resolve(\n                        self,\n                        context,\n                        attribute_path=reference.attribute_path,\n                        pending_bindings=pending_bindings",
+                  "new_source": "self._captured_alias_resolution(\n                        alias,\n                        context,\n                        reference,\n                        None,\n                        pending_bindings"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._possible_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-19-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "mutation.kind.preserves_nominal_identity",
+                  "new_source": "mutation.kind.introduces_nominal_binding"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/python_module_identity.py",
+              "rationale": "",
+              "import_source": "from importlib.util import resolve_name\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/python_module_identity.py",
+              "target_qualname": "PythonModulePathIdentity.resolve_import_from_module",
+              "rationale": "",
+              "body_source": "\"\"\"Use Python's package-boundary rules without importing analysed modules.\"\"\"\nif level == 0:\n    return imported_module\npackage = self.import_name if self.is_package_init else self.import_name.rpartition(\".\")[0]\ntry:\n    return resolve_name(\".\" * level + (imported_module or \"\"), package)\nexcept ImportError:\n    return None\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

@@ -303,7 +303,7 @@ that declaration object, and its qualified name derives from the declaration's
 identity. ``CompactNamespaceFlowOwner`` represents module and class-body scopes
 and rejects function scope construction without a declaration.
 ``CompactProductFlowModuleProjection.function_declarations`` and
-``CompactProductFlowContext.declaration`` derive from flow owners. Repeated
+``CompactFlowContext.declaration`` derive from flow owners. Repeated
 function names therefore retain their individual signatures and source sites;
 repository ambiguity checks remain separate. The :download:`flow ownership
 refactor <../../examples/flow_declaration_ownership.py>` removes the former
@@ -319,6 +319,27 @@ not yet establish captured-object or native namespace integrity. The
 :download:`binding-source dispatch refactor
 <../../examples/binding_source_dispatch.json>` applies the extraction and
 diagnostic cleanup in 18 authored stages.
+
+``CompactFlowContext`` in ``product_flow`` owns the module/flow join formerly
+declared in the product repository. ``CompactBindingResolverABC[ResultT]`` uses
+that context for shared exact-source cycle handling, alias selection and
+mutation-operation dispatch. ``CompactMutationKind.binding_operation`` owns
+value, import and definition behaviour, including pending-visit rules and import
+origin validation. Callable projections remain in the product repository;
+``CompactDefinitionResolverABC`` supplies source-definition selection without
+requiring the callable interface. ``introduces_nominal_binding`` identifies a
+syntactic binding category, not post-decorator or metaclass object identity.
+
+Both exact and alternative alias paths use the captured-reference projection.
+The current callable projection retains the previous suffix-at-capture rule;
+it does not yet prove a later slot access unchanged. Imported-name projection
+also does not retain import activation evidence. The
+:download:`shared binding interpretation refactor
+<../../examples/shared_binding_interpretation.json>` moves and factors these
+contracts in 21 stages, followed by two corrective stages that use Python's
+native relative-name resolver. Imports beyond the known package boundary remain
+unresolved instead of producing an invented module name.
+
 ``InitialCompactParameterBinding`` retains the exact parameter object from the
 owning signature and has no mutation event. Its value origin is that entry
 parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an

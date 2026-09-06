@@ -24401,6 +24401,7 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
     monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
     cache_env = os.environ.copy()
     focused_path = package_root / "beta.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(
         tmp_path,
         "pkg/alpha.py",

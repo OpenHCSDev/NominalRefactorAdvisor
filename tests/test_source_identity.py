@@ -65,10 +65,13 @@ def test_codemod_snapshot_canonicalizes_source_mapping_identity() -> None:
     canonical_path = "pkg/mod.py"
     assert snapshot.sources_by_file_path == {canonical_path: source}
     assert snapshot.source_index.files[0].file_path == canonical_path
-    assert snapshot.class_family_index.symbol_for(
-        file_path=canonical_path,
-        qualname="Alpha",
-    ) == "pkg.mod.Alpha"
+    assert (
+        snapshot.class_family_index.symbol_for(
+            file_path=canonical_path,
+            qualname="Alpha",
+        )
+        == "pkg.mod.Alpha"
+    )
 
 
 def test_canonical_source_mapping_rejects_duplicate_path_identities() -> None:
@@ -118,6 +121,11 @@ def test_projected_module_identity_uses_closest_declared_import_root(
         ("pkg.sub.consumer", False, "family", 2, "pkg.family"),
         ("pkg.sub.consumer", False, None, 1, "pkg.sub"),
         ("pkg.consumer", False, "family", 3, None),
+        ("consumer", False, None, 1, None),
+        ("consumer", False, "family", 1, None),
+        ("pkg.consumer", False, "family", 2, None),
+        ("pkg", True, None, 2, None),
+        ("pkg.sub.consumer", False, "family", 3, None),
     ),
 )
 def test_module_identity_resolves_from_imports(
@@ -140,6 +148,27 @@ def test_module_identity_resolves_from_imports(
             level=level,
         )
         == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "module_name, package, statement, level",
+    (
+        ("consumer", "", "from . import unavailable", 1),
+        ("pkg.consumer", "pkg", "from .. import unavailable", 2),
+        ("pkg.sub.consumer", "pkg.sub", "from ... import unavailable", 3),
+    ),
+)
+def test_unresolved_relative_boundary_matches_native_execution(
+    tmp_path: Path, module_name: str, package: str, statement: str, level: int
+) -> None:
+    with pytest.raises(ImportError):
+        exec(statement, {"__name__": module_name, "__package__": package})
+    identity = PythonModulePathIdentity(
+        path=tmp_path / "consumer.py", import_name=module_name, is_package_init=False
+    )
+    assert (
+        identity.resolve_import_from_module(imported_module=None, level=level) is None
     )
 
 

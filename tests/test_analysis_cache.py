@@ -3354,6 +3354,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
     source_path = package_root / "mod.py"
     source = (
         "from __future__ import annotations\n"
@@ -3374,7 +3375,10 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         "        pass\n"
     )
     source_path.write_text(source, encoding="utf-8", newline="")
-    parsed_module = parse_python_modules(package_root, use_parse_cache=False)[0]
+    parsed_module = next(
+        module for module in parse_python_modules(package_root, use_parse_cache=False)
+        if module.path == source_path
+    )
     family = class_index_module.CompactModuleClassProjectionFamily
     demand = class_index_module.CompactClassProjectionDemand(
         class_method_names=frozenset(),
@@ -3383,7 +3387,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     full_items = tuple(family.collect(parsed_module))
     expected = family.project_cached_demand(full_items, demand)
     actual = family.collect_demanded_source(
-        SourceModule(source_path, "mod", source),
+        SourceModule(source_path, parsed_module.module_name, source),
         NativePythonSyntaxIndex.from_source(source),
         demand,
     )
@@ -3405,7 +3409,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         class_index_module.CompactPublicNameExposure.PUBLIC
     )
     assert tuple(origin.module_name for origin in actual[0].star_import_origins) == (
-        "exports",
+        "pkg.exports",
     )
     assert class_index_module.CompactIndexedClass.__mro__[:3] == (
         class_index_module.CompactIndexedClass,
@@ -4444,6 +4448,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
 
     package_root = tmp_path / "pkg"
     package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "family.py").write_text(
         "class Boundary:\n    pass\n\nclass ConcreteBoundary(Boundary):\n    pass\n",
         encoding="utf-8", newline="",
@@ -5192,6 +5197,7 @@ def test_compact_roster_candidates_preserve_semantics(
 
     package_root = tmp_path / "pkg"
     package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "base.py").write_text(
         "from abc import ABC, abstractmethod\n"
         "\n"

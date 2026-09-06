@@ -8,10 +8,12 @@ from dataclasses import dataclass
 
 
 from .class_index import CompactProductAuthority
-from .product_flow import CompactFunctionDeclaration
+from .product_flow import (
+    CompactFunctionDeclaration,
+    CompactFlowContext,
+)
 from .product_flow_authority import (
     CompactFunctionCallIdentity,
-    CompactProductFlowContext,
     CompactResolvedFunctionCall,
 )
 from .value_expression import LexicalValueReference
@@ -76,7 +78,7 @@ class CarrierCollapseParticipant:
     """One function whose flat field parameters can become one carrier."""
 
     declaration: CompactFunctionDeclaration
-    context: CompactProductFlowContext
+    context: CompactFlowContext
 
     @property
     def symbol(self) -> str:

@@ -271,25 +271,146 @@ class CompactControlBranchKind(StrEnum):
     MATCH_CASE = "match_case"
 
 
+class CompactBindingOperationABC(ABC):
+    """Source-kind behaviour owned by the mutation declaration."""
+
+    is_import_binding = False
+    is_definition_binding = False
+
+    def pending_after(
+        self,
+        context: CompactFlowContext,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> frozenset[CompactBindingVisit]:
+        return pending | {(context.owner_symbol, binding)}
+
+    def validate_import_origin(self, origin: str | None) -> None:
+        if origin is not None:
+            raise ValueError("Only import mutations carry an imported origin")
+
+    @abstractmethod
+    def resolve_source(
+        self,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    def resolve_definition(
+        self,
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
+        symbol: str,
+        binding: CompactMutation,
+    ) -> TargetResolutionT:
+        raise ValueError("Only definition mutations resolve a declaration")
+
+
+class CompactValueBindingOperation(CompactBindingOperationABC):
+    def resolve_source(
+        self,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        return resolver._possible_binding_resolution(
+            context,
+            reference,
+            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            pending,
+        )
+
+
+class CompactImportBindingOperation(CompactBindingOperationABC):
+    is_import_binding = True
+
+    def validate_import_origin(self, origin: str | None) -> None:
+        pass
+
+    def resolve_source(
+        self,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        origin = binding.imported_origin
+        if origin is None:
+            return resolver._possible_binding_resolution(
+                context,
+                reference,
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+                pending,
+            )
+        return resolver._imported_name_resolution(
+            origin, reference.attribute_path, pending
+        )
+
+
+class CompactDefinitionBindingOperation(CompactBindingOperationABC):
+    is_definition_binding = True
+
+    def __init__(
+        self,
+        selector: Callable[
+            [CompactDefinitionResolverABC[TargetResolutionT], str, CompactMutation],
+            TargetResolutionT,
+        ],
+    ) -> None:
+        self._selector = selector
+
+    def pending_after(
+        self,
+        context: CompactFlowContext,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> frozenset[CompactBindingVisit]:
+        return pending
+
+    def resolve_source(
+        self,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        return resolver._definition_binding_resolution(
+            context, reference, binding, pending
+        )
+
+    def resolve_definition(
+        self,
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
+        symbol: str,
+        binding: CompactMutation,
+    ) -> TargetResolutionT:
+        return self._selector(resolver, symbol, binding)
+
+
 class CompactMutationKind(StrEnum):
-    """Source operations and their nominal declaration lookup behaviour."""
+    """Source operations with one declaration-owned binding interpretation."""
 
     ASSIGNMENT = "assignment"
     AUGMENTED_ASSIGNMENT = "augmented_assignment"
     DELETION = "deletion"
-    FUNCTION_DEFINITION = (
-        "function_definition",
+    FUNCTION_DEFINITION = "function_definition", CompactDefinitionBindingOperation(
         lambda resolver, symbol, binding: resolver._selected_function_resolution(
             symbol, binding
-        ),
+        )
     )
-    CLASS_DEFINITION = (
-        "class_definition",
+    CLASS_DEFINITION = "class_definition", CompactDefinitionBindingOperation(
         lambda resolver, symbol, binding: resolver._selected_class_resolution(
             symbol, binding
-        ),
+        )
     )
-    IMPORT = "import"
+    IMPORT = "import", CompactImportBindingOperation()
     ITERATION_BINDING = "iteration_binding"
     CONTEXT_BINDING = "context_binding"
     EXCEPTION_BINDING = "exception_binding"
@@ -298,48 +419,33 @@ class CompactMutationKind(StrEnum):
     def __new__(
         cls,
         value: str,
-        declaration_resolution: (
-            Callable[
-                [
-                    CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
-                    str,
-                    CompactMutation,
-                ],
-                TargetResolutionT,
-            ]
-            | None
-        ) = None,
+        binding_operation: CompactBindingOperationABC = CompactValueBindingOperation(),
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
-        member._declaration_resolution = declaration_resolution
+        member.binding_operation = binding_operation
         return member
 
-    @property
-    def is_import_binding(self) -> bool:
-        return self is type(self).IMPORT
+    is_import_binding = AliasProperty[bool]("binding_operation.is_import_binding")
+    is_definition_binding = AliasProperty[bool](
+        "binding_operation.is_definition_binding"
+    )
 
     @property
-    def is_definition_binding(self) -> bool:
-        return self._declaration_resolution is not None
-
-    @property
-    def preserves_nominal_identity(self) -> bool:
+    def introduces_nominal_binding(self) -> bool:
+        """A syntactic binding category, not a runtime identity guarantee."""
         return self.is_import_binding or self.is_definition_binding
 
     def resolve_definition(
         self,
-        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
         symbol: str,
         binding: CompactMutation,
     ) -> TargetResolutionT:
-        if self._declaration_resolution is None:
-            raise ValueError("Only definition mutations resolve a declaration")
-        return self._declaration_resolution(resolver, symbol, binding)
+        return self.binding_operation.resolve_definition(resolver, symbol, binding)
 
     def validate_import_origin(self, origin: str | None) -> None:
-        if origin is not None and not self.is_import_binding:
-            raise ValueError("Only import mutations carry an imported origin")
+        self.binding_operation.validate_import_origin(origin)
 
 
 class CompactCallResultUse(StrEnum):
@@ -427,7 +533,26 @@ ResolutionContextT = TypeVar("ResolutionContextT")
 TargetResolutionT = TypeVar("TargetResolutionT")
 
 
-class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
+class CompactDefinitionResolverABC(ABC, Generic[TargetResolutionT]):
+    """Select source definitions independently of callable-use projection."""
+
+    @abstractmethod
+    def _selected_class_resolution(
+        self, symbol: str, binding: CompactMutation
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _selected_function_resolution(
+        self, symbol: str, binding: CompactMutation
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
+class CompactCallTargetResolverABC(
+    CompactDefinitionResolverABC[TargetResolutionT],
+    Generic[ResolutionContextT, TargetResolutionT],
+):
     """Repository obligations selected by nominal call-target syntax."""
 
     @abstractmethod
@@ -447,20 +572,6 @@ class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolu
         resolution: TargetResolutionT,
     ) -> TargetResolutionT:
         """Require the current-class receiver to retain its entry origin."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def _selected_class_resolution(
-        self, symbol: str, binding: CompactMutation
-    ) -> TargetResolutionT:
-        """Resolve a selected class definition at its exact source site."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def _selected_function_resolution(
-        self, symbol: str, binding: CompactMutation
-    ) -> TargetResolutionT:
-        """Resolve a selected function definition at its exact source site."""
         raise NotImplementedError
 
     @abstractmethod
@@ -982,16 +1093,71 @@ class CompactFunctionTargetResolutionViolation(StrEnum):
     CYCLIC_BINDING = "cyclic_binding"
 
 
-class CompactBindingResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
-    """Consumer projections of an already-selected nominal binding source."""
+class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
+    """Shared interpretation of a source selected in its actual flow."""
 
-    @abstractmethod
     def _selected_binding_resolution(
         self,
-        context: ResolutionContextT,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
         use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        visit = (context.owner_symbol, binding)
+        if visit in pending_bindings:
+            return self._cyclic_binding_resolution(pending_bindings)
+        operation = binding.kind.binding_operation
+        pending = operation.pending_after(context, binding, pending_bindings)
+        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
+        if alias is not None:
+            resolution = self._captured_alias_resolution(
+                alias, context, reference, use_position, pending
+            )
+            return self._installed_alias_resolution(resolution, alias, context)
+        return operation.resolve_source(self, context, reference, binding, pending)
+
+    @abstractmethod
+    def _cyclic_binding_resolution(
+        self, pending: frozenset[CompactBindingVisit]
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _captured_alias_resolution(
+        self,
+        alias: CompactExactValueAlias,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _installed_alias_resolution(
+        self,
+        resolution: TargetResolutionT,
+        alias: CompactExactValueAlias,
+        context: CompactFlowContext,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _imported_name_resolution(
+        self,
+        origin: str,
+        attribute_path: tuple[str, ...],
+        pending: frozenset[CompactBindingVisit],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _definition_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
         raise NotImplementedError
@@ -999,7 +1165,7 @@ class CompactBindingResolverABC(ABC, Generic[ResolutionContextT, TargetResolutio
     @abstractmethod
     def _possible_binding_resolution(
         self,
-        context: ResolutionContextT,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         violation: CompactFunctionTargetResolutionViolation,
         pending_bindings: frozenset[CompactBindingVisit],
@@ -1013,8 +1179,8 @@ class CompactBindingSource(ABC):
     @abstractmethod
     def resolve_binding(
         self,
-        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
-        context: ResolutionContextT,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit],
@@ -1044,8 +1210,8 @@ class ExactCompactBindingMutation(CompactBindingSource):
 
     def resolve_binding(
         self,
-        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
-        context: ResolutionContextT,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit],
@@ -1093,8 +1259,8 @@ class UnresolvedCompactBindingSource(CompactBindingSource, ABC):
 
     def resolve_binding(
         self,
-        resolver: CompactBindingResolverABC[ResolutionContextT, TargetResolutionT],
-        context: ResolutionContextT,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit],
@@ -1814,6 +1980,25 @@ class CompactFunctionFlow:
             module_name,
             self.lexical_scope_qualnames,
         )
+
+
+@dataclass(frozen=True)
+class CompactFlowContext:
+    """One execution flow joined to its module and optional declaration."""
+
+    module_name: str
+    file_path: str
+    flow: CompactFunctionFlow
+
+    declaration = AliasProperty[CompactFunctionDeclaration | None](
+        "flow.owner.declaration"
+    )
+
+    @property
+    def owner_symbol(self) -> str:
+        if self.flow.owner.kind.is_module_scope:
+            return self.module_name
+        return f"{self.module_name}.{self.flow.owner.qualname}"
 
 
 @dataclass(frozen=True)

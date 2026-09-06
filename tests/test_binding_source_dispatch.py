@@ -9,6 +9,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import (
     CompactBindingResolverABC,
     CompactBindingVisit,
+    CompactFlowContext,
     CompactFlowPosition,
     CompactFunctionTargetResolutionViolation,
     CompactMutation,
@@ -20,13 +21,13 @@ from nominal_refactor_advisor.product_flow import (
 from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
-class _ReceiptResolver(CompactBindingResolverABC[object, object]):
+class _ReceiptResolver(CompactBindingResolverABC[object]):
     def __init__(self) -> None:
         self.receipts: list[tuple[object, ...]] = []
 
     def _selected_binding_resolution(
         self,
-        context: object,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
         use_position: CompactFlowPosition | None,
@@ -37,13 +38,22 @@ class _ReceiptResolver(CompactBindingResolverABC[object, object]):
 
     def _possible_binding_resolution(
         self,
-        context: object,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         violation: CompactFunctionTargetResolutionViolation,
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> object:
         self.receipts.append((context, reference, pending_bindings))
         return violation
+
+    def _unexpected(self, *_args: object) -> object:
+        raise AssertionError("Source leaf selected an unrelated projection")
+
+    _cyclic_binding_resolution = _unexpected
+    _captured_alias_resolution = _unexpected
+    _installed_alias_resolution = _unexpected
+    _imported_name_resolution = _unexpected
+    _definition_binding_resolution = _unexpected
 
 
 @pytest.mark.parametrize("name", ("bound", "maybe", "value"))
@@ -66,7 +76,7 @@ def test_selected_source_projects_actual_evidence(name: str) -> None:
     assert selection is not None
     position = flow.mutations[0].position
     pending = frozenset((("prior", flow.mutations[0]),))
-    context = object()
+    context = CompactFlowContext(module.module_name, module.file_path, flow)
     reference = LexicalValueReference(name, ("member",))
     resolver = _ReceiptResolver()
     result = selection.resolve_binding(resolver, context, reference, position, pending)

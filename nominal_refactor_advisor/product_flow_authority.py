@@ -50,11 +50,11 @@ from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
-    CompactFunctionFlow,
     CompactFunctionTargetResolutionViolation as CompactFunctionTargetResolutionViolation,
     CompactMutation,
     CompactMutationResolverABC,
     CompactProductConstruction,
+    CompactFlowContext as CompactFlowContext,
     CompactProductFlowModuleProjection,
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
@@ -63,25 +63,6 @@ from .product_flow import (
     compact_product_flow_projection,
 )
 from .value_expression import LexicalValueReference
-
-
-@dataclass(frozen=True)
-class CompactProductFlowContext:
-    """One execution flow joined to its module and optional declaration."""
-
-    module_name: str
-    file_path: str
-    flow: CompactFunctionFlow
-
-    declaration = AliasProperty[CompactFunctionDeclaration | None](
-        "flow.owner.declaration"
-    )
-
-    @property
-    def owner_symbol(self) -> str:
-        if self.flow.owner.kind.is_module_scope:
-            return self.module_name
-        return f"{self.module_name}.{self.flow.owner.qualname}"
 
 
 @dataclass(frozen=True)
@@ -112,7 +93,7 @@ class CompactCallTargetResolution(ABC):
         raise NotImplementedError
 
     def through_alias(
-        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+        self, alias: CompactExactValueAlias, context: CompactFlowContext
     ) -> CompactCallTargetResolution:
         return self
 
@@ -122,14 +103,14 @@ class CompactCallTargetResolution(ABC):
         return self
 
     def resolve_call(
-        self, context: CompactProductFlowContext, call: CompactFunctionCall
+        self, context: CompactFlowContext, call: CompactFunctionCall
     ) -> CompactFunctionCallResolution:
         return CompactOpenFunctionCall(context, call, self)
 
     def resolve_construction(
         self,
         repository: CompactProductFlowRepository,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactResolvedProductConstruction | None:
         return None
@@ -152,7 +133,7 @@ class ResolvedCompactClassTarget(CompactCallTargetResolution):
     def resolve_construction(
         self,
         repository: CompactProductFlowRepository,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactResolvedProductConstruction | None:
         construction = call.product_construction()
@@ -187,7 +168,7 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
         return replace(self, descriptor_access=access)
 
     def resolve_call(
-        self, context: CompactProductFlowContext, call: CompactFunctionCall
+        self, context: CompactFlowContext, call: CompactFunctionCall
     ) -> CompactFunctionCallResolution:
         return CompactResolvedFunctionCall(context, call, self)
 
@@ -208,7 +189,7 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
         )
 
     def through_alias(
-        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+        self, alias: CompactExactValueAlias, context: CompactFlowContext
     ) -> CompactCallTargetResolution:
         if self.resolved_declaration.preserves_alias_call_binding(
             alias, context.flow.owner, context.module_name
@@ -236,7 +217,7 @@ class OpenCompactFunctionTarget(CompactCallTargetResolution):
         return self.candidate_symbols
 
     def through_alias(
-        self, alias: CompactExactValueAlias, context: CompactProductFlowContext
+        self, alias: CompactExactValueAlias, context: CompactFlowContext
     ) -> CompactCallTargetResolution:
         return type(self)(
             tuple(
@@ -301,7 +282,7 @@ class _CompactClassMemberResolution:
 class CompactFunctionCallResolution(ABC):
     """Complete call-resolution result retained for every projected call."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     call: CompactFunctionCall
 
     @property
@@ -343,7 +324,7 @@ class CompactFunctionCallResolution(ABC):
 class CompactResolvedFunctionCall(CompactFunctionCallResolution):
     """One call edge whose callee has exactly one nominal declaration."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     call: CompactFunctionCall
     resolved_target: ResolvedCompactFunctionTarget
 
@@ -382,7 +363,7 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
 class CompactOpenFunctionCall(CompactFunctionCallResolution):
     """One projected call without a resolved function declaration."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     call: CompactFunctionCall
     open_target_resolution: CompactCallTargetResolution
 
@@ -399,7 +380,7 @@ class CompactOpenFunctionCall(CompactFunctionCallResolution):
 class CompactCallableEscape:
     """One non-call use retaining its complete target-resolution evidence."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     use: CompactCallableReferenceUse
     target_resolution: CompactCallTargetResolution
 
@@ -448,7 +429,7 @@ class CompactCallableComponentAuthorityProof:
 class CompactResolvedProductConstruction:
     """One explicit construction joined to its complete product authority."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     call: CompactFunctionCall
     construction: CompactProductConstruction
     authority: CompactProductAuthority
@@ -466,7 +447,7 @@ class CompactProductRuntimeViolation(StrEnum):
 class CompactProductRuntimeFailure:
     """One retained source observation, shared by all affected product queries."""
 
-    context: CompactProductFlowContext
+    context: CompactFlowContext
     source_event: CompactMutation | CompactFunctionCall
     target_resolution: CompactCallTargetResolution
     violation: CompactProductRuntimeViolation
@@ -511,75 +492,71 @@ class CompactProductRuntimeFailureIndex(
 
 @dataclass(frozen=True)
 class CompactProductFlowRepository(
-    CompactCallTargetResolverABC[
-        CompactProductFlowContext, CompactCallTargetResolution
-    ],
-    CompactMutationResolverABC[CompactProductFlowContext, CompactCallTargetResolution],
-    CompactBindingResolverABC[CompactProductFlowContext, CompactCallTargetResolution],
+    CompactCallTargetResolverABC[CompactFlowContext, CompactCallTargetResolution],
+    CompactMutationResolverABC[CompactFlowContext, CompactCallTargetResolution],
+    CompactBindingResolverABC[CompactCallTargetResolution],
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
 
-    def _selected_binding_resolution(
+    def _imported_name_resolution(
         self,
-        context: CompactProductFlowContext,
+        origin: str,
+        attribute_path: tuple[str, ...],
+        pending: frozenset[CompactBindingVisit],
+    ) -> CompactCallTargetResolution:
+        return self._function_resolution_for_symbol(
+            ".".join((origin, *attribute_path)), pending
+        )
+
+    def _installed_alias_resolution(
+        self,
+        resolution: CompactCallTargetResolution,
+        alias: CompactExactValueAlias,
+        context: CompactFlowContext,
+    ) -> CompactCallTargetResolution:
+        return resolution.through_alias(alias, context)
+
+    def _captured_alias_resolution(
+        self,
+        alias: CompactExactValueAlias,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending: frozenset[CompactBindingVisit],
+    ) -> CompactCallTargetResolution:
+        return alias.source_use.resolve(
+            self,
+            context,
+            pending_bindings=pending,
+            attribute_path=reference.attribute_path,
+        )
+
+    def _cyclic_binding_resolution(
+        self, pending: frozenset[CompactBindingVisit]
+    ) -> CompactCallTargetResolution:
+        return OpenCompactFunctionTarget(
+            tuple(
+                sorted(
+                    {
+                        f"{owner}.{mutation.target.bound_name}"
+                        for owner, mutation in pending
+                    }
+                )
+            ),
+            CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
+        )
+
+    def _definition_binding_resolution(
+        self,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
-        use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> CompactCallTargetResolution:
-        root_name = reference.root_name
-        binding_visit = (context.owner_symbol, binding)
-        if binding_visit in pending_bindings:
-            return OpenCompactFunctionTarget(
-                tuple(
-                    sorted(
-                        {
-                            f"{owner}.{mutation.target.bound_name}"
-                            for owner, mutation in pending_bindings
-                        }
-                    )
-                ),
-                CompactFunctionTargetResolutionViolation.CYCLIC_BINDING,
-            )
-        if not binding.kind.is_definition_binding:
-            pending_bindings = pending_bindings | {binding_visit}
-
-        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
-        if alias is not None:
-            resolution = alias.source_use.resolve(
-                self,
-                context,
-                pending_bindings=pending_bindings,
-                attribute_path=reference.attribute_path,
-            )
-            return resolution.through_alias(alias, context)
-
-        if binding.kind.is_import_binding:
-            alias_target = binding.imported_origin
-            if alias_target is None:
-                return self._possible_binding_resolution(
-                    context,
-                    reference,
-                    CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-                    pending_bindings,
-                )
-            return self._function_resolution_for_symbol(
-                ".".join((alias_target, *reference.attribute_path)),
-                pending_bindings,
-            )
-
-        if not binding.kind.is_definition_binding:
-            return self._possible_binding_resolution(
-                context,
-                reference,
-                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-                pending_bindings,
-            )
-
-        binding_symbol = f"{context.owner_symbol}.{root_name}"
+        binding_symbol = f"{context.owner_symbol}.{reference.root_name}"
         if reference.attribute_path:
             owner = self.class_index.class_for(binding_symbol)
             if owner is None or owner.line != binding.line:
@@ -625,7 +602,7 @@ class CompactProductFlowRepository(
 
     def _receiver_mutation_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         mutation: CompactMutation,
         receiver_use: CompactValueUse,
     ) -> CompactCallTargetResolution:
@@ -644,7 +621,7 @@ class CompactProductFlowRepository(
 
     def _binding_mutation_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         mutation: CompactMutation,
         name: str,
     ) -> CompactCallTargetResolution:
@@ -675,7 +652,7 @@ class CompactProductFlowRepository(
 
     def _through_receiver_binding(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         position: CompactFlowPosition,
         resolution: CompactCallTargetResolution,
     ) -> CompactCallTargetResolution:
@@ -710,7 +687,7 @@ class CompactProductFlowRepository(
 
     def _local_function_target_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         target: CompactCallTargetReference,
     ) -> CompactCallTargetResolution:
         """Resolve source-local candidates without rediscovering target syntax."""
@@ -813,9 +790,9 @@ class CompactProductFlowRepository(
         )
 
     @cached_property
-    def flow_contexts(self) -> tuple[CompactProductFlowContext, ...]:
+    def flow_contexts(self) -> tuple[CompactFlowContext, ...]:
         return tuple(
-            CompactProductFlowContext(
+            CompactFlowContext(
                 module_name=projection.module_name,
                 file_path=projection.file_path,
                 flow=flow,
@@ -825,7 +802,7 @@ class CompactProductFlowRepository(
         )
 
     @cached_property
-    def module_flow_contexts(self) -> dict[str, CompactProductFlowContext]:
+    def module_flow_contexts(self) -> dict[str, CompactFlowContext]:
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             (
                 context
@@ -836,7 +813,7 @@ class CompactProductFlowRepository(
         )
 
     @cached_property
-    def flow_contexts_by_owner_symbol(self) -> dict[str, CompactProductFlowContext]:
+    def flow_contexts_by_owner_symbol(self) -> dict[str, CompactFlowContext]:
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             self.flow_contexts,
             lambda context: context.owner_symbol,
@@ -859,7 +836,7 @@ class CompactProductFlowRepository(
         product_symbols = frozenset(candidates)
         for context in self.flow_contexts:
             for mutation in context.flow.mutations:
-                if mutation.kind.preserves_nominal_identity:
+                if mutation.kind.introduces_nominal_binding:
                     continue
                 resolution = mutation.resolve(self, context)
                 if resolution.candidate_symbols_within(product_symbols):
@@ -916,7 +893,7 @@ class CompactProductFlowRepository(
 
     def _class_for_reference(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         *,
         line: int,
@@ -990,19 +967,19 @@ class CompactProductFlowRepository(
 
     def resolve_function_call(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactFunctionCallResolution:
         return call.target_use.resolve(self, context).resolve_call(context, call)
 
     def resolve_callable_escape(
-        self, context: CompactProductFlowContext, use: CompactCallableReferenceUse
+        self, context: CompactFlowContext, use: CompactCallableReferenceUse
     ) -> CompactCallableEscape:
         return CompactCallableEscape(context, use, use.resolve(self, context))
 
     def resolve_function_target(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         target: CompactCallTargetReference,
         position: CompactFlowPosition,
     ) -> CompactCallTargetResolution:
@@ -1011,7 +988,7 @@ class CompactProductFlowRepository(
 
     def _class_member_method_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         target: CurrentClassMemberMethodReference,
         position: CompactFlowPosition,
     ) -> CompactCallTargetResolution:
@@ -1111,7 +1088,7 @@ class CompactProductFlowRepository(
 
     def _lexical_binding_exists(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         position: CompactFlowPosition,
     ) -> bool:
@@ -1136,7 +1113,7 @@ class CompactProductFlowRepository(
 
     def resolve_product_construction(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactResolvedProductConstruction | None:
         return call.target_use.resolve(self, context).resolve_construction(
@@ -1170,7 +1147,7 @@ class CompactProductFlowRepository(
 
     def declared_bound_value_class_symbol(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition,
     ) -> str | None:
@@ -1283,7 +1260,7 @@ class CompactProductFlowRepository(
     @staticmethod
     def _signature_is_closed_for_parameters(
         declaration: CompactFunctionDeclaration,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         parameter_names: frozenset[str],
     ) -> bool:
         parameters_by_name = {
@@ -1336,7 +1313,7 @@ class CompactProductFlowRepository(
 
     def _lexical_function_target_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         position: CompactFlowPosition,
         pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
@@ -1372,7 +1349,7 @@ class CompactProductFlowRepository(
 
     def _scope_binding_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
@@ -1426,7 +1403,7 @@ class CompactProductFlowRepository(
 
     def _possible_binding_resolution(
         self,
-        context: CompactProductFlowContext,
+        context: CompactFlowContext,
         reference: LexicalValueReference,
         violation: CompactFunctionTargetResolutionViolation,
         pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
@@ -1453,12 +1430,12 @@ class CompactProductFlowRepository(
             (
                 local_and_imported,
                 *(
-                    alias.source_use.resolve(
-                        self,
+                    self._captured_alias_resolution(
+                        alias,
                         context,
-                        attribute_path=reference.attribute_path,
-                        pending_bindings=pending_bindings
-                        | {(context.owner_symbol, mutation)},
+                        reference,
+                        None,
+                        pending_bindings | {(context.owner_symbol, mutation)},
                     )
                     for mutation in mutations
                     if (context.owner_symbol, mutation) not in pending_bindings
