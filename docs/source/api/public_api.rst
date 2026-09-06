@@ -269,6 +269,14 @@ supplied flow field. The :download:`reference ownership refactor
 <../../examples/reference_fact_ownership.py>` removes the collector's parallel
 loaded-name state.
 
+``CompactCallableEscape`` retains the complete ``target_resolution`` for each
+non-call use. ``callable_escapes_for(symbol)`` includes both exact and possible
+references to that symbol. The shared callable-component proof rejects a
+signature rewrite when a participant appears among those possible targets;
+an unresolved declaration does not erase the escape. The
+:download:`escape-evidence refactor <../../examples/escape_resolution_evidence.py>`
+applies the declaration rename and its consumers through the DSL.
+
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``
 resolves at that position. Opaque expressions return an explicit

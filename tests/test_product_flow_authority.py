@@ -461,6 +461,21 @@ def test_function_attribute_reads_retain_the_function_escape(
     assert escapes[0].context.owner_symbol == "pkg.sample"
 
 
+def test_unresolved_noncall_uses_keep_their_resolution_evidence() -> None:
+    repository = _repository(
+        _module("pkg.unknown_read", "def read():\n    return factory().callback\n")
+    )
+    context = repository.flow_contexts_by_owner_symbol["pkg.unknown_read.read"]
+    use = context.flow.callable_reference_uses[0]
+    resolution = repository.resolve_callable_escape(context, use)
+    assert resolution is not None
+    assert resolution.context is context
+    assert resolution.use is use
+    assert resolution.target_resolution.declaration is None
+    assert resolution.target_resolution.possible_symbols == ()
+    assert resolution in repository.callable_escapes
+
+
 @pytest.mark.parametrize(
     "binding_source",
     (

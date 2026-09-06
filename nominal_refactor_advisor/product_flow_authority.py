@@ -322,12 +322,12 @@ class CompactOpenFunctionCall(CompactFunctionCallResolution):
 
 
 @dataclass(frozen=True)
-class CompactResolvedCallableEscape:
-    """One non-call callable use joined to its nominal declaration."""
+class CompactCallableEscape:
+    """One non-call use retaining its complete target-resolution evidence."""
 
     context: CompactProductFlowContext
     use: CompactCallableReferenceUse
-    declaration: CompactFunctionDeclaration
+    target_resolution: CompactCallTargetResolution
 
 
 @dataclass(frozen=True)
@@ -750,12 +750,11 @@ class CompactProductFlowRepository(
         )
 
     @cached_property
-    def callable_escapes(self) -> tuple[CompactResolvedCallableEscape, ...]:
+    def callable_escapes(self) -> tuple[CompactCallableEscape, ...]:
         return tuple(
-            resolved
+            self.resolve_callable_escape(context, use)
             for context in self.flow_contexts
             for use in context.flow.callable_reference_uses
-            if (resolved := self.resolve_callable_escape(context, use)) is not None
         )
 
     @cached_property
@@ -778,14 +777,9 @@ class CompactProductFlowRepository(
         return call.target_use.resolve(self, context).resolve_call(context, call)
 
     def resolve_callable_escape(
-        self,
-        context: CompactProductFlowContext,
-        use: CompactCallableReferenceUse,
-    ) -> CompactResolvedCallableEscape | None:
-        declaration = use.resolve(self, context).declaration
-        if declaration is None:
-            return None
-        return CompactResolvedCallableEscape(context, use, declaration)
+        self, context: CompactProductFlowContext, use: CompactCallableReferenceUse
+    ) -> CompactCallableEscape:
+        return CompactCallableEscape(context, use, use.resolve(self, context))
 
     def resolve_function_target(
         self,
@@ -976,11 +970,11 @@ class CompactProductFlowRepository(
     def callable_escapes_for(
         self,
         function_symbol: str,
-    ) -> tuple[CompactResolvedCallableEscape, ...]:
+    ) -> tuple[CompactCallableEscape, ...]:
         return tuple(
             escape
             for escape in self.callable_escapes
-            if escape.declaration.identity.symbol == function_symbol
+            if function_symbol in escape.target_resolution.possible_symbols
         )
 
     def callable_boundary_exposure(
@@ -1027,11 +1021,11 @@ class CompactProductFlowRepository(
                 for incoming in self.incoming_calls_for(participant_symbol)
             )
         }
-        escaping_callable_symbols = {
-            participant_symbol
-            for participant_symbol in participant_symbols
-            if self.callable_escapes_for(participant_symbol)
-        }
+        escaping_callable_symbols = participant_symbols.intersection(
+            symbol
+            for escape in self.callable_escapes
+            for symbol in escape.target_resolution.possible_symbols
+        )
         signature_hazard_symbols = {
             participant_symbol
             for participant_symbol in participant_symbols - missing_declaration_symbols

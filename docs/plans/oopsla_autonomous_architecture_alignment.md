@@ -1622,3 +1622,55 @@ Python 3.14, with eight workers each (217/219 seconds). Python 3.14 retains its
 zero findings. Eight-stage full-module AST replay from `98de5c5`, Ruff and
 whitespace checks pass. Sphinx builds with its two existing duplicate-description
 warnings; Diataxis keeps the API contract separate from this investigation log.
+
+## Unresolved callable escapes retain authority evidence (2026-09-06)
+
+The unresolved-escape audit reproduced another invalid automatic signature
+rewrite. A function conditionally imports `_build` and returns it. The resolver
+already identifies `_build` among the possible targets, but the old escape
+projection discarded the whole result because its declaration was unresolved.
+The conveyor was consequently classified as closed. Runtime execution returned
+`(1, 2)` before rewriting and raised `TypeError` afterwards when invoking that
+returned callable with its original arguments.
+
+The existing escape carrier is now `CompactCallableEscape` and retains the
+typed target-resolution object instead of extracting only a declaration.
+Every non-call use retains its result. Symbol queries include possible targets,
+and the shared component proof intersects participant symbols with those targets
+in one traversal. This removes the per-participant scan without introducing a
+second registry or classification hierarchy. Both new regressions failed before
+the change; all 245 focused cases pass, including opaque unresolved reads.
+
+The seven-stage `docs/examples/escape_resolution_evidence.py` plan uses the
+repository-aware declaration rename and applies the consumer edits through the
+CLI. Receipts use `/tmp/nra-escape-evidence-*`. This change precedes the receiver
+rebinding guard deliberately: returning an open receiver lookup must not discard
+a method-value use that remains relevant to a signature boundary.
+
+The receiver family still needs initial-binding and use-position evidence.
+Its selected class and possible alternatives must survive uncertainty; replacing
+an incorrect exact lookup with an empty candidate set would not close the proof
+gap. Initial receiver aliases and calls captured before a later reassignment
+also require shared binding semantics, not blanket rejection of any written
+receiver name.
+
+Full suites pass 2,416 tests with 15 skipped on Python 3.11 and 2,431 tests on
+Python 3.14, with eight workers each (215/219 seconds). Python 3.14 retains
+its 96 existing warnings. Seven-stage full-module AST replay from `d035daf`,
+Ruff and whitespace checks pass. All 81 detectors complete the touched-module
+audit with zero findings. Sphinx retains its two existing duplicate-description
+warnings; the API guarantee is separate from these Diataxis investigation notes.
+
+An eight-run alternating aggregation probe uses 500 participants and 2,000 read
+results, including 1,000 exact function references. Both algorithms select the
+same participants. Median aggregation time falls from 0.193 seconds for the old
+per-participant scan to 0.000298 seconds for the shared intersection. This
+measures only the boundary aggregation, not collection, resolution or end-to-end
+analysis. Retaining unresolved results increases the cached escape evidence.
+
+For the subsequent receiver work, initial parameter bindings must be distinguished
+from writes. The current mutation sequence describes assignments and other
+body events, while the existing function declaration already owns the signature.
+Pretending parameters are ordinary mutations would force unrelated consumers
+to filter those fake writes; initial-binding evidence should instead derive from
+the declaration and join the shared selection contract explicitly.

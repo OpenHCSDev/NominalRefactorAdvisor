@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import ModuleType
 
 import pytest
 
@@ -965,6 +966,37 @@ def test_callable_used_as_attribute_receiver_blocks_signature_collapse(
     assert namespace["invoke"](1, 2) == (1, 2)
     builder = _builder(module)
     assert builder.repository.callable_escapes_for("pkg.receiver_escape._build")
+    assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
+        builder.assessed_components()[0].proof.violations
+    )
+    assert builder.proven_components() == ()
+    assert ClosedParameterConveyorDetector().detect([module], DetectorConfig()) == []
+
+
+def test_possible_callable_escape_blocks_signature_collapse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = (
+        _base_source() + "\ndef escaped(flag):\n"
+        "    if flag:\n"
+        "        from escape import _build\n"
+        "    return _build\n"
+    )
+    runtime_module = ModuleType("escape")
+    monkeypatch.setitem(sys.modules, "escape", runtime_module)
+    exec(
+        compile(source, "escape.py", "exec", dont_inherit=True), runtime_module.__dict__
+    )
+    assert runtime_module.escaped(True)(1, 2) == (1, 2)
+    with pytest.raises(UnboundLocalError):
+        runtime_module.escaped(False)
+
+    module = _module("escape", source)
+    builder = _builder(module)
+    escapes = builder.repository.callable_escapes_for("escape._build")
+    assert len(escapes) == 1
+    assert escapes[0].target_resolution.declaration is None
+    assert "escape._build" in escapes[0].target_resolution.possible_symbols
     assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         builder.assessed_components()[0].proof.violations
     )
