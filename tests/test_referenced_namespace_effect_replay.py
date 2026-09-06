@@ -7,27 +7,35 @@ import runpy
 import subprocess
 import sys
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.source_geometry import read_source_text
 
 
+@pytest.mark.parametrize("source_newline", ("\n", "\r\n"), ids=("lf", "crlf"))
 def test_reference_effect_factor_replays_without_replacing_leaf_bodies(
     tmp_path: Path,
+    source_newline: str,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     relative = Path("nominal_refactor_advisor/class_namespace.py")
-    expected = read_source_text(root / relative)
+    expected = (
+        source_newline.join(read_source_text(root / relative).splitlines())
+        + source_newline
+    )
     base = next(
         node
         for node in ast.parse(expected).body
         if isinstance(node, ast.ClassDef)
         and node.name == "ReferencedClassNamespaceEffect"
     )
-    lines = expected.splitlines(keepends=True)
+    # Reconstruct in one spelling, then exercise the requested physical newline.
+    lines = expected.splitlines()
     del lines[base.decorator_list[0].lineno - 1 : base.end_lineno]
-    before = "".join(lines).replace(
+    before = ("\n".join(lines) + "\n").replace(
         "from .descriptor_algebra import AliasProperty\n", ""
     )
     before = before.replace(
@@ -56,6 +64,7 @@ def test_reference_effect_factor_replays_without_replacing_leaf_bodies(
         )
         before = "".join(lines)
 
+    before = before.replace("\n", source_newline)
     path = tmp_path / relative
     path.parent.mkdir()
     path.write_text(before, encoding="utf-8", newline="")
@@ -105,7 +114,7 @@ print(json.dumps([
     result = plan.simulate(snapshot)
     assert result.is_clean
     assert result.stage_count == 9
-    assert path.read_text(encoding="utf-8") == before
+    assert read_source_text(path) == before
     result.apply()
     assert ast.dump(ast.parse(path.read_text(encoding="utf-8"))) == ast.dump(
         ast.parse(expected)
