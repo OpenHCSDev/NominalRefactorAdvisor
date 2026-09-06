@@ -48,13 +48,11 @@ from .product_flow import (
     CompactProductFlowModuleProjection,
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
+    CompactValueUse,
     CurrentClassMemberMethodReference,
     compact_product_flow_projection,
 )
-from .value_expression import (
-    CompactValueExpression,
-    LexicalValueReference,
-)
+from .value_expression import LexicalValueReference
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 
@@ -247,12 +245,7 @@ class CompactFunctionCallResolution(ABC):
         self,
     ) -> tuple[CompactValueOriginResolution, ...]:
         return tuple(
-            self.context.flow.value_origin_for(
-                reference,
-                self.call.position,
-            )
-            for value in self.call.arguments.values
-            if (reference := value.lexical_reference) is not None
+            value.origin_in(self.context.flow) for value in self.call.arguments.values
         )
 
     @cached_property
@@ -280,6 +273,16 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
     call: CompactFunctionCall
     resolved_target: ResolvedCompactFunctionTarget
 
+    @cached_property
+    def bound_value_uses(self) -> dict[str, CompactValueUse]:
+        """Single supplied values selected by the existing binding result."""
+        return {
+            parameter.name: argument.values[0]
+            for parameter in self.call_signature.parameters
+            if (argument := self.binding.argument_for(parameter.name)) is not None
+            and len(argument.values) == 1
+        }
+
     @property
     def callee(self) -> CompactFunctionDeclaration:
         return self.resolved_target.declaration
@@ -293,7 +296,7 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
         return self.resolved_target.call_signature
 
     @cached_property
-    def binding(self) -> CompactCallBinding[CompactValueExpression]:
+    def binding(self) -> CompactCallBinding[CompactValueUse]:
         return self.resolved_target.bind_arguments(self.call.arguments)
 
     @property
@@ -665,10 +668,7 @@ class CompactProductFlowRepository(
                     reference = value.lexical_reference
                     if reference is None:
                         continue
-                    exact_origin = context.flow.value_origin_for(
-                        reference,
-                        call.position,
-                    ).exact_origin
+                    exact_origin = value.origin_in(context.flow).exact_origin
                     class_symbol = self._class_symbol_for_reference(
                         context,
                         exact_origin or reference,

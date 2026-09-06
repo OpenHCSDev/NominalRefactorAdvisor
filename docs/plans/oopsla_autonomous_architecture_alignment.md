@@ -1466,3 +1466,58 @@ or establish receiver lifetime. The source collector can now supply one
 positioned value per argument through its projector and eliminate its separate
 argument traversal. The constructor and forwarding consumers must keep those
 positioned values until origin resolution rather than strip them back to names.
+
+## Captured argument values and shared origin selection (2026-09-06)
+
+Closed the argument-timing gap across the collector, call binding, constructor
+fields and both conveyor/expansion consumers. Each `CompactValueUse` owns its
+expression and evaluation event. The existing argument projector now visits
+and captures each argument in one pass. The same captured objects pass through
+signature binding; no invocation-time reconstruction or second argument table
+is used to recover their origins.
+
+The investigation also found that `_value_origin_for` rejected every name with
+multiple writes, independently of its supplied use position. It now selects
+the write through `binding_resolution_for`, shared with callable and bound-result
+lookup. Alias recursion tracks selected mutations rather than root names, so
+`selected = original; selected = selected` retains its actual origin. Ambiguous
+control flow and opaque assignments remain unresolved. Opaque expressions now
+produce an explicit `OPAQUE_EXPRESSION` result instead of disappearing from the
+argument-origin sequence.
+
+`CompactResolvedFunctionCall.bound_value_uses` projects single supplied values
+through the existing binding result. `CompactProductConstruction.field_values`
+owns the field view and derives its field names. Their consumers retain these
+uses until origin resolution, including declared carrier class lookup at each
+argument's evaluation event. Five builder-side helpers/indexes were removed;
+the four production modules are 86 lines smaller overall.
+
+Five regressions failed before the change. The seven-case addition compares
+positional, keyword and nested-call rebinding with real Python execution,
+checks repeated-alias write events and later opaque assignments, and verifies
+constructor-field and bound-argument object identity. The 229-case focused run
+passes. The remaining raw `value_origin_for` call in the conveyor builder is
+for a mutation event, not an argument, and correctly retains mutation timing.
+
+The 34-stage `docs/examples/argument_value_capture.py` plan was applied through
+the CLI, with an explicit final import-cleanup stage. Replaying from `f31c5d5`
+reproduces all four complete production module ASTs. All 81 detectors complete
+the touched-source audit with zero findings. Sphinx builds the API reference
+with its two existing duplicate-description warnings. Ruff and whitespace
+checks pass. Receipts use `/tmp/nra-argument-capture-*`.
+
+Full suites pass 2,400 tests with 15 skipped on Python 3.11 and 2,415 tests on
+Python 3.14, with eight workers per suite. Python 3.14 retains the existing 96
+fork/thread warnings. The four-module alternating collector probe retained
+3,500 calls: seven-run median collection times were 0.738 seconds before and
+0.782 seconds after; serialized facts grew from 3,056,153 to 3,350,436 bytes.
+Those timings include concurrent test load and do not measure the eliminated
+downstream indexes or end-to-end analysis throughput.
+
+Receiver-lifetime proof remains open. Captured argument identity does not prove
+construction hooks, descriptor effects, intervening mutations or escape safety.
+The real bootstrap caller's `authority.geometry` getter still needs source
+effect evidence before the instance-selected `replacements_for` call can be
+authorised. The origin diagnostic taxonomy also retains an unused
+`CONTROL_FLOW_JOIN` member after moving selection to the shared resolver; it
+can be consolidated with the next binding-proof audit.

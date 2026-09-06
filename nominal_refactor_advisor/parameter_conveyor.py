@@ -25,8 +25,8 @@ from .product_flow import (
     CompactFunctionCall,
     CompactLexicalMutation,
     CompactMutationKind,
-    CompactValueOriginResolution,
     CompactProductFlowModuleProjection,
+    CompactValueUse,
 )
 from .product_flow_authority import (
     CompactCallableComponentAuthorityProof,
@@ -405,35 +405,6 @@ class ClosedParameterConveyorComponentBuilder:
         return cls(CompactProductFlowRepository.from_modules(modules))
 
     @cached_property
-    def simple_bound_arguments_by_call(
-        self,
-    ) -> dict[CompactFunctionCallIdentity, dict[str, LexicalValueReference]]:
-        return {
-            self.call_identity(edge): self._simple_bound_arguments(edge)
-            for edge in self.repository.resolved_function_calls
-        }
-
-    @cached_property
-    def bound_argument_origins_by_call(
-        self,
-    ) -> dict[
-        CompactFunctionCallIdentity,
-        dict[str, CompactValueOriginResolution],
-    ]:
-        return {
-            self.call_identity(edge): {
-                parameter_name: edge.context.flow.value_origin_for(
-                    reference,
-                    edge.call.position,
-                )
-                for parameter_name, reference in self.simple_bound_arguments_by_call[
-                    self.call_identity(edge)
-                ].items()
-            }
-            for edge in self.repository.resolved_function_calls
-        }
-
-    @cached_property
     def calls_by_value_projection(
         self,
     ) -> dict[_ValueProjectionKey, tuple[CompactResolvedFunctionCall, ...]]:
@@ -441,16 +412,8 @@ class ClosedParameterConveyorComponentBuilder:
             defaultdict(list)
         )
         for edge in self.repository.resolved_function_calls:
-            for parameter_name, reference in self.simple_bound_arguments_by_call.get(
-                self.call_identity(edge), {}
-            ).items():
-                projections = [reference]
-                exact_origin = self.bound_argument_origins_by_call[
-                    self.call_identity(edge)
-                ][parameter_name].exact_origin
-                if exact_origin is not None:
-                    projections.append(exact_origin)
-                for projection in dict.fromkeys(projections):
+            for value in edge.bound_value_uses.values():
+                for projection in value.reference_equivalents_in(edge.context.flow):
                     grouped[(edge.context.owner_symbol, projection)].append(edge)
         return {key: tuple(edges) for key, edges in grouped.items()}
 
@@ -459,7 +422,7 @@ class ClosedParameterConveyorComponentBuilder:
         edges: dict[_RootEdgeIdentity, ConstructedProductCallEdge] = {}
         for construction in self.repository.resolved_product_constructions:
             authority_fields = construction.authority.field_names
-            construction_arguments = self._construction_arguments(construction)
+            construction_arguments = construction.construction.field_values
             if (
                 frozenset(construction_arguments) != frozenset(authority_fields)
                 or not authority_fields
@@ -467,7 +430,7 @@ class ClosedParameterConveyorComponentBuilder:
                 continue
             first_field = authority_fields[0]
             source_reference = construction_arguments[first_field]
-            if source_reference is None:
+            if source_reference.lexical_reference is None:
                 continue
             carrier_reference = LexicalValueReference(
                 construction.construction.result_binding.root_name,
@@ -477,11 +440,7 @@ class ClosedParameterConveyorComponentBuilder:
                 ),
             )
             first_field_references = (
-                *self._reference_equivalents(
-                    construction.context,
-                    source_reference,
-                    construction.call.position,
-                ),
+                *source_reference.reference_equivalents_in(construction.context.flow),
                 carrier_reference,
             )
             candidate_edges = {
@@ -601,7 +560,7 @@ class ClosedParameterConveyorComponentBuilder:
         self,
         construction: CompactResolvedProductConstruction,
         call_edge: CompactResolvedFunctionCall,
-        construction_arguments: dict[str, LexicalValueReference | None],
+        construction_arguments: dict[str, CompactValueUse],
     ) -> ConstructedProductCallEdge | None:
         if call_edge.context.owner_symbol != construction.context.owner_symbol:
             return None
@@ -612,13 +571,9 @@ class ClosedParameterConveyorComponentBuilder:
                 field_name: frozenset(
                     (
                         *(
-                            self._reference_equivalents(
-                                construction.context,
-                                construction_arguments[field_name],
-                                construction.call.position,
+                            construction_arguments[field_name].reference_equivalents_in(
+                                construction.context.flow
                             )
-                            if construction_arguments[field_name] is not None
-                            else ()
                         ),
                         LexicalValueReference(
                             construction.construction.result_binding.root_name,
@@ -640,8 +595,8 @@ class ClosedParameterConveyorComponentBuilder:
             construction.construction.result_binding.root_name,
             *(
                 reference.root_name
-                for reference in construction_arguments.values()
-                if reference is not None
+                for value in construction_arguments.values()
+                if (reference := value.lexical_reference) is not None
             ),
         }
         intervening_mutation_roots = tuple(
@@ -714,28 +669,18 @@ class ClosedParameterConveyorComponentBuilder:
             frozenset[LexicalValueReference],
         ],
     ) -> tuple[CarrierCollapseFieldBinding, ...] | None:
-        simple_arguments = self.simple_bound_arguments_by_call.get(
-            self.call_identity(call_edge),
-            {},
-        )
-        argument_origins = self.bound_argument_origins_by_call.get(
-            self.call_identity(call_edge),
-            {},
-        )
         bindings: list[CarrierCollapseFieldBinding] = []
+        argument_equivalents = {
+            name: value.reference_equivalents_in(call_edge.context.flow)
+            for name, value in call_edge.bound_value_uses.items()
+        }
         for field_name in authority.field_names:
             matches = tuple(
-                (parameter_name, value_reference)
-                for parameter_name, value_reference in simple_arguments.items()
-                if expected_references_by_field[field_name]
-                & frozenset(
-                    reference
-                    for reference in (
-                        value_reference,
-                        argument_origins[parameter_name].exact_origin,
-                    )
-                    if reference is not None
-                )
+                (parameter_name, reference)
+                for parameter_name, value in call_edge.bound_value_uses.items()
+                if (reference := value.lexical_reference) is not None
+                and expected_references_by_field[field_name]
+                & frozenset(argument_equivalents[parameter_name])
             )
             if len(matches) != 1:
                 return None
@@ -748,24 +693,6 @@ class ClosedParameterConveyorComponentBuilder:
                 )
             )
         return tuple(bindings)
-
-    @staticmethod
-    def _reference_equivalents(
-        context: CompactProductFlowContext,
-        reference: LexicalValueReference,
-        use_position: CompactFlowPosition,
-    ) -> tuple[LexicalValueReference, ...]:
-        exact_origin = context.flow.value_origin_for(
-            reference,
-            use_position,
-        ).exact_origin
-        return tuple(
-            dict.fromkeys(
-                candidate
-                for candidate in (reference, exact_origin)
-                if candidate is not None
-            )
-        )
 
     @staticmethod
     def _mutation_reaches_protected_root(
@@ -784,33 +711,6 @@ class ClosedParameterConveyorComponentBuilder:
                 for origin in origin_resolution.possible_origins
             )
         )
-
-    @staticmethod
-    def _construction_arguments(
-        construction: CompactResolvedProductConstruction,
-    ) -> dict[str, LexicalValueReference | None]:
-        return {
-            argument.name: argument.value.lexical_reference
-            for argument in construction.construction.field_arguments
-            if argument.name is not None
-        }
-
-    @staticmethod
-    def _simple_bound_arguments(
-        edge: CompactResolvedFunctionCall,
-    ) -> dict[str, LexicalValueReference]:
-        binding = edge.binding
-        if not binding.is_exact:
-            return {}
-        arguments: dict[str, LexicalValueReference] = {}
-        for parameter in edge.call_signature.parameters:
-            bound_argument = binding.argument_for(parameter.name)
-            if bound_argument is None or len(bound_argument.values) != 1:
-                continue
-            reference = bound_argument.values[0].lexical_reference
-            if reference is not None:
-                arguments[parameter.name] = reference
-        return arguments
 
     @staticmethod
     def call_identity(
@@ -1048,16 +948,14 @@ class ClosedParameterConveyorComponentBuilder:
         for construction in self.repository.resolved_product_constructions:
             if construction.authority.class_symbol != authority.class_symbol:
                 continue
-            construction_arguments = self._construction_arguments(construction)
+            construction_arguments = construction.construction.field_values
             if frozenset(construction_arguments) != frozenset(authority.field_names):
                 continue
             construction_origin_resolutions = {
-                field_name: construction.context.flow.value_origin_for(
-                    reference,
-                    construction.call.position,
-                )
+                field_name: value.origin_in(construction.context.flow)
                 for field_name in authority.field_names
-                if (reference := construction_arguments[field_name]) is not None
+                if (value := construction_arguments[field_name]).lexical_reference
+                is not None
             }
             if len(construction_origin_resolutions) != len(authority.field_names):
                 continue
@@ -1067,7 +965,7 @@ class ClosedParameterConveyorComponentBuilder:
                         field_name,
                         frozenset(
                             (
-                                construction_arguments[field_name],
+                                construction_arguments[field_name].lexical_reference,
                                 *origin_resolution.possible_origins,
                             )
                         ),

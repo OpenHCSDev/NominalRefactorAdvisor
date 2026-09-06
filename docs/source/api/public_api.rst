@@ -252,6 +252,20 @@ unresolved. The :download:`call target capture refactor
 <../../examples/call_target_capture.py>` applies this distinction through the DSL.
 This timing fact does not establish descriptor side effects or receiver lifetime.
 
+Collected arguments carry ``CompactValueUse`` through signature binding.
+Each use owns its expression and evaluation position; ``origin_in(flow)``
+resolves at that position. Opaque expressions return an explicit
+``OPAQUE_EXPRESSION`` origin result. Value-origin lookup selects writes through
+the shared binding-event resolver and tracks alias cycles by selected write,
+rather than rejecting every repeated name.
+
+``CompactResolvedFunctionCall.bound_value_uses`` and
+``CompactProductConstruction.field_values`` derive their parameter and field
+views from these same captured objects. Constructor and forwarding consumers
+retain the uses until origin resolution. The :download:`argument value capture
+refactor <../../examples/argument_value_capture.py>` applies the change through
+the DSL, including removal of the former builder-owned argument indexes.
+
 ``ResolvedCompactFunctionTarget`` retains ``CompactDescriptorAccess`` alongside
 the declaration. Direct descriptor access, class lookup and instance lookup
 select their implicit-argument rules from ``CompactFunctionBindingKind``.

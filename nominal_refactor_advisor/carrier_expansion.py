@@ -529,23 +529,18 @@ class DeclaredCarrierExpansionBuilder:
             tuple[LexicalValueReference, str],
             list[CarrierCollapseFieldBinding],
         ] = {}
-        for parameter in call.call_signature.parameters:
-            argument = call_binding.argument_for(parameter.name)
-            if argument is None or len(argument.values) != 1:
-                continue
-            value_reference = argument.values[0].lexical_reference
+        for parameter_name, argument in call.bound_value_uses.items():
+            value_reference = argument.lexical_reference
             if value_reference is None or not value_reference.attribute_path:
                 continue
             carrier_reference = LexicalValueReference(
                 value_reference.root_name,
                 value_reference.attribute_path[:-1],
             )
-            carrier_class_symbol = (
-                self.repository.declared_bound_value_class_symbol(
-                    call.context,
-                    carrier_reference,
-                    call.call.position,
-                )
+            carrier_class_symbol = self.repository.declared_bound_value_class_symbol(
+                call.context,
+                carrier_reference,
+                argument.position,
             )
             if carrier_class_symbol is None:
                 continue
@@ -555,7 +550,7 @@ class DeclaredCarrierExpansionBuilder:
             ).append(
                 CarrierCollapseFieldBinding(
                     field_name=value_reference.terminal_name,
-                    parameter_name=parameter.name,
+                    parameter_name=parameter_name,
                     value_reference=value_reference,
                 )
             )
@@ -640,20 +635,14 @@ class DeclaredCarrierExpansionBuilder:
         if not call_binding.is_exact:
             return None
         parameters_by_origin: dict[LexicalValueReference, set[str]] = defaultdict(set)
-        for parameter in call.call_signature.parameters:
-            argument = call_binding.argument_for(parameter.name)
-            if argument is None or len(argument.values) != 1:
-                continue
-            reference = argument.values[0].lexical_reference
+        for parameter_name, argument in call.bound_value_uses.items():
+            reference = argument.lexical_reference
             if reference is None:
                 continue
-            origin = call.context.flow.value_origin_for(
-                reference,
-                call.call.position,
-            ).exact_origin
-            parameters_by_origin[reference].add(parameter.name)
+            origin = argument.origin_in(call.context.flow).exact_origin
+            parameters_by_origin[reference].add(parameter_name)
             if origin is not None:
-                parameters_by_origin[origin].add(parameter.name)
+                parameters_by_origin[origin].add(parameter_name)
         field_bindings = []
         for field_name, caller_parameter_name in caller_mapping:
             parameter_names = parameters_by_origin.get(

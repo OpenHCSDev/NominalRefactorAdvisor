@@ -429,12 +429,11 @@ def test_product_flow_projection_preserves_complete_construction_forwarding_cont
     )
     binding = consumer_call.bind_to(declarations["consume"])
     assert binding.is_exact
-    assert binding.argument_for("left").values == (
-        LexicalValueReference("cache_key", ("left",)),
-    )
-    assert binding.argument_for("right").values == (
-        LexicalValueReference("cache_key", ("right",)),
-    )
+    for name, supplied in zip(
+        ("left", "right"), consumer_call.arguments.values, strict=True
+    ):
+        assert binding.argument_for(name).values[0] is supplied
+        assert supplied.lexical_reference == LexicalValueReference("cache_key", (name,))
     module_flow = projection.flows[0]
     assert [
         use.target.terminal_name for use in module_flow.callable_reference_uses

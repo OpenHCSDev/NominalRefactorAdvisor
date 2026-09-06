@@ -803,6 +803,7 @@ class CompactValueOriginViolation(StrEnum):
     AMBIGUOUS_BINDING = "ambiguous_binding"
     CYCLIC_ALIAS = "cyclic_alias"
 
+    OPAQUE_EXPRESSION = "opaque_expression"
 
 class CompactValueOriginResolution(ABC):
     """Nominal result of tracing one value through exact local aliases."""
@@ -908,6 +909,40 @@ class CompactExactValueAlias:
 
 
 @dataclass(frozen=True)
+class CompactValueUse:
+    """One evaluated argument value, retaining its source event."""
+
+    value: CompactValueExpression
+    position: CompactFlowPosition
+
+    lexical_reference = AliasProperty[LexicalValueReference | None](
+        "value.lexical_reference"
+    )
+
+    def origin_in(self, flow: CompactFunctionFlow) -> CompactValueOriginResolution:
+        reference = self.lexical_reference
+        if reference is None:
+            return OpenCompactValueOrigin(
+                (), CompactValueOriginViolation.OPAQUE_EXPRESSION
+            )
+        return flow.value_origin_for(reference, self.position)
+
+    def reference_equivalents_in(
+        self, flow: CompactFunctionFlow
+    ) -> tuple[LexicalValueReference, ...]:
+        return tuple(
+            dict.fromkeys(
+                reference
+                for reference in (
+                    self.lexical_reference,
+                    self.origin_in(flow).exact_origin,
+                )
+                if reference is not None
+            )
+        )
+
+
+@dataclass(frozen=True)
 class CompactCallableReferenceUse:
     target: CompactCallTargetReference
     position: CompactFlowPosition
@@ -925,7 +960,7 @@ class CompactCallableReferenceUse:
 @dataclass(frozen=True)
 class CompactFunctionCall:
     target_use: CompactCallableReferenceUse
-    arguments: CompactCallArguments[CompactValueExpression]
+    arguments: CompactCallArguments[CompactValueUse]
     result: CompactCallResult
     position: CompactFlowPosition
     source_span: SourceByteSpan
@@ -946,7 +981,7 @@ class CompactFunctionCall:
 
     def bind_to(
         self, declaration: "CompactFunctionDeclaration"
-    ) -> CompactCallBinding[CompactValueExpression]:
+    ) -> CompactCallBinding[CompactValueUse]:
         return self.arguments.bind_to(declaration)
 
     def product_construction(self) -> "CompactProductConstruction | None":
@@ -1052,17 +1087,21 @@ class CompactProductConstruction:
 
     target: CompactCallTargetReference
     result_binding: LexicalValueReference
-    field_arguments: tuple[CompactKeywordArgument[CompactValueExpression], ...]
+    field_arguments: tuple[CompactKeywordArgument[CompactValueUse], ...]
     position: CompactFlowPosition
     line: int
 
-    @property
-    def field_names(self) -> tuple[str, ...]:
-        return tuple(
-            argument.name
+    @cached_property
+    def field_values(self) -> dict[str, CompactValueUse]:
+        return {
+            argument.name: argument.value
             for argument in self.field_arguments
             if argument.name is not None
-        )
+        }
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(self.field_values)
 
 
 @dataclass(frozen=True)
@@ -1281,44 +1320,32 @@ class CompactFunctionFlow:
         self,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition,
-        visited_root_names: frozenset[str],
+        visited_mutations: frozenset[CompactLexicalMutation],
     ) -> CompactValueOriginResolution:
-        root_name = reference.root_name
-        if root_name in visited_root_names:
-            return OpenCompactValueOrigin(
-                (reference,),
-                CompactValueOriginViolation.CYCLIC_ALIAS,
-            )
-        mutations = self.mutations_by_root_name.get(root_name, ())
-        if not mutations:
+        selection = self.binding_resolution_for(reference.root_name, use_position)
+        if selection is None:
             return ExactCompactValueOrigin(reference)
-        possible_origins = self._possible_alias_origins(reference, mutations)
-        if len(mutations) != 1:
+        possible_origins = self._possible_alias_origins(
+            reference, self.mutations_by_root_name[reference.root_name]
+        )
+        mutation = selection.mutation
+        if mutation is None:
             return OpenCompactValueOrigin(
-                possible_origins,
-                CompactValueOriginViolation.AMBIGUOUS_BINDING,
+                possible_origins, CompactValueOriginViolation.AMBIGUOUS_BINDING
             )
-        mutation = mutations[0]
-        if not mutation.position.dominates(use_position):
+        if mutation in visited_mutations:
             return OpenCompactValueOrigin(
-                possible_origins,
-                CompactValueOriginViolation.CONTROL_FLOW_JOIN,
+                possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
             )
         alias = self.exact_aliases_by_binding_mutation.get(mutation)
         if alias is None:
             return OpenCompactValueOrigin(
-                possible_origins,
-                CompactValueOriginViolation.INTERVENING_REBINDING,
+                possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING
             )
         source_resolution = self._value_origin_for(
-            alias.source,
-            alias.source_position,
-            visited_root_names | {root_name},
+            alias.source, alias.source_position, visited_mutations | {mutation}
         )
-        return source_resolution.through_alias(
-            reference.attribute_path,
-            mutation,
-        )
+        return source_resolution.through_alias(reference.attribute_path, mutation)
 
     def _possible_alias_origins(
         self,
@@ -1475,6 +1502,12 @@ class _DeclarationCollector(ast.NodeVisitor):
 class _CompactFlowCollector(ast.NodeVisitor):
     """Collect one source scope without descending into nested scope bodies."""
 
+    def _capture_argument(self, expression: ast.expr) -> CompactValueUse:
+        self.visit(expression)
+        return CompactValueUse(
+            CompactValueExpression.project(expression), self._position()
+        )
+
     def __init__(
         self,
         *,
@@ -1605,22 +1638,16 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self.loaded_value_root_names.add(target_reference.root_name)
         self._visit_call_target_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
-        for argument in node.args:
-            self.visit(
-                argument.value if isinstance(argument, ast.Starred) else argument
-            )
-        for keyword in node.keywords:
-            self.visit(keyword.value)
+        arguments = CompactCallArguments[CompactValueUse].from_call(
+            node, self._capture_argument
+        )
         result = self.call_results.get(
-            id(node),
-            CompactCallResult(CompactCallResultUse.EMBEDDED),
+            id(node), CompactCallResult(CompactCallResultUse.EMBEDDED)
         )
         self.calls.append(
             CompactFunctionCall(
                 target_use=target_use,
-                arguments=CompactCallArguments[CompactValueExpression].from_call(
-                    node, CompactValueExpression.project
-                ),
+                arguments=arguments,
                 result=result,
                 position=self._position(),
                 source_span=SourceByteSpan.require_node(node),
