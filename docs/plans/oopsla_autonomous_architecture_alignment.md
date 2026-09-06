@@ -1211,3 +1211,51 @@ fork/thread warnings tracked above. Sphinx built the rendered API contract with
 the two existing duplicate-description warnings; Ruff and the whitespace check
 passed. Validation receipts use `/tmp/nra-target-dispatch-*`. CI for the
 preceding binding-resolution commit was still running at this handoff.
+
+## Retained reference-use evidence (2026-09-06)
+
+The constructed-receiver investigation found that flow collection discarded
+reads unless a separate inventory recognised their names as possibly callable.
+A locally constructed result stored in a tuple, returned, or passed to an
+unknown function could disappear from the reference-use facts. The repository
+could not use those missing facts to establish receiver lifetime or escape.
+
+Collection now retains lexical reads independently of callable identity. The
+existing repository resolver determines which reads resolve to callable
+escapes. Four function/method/import name inventories, their duplicate import
+collector and the untyped constructor-argument dictionary are removed. The
+production change removes 70 net lines without adding a parallel fact family.
+
+Attribute reads retain their lexical subexpressions in evaluation order.
+An extra probe after the first full-suite run caught that retaining only the
+outer path would lose the function escape in `function.__call__`. That first
+implementation was corrected through the DSL before committing; regressions
+now cover both direct and nested function-attribute reads. Actual call targets
+remain owned by call facts, and stores/deletions remain mutations.
+
+`docs/examples/reference_use_collection.py` replays eleven dependent stages
+from `6e8b9a5` and reproduces the complete edited module AST. It uses the existing
+declaration-selected call-argument operation after changing the callee
+signature. Constructor setup and visitor-body edits are still authored:
+instance-attribute assignment deletion and constructed-instance call selection
+remain concrete DSL gaps, rather than being presented as solved by this plan.
+
+The focused suite passes 155 cases. The four-module source-collection probe
+retains 13,164 candidate reads instead of 2,600, with pickled projections of
+2.83 MB rather than 1.90 MB. Under concurrent full-suite load, seven-repetition
+median collection times were 724 ms and 569 ms respectively. This adds source
+evidence and costs collection time and space; it is not a performance win.
+The probe is not a whole-repository throughput measurement. Future optimisation
+must preserve the retained evidence rather than reintroduce name filtering.
+
+All 81 detectors complete the touched-source audit with zero findings. The
+preceding `ba36274` and `6e8b9a5` commits both completed CI successfully.
+Validation receipts use `/tmp/nra-reference-uses-*` and
+`/tmp/nra-reference-prefix-*`. The unrelated `uv.lock` remains excluded.
+
+Final full validation passes 2,365 tests with 15 skipped on Python 3.11 and
+2,380 tests on Python 3.14, using eight workers per suite. Python 3.14 retains
+the same 96 fork/thread lifecycle warnings. Sphinx builds the updated reference
+with its two existing duplicate-description warnings. Ruff and the whitespace
+check pass. Constructed-instance method resolution remains the next task;
+this batch supplies source-use evidence, not that resolution proof.

@@ -54,6 +54,53 @@ def _value(name: str) -> LexicalValueReference:
 
 
 @pytest.mark.parametrize(
+    "use_source,expected",
+    (
+        ("saved = (result,)", (LexicalValueReference("result"),)),
+        ("return result", (LexicalValueReference("result"),)),
+        ("publish(result)", (LexicalValueReference("result"),)),
+        (
+            "saved = result.callback",
+            (
+                LexicalValueReference("result"),
+                LexicalValueReference("result", ("callback",)),
+            ),
+        ),
+        (
+            "saved = result.child.callback",
+            (
+                LexicalValueReference("result"),
+                LexicalValueReference("result", ("child",)),
+                LexicalValueReference("result", ("child", "callback")),
+            ),
+        ),
+        (
+            "saved = [result, unknown]",
+            (LexicalValueReference("result"), LexicalValueReference("unknown")),
+        ),
+        ("result.execute()", ()),
+        ("result.callback = replacement", (LexicalValueReference("replacement"),)),
+    ),
+)
+def test_flow_retains_reference_uses_without_a_callable_name_inventory(
+    use_source: str, expected: tuple[LexicalValueReference, ...]
+) -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(f"def run():\n    result = Factory()\n    {use_source}\n")
+    )
+    flow = next(flow for flow in projection.flows if flow.owner.qualname == "run")
+
+    assert (
+        tuple(use.target.lexical_reference for use in flow.callable_reference_uses)
+        == expected
+    )
+    assert all(
+        flow.calls[0].position.dominates(use.position)
+        for use in flow.callable_reference_uses
+    )
+
+
+@pytest.mark.parametrize(
     "source,expected",
     (
         ("import pkg.library", (("pkg", "pkg"),)),
@@ -562,7 +609,9 @@ def test_function_binding_and_dynamic_call_shapes_remain_nominal() -> None:
         CompactFunctionBindingKind.INSTANCE_METHOD
     )
     assert [use.target.terminal_name for use in execute.callable_reference_uses] == [
-        "normalize"
+        "self",
+        "normalize",
+        "value",
     ]
     assert any(
         isinstance(call.target, DynamicCallTargetReference) for call in execute.calls

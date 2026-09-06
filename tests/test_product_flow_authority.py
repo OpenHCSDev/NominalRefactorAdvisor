@@ -408,6 +408,21 @@ def test_repository_joins_local_calls_constructions_and_callable_escapes() -> No
     assert escapes[0].context.owner_symbol == "pkg.sample"
 
 
+@pytest.mark.parametrize("attribute_path", ("__call__", "metadata.callback"))
+def test_function_attribute_reads_retain_the_function_escape(attribute_path: str) -> None:
+    repository = _repository(
+        _module(
+            "pkg.sample",
+            "def consume(value):\n    return value\n"
+            f"escaped = consume.{attribute_path}\n",
+        )
+    )
+
+    escapes = repository.callable_escapes_for("pkg.sample.consume")
+    assert len(escapes) == 1
+    assert escapes[0].context.owner_symbol == "pkg.sample"
+
+
 def test_repository_resolves_imported_and_qualified_function_authorities() -> None:
     models = _module(
         "pkg.models",

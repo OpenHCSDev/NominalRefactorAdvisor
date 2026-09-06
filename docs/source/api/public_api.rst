@@ -84,6 +84,15 @@ member-lookup behaviour. ``CompactProductFlowRepository`` implements
 ``CompactCallTargetResolverABC`` with its concrete context and resolution types.
 Unknown and ambiguous targets retain their nominal unresolved results.
 
+``CompactFunctionFlow.callable_reference_uses`` retains lexical reads outside
+call-target positions, including names whose callable identity is unknown.
+Attribute reads retain their lexical subexpressions in evaluation order, so
+``function.__call__`` preserves the use of ``function`` itself. Call targets belong to
+``calls``; assignments and deletions belong to ``mutations``. The repository
+derives ``callable_escapes`` only from uses that resolve to a function
+declaration. Collection does not filter reads against a separate inventory of
+function, method or import names.
+
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.
 ``FunctionBindingProjection`` uses the same collector when deriving function

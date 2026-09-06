@@ -1320,7 +1320,6 @@ class _DeclarationCollector(ast.NodeVisitor):
         self.scope_kinds: list[CompactFlowOwnerKind] = []
         self.function_qualnames: list[str] = []
         self.class_qualnames: list[str] = []
-        self.imported_binding_names: set[str] = set()
         self.function_contexts: list[_FunctionContext] = []
         self.class_contexts: list[_ClassContext] = []
 
@@ -1332,11 +1331,6 @@ class _DeclarationCollector(ast.NodeVisitor):
                 self.visit(child)
             elif isinstance(child, (ast.ExceptHandler, ast.match_case)):
                 self.generic_visit(child)
-
-    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
-        self.imported_binding_names.update(ImportBoundNameProjection(node).names())
-
-    visit_ImportFrom = visit_Import
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = ".".join((*self.scope_names, node.name))
@@ -1422,20 +1416,12 @@ class _CompactFlowCollector(ast.NodeVisitor):
         lexical_scope_qualnames: tuple[str, ...],
         current_class_qualname: str | None,
         current_class_receiver_name: str | None,
-        declared_function_names: frozenset[str],
-        declared_method_names: frozenset[str],
-        imported_binding_names: frozenset[str],
-        method_names_by_class: dict[str, frozenset[str]],
     ) -> None:
         self.owner = owner
         self.module_identity = module_identity
         self.lexical_scope_qualnames = lexical_scope_qualnames
         self.current_class_qualname = current_class_qualname
         self.current_class_receiver_name = current_class_receiver_name
-        self.declared_function_names = declared_function_names
-        self.declared_method_names = declared_method_names
-        self.imported_binding_names = imported_binding_names
-        self.method_names_by_class = method_names_by_class
         self.calls: list[CompactFunctionCall] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactLexicalMutation] = []
@@ -1539,32 +1525,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             )
         return QualifiedCallTargetReference(reference)
 
-    def _is_potential_callable_reference(
-        self,
-        reference: LexicalValueReference,
-    ) -> bool:
-        if reference.root_name in self.imported_binding_names:
-            return True
-        if not reference.attribute_path:
-            return reference.root_name in self.declared_function_names
-        if reference.terminal_name in self.declared_method_names:
-            return True
-        return bool(
-            self.current_class_qualname is not None
-            and self.current_class_receiver_name is not None
-            and reference.root_name == self.current_class_receiver_name
-            and len(reference.attribute_path) == 1
-            and reference.terminal_name
-            in self.method_names_by_class.get(self.current_class_qualname, ())
-        )
-
-    def _record_callable_reference(
-        self,
-        reference: LexicalValueReference,
-        node: ast.expr,
-    ) -> None:
-        if not self._is_potential_callable_reference(reference):
-            return
+    def _record_callable_reference(self, node: ast.expr) -> None:
         self.callable_reference_uses.append(
             CompactCallableReferenceUse(
                 target=self._call_target(node),
@@ -1612,12 +1573,10 @@ class _CompactFlowCollector(ast.NodeVisitor):
             if reference is not None:
                 self._record_mutation(reference, node)
             return
+        self.visit(node.value)
         if reference is not None:
             self.loaded_value_root_names.add(reference.root_name)
-        if reference is not None and self._is_potential_callable_reference(reference):
-            self._record_callable_reference(reference, node)
-            return
-        self.visit(node.value)
+            self._record_callable_reference(node)
 
     def visit_Name(self, node: ast.Name) -> None:
         reference = LexicalValueReference(node.id)
@@ -1625,7 +1584,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self._record_mutation(reference, node)
         elif isinstance(node.ctx, ast.Load):
             self.loaded_value_root_names.add(node.id)
-            self._record_callable_reference(reference, node)
+            self._record_callable_reference(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) == 1 and isinstance(node.value, ast.Call):
@@ -1906,42 +1865,13 @@ def compact_product_flow_projection(
 
     declarations = _DeclarationCollector(parsed_module.module_name)
     declarations.visit(parsed_module.module)
-    declared_function_names = frozenset(
-        context.declaration.identity.qualname.rsplit(".", 1)[-1]
-        for context in declarations.function_contexts
-    )
-    class_qualnames = frozenset(
-        context.qualname for context in declarations.class_contexts
-    )
-    methods_by_class: dict[str, set[str]] = {}
-    for context in declarations.function_contexts:
-        qualname = context.declaration.identity.qualname
-        if "." not in qualname:
-            continue
-        owner_qualname, method_name = qualname.rsplit(".", 1)
-        if owner_qualname in class_qualnames:
-            methods_by_class.setdefault(owner_qualname, set()).add(method_name)
-    method_names_by_class = {
-        owner: frozenset(names) for owner, names in methods_by_class.items()
-    }
-    common = dict(
-        module_identity=parsed_module.module_path_identity,
-        declared_function_names=declared_function_names,
-        declared_method_names=frozenset(
-            method_name
-            for method_names in method_names_by_class.values()
-            for method_name in method_names
-        ),
-        imported_binding_names=frozenset(declarations.imported_binding_names),
-        method_names_by_class=method_names_by_class,
-    )
     flows = [
         _CompactFlowCollector(
             owner=CompactFlowOwner(CompactFlowOwnerKind.MODULE, ""),
+            module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=("",),
             current_class_qualname=None,
             current_class_receiver_name=None,
-            **common,
         ).collect(parsed_module.module.body)
     ]
     flows.extend(
@@ -1950,10 +1880,10 @@ def compact_product_flow_projection(
                 CompactFlowOwnerKind.CLASS_BODY,
                 context.qualname,
             ),
+            module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
             current_class_receiver_name=None,
-            **common,
         ).collect(context.node.body)
         for context in declarations.class_contexts
     )
@@ -1963,10 +1893,10 @@ def compact_product_flow_projection(
                 CompactFlowOwnerKind.FUNCTION,
                 context.declaration.identity.qualname,
             ),
+            module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
             current_class_receiver_name=context.declaration.nominal_receiver_name,
-            **common,
         ).collect(context.node.body)
         for context in declarations.function_contexts
     )
