@@ -1,0 +1,1822 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-rename_top_level_declaration_authority",
+          "operations": [
+            {
+              "operation": "rename_top_level_declaration_authority",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactLexicalMutation",
+              "rationale": "",
+              "new_name": "CompactMutation"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": "",
+              "source": "class CompactAssignmentTargetABC(ABC):\n    \"\"\"An evaluated write destination, distinct from the later write event.\"\"\"\n\n    @property\n    @abstractmethod\n    def lexical_reference(self) -> LexicalValueReference | None:\n        raise NotImplementedError\n\n    @property\n    def bound_name(self) -> str | None:\n        return None\n\n    def may_replace(self, reference: LexicalValueReference) -> bool:\n        own_reference = self.lexical_reference\n        return (\n            bool(reference.attribute_path)\n            if own_reference is None\n            else own_reference.is_prefix_of(reference)\n        )\n\n    @abstractmethod\n    def affected_roots_within(\n        self, flow: CompactFunctionFlow, roots: frozenset[str],\n    ) -> frozenset[str]:\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass CompactBindingTarget(CompactAssignmentTargetABC):\n    name: str\n\n    bound_name = AliasProperty[str](\"name\")\n\n    @cached_property\n    def lexical_reference(self) -> LexicalValueReference:\n        return LexicalValueReference(self.name)\n\n    def affected_roots_within(\n        self, flow: CompactFunctionFlow, roots: frozenset[str],\n    ) -> frozenset[str]:\n        return roots.intersection((self.name,))\n\n\n@dataclass(frozen=True)\nclass CompactReceiverTarget(CompactAssignmentTargetABC, ABC):\n    receiver_use: CompactValueUse\n\n    @property\n    def lexical_reference(self) -> LexicalValueReference | None:\n        return None\n\n    def affected_roots_within(\n        self, flow: CompactFunctionFlow, roots: frozenset[str],\n    ) -> frozenset[str]:\n        return self.receiver_use.origin_in(flow).candidate_roots_within(roots)\n\n\n@dataclass(frozen=True)\nclass CompactAttributeTarget(CompactReceiverTarget):\n    attribute_name: str\n\n    @cached_property\n    def lexical_reference(self) -> LexicalValueReference | None:\n        receiver = self.receiver_use.lexical_reference\n        return (\n            None if receiver is None else LexicalValueReference(\n                receiver.root_name,\n                (*receiver.attribute_path, self.attribute_name),\n            )\n        )\n\n\n@dataclass(frozen=True)\nclass CompactItemTarget(CompactReceiverTarget):\n    index_use: CompactValueUse\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": "",
+              "replacement_source": "class CompactMutation:\n    target: CompactAssignmentTargetABC\n    kind: CompactMutationKind\n    position: CompactFlowPosition\n    line: int\n    imported_origin: str | None = None\n\n    reference = AliasProperty[LexicalValueReference | None](\n        \"target.lexical_reference\"\n    )\n\n    def __post_init__(self) -> None:\n        self.kind.validate_import_origin(self.imported_origin)\n        if self.imported_origin is not None and self.target.bound_name is None:\n            raise ValueError(\"An import requires a lexical binding target\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueOriginResolution",
+              "rationale": "",
+              "source": "def candidate_roots_within(self, roots: frozenset[str]) -> frozenset[str]:\n    \"\"\"Project potentially retained origins into a supplied lexical family.\"\"\"\n    return roots.intersection(origin.root_name for origin in self.possible_origins)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "OpenCompactValueOrigin",
+              "rationale": "",
+              "source": "def candidate_roots_within(self, roots: frozenset[str]) -> frozenset[str]:\n    \"\"\"Diagnostic origins do not bound an unresolved object's identity.\"\"\"\n    return roots\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow.mutations_by_root_name",
+              "rationale": "",
+              "body_source": "grouped: dict[str, list[CompactMutation]] = {}\nfor mutation in self.mutations:\n    name = mutation.target.bound_name\n    if name is not None:\n        grouped.setdefault(name, []).append(mutation)\nreturn {name: tuple(mutations) for name, mutations in grouped.items()}\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow",
+              "rationale": "",
+              "source": "def mutated_roots_within(self, roots: frozenset[str]) -> frozenset[str]:\n    \"\"\"Derive possible affected roots from captured mutation targets.\"\"\"\n    return frozenset(chain.from_iterable(\n        mutation.target.affected_roots_within(self, roots)\n        for mutation in self.mutations\n    ))\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "mutation.reference.is_prefix_of(reference)",
+                  "new_source": "mutation.target.may_replace(reference)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow.bound_call_result_for",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "source": "@dataclass\nclass _CompactMutationTargetCollector(ast.NodeVisitor):\n    \"\"\"Capture legal Python target leaves through native AST dispatch.\"\"\"\n\n    flow: _CompactFlowCollector\n\n    def generic_visit(self, node: ast.AST) -> CompactAssignmentTargetABC:\n        raise ValueError(\"Expected a binding, attribute or item assignment target\")\n\n    def visit_Name(self, node: ast.Name) -> CompactBindingTarget:\n        return CompactBindingTarget(node.id)\n\n    def visit_Attribute(self, node: ast.Attribute) -> CompactAttributeTarget:\n        return CompactAttributeTarget(\n            self.flow._capture_value(node.value), node.attr,\n        )\n\n    def visit_Subscript(self, node: ast.Subscript) -> CompactItemTarget:\n        return CompactItemTarget(\n            self.flow._capture_value(node.value),\n            self.flow._capture_value(node.slice),\n        )\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "_capture_argument",
+                  "new_source": "_capture_value"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._capture_argument",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self._capture_argument",
+                  "new_source": "self._capture_value"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Call",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self._visit_reference_evaluation(node.target)",
+                  "new_source": "self.mutation_targets.visit(node.target)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_AnnAssign",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self.mutation_kind = CompactMutationKind.ASSIGNMENT",
+                  "new_source": "self.mutation_kind = CompactMutationKind.ASSIGNMENT\n        self.mutation_targets = _CompactMutationTargetCollector(self)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._record_target_mutation",
+              "rationale": "",
+              "body_source": "self._record_mutation(self.mutation_targets.visit(node), node, kind)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "reference: LexicalValueReference,",
+                  "new_source": "target: CompactAssignmentTargetABC,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._record_mutation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "reference=reference,",
+                  "new_source": "target=target,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._record_mutation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Attribute",
+              "rationale": "",
+              "body_source": "if isinstance(node.ctx, (ast.Store, ast.Del)):\n    self._record_target_mutation(node)\n    return\nself._visit_reference_evaluation(node)\nself.callable_reference_uses.append(self._callable_reference_use(node))\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "source": "def visit_Subscript(self, node: ast.Subscript) -> None:\n    if isinstance(node.ctx, (ast.Store, ast.Del)):\n        self._record_target_mutation(node)\n    else:\n        self.generic_visit(node)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-19-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self._record_mutation(LexicalValueReference(node.id), node)",
+                  "new_source": "self._record_target_mutation(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Name",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-20-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_AugAssign",
+              "rationale": "",
+              "body_source": "target = self.mutation_targets.visit(node.target)\nself.callable_reference_uses.append(self._callable_reference_use(node.target))\nself.visit(node.value)\nself._record_mutation(target, node, CompactMutationKind.AUGMENTED_ASSIGNMENT)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-21-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "LexicalValueReference(origin.bound_name)",
+                  "new_source": "CompactBindingTarget(origin.bound_name)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Import",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-22-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "LexicalValueReference(node.name)",
+                  "new_source": "CompactBindingTarget(node.name)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_FunctionDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-23-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "LexicalValueReference(node.name)",
+                  "new_source": "CompactBindingTarget(node.name)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_ClassDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-24-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "LexicalValueReference(handler.name)",
+                  "new_source": "CompactBindingTarget(handler.name)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Try",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-25-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "LexicalValueReference(name)",
+                  "new_source": "CompactBindingTarget(name)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Match",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                    mutation.reference.root_name\n                    for mutation in construction.context.flow.mutations\n                    if self._mutation_reaches_protected_root(\n                        construction.context,\n                        mutation,\n                        protected_roots,\n                    )\n                    and construction_position.dominates(mutation.position)\n                    and mutation.position.dominates(call_position)\n",
+                  "new_source": "                    root\n                    for mutation in construction.context.flow.mutations\n                    if construction_position.dominates(mutation.position)\n                    and not call_position.dominates(mutation.position)\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "target_qualname": "ClosedParameterConveyorComponentBuilder._constructed_edge",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                        == construction_position.statement_index\n                    )\n                }\n",
+                  "new_source": "                        == construction_position.statement_index\n                    )\n                    for root in mutation.target.affected_roots_within(\n                        construction.context.flow, frozenset(protected_roots)\n                    )\n                }\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "target_qualname": "ClosedParameterConveyorComponentBuilder._constructed_edge",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                mutation.reference.root_name\n                in {\n                    parameter_name\n                    for _field_name, parameter_name in exact_field_mapping_by_participant.get(\n                        participant.symbol,\n                        (),\n                    )\n                }\n",
+                  "new_source": "                mutation.target.affected_roots_within(\n                    participant.context.flow,\n                    frozenset(\n                        parameter_name\n                        for _field_name, parameter_name in exact_field_mapping_by_participant.get(\n                            participant.symbol,\n                            (),\n                        )\n                    ),\n                )\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "target_qualname": "ClosedParameterConveyorComponentBuilder._assessed_component",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                mutation.reference.root_name\n                in parameter_names_by_participant[participant_symbol]\n",
+                  "new_source": "                mutation.target.affected_roots_within(\n                    self.repository.flow_contexts_by_owner_symbol[\n                        participant_symbol\n                    ].flow,\n                    parameter_names_by_participant[participant_symbol],\n                )\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/carrier_expansion.py",
+              "target_qualname": "DeclaredCarrierExpansionBuilder._authority_proof",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "target_qualname": "ClosedParameterConveyorComponentBuilder._mutation_reaches_protected_root",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "rationale": "",
+              "module_name": ".product_flow",
+              "import_names": [
+                "CompactMutation"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            if any(\n                mutation.target.affected_roots_within(\n                    participant.context.flow,\n                    frozenset(\n                        parameter_name\n                        for _field_name, parameter_name in exact_field_mapping_by_participant.get(\n                            participant.symbol,\n                            (),\n                        )\n                    ),\n                )\n                for mutation in participant.context.flow.mutations\n            )\n",
+                  "new_source": "            if participant.context.flow.mutated_roots_within(\n                frozenset(\n                    parameter_name\n                    for _field_name, parameter_name in exact_field_mapping_by_participant.get(\n                        participant.symbol,\n                        (),\n                    )\n                )\n            )\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/parameter_conveyor.py",
+              "target_qualname": "ClosedParameterConveyorComponentBuilder._assessed_component",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            if any(\n                mutation.target.affected_roots_within(\n                    self.repository.flow_contexts_by_owner_symbol[\n                        participant_symbol\n                    ].flow,\n                    parameter_names_by_participant[participant_symbol],\n                )\n                for mutation in self.repository.flow_contexts_by_owner_symbol[\n                    participant_symbol\n                ].flow.mutations\n            )\n",
+                  "new_source": "            if self.repository.flow_contexts_by_owner_symbol[\n                participant_symbol\n            ].flow.mutated_roots_within(\n                parameter_names_by_participant[participant_symbol]\n            )\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/carrier_expansion.py",
+              "target_qualname": "DeclaredCarrierExpansionBuilder._authority_proof",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "mutation.reference.root_name\n            for mutation in participant.context.flow.mutations\n            if mutation.reference.root_name not in mapped_parameter_names",
+                  "new_source": "participant.context.flow.mutations_by_root_name.keys()\n            - mapped_parameter_names"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/codemod.py",
+              "target_qualname": "_ClosedCarrierCollapseSourceRewrite._carrier_parameter_name",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "raise ValueError(\"Exact value aliases require a lexical source read\")",
+                  "new_source": "raise ValueError(\"Exact value aliases require a lexical source read\")\n        if self.binding_mutation.target.bound_name is None:\n            raise ValueError(\"Exact value aliases require a lexical name binding\")"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactExactValueAlias.__post_init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\"\"\"One evaluated argument value, retaining its source event.\"\"\"",
+                  "new_source": "\"\"\"One evaluated expression value, retaining its source event.\"\"\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueUse",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactAssignmentTargetABC",
+              "rationale": "",
+              "source": "class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):\n    \"\"\"Distinct namespace-binding and captured-object mutation obligations.\"\"\"\n\n    @abstractmethod\n    def _binding_mutation_resolution(\n        self, context: ResolutionContextT, mutation: CompactMutation, name: str,\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def _receiver_mutation_resolution(\n        self, context: ResolutionContextT, mutation: CompactMutation,\n        receiver_use: CompactValueUse,\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactAssignmentTargetABC",
+              "rationale": "",
+              "source": "@abstractmethod\ndef resolve_mutation(\n    self,\n    resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],\n    context: ResolutionContextT,\n    mutation: CompactMutation,\n) -> TargetResolutionT:\n    raise NotImplementedError\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingTarget",
+              "rationale": "",
+              "source": "def resolve_mutation(\n    self,\n    resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],\n    context: ResolutionContextT,\n    mutation: CompactMutation,\n) -> TargetResolutionT:\n    return resolver._binding_mutation_resolution(context, mutation, self.name)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactReceiverTarget",
+              "rationale": "",
+              "source": "def resolve_mutation(\n    self,\n    resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],\n    context: ResolutionContextT,\n    mutation: CompactMutation,\n) -> TargetResolutionT:\n    return resolver._receiver_mutation_resolution(context, mutation, self.receiver_use)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": "",
+              "source": "def resolve(\n    self,\n    resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],\n    context: ResolutionContextT,\n) -> TargetResolutionT:\n    return self.target.resolve_mutation(resolver, context, self)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "rationale": "",
+              "import_source": "from .product_flow import CompactMutationResolverABC"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    CompactCallTargetResolverABC[\n        CompactProductFlowContext, CompactCallTargetResolution\n    ],\n",
+                  "new_source": "    CompactCallTargetResolverABC[\n        CompactProductFlowContext, CompactCallTargetResolution\n    ],\n    CompactMutationResolverABC[\n        CompactProductFlowContext, CompactCallTargetResolution\n    ],\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactCallTargetResolution",
+              "rationale": "",
+              "source": "def for_object_mutation(self) -> CompactCallTargetResolution:\n    \"\"\"Project the captured nominal object's existing candidate bound.\"\"\"\n    return self\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "OpenCompactFunctionTarget",
+              "rationale": "",
+              "source": "def for_object_mutation(self) -> CompactCallTargetResolution:\n    \"\"\"Unresolved callable names do not bound arbitrary object identity.\"\"\"\n    return UnboundedCompactFunctionTarget(self.possible_symbols, self.violation)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "AlternativeCompactFunctionTargets",
+              "rationale": "",
+              "source": "def for_object_mutation(self) -> CompactCallTargetResolution:\n    return type(self)(\n        tuple(alternative.for_object_mutation() for alternative in self.alternatives),\n        self.violation,\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _binding_mutation_resolution(\n    self, context: CompactProductFlowContext, mutation: CompactMutation, name: str,\n) -> CompactCallTargetResolution:\n    \"\"\"A namespace write affects its declared name, not the previous object's contents.\"\"\"\n    symbol = self._class_symbol_for_reference(\n        context, LexicalValueReference(name), line=mutation.line,\n        use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,\n    )\n    if symbol is None:\n        return OpenCompactFunctionTarget(\n            (), CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,\n        )\n    declaration = self.class_index.class_for(symbol)\n    assert declaration is not None\n    return ResolvedCompactClassTarget(declaration)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _receiver_mutation_resolution(\n    self, context: CompactProductFlowContext, mutation: CompactMutation,\n    receiver_use: CompactValueUse,\n) -> CompactCallTargetResolution:\n    \"\"\"Use the evaluated receiver receipt, never reevaluate it at write time.\"\"\"\n    reference = receiver_use.lexical_reference\n    if reference is None:\n        return UnboundedCompactFunctionTarget(\n            (), CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,\n        )\n    return self._lexical_function_target_resolution(\n        context, reference, receiver_use.position,\n    ).for_object_mutation()\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        for context in self.flow_contexts:\n            for mutation in context.flow.mutations:\n",
+                  "new_source": "        product_symbols = frozenset(self.class_index.product_authority_resolutions_by_symbol)\n        for context in self.flow_contexts:\n            for mutation in context.flow.mutations:\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                class_symbol = self._class_symbol_for_reference(\n                    context,\n                    mutation.reference,\n                    line=mutation.line,\n                    use=CompactProductClassReferenceUse.MUTATION_TARGET,\n                )\n                if class_symbol is not None:\n",
+                  "new_source": "                for class_symbol in mutation.resolve(self, context).candidate_symbols_within(product_symbols):\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            if reference.root_name not in context.flow.global_binding_names and any(\n                mutation.reference.root_name == reference.root_name\n                and not mutation.reference.attribute_path\n                for mutation in context.flow.mutations\n            ):\n",
+                  "new_source": "            if (\n                reference.root_name not in context.flow.global_binding_names\n                and reference.root_name in context.flow.mutations_by_root_name\n            ):\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_symbol_for_reference",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "f\"{owner}.{mutation.reference.root_name}\"",
+                  "new_source": "f\"{owner}.{mutation.target.bound_name}\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._scope_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    CLASS_OBJECT_ESCAPE = \"class_object_escape\"",
+                  "new_source": "    CLASS_OBJECT_ESCAPE = \"class_object_escape\"\n    UNRESOLVED_MUTATION_RECEIVER = \"unresolved_mutation_receiver\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductRuntimeViolation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactCallTargetResolution",
+              "rationale": "",
+              "source": "@property\ndef runtime_mutation_violation(self) -> CompactProductRuntimeViolation:\n    \"\"\"An unselected receiver remains an uncertainty, not a confirmed class write.\"\"\"\n    return CompactProductRuntimeViolation.UNRESOLVED_MUTATION_RECEIVER\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "ResolvedCompactClassTarget",
+              "rationale": "",
+              "source": "@property\ndef runtime_mutation_violation(self) -> CompactProductRuntimeViolation:\n    return CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                for class_symbol in mutation.resolve(self, context).candidate_symbols_within(product_symbols):\n",
+                  "new_source": "                resolution = mutation.resolve(self, context)\n                for class_symbol in resolution.candidate_symbols_within(product_symbols):\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                            CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION,",
+                  "new_source": "                            resolution.runtime_mutation_violation,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactAssignmentTargetABC.may_replace",
+              "rationale": "",
+              "body_source": "\"\"\"Without a binding proof, a write may affect any object slot.\"\"\"\nreturn bool(reference.attribute_path)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingTarget",
+              "rationale": "",
+              "source": "def may_replace(self, reference: LexicalValueReference) -> bool:\n    return self.lexical_reference.is_prefix_of(reference)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "rationale": "",
+              "import_source": "from collections.abc import Iterator"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductRuntimeFailure",
+              "rationale": "",
+              "replacement_source": "class CompactProductRuntimeFailure:\n    \"\"\"One retained source observation, shared by all affected product queries.\"\"\"\n\n    context: CompactProductFlowContext\n    source_event: CompactMutation | CompactFunctionCall\n    target_resolution: CompactCallTargetResolution\n    violation: CompactProductRuntimeViolation\n\n    owner_symbol = AliasProperty[str](\"context.owner_symbol\")\n    line = AliasProperty[int](\"source_event.line\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "@dataclass(frozen=True, eq=False)\nclass CompactProductRuntimeFailureIndex(Mapping[str, tuple[CompactProductRuntimeFailure, ...]]):\n    \"\"\"Lazy authority queries over shared source observations, without class fanout.\"\"\"\n\n    authority_candidates: Mapping[str, CompactProductAuthority]\n    observations: tuple[CompactProductRuntimeFailure, ...]\n\n    def _failures_for(self, symbol: str) -> Iterator[CompactProductRuntimeFailure]:\n        if symbol in self.authority_candidates:\n            candidate = frozenset((symbol,))\n            for observation in self.observations:\n                if observation.target_resolution.candidate_symbols_within(candidate):\n                    yield observation\n\n    def __contains__(self, symbol: object) -> bool:\n        if symbol not in self.authority_candidates:\n            return False\n        return next(self._failures_for(cast(str, symbol)), None) is not None\n\n    def __getitem__(self, symbol: str) -> tuple[CompactProductRuntimeFailure, ...]:\n        failures = tuple(self._failures_for(symbol))\n        if not failures:\n            raise KeyError(symbol)\n        return failures\n\n    def __iter__(self) -> Iterator[str]:\n        return (symbol for symbol in self.authority_candidates if symbol in self)\n\n    def __len__(self) -> int:\n        return sum(1 for _symbol in self)\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "@cached_property\ndef declared_product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:\n    \"\"\"Declaration-proved product candidates before runtime obligations are applied.\"\"\"\n    return {\n        symbol: authority\n        for symbol, resolution in self.class_index.product_authority_resolutions_by_symbol.items()\n        if (authority := resolution.authority) is not None\n        and len(authority.field_names) >= 2\n    }\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_authorities_by_symbol",
+              "rationale": "",
+              "body_source": "return {\n    symbol: authority\n    for symbol, authority in self.declared_product_authorities_by_symbol.items()\n    if symbol not in self.product_runtime_failures_by_authority_symbol\n}\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_function_signature",
+          "operations": [
+            {
+              "operation": "replace_function_signature",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": "",
+              "signature_suffix": "(self) -> CompactProductRuntimeFailureIndex:"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": "",
+              "body_source": "observations: list[CompactProductRuntimeFailure] = []\ncandidates = self.declared_product_authorities_by_symbol\nproduct_symbols = frozenset(candidates)\nfor context in self.flow_contexts:\n    for mutation in context.flow.mutations:\n        if mutation.kind.preserves_nominal_identity:\n            continue\n        resolution = mutation.resolve(self, context)\n        if resolution.candidate_symbols_within(product_symbols):\n            observations.append(CompactProductRuntimeFailure(\n                context, mutation, resolution, resolution.runtime_mutation_violation,\n            ))\n    for alias in context.flow.exact_value_aliases:\n        declaration = self._class_for_reference(\n            context, alias.source, line=alias.binding_mutation.line,\n            use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,\n        )\n        if declaration is not None and declaration.symbol in candidates:\n            observations.append(CompactProductRuntimeFailure(\n                context, alias.binding_mutation, ResolvedCompactClassTarget(declaration),\n                CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,\n            ))\n    for call in context.flow.calls:\n        escaped_symbols: set[str] = set()\n        for value in call.arguments.values:\n            reference = value.lexical_reference\n            if reference is None:\n                continue\n            exact_origin = value.origin_in(context.flow).exact_origin\n            declaration = self._class_for_reference(\n                context, exact_origin or reference, line=call.line,\n                use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,\n            )\n            if (\n                declaration is not None\n                and declaration.symbol in candidates\n                and declaration.symbol not in escaped_symbols\n            ):\n                escaped_symbols.add(declaration.symbol)\n                observations.append(CompactProductRuntimeFailure(\n                    context, call, ResolvedCompactClassTarget(declaration),\n                    CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,\n                ))\nreturn CompactProductRuntimeFailureIndex(candidates, tuple(observations))\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "def _class_symbol_for_reference(",
+                  "new_source": "def _class_for_reference("
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_symbol_for_reference",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-replace_function_signature",
+          "operations": [
+            {
+              "operation": "replace_function_signature",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_for_reference",
+              "rationale": "",
+              "signature_suffix": "(self, context: CompactProductFlowContext, reference: LexicalValueReference, *, line: int, use: CompactProductClassReferenceUse) -> CompactIndexedClass | None:"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            return class_symbol",
+                  "new_source": "            return indexed_class"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_for_reference",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._binding_mutation_resolution",
+              "rationale": "",
+              "body_source": "\"\"\"A namespace write affects its declared name, not the previous object's contents.\"\"\"\ndeclaration = self._class_for_reference(\n    context, LexicalValueReference(name), line=mutation.line,\n    use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,\n)\nif declaration is None:\n    return OpenCompactFunctionTarget(\n        (), CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,\n    )\nreturn ResolvedCompactClassTarget(declaration)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_function_signature",
+          "operations": [
+            {
+              "operation": "replace_function_signature",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_for_reference",
+              "rationale": "",
+              "signature_suffix": "(self, context: CompactProductFlowContext, reference: LexicalValueReference, *, line: int) -> CompactIndexedClass | None:"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._class_for_reference",
+              "rationale": "",
+              "body_source": "\"\"\"Resolve one exact class-object reference without crossing a local rebind.\"\"\"\nif context.declaration is not None and reference.root_name in {\n    parameter.name for parameter in context.declaration.signature.parameters\n}:\n    return None\nif not context.flow.owner.kind.is_module_scope:\n    if reference.root_name in context.flow.nonlocal_binding_names:\n        return None\n    if (\n        reference.root_name not in context.flow.global_binding_names\n        and reference.root_name in context.flow.mutations_by_root_name\n    ):\n        return None\nsymbol = self.class_resolver.symbol_for(\n    module_name=context.module_name,\n    reference_parts=reference.parts,\n    allow_unique_unqualified=False,\n)\nif symbol is None:\n    return None\ndeclaration = self.class_index.class_for(symbol)\nif declaration is None:\n    return None\nif (\n    context.flow.owner.kind.is_module_scope\n    and declaration.module_name == context.module_name\n    and declaration.line >= line\n):\n    return None\nreturn declaration\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\n            use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._binding_mutation_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\n                    use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\n                        use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.product_runtime_failures_by_authority_symbol",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductClassReferenceUse",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "_exact_class_reference_part_counts",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "_member_prefix_class_reference_part_counts",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-delete_module_assignments",
+          "operations": [
+            {
+              "operation": "delete_module_assignments",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "",
+              "rationale": "",
+              "assignment_names": [
+                "CompactClassReferencePartCountProjection"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "",
+              "rationale": "",
+              "module_name": "typing",
+              "import_names": [
+                "Callable",
+                "TypeAlias"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactExactValueAlias.target",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactExactValueAlias",
+              "rationale": "",
+              "source": "target = AliasProperty[LexicalValueReference](\"binding_mutation.reference\")"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

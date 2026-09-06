@@ -34,7 +34,11 @@ from nominal_refactor_advisor.parameter_conveyor import (
     ClosedParameterConveyorComponentBuilder,
 )
 from nominal_refactor_advisor.patterns import PatternId
-
+from nominal_refactor_advisor.product_flow import CompactItemTarget
+from nominal_refactor_advisor.product_flow_authority import (
+    CompactProductRuntimeViolation,
+)
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 def _module(module_name: str, source: str) -> ParsedModule:
     path = Path(*module_name.split(".")).with_suffix(".py")
@@ -1377,23 +1381,32 @@ def test_open_disconnected_root_blocks_the_authority_wide_batch() -> None:
 
 
 def test_carrier_alias_mutation_blocks_root_substitution() -> None:
-    builder = _builder(
-        _module(
-            "pkg.carrier_alias_mutation",
-            _base_source().replace(
-                "    return _build(left, right)\n",
-                "    alias = key\n"
-                "    alias.left = normalize(left)\n"
-                "    return _build(left, right)\n",
-            ),
-        )
+    module = _module(
+        "pkg.carrier_alias_mutation",
+        _base_source().replace(
+            "    return _build(left, right)\n",
+            "    alias = key\n"
+            "    alias.left = normalize(left)\n"
+            "    return _build(left, right)\n",
+        ),
     )
+    builder = _builder(module)
 
-    component = builder.assessed_components()[0]
-
+    # Captured constructor-instance identity is not proved yet. The same
+    # unsafe rewrite is now refused earlier, with the uncertainty retained.
+    (failure,) = builder.repository.product_runtime_failures_by_authority_symbol[
+        "pkg.carrier_alias_mutation._CacheKey"
+    ]
     assert (
-        ClosedParameterConveyorAuthorityViolation.REBINDING_OR_MUTATION_BETWEEN_BINDING_AND_USE
-        in component.proof.violations
+        failure.violation is CompactProductRuntimeViolation.UNRESOLVED_MUTATION_RECEIVER
+    )
+    context = builder.repository.flow_contexts_by_owner_symbol[failure.owner_symbol]
+    write = next(
+        mutation for mutation in context.flow.mutations if mutation.line == failure.line
+    )
+    assert write.target.receiver_use.lexical_reference == LexicalValueReference("alias")
+    assert module.source.splitlines()[write.line - 1].strip() == (
+        "alias.left = normalize(left)"
     )
     assert builder.proven_components() == ()
 
@@ -1503,20 +1516,38 @@ def test_self_host_coherence_cache_key_does_not_cross_its_public_owner() -> None
         use_parse_cache=True,
     )[0]
     builder = _builder(module)
-    components = builder.assessed_components()
-
-    component = next(
-        component
-        for component in components
-        if component.authority.class_symbol.endswith("._CoherenceCohortCacheKey")
-    )
-
-    assert component.participant_symbols == (
-        "nominal_refactor_advisor.observation_graph."
-        "ObservationGraph._build_coherence_cohorts_for",
-    )
+    repository = builder.repository
+    class_symbol = f"{module.module_name}._CoherenceCohortCacheKey"
+    # The nominal product still exists. Missing runtime dictionary identity
+    # evidence currently prevents it reaching conveyor assessment.
     assert (
-        component.proof.callable_component.open_boundary_symbols
-        == component.participant_symbols
+        repository.class_index.product_authority_resolutions_by_symbol[
+            class_symbol
+        ].authority
+        is not None
     )
+    failures = repository.product_runtime_failures_by_authority_symbol[class_symbol]
+    assert failures
+    assert all(
+        failure.violation is CompactProductRuntimeViolation.UNRESOLVED_MUTATION_RECEIVER
+        for failure in failures
+    )
+    owner = f"{module.module_name}.ObservationGraph.coherence_cohorts_for"
+    failure = next(failure for failure in failures if failure.owner_symbol == owner)
+    context = repository.flow_contexts_by_owner_symbol[owner]
+    write = next(
+        mutation for mutation in context.flow.mutations if mutation.line == failure.line
+    )
+    assert isinstance(write.target, CompactItemTarget)
+    assert write.target.receiver_use.lexical_reference == LexicalValueReference(
+        "self", ("_coherence_cohorts_cache",)
+    )
+    assert module.source.splitlines()[write.line - 1].strip() == (
+        "self._coherence_cohorts_cache[cache_key] = cohorts"
+    )
+    # Preserve the original public-owner boundary check independently of
+    # the earlier runtime uncertainty gate.
+    participant = f"{module.module_name}.ObservationGraph._build_coherence_cohorts_for"
+    declaration = repository.function_declarations_by_symbol[participant]
+    assert repository.callable_boundary_exposure(declaration).blocks_closed_boundary
     assert builder.proven_components() == ()

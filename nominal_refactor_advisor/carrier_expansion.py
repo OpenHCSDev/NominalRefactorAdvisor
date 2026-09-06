@@ -475,12 +475,10 @@ class DeclaredCarrierExpansionBuilder:
         mutated_parameter_symbols = tuple(
             participant_symbol
             for participant_symbol in component.participant_symbols
-            if any(
-                mutation.reference.root_name
-                in parameter_names_by_participant[participant_symbol]
-                for mutation in self.repository.flow_contexts_by_owner_symbol[
-                    participant_symbol
-                ].flow.mutations
+            if self.repository.flow_contexts_by_owner_symbol[
+                participant_symbol
+            ].flow.mutated_roots_within(
+                parameter_names_by_participant[participant_symbol]
             )
         )
         field_count = min(len(edge.field_bindings) for edge in component.edges)

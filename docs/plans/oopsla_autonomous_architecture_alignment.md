@@ -1948,3 +1948,118 @@ the temporary filesystem is cleared. Project files, environments and the user's
 `uv.lock` changes were preserved. Diataxis keeps the verified collector contract
 and the outstanding native-proof limit in API reference, with investigation
 evidence and migration decisions here.
+
+## Captured assignment targets and runtime uncertainty (2026-09-06)
+
+The compact flow now retains computed and item writes. `CompactMutation` owns
+the write event; its target owns the destination evaluated earlier. A binding
+target names a lexical binding, while attribute and item targets retain the
+actual `CompactValueUse` for their receiver. Item targets also retain their
+index use. Augmented assignment captures these before evaluating its right-hand
+side. Native-execution regressions cover index expressions that rebind the
+receiver's name, alongside assignment, deletion and augmentation. Bare attribute
+and item annotations evaluate their targets without fabricating writes.
+
+`CompactMutationResolverABC` lets target leaves select lexical-binding or
+captured-object resolution. Product safety no longer drops a write because it
+lacks a lexical path. Conveyor and expansion consumers derive affected roots
+from the same targets; a shared flow query replaces their repeated whole-flow
+aggregation. Conditional intervening writes remain hazards even when they do
+not dominate the later consumption. Name collision checks use binding targets
+only. Rebinding an alias does not mutate its former referent.
+
+Unknown receiver identity remains unbounded. Diagnostic callable candidates do
+not prove a bound on possible runtime objects. Confirmed class writes and
+unresolved receiver writes have different failure reasons. This currently
+prevents two former assessments: a constructed carrier's aliased field write,
+and the self-host dictionary cache write. Their tests retain the exact source
+evidence, nominal-product existence and applicable public-owner boundary.
+Constructor and dictionary annotations alone do not close those runtime
+identity obligations.
+
+A separate probe exposed a related stale-result claim:
+`box.context = make(); alias = box; alias.context = None` still attributed a
+later `box.context` read to `make()`. Different parameter names can likewise
+receive the same object. Receiver writes now conservatively leave attribute
+result integrity unproved, including item setters that can modify attributes.
+Lexical result bindings retain their separate rebinding rule. Precise slot
+independence requires object-identity and setter evidence; it is not recovered
+from spelling differences. Native descriptor integrity remains unfinished.
+
+Eighty-five focused collector, product-flow and captured-target cases pass.
+The separate authority/conveyor checks passed 200 cases before the following
+storage optimisation. These are focused results, not a completed full gate.
+
+On identical source from `5a3d16d`, both collector versions process 131 modules
+and retain 26,692 calls and 106,509 reads. The new target model records 28,113
+writes instead of 27,883. Pickled evidence increases from 18,684,495 to
+18,726,106 bytes. Three collection samples have medians of 2.76 and 3.01 seconds;
+these short local samples are not a throughput guarantee. Receipts are
+`/tmp/nra-captured-mutation-cost-{before,after}.json`.
+
+The first runtime-safety integration exposed an eager Cartesian expansion:
+1,980 indexed classes and 640 unbounded receiver writes would produce about
+1.27 million mutation-failure records from 643 relevant source mutations.
+Restricting the universe to 474 eligible products still produces over 303,000
+records. The next change retains source failure evidence once and derives
+class-specific views on demand, preserving uncertainty without this copying.
+
+The first 59 authored DSL stages replay cleanly from `5a3d16d` and reproduce all
+five changed production ASTs. Replay caught a continuation whose textual match
+assumed an intervening formatter run; its expected source now matches the
+preceding stage's actual output. It also verifies declaration insertion order,
+not merely method-body equivalence. Syntax-aware expression and statement
+selection remains a useful DSL gap: authored text patches still depend on the
+intermediate spelling, whereas the intended semantic decision often does not.
+
+The storage correction adds 11 DSL stages. `CompactProductRuntimeFailure` now
+retains the actual context, source event and target resolution; owner and line
+are derived and the copied authority symbol is removed. A `Mapping` ABC query
+index holds the shared observations and the existing declaration-derived
+product candidate map. Membership short-circuits without materialising
+diagnostics; per-class diagnostics reference the original observations. No
+diagnostic cap, deep-flow hashing or truncated candidate set is introduced.
+
+The self-host measurement retains 684 mutation and escape observations for 474
+eligible products. Index construction takes 0.408 seconds; iterating affected
+keys takes 0.00129 seconds, and 47,400 membership checks take 0.0686 seconds. A
+requested product returns 640 references to shared records. The measurement
+does not allocate the earlier eager matrix. The focused authority/conveyor
+suite passes 201 cases, including one unknown write shared by 41 products, with
+hashing and diagnostic materialisation explicitly forbidden during membership
+checks. Evidence is in `/tmp/nra_runtime_failure_lazy_measure.log`.
+
+The complete 70-stage
+`docs/examples/captured_assignment_targets.json` plan loads through the actual
+JSON plan boundary, simulates cleanly from `5a3d16d`, and reproduces all five
+changed production ASTs. Ruff and whitespace checks pass. Full runs of that
+increment pass 2,537 cases with 15 skipped on Python 3.11, and 2,552 cases on
+Python 3.14. Both also reproduce the nine pending native-binding failures; no
+other tests fail. These native-integrity cases are still an uncommitted
+investigation, not a completed capability or a suppressed expected-failure gate.
+
+The final ownership audit removes the obsolete
+`CompactProductClassReferenceUse` enum, its two prefix-projection functions,
+callback type alias and repeated caller flags. Captured receiver dispatch has
+replaced that decision path; exact class lookup needs no prefix-search policy.
+The exact-alias target uses the existing `AliasProperty` contract instead of a
+one-line property wrapper. Twelve additional DSL stages perform this cleanup.
+The resulting 82-stage plan replays exactly, and 274 focused cases pass. Final
+full-suite reruns pass 2,537 cases with 15 skipped on Python 3.11 and 2,552 on
+Python 3.14. Both reproduce only the same nine pending native-binding failures.
+The actual CLI also simulates all 82 stages against the baseline checkout.
+All 81 detectors complete the final touched-source audit without findings or
+omissions; Ruff, whitespace and Sphinx checks pass, with the same two existing
+Sphinx duplicate-description warnings. Final receipts use
+`/tmp/nra-captured-mutation-final-*` and
+`/tmp/nra-captured-mutation-cli-replay.json`.
+
+A further native execution probe shows why the next step must establish object
+identity rather than add a mutation-only exception. A class decorator returning
+`Product` binds `Other` to that same object; `Other.changed = 1` changes
+`Product`, but the current source-declaration lookup still authorises the
+product. This existing gap is retained in
+`/tmp/nra-decorated-object-identity-probe.py` and its JSON receipt. Promotion
+safety metadata is a different obligation and cannot substitute for class
+creation identity. This batch supplies captured destinations and economical
+failure evidence, not a complete declaration-to-runtime-object proof.

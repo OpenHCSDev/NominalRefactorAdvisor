@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import (
+    Iterator,
+    Mapping,
+)
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Callable, Self, TypeAlias, cast
+from typing import (
+    Self,
+    cast,
+)
 
 from .ast_tools import CollectedFamily, ParsedModule
 from .call_binding import (
@@ -45,7 +51,8 @@ from .product_flow import (
     CompactFunctionDeclaration,
     CompactFunctionFlow,
     CompactFunctionTargetResolutionViolation as CompactFunctionTargetResolutionViolation,
-    CompactLexicalMutation,
+    CompactMutation,
+    CompactMutationResolverABC,
     CompactProductConstruction,
     CompactProductFlowModuleProjection,
     CompactProductFlowModuleProjectionFamily,
@@ -79,6 +86,15 @@ class CompactProductFlowContext:
 @dataclass(frozen=True)
 class CompactCallTargetResolution(ABC):
     """A lexical callable target, with function and construction projections."""
+
+    @property
+    def runtime_mutation_violation(self) -> CompactProductRuntimeViolation:
+        """An unselected receiver remains an uncertainty, not a confirmed class write."""
+        return CompactProductRuntimeViolation.UNRESOLVED_MUTATION_RECEIVER
+
+    def for_object_mutation(self) -> CompactCallTargetResolution:
+        """Project the captured nominal object's existing candidate bound."""
+        return self
 
     def candidate_symbols_within(self, symbols: frozenset[str]) -> frozenset[str]:
         """Project potentially referenced participants through this target's bound."""
@@ -123,6 +139,10 @@ class ResolvedCompactClassTarget(CompactCallTargetResolution):
     """A class definition selected by the ordinary lexical binding resolver."""
 
     resolved_declaration: CompactIndexedClass
+
+    @property
+    def runtime_mutation_violation(self) -> CompactProductRuntimeViolation:
+        return CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION
 
     @property
     def possible_symbols(self) -> tuple[str, ...]:
@@ -206,6 +226,10 @@ class OpenCompactFunctionTarget(CompactCallTargetResolution):
     candidate_symbols: tuple[str, ...]
     violation: CompactFunctionTargetResolutionViolation
 
+    def for_object_mutation(self) -> CompactCallTargetResolution:
+        """Unresolved callable names do not bound arbitrary object identity."""
+        return UnboundedCompactFunctionTarget(self.possible_symbols, self.violation)
+
     @property
     def possible_symbols(self) -> tuple[str, ...]:
         return self.candidate_symbols
@@ -239,6 +263,14 @@ class AlternativeCompactFunctionTargets(CompactCallTargetResolution):
 
     alternatives: tuple[CompactCallTargetResolution, ...]
     violation: CompactFunctionTargetResolutionViolation
+
+    def for_object_mutation(self) -> CompactCallTargetResolution:
+        return type(self)(
+            tuple(
+                alternative.for_object_mutation() for alternative in self.alternatives
+            ),
+            self.violation,
+        )
 
     @cached_property
     def possible_symbols(self) -> tuple[str, ...]:
@@ -426,59 +458,54 @@ class CompactProductRuntimeViolation(StrEnum):
 
     CLASS_REBINDING_OR_MEMBER_MUTATION = "class_rebinding_or_member_mutation"
     CLASS_OBJECT_ESCAPE = "class_object_escape"
-
-
-CompactClassReferencePartCountProjection: TypeAlias = Callable[
-    [LexicalValueReference],
-    tuple[int, ...],
-]
-
-
-def _exact_class_reference_part_counts(
-    reference: LexicalValueReference,
-) -> tuple[int, ...]:
-    return (len(reference.parts),)
-
-
-def _member_prefix_class_reference_part_counts(
-    reference: LexicalValueReference,
-) -> tuple[int, ...]:
-    return tuple(range(len(reference.parts), 0, -1))
-
-
-class CompactProductClassReferenceUse(StrEnum):
-    """Class-reference uses with member-prefix resolution owned by each leaf."""
-
-    EXACT_CLASS_OBJECT = "exact_class_object", _exact_class_reference_part_counts
-    MUTATION_TARGET = "mutation_target", _member_prefix_class_reference_part_counts
-
-    part_count_projection: CompactClassReferencePartCountProjection
-
-    def __new__(
-        cls,
-        value: str,
-        part_count_projection: CompactClassReferencePartCountProjection,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.part_count_projection = part_count_projection
-        return member
-
-    def candidate_part_counts(
-        self,
-        reference: LexicalValueReference,
-    ) -> tuple[int, ...]:
-        return self.part_count_projection(reference)
+    UNRESOLVED_MUTATION_RECEIVER = "unresolved_mutation_receiver"
 
 
 @dataclass(frozen=True)
 class CompactProductRuntimeFailure:
-    """One runtime-opening product use retained at its exact flow source."""
+    """One retained source observation, shared by all affected product queries."""
 
-    authority_symbol: str
-    owner_symbol: str
-    line: int
+    context: CompactProductFlowContext
+    source_event: CompactMutation | CompactFunctionCall
+    target_resolution: CompactCallTargetResolution
     violation: CompactProductRuntimeViolation
+
+    owner_symbol = AliasProperty[str]("context.owner_symbol")
+    line = AliasProperty[int]("source_event.line")
+
+
+@dataclass(frozen=True, eq=False)
+class CompactProductRuntimeFailureIndex(
+    Mapping[str, tuple[CompactProductRuntimeFailure, ...]]
+):
+    """Lazy authority queries over shared source observations, without class fanout."""
+
+    authority_candidates: Mapping[str, CompactProductAuthority]
+    observations: tuple[CompactProductRuntimeFailure, ...]
+
+    def _failures_for(self, symbol: str) -> Iterator[CompactProductRuntimeFailure]:
+        if symbol in self.authority_candidates:
+            candidate = frozenset((symbol,))
+            for observation in self.observations:
+                if observation.target_resolution.candidate_symbols_within(candidate):
+                    yield observation
+
+    def __contains__(self, symbol: object) -> bool:
+        if symbol not in self.authority_candidates:
+            return False
+        return next(self._failures_for(cast(str, symbol)), None) is not None
+
+    def __getitem__(self, symbol: str) -> tuple[CompactProductRuntimeFailure, ...]:
+        failures = tuple(self._failures_for(symbol))
+        if not failures:
+            raise KeyError(symbol)
+        return failures
+
+    def __iter__(self) -> Iterator[str]:
+        return (symbol for symbol in self.authority_candidates if symbol in self)
+
+    def __len__(self) -> int:
+        return sum(1 for _symbol in self)
 
 
 @dataclass(frozen=True)
@@ -486,11 +513,62 @@ class CompactProductFlowRepository(
     CompactCallTargetResolverABC[
         CompactProductFlowContext, CompactCallTargetResolution
     ],
+    CompactMutationResolverABC[CompactProductFlowContext, CompactCallTargetResolution],
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
+
+    @cached_property
+    def declared_product_authorities_by_symbol(
+        self,
+    ) -> dict[str, CompactProductAuthority]:
+        """Declaration-proved product candidates before runtime obligations are applied."""
+        return {
+            symbol: authority
+            for symbol, resolution in self.class_index.product_authority_resolutions_by_symbol.items()
+            if (authority := resolution.authority) is not None
+            and len(authority.field_names) >= 2
+        }
+
+    def _receiver_mutation_resolution(
+        self,
+        context: CompactProductFlowContext,
+        mutation: CompactMutation,
+        receiver_use: CompactValueUse,
+    ) -> CompactCallTargetResolution:
+        """Use the evaluated receiver receipt, never reevaluate it at write time."""
+        reference = receiver_use.lexical_reference
+        if reference is None:
+            return UnboundedCompactFunctionTarget(
+                (),
+                CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+            )
+        return self._lexical_function_target_resolution(
+            context,
+            reference,
+            receiver_use.position,
+        ).for_object_mutation()
+
+    def _binding_mutation_resolution(
+        self,
+        context: CompactProductFlowContext,
+        mutation: CompactMutation,
+        name: str,
+    ) -> CompactCallTargetResolution:
+        """A namespace write affects its declared name, not the previous object's contents."""
+        declaration = self._class_for_reference(
+            context,
+            LexicalValueReference(name),
+            line=mutation.line,
+        )
+        if declaration is None:
+            return OpenCompactFunctionTarget(
+                (),
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            )
+        return ResolvedCompactClassTarget(declaration)
 
     def _through_attribute_suffix(
         self,
@@ -526,7 +604,7 @@ class CompactProductFlowRepository(
         return resolution
 
     def _selected_class_resolution(
-        self, symbol: str, binding: CompactLexicalMutation
+        self, symbol: str, binding: CompactMutation
     ) -> CompactCallTargetResolution:
         declaration = self.class_index.class_for(symbol)
         if declaration is None:
@@ -676,91 +754,83 @@ class CompactProductFlowRepository(
     @cached_property
     def product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:
         return {
-            class_symbol: authority
-            for class_symbol, resolution in (
-                self.class_index.product_authority_resolutions_by_symbol.items()
-            )
-            if (authority := resolution.authority) is not None
-            and len(authority.field_names) >= 2
-            and class_symbol not in self.product_runtime_failures_by_authority_symbol
+            symbol: authority
+            for symbol, authority in self.declared_product_authorities_by_symbol.items()
+            if symbol not in self.product_runtime_failures_by_authority_symbol
         }
 
     @cached_property
     def product_runtime_failures_by_authority_symbol(
         self,
-    ) -> dict[str, tuple[CompactProductRuntimeFailure, ...]]:
-        failures: dict[str, list[CompactProductRuntimeFailure]] = {}
+    ) -> CompactProductRuntimeFailureIndex:
+        observations: list[CompactProductRuntimeFailure] = []
+        candidates = self.declared_product_authorities_by_symbol
+        product_symbols = frozenset(candidates)
         for context in self.flow_contexts:
             for mutation in context.flow.mutations:
                 if mutation.kind.preserves_nominal_identity:
                     continue
-                class_symbol = self._class_symbol_for_reference(
-                    context,
-                    mutation.reference,
-                    line=mutation.line,
-                    use=CompactProductClassReferenceUse.MUTATION_TARGET,
-                )
-                if class_symbol is not None:
-                    failures.setdefault(class_symbol, []).append(
+                resolution = mutation.resolve(self, context)
+                if resolution.candidate_symbols_within(product_symbols):
+                    observations.append(
                         CompactProductRuntimeFailure(
-                            class_symbol,
-                            context.owner_symbol,
-                            mutation.line,
-                            CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION,
+                            context,
+                            mutation,
+                            resolution,
+                            resolution.runtime_mutation_violation,
                         )
                     )
             for alias in context.flow.exact_value_aliases:
-                class_symbol = self._class_symbol_for_reference(
+                declaration = self._class_for_reference(
                     context,
                     alias.source,
                     line=alias.binding_mutation.line,
-                    use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,
                 )
-                if class_symbol is not None:
-                    failures.setdefault(class_symbol, []).append(
+                if declaration is not None and declaration.symbol in candidates:
+                    observations.append(
                         CompactProductRuntimeFailure(
-                            class_symbol,
-                            context.owner_symbol,
-                            alias.binding_mutation.line,
+                            context,
+                            alias.binding_mutation,
+                            ResolvedCompactClassTarget(declaration),
                             CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,
                         )
                     )
             for call in context.flow.calls:
+                escaped_symbols: set[str] = set()
                 for value in call.arguments.values:
                     reference = value.lexical_reference
                     if reference is None:
                         continue
                     exact_origin = value.origin_in(context.flow).exact_origin
-                    class_symbol = self._class_symbol_for_reference(
+                    declaration = self._class_for_reference(
                         context,
                         exact_origin or reference,
                         line=call.line,
-                        use=CompactProductClassReferenceUse.EXACT_CLASS_OBJECT,
                     )
-                    if class_symbol is not None:
-                        failures.setdefault(class_symbol, []).append(
+                    if (
+                        declaration is not None
+                        and declaration.symbol in candidates
+                        and declaration.symbol not in escaped_symbols
+                    ):
+                        escaped_symbols.add(declaration.symbol)
+                        observations.append(
                             CompactProductRuntimeFailure(
-                                class_symbol,
-                                context.owner_symbol,
-                                call.line,
+                                context,
+                                call,
+                                ResolvedCompactClassTarget(declaration),
                                 CompactProductRuntimeViolation.CLASS_OBJECT_ESCAPE,
                             )
                         )
-        return {
-            class_symbol: tuple(dict.fromkeys(class_failures))
-            for class_symbol, class_failures in failures.items()
-        }
+        return CompactProductRuntimeFailureIndex(candidates, tuple(observations))
 
-    def _class_symbol_for_reference(
+    def _class_for_reference(
         self,
         context: CompactProductFlowContext,
         reference: LexicalValueReference,
         *,
         line: int,
-        use: CompactProductClassReferenceUse,
-    ) -> str | None:
+    ) -> CompactIndexedClass | None:
         """Resolve one exact class-object reference without crossing a local rebind."""
-
         if context.declaration is not None and reference.root_name in {
             parameter.name for parameter in context.declaration.signature.parameters
         }:
@@ -768,32 +838,28 @@ class CompactProductFlowRepository(
         if not context.flow.owner.kind.is_module_scope:
             if reference.root_name in context.flow.nonlocal_binding_names:
                 return None
-            if reference.root_name not in context.flow.global_binding_names and any(
-                mutation.reference.root_name == reference.root_name
-                and not mutation.reference.attribute_path
-                for mutation in context.flow.mutations
+            if (
+                reference.root_name not in context.flow.global_binding_names
+                and reference.root_name in context.flow.mutations_by_root_name
             ):
                 return None
-
-        for part_count in use.candidate_part_counts(reference):
-            class_symbol = self.class_resolver.symbol_for(
-                module_name=context.module_name,
-                reference_parts=reference.parts[:part_count],
-                allow_unique_unqualified=False,
-            )
-            if class_symbol is None:
-                continue
-            indexed_class = self.class_index.class_for(class_symbol)
-            if indexed_class is None:
-                continue
-            if (
-                context.flow.owner.kind.is_module_scope
-                and indexed_class.module_name == context.module_name
-                and indexed_class.line >= line
-            ):
-                continue
-            return class_symbol
-        return None
+        symbol = self.class_resolver.symbol_for(
+            module_name=context.module_name,
+            reference_parts=reference.parts,
+            allow_unique_unqualified=False,
+        )
+        if symbol is None:
+            return None
+        declaration = self.class_index.class_for(symbol)
+        if declaration is None:
+            return None
+        if (
+            context.flow.owner.kind.is_module_scope
+            and declaration.module_name == context.module_name
+            and declaration.line >= line
+        ):
+            return None
+        return declaration
 
     @cached_property
     def function_call_resolutions(self) -> tuple[CompactFunctionCallResolution, ...]:
@@ -1274,7 +1340,7 @@ class CompactProductFlowRepository(
                 tuple(
                     sorted(
                         {
-                            f"{owner}.{mutation.reference.root_name}"
+                            f"{owner}.{mutation.target.bound_name}"
                             for owner, mutation in pending_bindings
                         }
                     )
@@ -1446,7 +1512,7 @@ class CompactProductFlowRepository(
     def _selected_function_resolution(
         self,
         symbol: str,
-        binding: CompactLexicalMutation,
+        binding: CompactMutation,
     ) -> CompactCallTargetResolution:
         """A selected definition must identify this function's source declaration."""
 

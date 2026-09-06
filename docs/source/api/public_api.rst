@@ -75,8 +75,11 @@ possible bindings remains unresolved, including an entry value followed by a
 write. Conditional
 writes also remain unresolved. Bound call-result queries use the same write
 selection. For an attribute result such as ``owner.child.result``, replacing
-``owner`` or ``owner.child`` invalidates that result's provenance; writes to
-sibling attributes do not. An unresolved binding cannot supply the declared
+``owner`` or ``owner.child`` invalidates that result's provenance. Receiver
+writes also leave attribute results unproved: different lexical receiver names
+do not establish different objects, and attribute or item setters may affect
+other slots. Local-name result bindings remain independent of these receiver
+writes. An unresolved binding cannot supply the declared
 return type used by carrier-expansion refactor proofs.
 
 ``CompactCallTargetReference.resolve`` selects the target's lookup contract
@@ -100,6 +103,9 @@ absent from the class index remain unresolved under their own qualified name.
 A resolved class definition does not establish the type or unchanged lookup
 behaviour of an instance returned by its constructor. Plain-product schema and
 runtime checks remain required for product-construction proofs.
+Class decorators can also replace the class object bound to the declared name.
+The current declaration lookup does not prove that runtime identity relation;
+it remains an open obligation alongside native namespace-slot integrity.
 
 ``CompactFunctionFlow.callable_reference_uses`` retains lexical reads outside
 call-target positions, including names whose callable identity is unknown.
@@ -338,10 +344,42 @@ resolves at that position. Opaque expressions return an explicit
 the shared binding-event resolver and tracks alias cycles by selected write,
 rather than rejecting every repeated name.
 
-Calls in attribute assignment and deletion targets retain their evaluation
-events. Augmented assignments evaluate and read the target before their
-right-hand side, then record the write. An attribute annotation without an
-assigned value evaluates its receiver without recording a write. These calls
+``CompactMutation`` retains a typed assignment target separately from the write
+event. ``CompactBindingTarget`` represents a lexical name binding;
+``CompactAttributeTarget`` and ``CompactItemTarget`` retain the evaluated
+receiver, and item targets also retain the evaluated index. Their
+``CompactValueUse`` records precede the later write, including when index or
+right-hand-side evaluation rebinds the receiver's original name. Computed
+receivers retain explicit unresolved value evidence rather than being omitted.
+``mutations_by_root_name`` derives only lexical binding writes;
+``mutated_roots_within`` derives possible affected roots from the target family.
+Rebinding an alias does not mutate the object it previously referenced.
+The :download:`captured assignment-target migration
+<../../examples/captured_assignment_targets.json>` is an authored staged plan
+against the repository at ``5a3d16d``. Its changes are corrections checked by
+native execution and replay, not automatically established equivalences.
+
+``CompactMutationResolverABC`` separates lexical rebinding from writes through
+captured receivers. Targets select their resolution contract; repository
+consumers do not dispatch on target types. Unresolved receiver identity remains
+unbounded for product-runtime safety, even when callable lookup has diagnostic
+candidate names. An annotation alone does not prove that a receiver is a
+non-class object.
+
+``declared_product_authorities_by_symbol`` supplies the declaration-proved
+product candidates before runtime obligations. ``CompactProductRuntimeFailure``
+retains its context, source event and target resolution; owner and line are
+derived views. ``CompactProductRuntimeFailureIndex`` provides lazy mapping
+queries over shared observations. Membership checks do not construct
+per-class diagnostics, and requested diagnostics retain those same observation
+objects. ``UNRESOLVED_MUTATION_RECEIVER`` distinguishes unknown identity from a
+confirmed class write. Runtime uncertainty can currently prevent a candidate
+from reaching conveyor assessment; its source evidence remains queryable here.
+
+Calls in attribute and item assignment and deletion targets retain their
+evaluation events. Augmented assignments evaluate and read the target before
+their right-hand side, then record the write. An attribute or item annotation
+without an assigned value evaluates its target without recording a write. These calls
 participate in declaration-resolved call edits. The :download:`assignment-target
 evaluation correction <../../examples/assignment_target_evaluation.py>` applies
 the collector change through the DSL. Receiver capture and namespace-slot

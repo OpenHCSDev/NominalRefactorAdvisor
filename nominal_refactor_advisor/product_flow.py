@@ -303,7 +303,7 @@ class CompactMutationKind(StrEnum):
                 [
                     CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
                     str,
-                    CompactLexicalMutation,
+                    CompactMutation,
                 ],
                 TargetResolutionT,
             ]
@@ -331,7 +331,7 @@ class CompactMutationKind(StrEnum):
         self,
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         symbol: str,
-        binding: CompactLexicalMutation,
+        binding: CompactMutation,
     ) -> TargetResolutionT:
         if self._declaration_resolution is None:
             raise ValueError("Only definition mutations resolve a declaration")
@@ -451,14 +451,14 @@ class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolu
 
     @abstractmethod
     def _selected_class_resolution(
-        self, symbol: str, binding: CompactLexicalMutation
+        self, symbol: str, binding: CompactMutation
     ) -> TargetResolutionT:
         """Resolve a selected class definition at its exact source site."""
         raise NotImplementedError
 
     @abstractmethod
     def _selected_function_resolution(
-        self, symbol: str, binding: CompactLexicalMutation
+        self, symbol: str, binding: CompactMutation
     ) -> TargetResolutionT:
         """Resolve a selected function definition at its exact source site."""
         raise NotImplementedError
@@ -812,19 +812,163 @@ class CompactFlowPosition:
         return self.statement_index < child_branch.parent_statement_index
 
 
+class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
+    """Distinct namespace-binding and captured-object mutation obligations."""
+
+    @abstractmethod
+    def _binding_mutation_resolution(
+        self,
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+        name: str,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _receiver_mutation_resolution(
+        self,
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+        receiver_use: CompactValueUse,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
+class CompactAssignmentTargetABC(ABC):
+    """An evaluated write destination, distinct from the later write event."""
+
+    @abstractmethod
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def lexical_reference(self) -> LexicalValueReference | None:
+        raise NotImplementedError
+
+    @property
+    def bound_name(self) -> str | None:
+        return None
+
+    def may_replace(self, reference: LexicalValueReference) -> bool:
+        """Without a binding proof, a write may affect any object slot."""
+        return bool(reference.attribute_path)
+
+    @abstractmethod
+    def affected_roots_within(
+        self,
+        flow: CompactFunctionFlow,
+        roots: frozenset[str],
+    ) -> frozenset[str]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CompactLexicalMutation:
-    reference: LexicalValueReference
+class CompactBindingTarget(CompactAssignmentTargetABC):
+    name: str
+
+    bound_name = AliasProperty[str]("name")
+
+    def may_replace(self, reference: LexicalValueReference) -> bool:
+        return self.lexical_reference.is_prefix_of(reference)
+
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        return resolver._binding_mutation_resolution(context, mutation, self.name)
+
+    @cached_property
+    def lexical_reference(self) -> LexicalValueReference:
+        return LexicalValueReference(self.name)
+
+    def affected_roots_within(
+        self,
+        flow: CompactFunctionFlow,
+        roots: frozenset[str],
+    ) -> frozenset[str]:
+        return roots.intersection((self.name,))
+
+
+@dataclass(frozen=True)
+class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
+    receiver_use: CompactValueUse
+
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        return resolver._receiver_mutation_resolution(
+            context, mutation, self.receiver_use
+        )
+
+    @property
+    def lexical_reference(self) -> LexicalValueReference | None:
+        return None
+
+    def affected_roots_within(
+        self,
+        flow: CompactFunctionFlow,
+        roots: frozenset[str],
+    ) -> frozenset[str]:
+        return self.receiver_use.origin_in(flow).candidate_roots_within(roots)
+
+
+@dataclass(frozen=True)
+class CompactAttributeTarget(CompactReceiverTarget):
+    attribute_name: str
+
+    @cached_property
+    def lexical_reference(self) -> LexicalValueReference | None:
+        receiver = self.receiver_use.lexical_reference
+        return (
+            None
+            if receiver is None
+            else LexicalValueReference(
+                receiver.root_name,
+                (*receiver.attribute_path, self.attribute_name),
+            )
+        )
+
+
+@dataclass(frozen=True)
+class CompactItemTarget(CompactReceiverTarget):
+    index_use: CompactValueUse
+
+
+@dataclass(frozen=True)
+class CompactMutation:
+    target: CompactAssignmentTargetABC
     kind: CompactMutationKind
     position: CompactFlowPosition
     line: int
     imported_origin: str | None = None
 
+    reference = AliasProperty[LexicalValueReference | None]("target.lexical_reference")
+
+    def resolve(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return self.target.resolve_mutation(resolver, context, self)
+
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
+        if self.imported_origin is not None and self.target.bound_name is None:
+            raise ValueError("An import requires a lexical binding target")
 
 
-CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
+CompactBindingVisit: TypeAlias = tuple[str, CompactMutation]
 
 
 class CompactFunctionTargetResolutionViolation(StrEnum):
@@ -842,7 +986,7 @@ class CompactBindingSource(ABC):
     """Selected source evidence, with distinct value and callable projections."""
 
     @property
-    def mutation(self) -> CompactLexicalMutation | None:
+    def mutation(self) -> CompactMutation | None:
         return None
 
     @property
@@ -858,20 +1002,20 @@ class CompactBindingSource(ABC):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactLexicalMutation],
+        visited_mutations: frozenset[CompactMutation],
     ) -> CompactValueOriginResolution:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
 class ExactCompactBindingMutation(CompactBindingSource):
-    selected_mutation: CompactLexicalMutation
+    selected_mutation: CompactMutation
 
     def value_origin(
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactLexicalMutation],
+        visited_mutations: frozenset[CompactMutation],
     ) -> CompactValueOriginResolution:
         mutation = self.selected_mutation
         possible_origins = flow._possible_alias_origins(
@@ -892,7 +1036,7 @@ class ExactCompactBindingMutation(CompactBindingSource):
         return source_resolution.through_alias(reference.attribute_path, mutation)
 
     @property
-    def mutation(self) -> CompactLexicalMutation:
+    def mutation(self) -> CompactMutation:
         return self.selected_mutation
 
     @property
@@ -908,7 +1052,7 @@ class OpenCompactBindingMutation(CompactBindingSource):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactLexicalMutation],
+        visited_mutations: frozenset[CompactMutation],
     ) -> CompactValueOriginResolution:
         return OpenCompactValueOrigin(
             flow._possible_alias_origins(
@@ -936,7 +1080,7 @@ class InitialCompactParameterBinding(CompactBindingSource):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactLexicalMutation],
+        visited_mutations: frozenset[CompactMutation],
     ) -> CompactValueOriginResolution:
         return ExactCompactValueOrigin(reference)
 
@@ -953,6 +1097,10 @@ class CompactValueOriginViolation(StrEnum):
 class CompactValueOriginResolution(ABC):
     """Nominal result of tracing one value through exact local aliases."""
 
+    def candidate_roots_within(self, roots: frozenset[str]) -> frozenset[str]:
+        """Project potentially retained origins into a supplied lexical family."""
+        return roots.intersection(origin.root_name for origin in self.possible_origins)
+
     @property
     @abstractmethod
     def exact_origin(self) -> LexicalValueReference | None:
@@ -967,7 +1115,7 @@ class CompactValueOriginResolution(ABC):
     def through_alias(
         self,
         suffix: tuple[str, ...],
-        binding_mutation: CompactLexicalMutation,
+        binding_mutation: CompactMutation,
     ) -> "CompactValueOriginResolution":
         raise NotImplementedError
 
@@ -975,7 +1123,7 @@ class CompactValueOriginResolution(ABC):
 @dataclass(frozen=True)
 class ExactCompactValueOrigin(CompactValueOriginResolution):
     origin: LexicalValueReference
-    alias_chain: tuple[CompactLexicalMutation, ...] = ()
+    alias_chain: tuple[CompactMutation, ...] = ()
 
     @property
     def exact_origin(self) -> LexicalValueReference:
@@ -988,7 +1136,7 @@ class ExactCompactValueOrigin(CompactValueOriginResolution):
     def through_alias(
         self,
         suffix: tuple[str, ...],
-        binding_mutation: CompactLexicalMutation,
+        binding_mutation: CompactMutation,
     ) -> "ExactCompactValueOrigin":
         return type(self)(
             LexicalValueReference(
@@ -1004,6 +1152,10 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
     candidates: tuple[LexicalValueReference, ...]
     violation: CompactValueOriginViolation
 
+    def candidate_roots_within(self, roots: frozenset[str]) -> frozenset[str]:
+        """Diagnostic origins do not bound an unresolved object's identity."""
+        return roots
+
     @property
     def exact_origin(self) -> None:
         return None
@@ -1015,7 +1167,7 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
     def through_alias(
         self,
         suffix: tuple[str, ...],
-        binding_mutation: CompactLexicalMutation,
+        binding_mutation: CompactMutation,
     ) -> "OpenCompactValueOrigin":
         del binding_mutation
         return type(self)(
@@ -1037,18 +1189,18 @@ class CompactExactValueAlias:
     """An exact binding retaining the already-collected source read."""
 
     source_use: CompactCallableReferenceUse
-    binding_mutation: CompactLexicalMutation
+    binding_mutation: CompactMutation
 
     source = AliasProperty[LexicalValueReference]("source_use.target.lexical_reference")
     source_position = AliasProperty[CompactFlowPosition]("source_use.position")
 
+    target = AliasProperty[LexicalValueReference]("binding_mutation.reference")
+
     def __post_init__(self) -> None:
         if self.source is None:
             raise ValueError("Exact value aliases require a lexical source read")
-
-    @property
-    def target(self) -> LexicalValueReference:
-        return self.binding_mutation.reference
+        if self.binding_mutation.target.bound_name is None:
+            raise ValueError("Exact value aliases require a lexical name binding")
 
     def source_for(self, reference: LexicalValueReference) -> LexicalValueReference:
         """Project lexical origin syntax without replacing nominal lookup evidence."""
@@ -1060,7 +1212,7 @@ class CompactExactValueAlias:
 
 @dataclass(frozen=True)
 class CompactValueUse:
-    """One evaluated argument value, retaining its source event."""
+    """One evaluated expression value, retaining its source event."""
 
     value: CompactValueExpression
     position: CompactFlowPosition
@@ -1425,10 +1577,19 @@ class CompactFunctionFlow:
     lexical_scope_qualnames: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
-    mutations: tuple[CompactLexicalMutation, ...]
+    mutations: tuple[CompactMutation, ...]
     exact_value_aliases: tuple[CompactExactValueAlias, ...]
     global_binding_names: tuple[str, ...]
     nonlocal_binding_names: tuple[str, ...]
+
+    def mutated_roots_within(self, roots: frozenset[str]) -> frozenset[str]:
+        """Derive possible affected roots from captured mutation targets."""
+        return frozenset(
+            chain.from_iterable(
+                mutation.target.affected_roots_within(self, roots)
+                for mutation in self.mutations
+            )
+        )
 
     @cached_property
     def loaded_value_root_names(self) -> tuple[str, ...]:
@@ -1448,7 +1609,7 @@ class CompactFunctionFlow:
 
     def _binding_resolution_for_mutations(
         self,
-        mutations: tuple[CompactLexicalMutation, ...],
+        mutations: tuple[CompactMutation, ...],
         use_position: CompactFlowPosition | None,
         root_name: str,
     ) -> CompactBindingSource | None:
@@ -1491,12 +1652,12 @@ class CompactFunctionFlow:
         return CompactLocalSignatureObserver.observes_any(self.calls)
 
     @cached_property
-    def mutations_by_root_name(self) -> dict[str, tuple[CompactLexicalMutation, ...]]:
-        grouped: dict[str, list[CompactLexicalMutation]] = {}
+    def mutations_by_root_name(self) -> dict[str, tuple[CompactMutation, ...]]:
+        grouped: dict[str, list[CompactMutation]] = {}
         for mutation in self.mutations:
-            if mutation.reference.attribute_path:
-                continue
-            grouped.setdefault(mutation.reference.root_name, []).append(mutation)
+            name = mutation.target.bound_name
+            if name is not None:
+                grouped.setdefault(name, []).append(mutation)
         return {name: tuple(mutations) for name, mutations in grouped.items()}
 
     def binding_resolution_for(
@@ -1510,7 +1671,7 @@ class CompactFunctionFlow:
     @cached_property
     def exact_aliases_by_binding_mutation(
         self,
-    ) -> dict[CompactLexicalMutation, CompactExactValueAlias]:
+    ) -> dict[CompactMutation, CompactExactValueAlias]:
         return {alias.binding_mutation: alias for alias in self.exact_value_aliases}
 
     def bound_call_result_for(
@@ -1523,7 +1684,7 @@ class CompactFunctionFlow:
             tuple(
                 mutation
                 for mutation in self.mutations
-                if mutation.reference.is_prefix_of(reference)
+                if mutation.target.may_replace(reference)
             ),
             use_position,
             reference.root_name,
@@ -1553,7 +1714,7 @@ class CompactFunctionFlow:
         self,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition,
-        visited_mutations: frozenset[CompactLexicalMutation],
+        visited_mutations: frozenset[CompactMutation],
     ) -> CompactValueOriginResolution:
         selection = self.binding_resolution_for(reference.root_name, use_position)
         if selection is None:
@@ -1563,7 +1724,7 @@ class CompactFunctionFlow:
     def _possible_alias_origins(
         self,
         reference: LexicalValueReference,
-        mutations: tuple[CompactLexicalMutation, ...],
+        mutations: tuple[CompactMutation, ...],
     ) -> tuple[LexicalValueReference, ...]:
         return tuple(
             dict.fromkeys(
@@ -1719,20 +1880,48 @@ class _DeclarationCollector(ast.NodeVisitor):
         self.scope_names.pop()
 
 
+@dataclass
+class _CompactMutationTargetCollector(ast.NodeVisitor):
+    """Capture legal Python target leaves through native AST dispatch."""
+
+    flow: _CompactFlowCollector
+
+    def generic_visit(self, node: ast.AST) -> CompactAssignmentTargetABC:
+        raise ValueError("Expected a binding, attribute or item assignment target")
+
+    def visit_Name(self, node: ast.Name) -> CompactBindingTarget:
+        return CompactBindingTarget(node.id)
+
+    def visit_Attribute(self, node: ast.Attribute) -> CompactAttributeTarget:
+        return CompactAttributeTarget(
+            self.flow._capture_value(node.value),
+            node.attr,
+        )
+
+    def visit_Subscript(self, node: ast.Subscript) -> CompactItemTarget:
+        return CompactItemTarget(
+            self.flow._capture_value(node.value),
+            self.flow._capture_value(node.slice),
+        )
+
+
 class _CompactFlowCollector(ast.NodeVisitor):
     """Collect one source scope without descending into nested scope bodies."""
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._record_target_mutation(node)
+        else:
+            self.generic_visit(node)
 
     def _record_target_mutation(
         self,
         node: ast.expr,
         kind: CompactMutationKind | None = None,
     ) -> None:
-        """Record the lexical write after its target has been evaluated."""
-        reference = LexicalValueReference.from_expression(node)
-        if reference is not None:
-            self._record_mutation(reference, node, kind)
+        self._record_mutation(self.mutation_targets.visit(node), node, kind)
 
-    def _capture_argument(self, expression: ast.expr) -> CompactValueUse:
+    def _capture_value(self, expression: ast.expr) -> CompactValueUse:
         self.visit(expression)
         return CompactValueUse(
             CompactValueExpression.project(expression), self._position()
@@ -1754,7 +1943,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.current_class_receiver_name = current_class_receiver_name
         self.calls: list[CompactFunctionCall] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
-        self.mutations: list[CompactLexicalMutation] = []
+        self.mutations: list[CompactMutation] = []
         self.exact_value_aliases: list[CompactExactValueAlias] = []
         self.global_binding_names: set[str] = set()
         self.nonlocal_binding_names: set[str] = set()
@@ -1763,6 +1952,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.event_index = 0
         self.call_results: dict[int, CompactCallResult] = {}
         self.mutation_kind = CompactMutationKind.ASSIGNMENT
+        self.mutation_targets = _CompactMutationTargetCollector(self)
 
     def collect(self, statements: list[ast.stmt]) -> CompactFunctionFlow:
         self._collect_statements(statements)
@@ -1812,14 +2002,14 @@ class _CompactFlowCollector(ast.NodeVisitor):
 
     def _record_mutation(
         self,
-        reference: LexicalValueReference,
+        target: CompactAssignmentTargetABC,
         node: SourcePositionedNode,
         kind: CompactMutationKind | None = None,
         *,
         imported_origin: str | None = None,
-    ) -> CompactLexicalMutation:
-        mutation = CompactLexicalMutation(
-            reference=reference,
+    ) -> CompactMutation:
+        mutation = CompactMutation(
+            target=target,
             kind=self.mutation_kind if kind is None else kind,
             position=self._position(),
             line=node.lineno,
@@ -1865,7 +2055,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._visit_reference_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
         arguments = CompactCallArguments[CompactValueUse].from_call(
-            node, self._capture_argument
+            node, self._capture_value
         )
         result = self.call_results.get(
             id(node), CompactCallResult(CompactCallResultUse.EMBEDDED)
@@ -1888,15 +2078,15 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self.visit(expression)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        self._visit_reference_evaluation(node)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self._record_target_mutation(node)
             return
+        self._visit_reference_evaluation(node)
         self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self._record_mutation(LexicalValueReference(node.id), node)
+            self._record_target_mutation(node)
         elif isinstance(node.ctx, ast.Load):
             self.callable_reference_uses.append(self._callable_reference_use(node))
 
@@ -1918,7 +2108,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is None:
-            self._visit_reference_evaluation(node.target)
+            self.mutation_targets.visit(node.target)
             if not (
                 isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope
             ):
@@ -1944,13 +2134,10 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_exact_value_aliases((node.target,), source, mutations)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._visit_reference_evaluation(node.target)
+        target = self.mutation_targets.visit(node.target)
         self.callable_reference_uses.append(self._callable_reference_use(node.target))
         self.visit(node.value)
-        self._record_target_mutation(
-            node.target,
-            CompactMutationKind.AUGMENTED_ASSIGNMENT,
-        )
+        self._record_mutation(target, node, CompactMutationKind.AUGMENTED_ASSIGNMENT)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         if isinstance(node.value, ast.Call):
@@ -1985,7 +2172,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self,
         targets: tuple[ast.expr, ...] | list[ast.expr],
         kind: CompactMutationKind,
-    ) -> tuple[CompactLexicalMutation, ...]:
+    ) -> tuple[CompactMutation, ...]:
         mutation_start = len(self.mutations)
         saved_kind = self.mutation_kind
         self.mutation_kind = kind
@@ -2017,7 +2204,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self,
         targets: tuple[ast.expr, ...] | list[ast.expr],
         source: LexicalValueReference | None,
-        mutations: tuple[CompactLexicalMutation, ...],
+        mutations: tuple[CompactMutation, ...],
     ) -> None:
         if not self._is_exact_value_alias_assignment(targets, source):
             return
@@ -2040,7 +2227,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         for origin in ImportBoundNameProjection(node).origins(self.module_identity):
             self._record_mutation(
-                LexicalValueReference(origin.bound_name),
+                CompactBindingTarget(origin.bound_name),
                 node,
                 CompactMutationKind.IMPORT,
                 imported_origin=origin.qualified_name,
@@ -2051,7 +2238,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_definition_expressions(node)
         self._record_mutation(
-            LexicalValueReference(node.name),
+            CompactBindingTarget(node.name),
             node,
             CompactMutationKind.FUNCTION_DEFINITION,
         )
@@ -2086,7 +2273,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
         self._record_mutation(
-            LexicalValueReference(node.name), node, CompactMutationKind.CLASS_DEFINITION
+            CompactBindingTarget(node.name), node, CompactMutationKind.CLASS_DEFINITION
         )
 
     def visit_If(self, node: ast.If) -> None:
@@ -2116,7 +2303,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
                 self.visit(handler.type)
             if handler.name is not None:
                 self._record_mutation(
-                    LexicalValueReference(handler.name),
+                    CompactBindingTarget(handler.name),
                     handler,
                     CompactMutationKind.EXCEPTION_BINDING,
                 )
@@ -2146,7 +2333,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         for index, case in enumerate(node.cases):
             for name in _match_bound_names(case.pattern):
                 self._record_mutation(
-                    LexicalValueReference(name),
+                    CompactBindingTarget(name),
                     case.pattern,
                     CompactMutationKind.PATTERN_BINDING,
                 )

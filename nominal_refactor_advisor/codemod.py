@@ -1438,9 +1438,8 @@ class _ClosedCarrierCollapseSourceRewrite:
             if isinstance(name, ast.Name) and name.id not in mapped_parameter_names
         )
         occupied_names.update(
-            mutation.reference.root_name
-            for mutation in participant.context.flow.mutations
-            if mutation.reference.root_name not in mapped_parameter_names
+            participant.context.flow.mutations_by_root_name.keys()
+            - mapped_parameter_names
         )
         candidate = stem
         suffix = 2

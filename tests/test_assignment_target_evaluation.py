@@ -24,6 +24,10 @@ from nominal_refactor_advisor.product_flow import compact_product_flow_projectio
         "del _owner().value",
         "_owner().value += _rhs()",
         "_array()[_index()] += _rhs()",
+        "_array()[_index()] = _rhs()",
+        "del _array()[_index()]",
+        "_array()[_index()]: int",
+        "_array()[_index()]: int = _rhs()",
         "_owner().value: int",
         "_owner().value: int = _rhs()",
     ),
@@ -64,6 +68,8 @@ def test_target_calls_match_execution_order(statement: str, scope: str) -> None:
     assert [
         call.target.terminal_name for call in flow.calls if call.line >= statement_line
     ] == namespace["events"]
+    if statement in ("_owner().value: int", "_array()[_index()]: int"):
+        assert not any(mutation.line >= statement_line for mutation in flow.mutations)
 
 
 def test_augmented_target_read_precedes_rhs_and_write_follows_it() -> None:

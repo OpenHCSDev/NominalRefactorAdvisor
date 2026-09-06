@@ -23,7 +23,6 @@ from .class_index import (
 from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
-    CompactLexicalMutation,
     CompactMutationKind,
     CompactProductFlowModuleProjection,
     CompactValueUse,
@@ -602,15 +601,10 @@ class ClosedParameterConveyorComponentBuilder:
         intervening_mutation_roots = tuple(
             sorted(
                 {
-                    mutation.reference.root_name
+                    root
                     for mutation in construction.context.flow.mutations
-                    if self._mutation_reaches_protected_root(
-                        construction.context,
-                        mutation,
-                        protected_roots,
-                    )
-                    and construction_position.dominates(mutation.position)
-                    and mutation.position.dominates(call_position)
+                    if construction_position.dominates(mutation.position)
+                    and not call_position.dominates(mutation.position)
                     and not (
                         mutation.kind is CompactMutationKind.ASSIGNMENT
                         and mutation.reference
@@ -619,6 +613,9 @@ class ClosedParameterConveyorComponentBuilder:
                         == construction_position.branch_path
                         and mutation.position.statement_index
                         == construction_position.statement_index
+                    )
+                    for root in mutation.target.affected_roots_within(
+                        construction.context.flow, frozenset(protected_roots)
                     )
                 }
             )
@@ -693,24 +690,6 @@ class ClosedParameterConveyorComponentBuilder:
                 )
             )
         return tuple(bindings)
-
-    @staticmethod
-    def _mutation_reaches_protected_root(
-        context: CompactProductFlowContext,
-        mutation: CompactLexicalMutation,
-        protected_roots: set[str],
-    ) -> bool:
-        origin_resolution = context.flow.value_origin_for(
-            mutation.reference,
-            mutation.position,
-        )
-        return bool(
-            mutation.reference.root_name in protected_roots
-            or any(
-                origin.root_name in protected_roots
-                for origin in origin_resolution.possible_origins
-            )
-        )
 
     @staticmethod
     def call_identity(
@@ -788,16 +767,14 @@ class ClosedParameterConveyorComponentBuilder:
         mutated_binding_symbols = {
             participant.symbol
             for participant in participants
-            if any(
-                mutation.reference.root_name
-                in {
+            if participant.context.flow.mutated_roots_within(
+                frozenset(
                     parameter_name
                     for _field_name, parameter_name in exact_field_mapping_by_participant.get(
                         participant.symbol,
                         (),
                     )
-                }
-                for mutation in participant.context.flow.mutations
+                )
             )
         }
         mutated_binding_symbols.update(

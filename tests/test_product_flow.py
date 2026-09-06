@@ -319,11 +319,12 @@ def test_bound_call_result_respects_selected_binding(intervening: str) -> None:
         ("owner.child = replacement", False),
         ("owner.child.result = replacement", False),
         ("if flag:\n        owner.child = replacement", False),
-        ("owner.sibling = replacement", True),
-        ("owner.child.result.field = replacement", True),
+        ("owner.sibling = replacement", False),
+        ("owner.child.result.field = replacement", False),
+        ("unrelated = replacement", True),
     ),
 )
-def test_bound_attribute_result_tracks_its_access_path(
+def test_bound_attribute_result_requires_unchanged_binding_and_closed_slot_writes(
     mutation: str, retains_result: bool
 ) -> None:
     projection = compact_product_flow_projection(
