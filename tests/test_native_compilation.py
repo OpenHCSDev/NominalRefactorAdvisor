@@ -3,7 +3,6 @@
 import ast
 import builtins
 from dataclasses import fields, is_dataclass
-import dis
 import inspect
 import multiprocessing
 from pathlib import Path
@@ -18,6 +17,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_semantics import CodemodBackend
 from nominal_refactor_advisor.native_compilation import (
     ExactNativeFunctionExecution,
+    NativeCreationBackend,
     NativeExecutionUnavailable,
     NativeFunctionExecutionMode,
     NativePythonCompilation,
@@ -200,15 +200,16 @@ def test_leaf_bodies_are_not_disassembled_to_find_nonexistent_child_code(
         "async def coroutine():\n    return None\n"
         "async def async_generator():\n    yield 1\n"
     )
-    native_instructions = dis.get_instructions
+    backend = NativeCreationBackend.current()
+    native_instructions = backend.instructions
     disassembled = []
 
-    def observed_instructions(code):
+    def observed_instructions(self, code):
         assert any(isinstance(value, CodeType) for value in code.co_consts)
         disassembled.append(code.co_name)
         return native_instructions(code)
 
-    monkeypatch.setattr(dis, "get_instructions", observed_instructions)
+    monkeypatch.setattr(type(backend), "instructions", observed_instructions)
     modes = tuple(
         module.native_compilation.execution_for(SourceByteSpan.require_node(node)).mode
         for node in _definitions(module)
@@ -234,15 +235,16 @@ def test_child_constants_still_require_emitted_instruction_evidence(
         "        yield 1\n"
         "    return inner\n"
     )
-    native_instructions = dis.get_instructions
+    backend = NativeCreationBackend.current()
+    native_instructions = backend.instructions
     disassembled = []
 
-    def observed_instructions(code):
+    def observed_instructions(self, code):
         assert any(isinstance(value, CodeType) for value in code.co_consts)
         disassembled.append(code.co_name)
         return native_instructions(code)
 
-    monkeypatch.setattr(dis, "get_instructions", observed_instructions)
+    monkeypatch.setattr(type(backend), "instructions", observed_instructions)
     definitions = {node.name: node for node in _definitions(module)}
     compilation = module.native_compilation
     absent = compilation.execution_for(
@@ -262,7 +264,7 @@ def test_child_constants_still_require_emitted_instruction_evidence(
     sys.version_info < (3, 12), reason="Native type parameters require Python 3.12+"
 )
 def test_generated_generic_scopes_do_not_overwrite_ambiguous_source_evidence() -> None:
-    module = _module("async def sample[T](value: T) -> T:\n    return value\n")
+    module = _module("async def sample[T](value):\n    return value\n")
     result = module.native_compilation.execution_for(
         SourceByteSpan.require_node(_definitions(module)[0])
     )

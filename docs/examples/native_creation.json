@@ -1,0 +1,166 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from collections.abc import Iterable, Iterator"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from dataclasses import field"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from typing import ClassVar, cast"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from metaclass_registry import AutoRegisterMeta"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "module_name": ".collection_algebra",
+              "import_names": [
+                "UniqueIdentityIndexAuthority"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "_NativeExecutionIndex.from_code",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "NativePythonCompilation",
+              "rationale": "",
+              "source": "@dataclass(eq=False)\nclass NativeCodeEmission:\n    \"\"\"One actual load site, with its observed native creation/attachment events.\n\n    Identity is this emission, never CodeType equality, flags or source span.\n    All fields are transient. The compact receipt is constructed only once.\n    \"\"\"\n\n    compilation: NativeCompilationIdentity\n    load: dis.Instruction\n    creation: dis.Instruction | None = None\n    attachments: list[dis.Instruction] = field(default_factory=list)\n\n    @property\n    def code(self) -> CodeType:\n        return cast(CodeType, self.load.argval)\n\n    @cached_property\n    def receipt(self) -> ExactNativeFunctionExecution | None:\n        line, end_line, column, end_column = self.load.positions\n        if None in (line, end_line, column, end_column):\n            return None\n        return ExactNativeFunctionExecution(\n            self.compilation,\n            SourceByteSpan(line - 1, end_line - 1, column, end_column),\n            self.code.co_flags,\n        )\n\n\nclass NativeCreationOperation(ABC, metaclass=AutoRegisterMeta):\n    \"\"\"Three admitted native transfers, registered from their declarations.\"\"\"\n\n    __registry__: ClassVar[dict[str, type[NativeCreationOperation]]] = {}\n    __registry_key__ = \"native_name\"\n    __skip_if_no_key__ = True\n    native_name: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def advance(\n        cls,\n        attribute_flags: frozenset[int],\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        raise NotImplementedError\n\n\nclass LoadNativeCode(NativeCreationOperation):\n    native_name = \"LOAD_CONST\"\n\n    @classmethod\n    def advance(\n        cls,\n        attribute_flags: frozenset[int],\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        return emission\n\n\nclass MakeNativeFunction(NativeCreationOperation):\n    native_name = \"MAKE_FUNCTION\"\n\n    @classmethod\n    def advance(\n        cls,\n        attribute_flags: frozenset[int],\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        if current is None or current.creation is not None:\n            return None\n        current.creation = instruction\n        return current\n\n\nclass AttachNativeFunctionAttribute(NativeCreationOperation):\n    native_name = \"SET_FUNCTION_ATTRIBUTE\"\n\n    @classmethod\n    def advance(\n        cls,\n        attribute_flags: frozenset[int],\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        if (\n            current is None\n            or current.creation is None\n            or instruction.arg not in attribute_flags\n        ):\n            return None\n        current.attachments.append(instruction)\n        return current\n\n\nclass NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):\n    \"\"\"Compiler-owned role evidence with a shared complete-emission inventory.\"\"\"\n\n    __registry__: ClassVar[dict[tuple[str, tuple[int, int]], type[NativeCreationBackend]]] = {}\n    __registry_key__ = \"compiler_identity\"\n    __skip_if_no_key__ = True\n    compiler_identity: ClassVar[tuple[str, tuple[int, int]]]\n\n    @classmethod\n    def current(cls) -> NativeCreationBackend:\n        native_identity = (sys.implementation.name, sys.version_info[:2])\n        return cls.__registry__.get(native_identity, SpanOnlyCreationBackend)()\n\n    @abstractmethod\n    def instructions(self, parent: CodeType) -> Iterable[dis.Instruction]:\n        raise NotImplementedError\n\n    @abstractmethod\n    def observe(\n        self,\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        raise NotImplementedError\n\n    @abstractmethod\n    def proves_body(self, emission: NativeCodeEmission) -> bool:\n        raise NotImplementedError\n\n    def select(self, bucket: list[NativeCodeEmission]) -> NativeCodeEmission | None:\n        \"\"\"Keep all emission sites until this single cardinality decision.\"\"\"\n        candidates = bucket if len(bucket) == 1 else tuple(\n            emission for emission in bucket if self.proves_body(emission)\n        )\n        return candidates[0] if len(candidates) == 1 else None\n\n    def emissions(\n        self, code: CodeType, compilation: NativeCompilationIdentity\n    ) -> Iterator[NativeCodeEmission]:\n        \"\"\"Stream transient sites; attachment evidence finalizes on exhaustion.\n\n        This is an internal collection phase, not a stream of completed proofs.\n        project() exhausts it before selecting any complete source-span bucket.\n        \"\"\"\n        pending = [code]\n        while pending:\n            parent = pending.pop()\n            if not any(isinstance(value, CodeType) for value in parent.co_consts):\n                continue\n            current = None\n            for instruction in self.instructions(parent):\n                emission = None\n                if isinstance(instruction.argval, CodeType):\n                    emission = NativeCodeEmission(compilation, instruction)\n                    # Merely occurring in co_consts is not emission evidence.\n                    pending.append(emission.code)\n                    yield emission\n                current = self.observe(current, instruction, emission)\n\n    def project(self, code: CodeType, compilation: NativeCompilationIdentity) -> _NativeExecutionIndex:\n        buckets: dict[SourceByteSpan, list[NativeCodeEmission]] = {}\n        incomplete = False\n        for emission in self.emissions(code, compilation):\n            receipt = emission.receipt\n            if receipt is None:\n                incomplete = True\n            else:\n                buckets.setdefault(receipt.source_span, []).append(emission)\n        exact: dict[SourceByteSpan, ExactNativeFunctionExecution] = {}\n        ambiguous: set[SourceByteSpan] = set()\n        for span, bucket in buckets.items():\n            selected = self.select(bucket)\n            if selected is None:\n                ambiguous.add(span)\n            else:\n                # Buckets only contain emissions with an existing exact receipt.\n                exact[span] = cast(ExactNativeFunctionExecution, selected.receipt)\n        return _NativeExecutionIndex(\n            compilation,\n            IdentityHandleMultiplicityProjection(exact, frozenset(ambiguous)),\n            incomplete,\n        )\n\n\nclass SpanOnlyCreationBackend(NativeCreationBackend):\n    \"\"\"No compiler-origin body-role claim outside an admitted backend.\"\"\"\n\n    def instructions(self, parent: CodeType) -> Iterable[dis.Instruction]:\n        return dis.get_instructions(parent)\n\n    def observe(\n        self,\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        return None\n\n    def proves_body(self, emission: NativeCodeEmission) -> bool:\n        return False\n\n\nclass CPython314CreationBackend(NativeCreationBackend):\n    \"\"\"Admit CPython 3.14's annotation attachment to its raw function body.\n\n    This is a compiler construction invariant, not opcode-shape inference:\n    codegen_function_annotations supplies MAKE_FUNCTION_ANNOTATE to\n    codegen_function_body. Generated providers/wrappers lack that attachment.\n    The preserved target is the raw body, before decorators or wrapper calls.\n    \"\"\"\n\n    compiler_identity = (\"cpython\", (3, 14))\n\n    def __init__(self) -> None:\n        # Access only after explicit compiler admission; missing capability is\n        # a failed backend contract, never an empty metadata fallback.\n        self.native_attributes: tuple[str, ...] = dis.FUNCTION_ATTR_FLAGS\n        if self.native_attributes.count(\"annotate\") != 1:\n            raise RuntimeError(\"Admitted CPython 3.14 backend lacks unique annotate metadata\")\n\n    @cached_property\n    def annotate_flag(self) -> int:\n        return 1 << self.native_attributes.index(\"annotate\")\n\n    @cached_property\n    def attribute_flags(self) -> frozenset[int]:\n        return frozenset(1 << index for index, _ in enumerate(self.native_attributes))\n\n    @cached_property\n    def operations(self) -> dict[int, type[NativeCreationOperation]]:\n        return {\n            dis.opmap[operation.native_name]: operation\n            for operation in NativeCreationOperation.__registry__.values()\n        }\n\n    def instructions(self, parent: CodeType) -> Iterable[dis.Instruction]:\n        # Includes direct jumps plus native exception entries and boundaries.\n        return dis.Bytecode(parent)\n\n    def observe(\n        self,\n        current: NativeCodeEmission | None,\n        instruction: dis.Instruction,\n        emission: NativeCodeEmission | None,\n    ) -> NativeCodeEmission | None:\n        if instruction.is_jump_target:\n            current = None\n        operation = self.operations.get(instruction.opcode)\n        if operation is None:\n            return None\n        return operation.advance(self.attribute_flags, current, instruction, emission)\n\n    def proves_body(self, emission: NativeCodeEmission) -> bool:\n        return any(event.arg == self.annotate_flag for event in emission.attachments)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "_NativeExecutionIndex.from_code(self.compile(), self.identity)",
+                  "new_source": "NativeCreationBackend.current().project(self.compile(), self.identity)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "NativePythonCompilation._execution_outcome",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

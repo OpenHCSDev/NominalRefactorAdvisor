@@ -135,7 +135,7 @@ def test_unavailable_native_evidence_is_retained_on_declaration(
     sys.version_info < (3, 12), reason="Native generic syntax needs 3.12+"
 )
 def test_generic_definition_keeps_ambiguous_native_span() -> None:
-    module = _module("async def sample[T](value: T) -> T:\n    return value\n")
+    module = _module("async def sample[T](value):\n    return value\n")
     (declaration,) = compact_product_flow_projection(module).function_declarations
     assert declaration.execution.mode is None
     assert declaration.execution.violation is (

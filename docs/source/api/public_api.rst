@@ -185,10 +185,21 @@ applies seven authored DSL stages against ``4515378``.
 
 Native indexing skips disassembly when a code object's constant tuple contains
 no child code objects. Child constants that do exist still require emitted
-instruction positions before they contribute evidence. Python 3.14 annotation
-helpers can share a function's full span and raw flags, so annotated definitions
-can have ambiguous receipts even without type parameters. No name-based helper
-filter resolves that ambiguity.
+instruction positions before they contribute evidence. The CPython 3.14 backend
+resolves annotation-helper ambiguity through native function creation and
+annotation attachment. A unique attached target identifies the raw declaration
+body even when its helper has identical names, flags and source geometry.
+Compiler support is declared on the backend; other interpreters retain the
+span-uniqueness rule.
+
+Creation evidence follows contiguous admitted native operations. Jump and
+exception entries end an existing creation region; an independent code load can
+start another. Each load site remains distinct, including repeated loads of the
+same code object in ``finally``. Multiple candidate targets and unannotated
+generic wrappers remain open. Transient instruction and code objects are
+discarded after the compact index is built. The
+:download:`native-creation refactor <../../examples/native_creation.json>`
+applies eight authored DSL stages against ``b79684a``.
 
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.

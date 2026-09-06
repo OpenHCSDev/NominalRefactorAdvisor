@@ -2577,3 +2577,66 @@ validation and design notes separate from the API reference. The native-binding,
 definition-result and registry-identity regressions remain unsuppressed, and
 their files remain outside this prerequisite commit rather than being presented
 as repaired.
+
+### 2026-09-06: Native creation-site evidence resolves annotation helpers
+
+CPython 3.14 can emit a function body and its annotation helper at the same
+full source span. A native control makes their names, signatures, flags and
+first lines identical too. The new compiler backend identifies the body through
+its actual creation and annotation-attachment events. This relies on the
+inspected compiler's construction rule: annotation providers are attached to
+source-function bodies, not to the generated providers or generic wrappers.
+It is a raw-code relation, independent of any subsequent decorator result.
+
+`NativeCodeEmission` represents one actual load site. Its creation and attachment
+instructions remain transient and its compact receipt is constructed once.
+All sites for a span remain available until the backend makes the cardinality
+decision. Two loads of the same code object in a lowered `finally` remain two
+sites and therefore remain ambiguous. An unannotated generic wrapper also
+remains open. Unknown operations and incoming jump or exception boundaries end
+the current creation region; an independent load can start a new region.
+The backend uses the native `Bytecode` iterator's exception labels, without a
+second disassembly or a hand-written exception-table decoder.
+
+Compiler admission and native operation identity belong to their respective
+registered declarations. Operation consumers do not name a concrete backend.
+Native operand metadata supplies the admitted attribute flags. Other compiler
+identities retain span uniqueness without gaining annotation-role claims.
+Only compact receipts survive index construction. The former index-construction
+wrapper is removed; the existing compilation owner directly asks its backend
+for the compact index.
+
+The eight-stage authored DSL artifact, `docs/examples/native_creation.json`,
+replays against `b79684a`. Current-CLI simulation is clean and API replay matches
+the resulting production AST. The automatic-package-context audit completes
+all 79 detectors with no omissions or findings. Focused native suites initially
+pass 48 cases with seven skips on Python 3.11 and all 55 cases on Python 3.14.
+Native tests observe the selected transient code object and compare it by
+identity with the actual captured function from that same compiled module;
+equal flags alone are insufficient for the helper collision control.
+
+An identical 133-module, 6,190-declaration baseline corpus resolves all 6,188
+previously ambiguous declarations on CPython 3.14. The result is 6,162 ordinary
+and 28 generator declarations. Python 3.11 outcomes and pickle sizes are
+unchanged. On 3.14, declaration-receipt payload grows from 326,222 to 344,679
+bytes as open receipts become exact. A separate-process comparison with verified
+baseline imports measures warm index construction at 1.600 seconds before and
+1.796 seconds after. Compilation is excluded equally; these shared-host timings
+are observations, not an overall speedup claim. The corresponding 3.11 timing
+pair has material host-load variation and does not isolate implementation cost.
+Receipts and commands are in `/var/tmp/nra_native_creation_owner_draft_handoff.md`.
+
+These changes do not close the fourteen native-binding, definition-result and
+registry-identity regressions. Those gates still need call activation, effects
+and final selected-object evidence. Diataxis keeps this explanation and the
+validation record separate from the supported-behaviour API reference.
+
+Final source-frozen suites pass 2,719 cases with 34 skipped on Python 3.11
+and 2,753 on Python 3.14. Both retain exactly the fourteen preceding integrity
+failure IDs, verified against the pre-integration full-suite receipts. None is
+skipped or marked as expected failure. The new creation suite checks 33 cases
+on 3.14 and 16 with 17 capability/syntax skips on 3.11, including exact selected
+code identity, native control-flow entry, unknown instructions, invalid operands,
+unsupported compiler admission and absence of native objects from cached state.
+Full logs are `/var/tmp/nra-native-creation-final-{311,314}.log`. Sphinx succeeds
+with the two existing duplicate-description warnings; Black and Ruff are clean.
