@@ -1116,3 +1116,59 @@ module ASTs. Ruff and the whitespace check passed. The rendered reference
 contains the new header-boundary description; Sphinx retained its two existing
 duplicate-description warnings. The preceding commit `9bacb9a` completed CI on
 all platforms. `uv.lock` remains unrelated and excluded.
+
+## Shared reaching-write evidence for bound call results (2026-09-06)
+
+Tracing the remaining constructed-instance call-selection gap exposed a second
+binding algorithm in `CompactFunctionFlow.bound_call_result_for`. Unlike the
+existing lexical binding resolver, it ignored conditional writes between a
+factory call and its consumer. It also tracked only an attribute's exact path,
+so replacing `owner` or `owner.child` could leave `owner.child.result` falsely
+associated with an earlier call. That association feeds the declared return
+type used by carrier-expansion proofs.
+
+Both queries now use the same flow-owned mutation selection. Bound-result
+lookup selects the reaching write first and then joins it to its originating
+call. Access-prefix semantics belong to `LexicalValueReference.is_prefix_of`.
+Parent replacements invalidate the result; sibling writes and writes inside
+the result do not replace its identity. Conditional bindings retain the
+existing unresolved outcome. No new registry, state cache or variant class was
+introduced.
+
+`docs/examples/bound_result_binding.py` applies the change as four dependent DSL
+stages. Replaying it from `7bbf17f` reproduces both complete edited module ASTs.
+This is an authored semantic change, not an equivalence claim: the old lookup
+returned an unjustified factory origin for the regression cases. The DSL still
+requires authored method bodies for this extraction; selecting and moving an
+existing method region is a separate capability gap.
+
+The focused 144-test run includes conditional assignments, iteration/context/
+pattern bindings, deletion, parent-path replacement, retained sibling paths,
+and downstream refusal to derive a carrier-expansion proof from a conditionally
+rebound value. A 1,000-assignment native-flow probe, comparing the committed
+method with the new method on the same facts, measured median lookup times of
+197.48 ms and 0.60 ms across five repetitions. This measures removal of the
+per-call mutation rescan, not whole-repository scan throughput. All 81 detectors
+completed the touched-source audit with zero findings. Sphinx built the API
+reference with its two existing duplicate-description warnings.
+
+The preceding Windows 3.11 CI failures passed on an unchanged rerun of
+`34012234564`. The original run crossed the 20-second CLI deadline in two tiny
+synthesis tests; local reproductions took about 2.4 seconds each. The deadline
+has not been increased, and the successful rerun does not establish a root
+cause for the intermittent timing failure.
+
+Next: establish constructed-receiver identity through existing class and flow
+evidence before broadening declaration-selected call edits. A class-name match
+alone does not rule out constructor replacement, custom lookup or intervening
+mutation. Do not substitute the stricter dataclass field-schema proof for this
+different required relation.
+
+Full validation passed 2,354 tests with 15 skipped on Python 3.11 and 2,369
+tests on Python 3.14, using eight pytest workers. The latter run retained 96
+warnings about forking a multi-threaded process; the analysis-pool lifecycle
+needs a separate audit rather than hiding the warnings. Logs are
+`/tmp/nra-binding-full.log` and `/tmp/nra-binding-full-314.log`; the focused,
+architecture, benchmark and documentation receipts share the
+`/tmp/nra-binding-*` or `/tmp/nra-bound-result-*` prefix. Ruff and the whitespace
+check passed. The unrelated `uv.lock` change remains excluded.

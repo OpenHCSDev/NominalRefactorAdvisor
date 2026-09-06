@@ -1042,25 +1042,12 @@ class CompactFunctionFlow:
     global_binding_names: tuple[str, ...]
     nonlocal_binding_names: tuple[str, ...]
 
-    @property
-    def local_signature_is_observed(self) -> bool:
-        return CompactLocalSignatureObserver.observes_any(self.calls)
-
-    @cached_property
-    def mutations_by_root_name(self) -> dict[str, tuple[CompactLexicalMutation, ...]]:
-        grouped: dict[str, list[CompactLexicalMutation]] = {}
-        for mutation in self.mutations:
-            if mutation.reference.attribute_path:
-                continue
-            grouped.setdefault(mutation.reference.root_name, []).append(mutation)
-        return {name: tuple(mutations) for name, mutations in grouped.items()}
-
-    def binding_resolution_for(
-        self, root_name: str, use_position: CompactFlowPosition | None = None
+    def _binding_resolution_for_mutations(
+        self,
+        mutations: tuple[CompactLexicalMutation, ...],
+        use_position: CompactFlowPosition | None,
     ) -> CompactBindingMutationResolution | None:
-        """Select one binding from ordered flow facts; absence permits outer lookup."""
-
-        mutations = self.mutations_by_root_name.get(root_name, ())
+        """Select a write once for both lexical and bound-result queries."""
         if not mutations:
             return None
         if any(mutation.position.branch_path for mutation in mutations):
@@ -1080,6 +1067,27 @@ class CompactFunctionFlow:
             )
         return ExactCompactBindingMutation(dominating[-1])
 
+    @property
+    def local_signature_is_observed(self) -> bool:
+        return CompactLocalSignatureObserver.observes_any(self.calls)
+
+    @cached_property
+    def mutations_by_root_name(self) -> dict[str, tuple[CompactLexicalMutation, ...]]:
+        grouped: dict[str, list[CompactLexicalMutation]] = {}
+        for mutation in self.mutations:
+            if mutation.reference.attribute_path:
+                continue
+            grouped.setdefault(mutation.reference.root_name, []).append(mutation)
+        return {name: tuple(mutations) for name, mutations in grouped.items()}
+
+    def binding_resolution_for(
+        self, root_name: str, use_position: CompactFlowPosition | None = None
+    ) -> CompactBindingMutationResolution | None:
+        """Select one binding from ordered flow facts; absence permits outer lookup."""
+        return self._binding_resolution_for_mutations(
+            self.mutations_by_root_name.get(root_name, ()), use_position
+        )
+
     @cached_property
     def exact_aliases_by_binding_mutation(
         self,
@@ -1092,37 +1100,26 @@ class CompactFunctionFlow:
         use_position: CompactFlowPosition,
     ) -> CompactFunctionCall | None:
         """Return the unique call whose unchanged result reaches one use."""
-
-        matching_calls = []
-        mutations = tuple(
-            mutation
-            for mutation in self.mutations
-            if mutation.reference == reference
-        )
-        for call in self.calls:
-            if (
-                call.result.binding != reference
-                or not call.position.dominates(use_position)
-            ):
-                continue
-            binding_mutations = tuple(
+        selection = self._binding_resolution_for_mutations(
+            tuple(
                 mutation
-                for mutation in mutations
-                if mutation.kind is CompactMutationKind.ASSIGNMENT
-                and mutation.position.branch_path == call.position.branch_path
-                and mutation.position.statement_index == call.position.statement_index
-                and call.position.dominates(mutation.position)
-            )
-            if len(binding_mutations) != 1:
-                continue
-            binding_position = binding_mutations[0].position
-            if any(
-                binding_position.dominates(mutation.position)
-                and mutation.position.dominates(use_position)
-                for mutation in mutations
-            ):
-                continue
-            matching_calls.append(call)
+                for mutation in self.mutations
+                if mutation.reference.is_prefix_of(reference)
+            ),
+            use_position,
+        )
+        binding = None if selection is None else selection.mutation
+        if binding is None or binding.kind is not CompactMutationKind.ASSIGNMENT:
+            return None
+        matching_calls = tuple(
+            call
+            for call in self.calls
+            if call.result.binding == reference
+            and binding.reference == reference
+            and binding.position.branch_path == call.position.branch_path
+            and binding.position.statement_index == call.position.statement_index
+            and call.position.dominates(binding.position)
+        )
         return matching_calls[0] if len(matching_calls) == 1 else None
 
     def value_origin_for(

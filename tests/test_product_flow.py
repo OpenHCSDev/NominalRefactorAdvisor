@@ -32,6 +32,7 @@ from nominal_refactor_advisor.product_flow import (
     compact_product_flow_projection,
 )
 
+
 def _parsed_module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("pkg/sample.py"),
@@ -225,6 +226,68 @@ def test_function_flow_proves_unchanged_bound_call_result() -> None:
 
     assert flow.bound_call_result_for(result, first_consume.position) == make_call
     assert flow.bound_call_result_for(result, second_consume.position) is None
+
+
+@pytest.mark.parametrize(
+    "intervening",
+    (
+        "if flag:\n        result = replacement",
+        "for result in replacements:\n        pass",
+        "try:\n        result = replacement\n    except Exception:\n        pass",
+        "with manager as result:\n        pass",
+        "match replacement:\n        case {'value': result}:\n            pass",
+        "if flag:\n        del result",
+    ),
+)
+def test_bound_call_result_respects_selected_binding(intervening: str) -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def caller():\n"
+            "    result = make()\n"
+            f"    {intervening}\n"
+            "    consume(result)\n"
+        )
+    )
+    flow = next(item for item in projection.flows if item.owner.qualname == "caller")
+    consume = next(
+        call for call in flow.calls if call.target.terminal_name == "consume"
+    )
+    selection = flow.binding_resolution_for("result", consume.position)
+    assert selection is not None
+    assert selection.mutation is None or selection.mutation.kind is not (
+        CompactMutationKind.ASSIGNMENT
+    )
+    assert flow.bound_call_result_for(_value("result"), consume.position) is None
+
+
+@pytest.mark.parametrize(
+    "mutation,retains_result",
+    (
+        ("owner = replacement", False),
+        ("owner.child = replacement", False),
+        ("owner.child.result = replacement", False),
+        ("if flag:\n        owner.child = replacement", False),
+        ("owner.sibling = replacement", True),
+        ("owner.child.result.field = replacement", True),
+    ),
+)
+def test_bound_attribute_result_tracks_its_access_path(
+    mutation: str, retains_result: bool
+) -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            "def caller():\n"
+            "    owner.child.result = make()\n"
+            f"    {mutation}\n"
+            "    consume(owner.child.result)\n"
+        )
+    )
+    flow = next(item for item in projection.flows if item.owner.qualname == "caller")
+    make, consume = flow.calls
+    reference = LexicalValueReference("owner", ("child", "result"))
+    assert flow.bound_call_result_for(reference, consume.position) == (
+        make if retains_result else None
+    )
 
 
 def test_function_signature_rejects_every_non_exact_binding_boundary() -> None:

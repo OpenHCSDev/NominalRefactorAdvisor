@@ -31,6 +31,13 @@ class LexicalValueReference(CompactValueExpression):
     root_name: str
     attribute_path: tuple[str, ...] = ()
 
+    def is_prefix_of(self, other: "LexicalValueReference") -> bool:
+        """Whether replacing this reference can replace the other's value."""
+        return (
+            self.root_name == other.root_name
+            and other.attribute_path[: len(self.attribute_path)] == self.attribute_path
+        )
+
     def select_expression(
         self,
         root: ast.Name,

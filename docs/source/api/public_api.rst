@@ -71,7 +71,11 @@ unrelated class with the same terminal name does not establish a binding.
 lexical and class-method lookup. Explicit use positions select the preceding
 write; deferred module and class namespace lookup uses the final write.
 Deferred closure lookup with multiple writes remains unresolved. Conditional
-writes also remain unresolved.
+writes also remain unresolved. Bound call-result queries use the same write
+selection. For an attribute result such as ``owner.child.result``, replacing
+``owner`` or ``owner.child`` invalidates that result's provenance; writes to
+sibling attributes do not. An unresolved binding cannot supply the declared
+return type used by carrier-expansion refactor proofs.
 
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.

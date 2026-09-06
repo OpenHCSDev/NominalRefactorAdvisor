@@ -62,6 +62,22 @@ def _closed_expansion_source() -> str:
     )
 
 
+def test_conditional_carrier_rebinding_does_not_supply_a_refactor_proof() -> None:
+    source = _closed_expansion_source().replace(
+        "    return _middle(context.first, context.second)",
+        "    if base.first:\n"
+        "        context = replacement\n"
+        "    return _middle(context.first, context.second)",
+    )
+    modules = (_module("pkg.rebound", source),)
+    builder = DeclaredCarrierExpansionBuilder.from_modules(modules)
+    assert builder.expansions == ()
+    assert builder.assessed_components() == ()
+    assert (
+        DeclaredCarrierExpansionDetector().detect(list(modules), DetectorConfig()) == []
+    )
+
+
 def test_builder_derives_field_mapping_from_bound_nominal_carrier() -> None:
     builder = DeclaredCarrierExpansionBuilder.from_modules(
         (
