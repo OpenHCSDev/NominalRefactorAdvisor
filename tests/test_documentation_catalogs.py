@@ -42,16 +42,16 @@ def test_operation_catalog_tracks_registered_declarations_and_is_repeatable(
     assert catalog.stat().st_mtime_ns == before
 
 
-def test_retired_detector_disappears_from_derived_catalogues(tmp_path: Path) -> None:
+@pytest.mark.parametrize("detector_id", ("autoregister_meta_under_rented", "premature_registry_infrastructure"))
+def test_retired_detector_disappears_from_derived_catalogues(tmp_path: Path, detector_id: str) -> None:
     reference_dir = tmp_path / "api/detector_reference"
     reference_dir.mkdir(parents=True)
-    stale_page = reference_dir / "autoregister_meta_under_rented.rst"
+    stale_page = reference_dir / f"{detector_id}.rst"
     stale_page.write_text("Obsolete generated detector documentation")
     _generator()["generate_api_reference_pages"](tmp_path)
     assert not stale_page.exists()
     for path in (tmp_path / "api/_generated").glob("*.rst"):
-        assert "autoregister_meta_under_rented" not in path.read_text()
-        assert "AutoRegisterMetaUnderRented" not in path.read_text()
+        assert detector_id not in path.read_text()
 
 
 def test_new_operation_appears_without_a_second_catalogue_declaration(

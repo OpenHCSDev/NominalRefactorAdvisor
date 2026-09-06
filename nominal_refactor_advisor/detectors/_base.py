@@ -6983,20 +6983,6 @@ class KeyedRegistryFactCandidate(ABC):
 
 
 @dataclass(frozen=True)
-class PrematureRegistryInfrastructureCandidate(
-    KeyedRegistryFactCandidate,
-    KeyedRegistryAxisSurface,
-    ClassLineWitnessCandidate,
-):
-    missing_maturity_signals: tuple[str, ...]
-
-    @classmethod
-    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
-        del cls
-        return bool(fact.missing_maturity_signals)
-
-
-@dataclass(frozen=True)
 class InjectiveTypeRegistryCandidate(
     KeyedRegistryFactCandidate,
     InjectiveRegistryProofSurface,

@@ -1,0 +1,85 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_systemic.py",
+              "target_qualname": "_CompactPrematureRegistryInfrastructureDetectorBase",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_systemic.py",
+              "target_qualname": "_registry_maturity_fanout_metrics",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_base.py",
+              "target_qualname": "PrematureRegistryInfrastructureCandidate",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "declare_candidate_rule_detector(\n    PrematureRegistryInfrastructureCandidate,\n    high_confidence_spec(\n        PatternId.AUTO_REGISTER_META,\n        \"Registry infrastructure lacks maturity evidence\",\n        \"A registry-shaped class has not exposed a stable key axis, explicit registration lifecycle, and multiple consumers in the analyzed source. That is a proof gap, not proof that the boundary must be removed; external registration or future consumers may supply the missing context.\",\n        \"source-backed registry maturity proof over key axis, lifecycle, and consumer fanout\",\n        \"keyed registry shape exists without enough observed cases, lifecycle, and consumers to prove its authority\",\n        (\n            CapabilityTag.CLASS_LEVEL_REGISTRATION,\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n        ),\n        (\n            ObservationTag.CLASS_FAMILY,\n            ObservationTag.MANUAL_SYNCHRONIZATION,\n        ),\n    ),\n    summary=lambda candidate: (\n        f\"`{candidate.class_name}` is registry-shaped over `{candidate.key_type_name}` via \"\n        f\"`{candidate.registry_key_attr_name}`, but missing maturity signals \"\n        f\"{candidate.missing_maturity_signals}: cases {candidate.registered_case_names}, \"\n        f\"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}.\"\n    ),\n    evidence=lambda candidate: (candidate.evidence,),\n    metrics=_registry_maturity_fanout_metrics,\n    detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,\n)\n\n\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/detectors/_systemic.py",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

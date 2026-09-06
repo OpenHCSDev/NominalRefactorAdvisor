@@ -2484,37 +2484,6 @@ class _CompactKeyedRegistryCandidateDetectorBase(
     )
 
 
-class _CompactPrematureRegistryInfrastructureDetectorBase(
-    _CompactKeyedRegistryCandidateDetectorBase[
-        PrematureRegistryInfrastructureCandidate
-    ],
-):
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_keyed_registry_axis_root
-    )
-
-    def _candidates_from_compact_projections(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        config: DetectorConfig,
-    ) -> Sequence[PrematureRegistryInfrastructureCandidate]:
-        return PrematureRegistryInfrastructureCandidate.from_facts(
-            _compact_keyed_registry_axis_facts(projections, config)
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: tuple[CompactModuleClassProjection, ...],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
-        return self._findings_for_candidates(
-            PrematureRegistryInfrastructureCandidate.from_facts(facts), config
-        )
-
-
 class _CompactNonInjectiveTypeRegistryDetectorBase(
     _CompactKeyedRegistryCandidateDetectorBase[NonInjectiveTypeRegistryCandidate],
 ):
@@ -2633,15 +2602,6 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
             ),
             config,
         )
-
-
-def _registry_maturity_fanout_metrics(
-    candidate: PrematureRegistryInfrastructureCandidate,
-) -> RegistrationMetrics:
-    return RegistrationMetrics(
-        registration_site_count=len(candidate.registered_case_names),
-        registry_name=candidate.class_name,
-    )
 
 
 declare_candidate_rule_detector(
@@ -2799,36 +2759,6 @@ declare_candidate_rule_detector(
         ),
     ),
     detector_base=_CompactRegistryProjectionPolicyAuthorityDetectorBase,
-)
-
-
-declare_candidate_rule_detector(
-    PrematureRegistryInfrastructureCandidate,
-    high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Registry infrastructure lacks maturity evidence",
-        "A registry-shaped class has not exposed a stable key axis, explicit registration lifecycle, and multiple consumers in the analyzed source. That is a proof gap, not proof that the boundary must be removed; external registration or future consumers may supply the missing context.",
-        "source-backed registry maturity proof over key axis, lifecycle, and consumer fanout",
-        "keyed registry shape exists without enough observed cases, lifecycle, and consumers to prove its authority",
-        (
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.class_name}` is registry-shaped over `{candidate.key_type_name}` via "
-        f"`{candidate.registry_key_attr_name}`, but missing maturity signals "
-        f"{candidate.missing_maturity_signals}: cases {candidate.registered_case_names}, "
-        f"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}."
-    ),
-    evidence=lambda candidate: (candidate.evidence,),
-    metrics=_registry_maturity_fanout_metrics,
-    detector_base=_CompactPrematureRegistryInfrastructureDetectorBase,
 )
 
 

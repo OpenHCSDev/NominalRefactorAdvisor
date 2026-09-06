@@ -3036,10 +3036,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
             keyed_registry_projection,
         ),
         (
-            systemic_detectors.PrematureRegistryInfrastructureDetector,
-            keyed_registry_projection,
-        ),
-        (
             systemic_detectors.RegistryProjectionSurfaceDetector,
             replace(empty_projection, named_projection_surfaces=(object(),)),
         ),
@@ -4763,7 +4759,6 @@ def test_keyed_registry_detectors_share_one_compact_repository_context(
     detector_types = (
         systemic_detectors.NonInjectiveTypeRegistryDetector,
         systemic_detectors.InjectiveTypeRegistryDetector,
-        systemic_detectors.PrematureRegistryInfrastructureDetector,
         systemic_detectors.RegistryProjectionSurfaceDetector,
         systemic_detectors.RegistryProjectionPolicyAuthorityDetector,
     )
@@ -4820,7 +4815,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
         systemic_detectors.CrossModuleAxisShadowFamilyDetector,
-        systemic_detectors.PrematureRegistryInfrastructureDetector,
         systemic_detectors.InheritedAutoRegisterConfigBoilerplateDetector,
         systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
     )
@@ -6177,9 +6171,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert systemic_detectors.InjectiveTypeRegistryDetector in (
-        partition.compact_global_detector_types
-    )
-    assert systemic_detectors.PrematureRegistryInfrastructureDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.RepeatedKeyedFamilyDetector in (

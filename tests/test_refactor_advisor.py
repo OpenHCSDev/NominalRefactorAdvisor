@@ -18,6 +18,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from registry_test_sources import _type_keyed_behavior_projection_source
+
 import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
@@ -13591,40 +13593,16 @@ def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
     assert "ModeAssemblyPolicy" in finding.summary
 
 
-def test_detects_premature_registry_infrastructure(tmp_path: Path) -> None:
+def test_single_case_registry_does_not_create_a_maturity_obligation(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n',
     )
     findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "premature_registry_infrastructure"
-        )
-    )
-    assert "ModeRunner" in finding.summary
-    assert "registered_case_axis" in finding.summary
-    assert "lookup_lifecycle" in finding.summary
-    assert "consumer_fanout" in finding.summary
-    assert finding.certification == CertificationLevel.STRONG_HEURISTIC
-    assert "maturity evidence" in finding.title
+    assert all(finding.detector_id != "premature_registry_infrastructure" for finding in findings)
 
 
-def test_ignores_mature_registry_infrastructure(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
-    )
-    assert not any(
-        (
-            finding.detector_id == "premature_registry_infrastructure"
-            for finding in analyze_path(tmp_path)
-        )
-    )
 
 
 def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
@@ -26646,80 +26624,6 @@ def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(
     assert "`inner`" in findings[0].summary
 
 
-def _type_keyed_behavior_projection_source() -> str:
-    return """
-from abc import ABC, abstractmethod
-from typing import ClassVar
-from metaclass_registry import AutoRegisterMeta
-from nominal_refactor_advisor.registry_identity import mro_registry_value
-
-
-class Event:
-    value: str
-
-
-class NamedEvent(Event):
-    name: str
-
-
-class CountedEvent(Event):
-    count: int
-
-
-class EventProjection(ABC, metaclass=AutoRegisterMeta):
-    __registry__: ClassVar[dict[type[Event], type["EventProjection"]]] = {}
-    __registry_key__ = "event_type"
-    __skip_if_no_key__ = True
-    event_type: ClassVar[type[Event]]
-
-    @abstractmethod
-    def render(self, event: Event) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def projection_for(cls, event: Event):
-        projection_type = mro_registry_value(cls.__registry__, type(event))
-        return projection_type() if projection_type is not None else None
-
-    @classmethod
-    def render_for(cls, event: Event) -> str:
-        projection = cls.projection_for(event)
-        if projection is None:
-            return ""
-        return projection.render(event)
-
-
-class NamedEventProjection(EventProjection):
-    event_type = NamedEvent
-
-    def render(self, event: Event) -> str:
-        return event.name
-
-
-class CountedEventProjection(EventProjection):
-    event_type = CountedEvent
-
-    def render(self, event: Event) -> str:
-        return str(event.count)
-
-
-class FallbackEventProjection(EventProjection):
-    event_type = Event
-
-    def render(self, event: Event) -> str:
-        return event.value
-
-
-def render_event(event: Event) -> str:
-    return EventProjection.render_for(event)
-
-
-def render_event_locally(event: Event) -> str:
-    projection = EventProjection.projection_for(event)
-    if projection is None:
-        return ""
-    return projection.render(event)
-"""
 
 
 def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
