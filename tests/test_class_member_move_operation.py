@@ -103,12 +103,78 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     assert payload["target_qualname"] == "Intermediate"
     assert payload["destination"]["target_qualname"] == "Authority"
     assert payload["member_names"] == ("payload", "describe")
-    assert "class Authority(ABC):\n    label: ClassVar[str] = 'shared'\n\n    payload: ClassVar[int] = 3" in rewritten
+    assert (
+        "class Authority(ABC):\n    label: ClassVar[str] = 'shared'\n\n    payload: ClassVar[int] = 3"
+        in rewritten
+    )
     assert "    @classmethod\n    def describe(cls) -> str:" in rewritten
     assert "class Intermediate(Authority, ABC):\n    pass" in rewritten
 
     module_path.write_text(rewritten, encoding="utf-8", newline="")
     assert json.loads(_runtime_output(tmp_path)) == ["shared", 3, 3]
+
+
+@pytest.mark.parametrize(
+    "bases,safe", (("Other, Authority", False), ("Authority, Other", True))
+)
+def test_promotion_preserves_native_member_owner_across_branches(
+    tmp_path: Path, bases: str, safe: bool
+) -> None:
+    source = (
+        "class Authority: pass\n"
+        "class Other:\n    def value(self): return 'other'\n"
+        f"class Owner({bases}):\n    def value(self): return 'owned'\n"
+        "print(Owner().value())\n"
+    )
+    path = _write_module(tmp_path, "probe.py", source)
+    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    assert before.strip() == "owned"
+    operation = PromoteClassMembersToAncestorOperation(
+        target=SourceRewriteTarget(file_path=path.as_posix(), qualname="Owner"),
+        destination=SourceRewriteTarget(
+            file_path=path.as_posix(), qualname="Authority"
+        ),
+        member_names=("value",),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    if safe:
+        simulation = CodemodPlanSequence.from_operations((operation,)).simulate(
+            snapshot
+        )
+        assert simulation.is_clean
+        simulation.apply()
+        assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+    else:
+        with pytest.raises(ValueError):
+            CodemodPlanSequence.from_operations((operation,)).simulate(snapshot)
+        assert path.read_bytes() == source.encode("utf-8")
+
+
+def test_promotion_preserves_lookup_in_a_descendant_diamond(tmp_path: Path) -> None:
+    source = (
+        "class Authority: pass\n"
+        "class Other(Authority):\n    def value(self): return 'other'\n"
+        "class Owner(Authority):\n    def value(self): return 'owned'\n"
+        "class Leaf(Owner, Other): pass\n"
+        "print(Owner().value(), Leaf().value())\n"
+    )
+    path = _write_module(tmp_path, "probe.py", source)
+    assert (
+        subprocess.check_output([sys.executable, str(path)], text=True).strip()
+        == "owned owned"
+    )
+    operation = PromoteClassMembersToAncestorOperation(
+        target=SourceRewriteTarget(file_path=path.as_posix(), qualname="Owner"),
+        destination=SourceRewriteTarget(
+            file_path=path.as_posix(), qualname="Authority"
+        ),
+        member_names=("value",),
+    )
+    with pytest.raises(ValueError):
+        CodemodPlanSequence.from_operations((operation,)).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
+    assert path.read_bytes() == source.encode("utf-8")
 
 
 def test_chains_member_promotion_with_intermediate_authority_collapse(
@@ -152,8 +218,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
 
     assert result.is_clean is True
     assert tuple(
-        stage["recipes"][0]["operations"][0]["operation"]
-        for stage in payload["stages"]
+        stage["recipes"][0]["operations"][0]["operation"] for stage in payload["stages"]
     ) == (
         "promote_class_members_to_ancestor",
         "collapse_intermediate_class_authority",
@@ -245,7 +310,8 @@ def test_rejects_destination_outside_source_ancestry(tmp_path: Path) -> None:
     module_path.write_text(
         module_path.read_text(encoding="utf-8")
         + "\n\nclass Unrelated(ABC):\n    pass\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = PromoteClassMembersToAncestorOperation(
@@ -284,10 +350,10 @@ def test_rejects_class_local_declaration_dependency(tmp_path: Path) -> None:
     module_path.write_text(
         module_path.read_text(encoding="utf-8").replace(
             "    payload: ClassVar[int] = 3",
-            "    default_payload = 3\n"
-            "    payload: ClassVar[int] = default_payload",
+            "    default_payload = 3\n" "    payload: ClassVar[int] = default_payload",
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 

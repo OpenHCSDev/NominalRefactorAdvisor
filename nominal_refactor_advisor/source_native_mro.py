@@ -13,12 +13,12 @@ from .class_index import (
     IndexedClass,
     RepositoryModuleBindingProof,
 )
-from .class_mro import DeclarationMroType
+from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
+from .class_mro import DeclarationMroType, NativeMroBase
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .codemod_selection_context import CodemodSelectorContext
 from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import (
-    ClassNamespaceDeclaration,
     NativeDeclaration,
     QualifiedDeclaration,
 )
@@ -44,7 +44,7 @@ class SourceNativeClassMro:
     """Close reachable source bases, then delegate all precedence to native C3."""
 
     context: CodemodSelectorContext
-    native_roots: tuple[type, ...]
+    native_roots: tuple[type, ...] = tuple(base.python_type for base in NativeMroBase)
 
     @cached_property
     def native_declarations(self) -> dict[str, NativeClassMroDeclaration]:
@@ -95,14 +95,16 @@ class SourceNativeClassMro:
             raise ValueError("Dynamic MRO base application remains unproved")
         return witness.qualified_name
 
-    def after_substitution(
+    def for_source_class(
         self,
-        substitution: NativeClassBaseSubstitution,
+        source_class: IndexedClass,
+        *,
+        substitution: NativeClassBaseSubstitution | None = None,
     ) -> DeclarationMroType[QualifiedDeclaration]:
         classes = self.context.required_class_family_index.classes_by_symbol
         dependencies: dict[str, tuple[str, ...]] = {}
         projected: dict[str, type] = {}
-        pending = [substitution.owner.symbol]
+        pending = [source_class.symbol]
         while pending:
             symbol = pending.pop()
             if symbol in dependencies or symbol in projected:
@@ -129,7 +131,7 @@ class SourceNativeClassMro:
             bases = []
             for base in owner.node.bases:
                 base_symbol = self.required_base_symbol(owner, base)
-                if substitution.replaces(owner, base):
+                if substitution is not None and substitution.replaces(owner, base):
                     if isinstance(base, ast.Subscript):
                         substitution.replacement.require_generic_origin()
                     base_symbol = substitution.replacement.qualified_name
@@ -146,7 +148,7 @@ class SourceNativeClassMro:
                     )
         except (CycleError, TypeError) as error:
             raise ValueError("Replacement has no consistent native C3 order") from error
-        result = projected[substitution.owner.symbol]
+        result = projected[source_class.symbol]
         if not isinstance(result, DeclarationMroType):
             raise ValueError("Replacement target is not a source class")
         return result
@@ -156,20 +158,16 @@ class SourceNativeClassMro:
         substitution: NativeClassBaseSubstitution,
         method_name: str,
     ) -> None:
-        projected = self.after_substitution(substitution)
+        projected = self.for_source_class(substitution.owner, substitution=substitution)
         expected = substitution.replacement.declaration
         expected_owner = NativeClassMroDeclaration(
             next(owner for owner in expected.__mro__ if method_name in vars(owner))
         )
-        for declaration in projected.declarations[1:]:
-            if not isinstance(declaration, ClassNamespaceDeclaration):
-                raise ValueError("MRO class namespace remains unproved")
-            if method_name not in declaration.member_binding_names:
-                continue
-            if declaration == expected_owner:
-                return
-            raise ValueError(
-                f"Replacement selects {declaration.qualified_name!r}, "
-                "a competing method authority"
-            )
-        raise ValueError("Replacement method ownership remains unproved")
+        ClassMemberLookupProof(
+            projected,
+            (
+                ClassNamespaceDelta(
+                    substitution.owner, removed_names=frozenset((method_name,))
+                ),
+            ),
+        ).require_owner(method_name, expected_owner)

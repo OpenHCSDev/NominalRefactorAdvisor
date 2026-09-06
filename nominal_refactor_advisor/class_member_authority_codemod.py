@@ -25,6 +25,7 @@ from .class_index import (
     ClassSymbolResolutionAuthority,
     IndexedClass,
 )
+from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
 from .codemod_authority_claims import AstTargetAuthorityClaim
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,
@@ -74,6 +75,7 @@ from .source_index import (
     AstTargetNodeKind,
     SourceIndex,
 )
+from .source_native_mro import SourceNativeClassMro
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1565,6 +1567,31 @@ class ClassMemberMoveSelection:
             )
         for member in members:
             member.require_safe_move(context)
+        classes = snapshot.required_class_family_index.classes_by_symbol
+        source_declaration = classes[source_symbol]
+        destination_declaration = classes[destination_symbol]
+        transferred_names = requested_names & source_declaration.member_binding_names
+        namespace_changes = (
+            ClassNamespaceDelta(source_declaration, removed_names=requested_names),
+            ClassNamespaceDelta(destination_declaration, added_names=transferred_names),
+        )
+        hierarchy = SourceNativeClassMro(snapshot)
+        for symbol in (
+            destination_symbol,
+            *snapshot.required_class_family_index.descendant_symbols(destination_symbol),
+        ):
+            mro_type = hierarchy.for_source_class(classes[symbol])
+            before = ClassMemberLookupProof(mro_type)
+            after = ClassMemberLookupProof(mro_type, namespace_changes)
+            for name in resolved_names:
+                previous_owner = before.owner_of(name)
+                if previous_owner is not None:
+                    after.require_owner(
+                        name,
+                        destination_declaration
+                        if previous_owner is source_declaration
+                        else previous_owner,
+                    )
         return cls(context=context, members=members)
 
     def source_edits(self, rationale: str) -> tuple[PhysicalSourceEdit, ...]:

@@ -770,3 +770,57 @@ The next leverage target remains expressing recurring semantic refactors with
 fewer authored replacement bodies, using these shared proof boundaries rather
 than repeating checks in each operation. The current DSL plans demonstrate
 execution and replay; their length still exposes that semantic-vocabulary gap.
+
+### Shared Member Lookup Proof and Native Argument Effects
+
+General member promotion now shares the source/native C3 proof used by collector
+migration. It checks lookup across the destination's complete indexed descendant
+cohort, including diamonds. A moved member must retain the same selected owner,
+with the authored source-to-destination transfer as the only owner substitution.
+An earlier competing branch now prevents a move; a later branch remains valid.
+Annotation-only declarations do not manufacture installed class bindings.
+
+`ClassMemberLookupProof` owns lookup over C3 and projected namespace changes.
+`ClassNamespaceDelta` is an edit over an existing declaration, not another
+declaration identity. Native owner equality retains Python object identity even
+when two declarations have the same qualified name. Raw native terminal bases
+participate in lookup. Collector migration uses this shared proof instead of
+maintaining its own MRO-member loop.
+
+Closing source namespaces exposed a distinction between native generic aliases,
+which store arguments, and `typing.ClassVar`, which can hash or inspect them.
+Explicit `property`, `staticmethod` and `classmethod` calls can also execute
+argument metadata hooks. Native-process probes reproduce these hooks mutating
+the class namespace. Use-point `ScopedNativeReference` and `NativeArgumentEvidence`
+carry the evidence into declaration-owned subscription families and the argument
+inspection visitor. The existing lexical traversal still owns evaluation order
+and eager versus deferred annotation behaviour. Unknown computed references
+produce an explicit unproved result rather than an incidental lookup exception.
+
+The two-stage `native_argument_evidence_refactor.py` was used on the working
+source for the argument-evidence rename and move. A separate real CLI replay
+against the preserved intermediate files applied nine physical rewrites; the
+moved declaration AST matches that snapshot after the rename. Fresh imports
+confirm that the retained source binding refers to the same declaration object.
+Later authored argument-proof behaviour is outside that replay's comparison.
+
+The nine-stage `referenced_namespace_effect_refactor.py` records the subsequent
+shared-base factor. Its automated replay reconstructs the unfactored fields and
+getters from current source, simulates through the CLI, applies through the DSL,
+and compares the complete module AST and fresh-process effect observations.
+This baseline is reconstructed, not a preserved pre-edit checkout. The plan uses
+import, insertion, base, decorator, assignment and deletion operations without
+whole-method replacements. It was recorded after the structural edit: future
+supported edits should use the DSL before mutation so projected continuation
+analysis can inform the next semantic decision.
+
+The API reference now describes cohort lookup and argument-effect boundaries.
+Two stale observation-family names were removed from autodoc after a clean
+documentation build exposed their absence from current source.
+
+Validation: 2,304 passed and 15 skipped on Python 3.11; 2,319 passed on Python
+3.14. The focused ASCII-locale run passed 43 tests. All 81 architecture detectors
+completed with no omissions or findings on the touched production paths using
+the whole package as context. Ruff and the whitespace check passed. A clean
+Sphinx rebuild retained the two existing duplicate-description warnings.
+The user-owned `uv.lock` is excluded from the batch.

@@ -335,6 +335,25 @@ member syntax, declaration order, insertion and deletion geometry, ancestry,
 and ownership-sensitive promotion checks.  The operation rejects cross-module
 moves, destination collisions, class-local field dependencies, name mangling,
 and hazardous method forms rather than asking the plan to carry derived source.
+It also checks member lookup throughout the destination's descendant cohort.
+The projected lookup must retain each existing owner, except where the selected
+member moves from the source to the destination. Native C3 supplies precedence;
+an earlier competing branch or a diamond descendant can therefore prevent a
+move even when the source class itself would retain the intended behaviour.
+Annotation-only names are not treated as installed class members.
+
+``ClassMemberLookupProof`` supplies the shared lookup check for member promotion
+and collector migration. Namespace changes project added and removed bindings
+over their original declarations; they do not become replacement declaration
+identities. Native declarations with identical qualified names remain distinct
+when they refer to different Python objects.
+
+Source namespace closure uses use-point lexical references and the module's
+annotation evaluation mode. Native generic aliases store their arguments;
+``typing.ClassVar`` can inspect or hash them. Explicit native descriptor calls
+likewise require evidence for argument metadata access. Unknown argument effects,
+custom creation hooks and unavailable base declarations leave the move unproved.
+
 Module-symbol moves likewise derive canonical source-module re-exports from the
 destination module and moved declarations.  They reject import cycles rather
 than accepting caller-authored import text that can disagree with the move.

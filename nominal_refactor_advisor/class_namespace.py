@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import ast
-import builtins
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import ClassMethodDescriptorType
 from typing import ClassVar, Iterator, TYPE_CHECKING
 
 from .ast_tools import ModuleAnnotationEvaluationMode
-from .ast_projection import AstExpressionProjection
 from .declaration_dependencies import (
     DeclarationDependencyUse,
     ModuleBindingResolutionPhase,
     _DeclarationDependencyCollector,
 )
+from .descriptor_algebra import AliasProperty
 from .lexical_scopes import (
     ClassNamespaceScope,
     LexicalNameResolution,
@@ -24,14 +22,20 @@ from .lexical_scopes import (
     LexicalScopeContext,
 )
 from .native_declarations import NativeDeclaration
+from .native_reference import (
+    NativeArgumentEvidence,
+    NativeReferenceEnvironment,
+    ScopedNativeReference,
+)
+from .native_subscription import NativeArgumentInspection, NativeSubscriptionAuthority
 
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule
     from .class_index import ModuleNominalBindingView
 
 
-# Native descriptor construction does not execute the wrapped function or expose
-# the caller's namespace. Names and import spellings derive from these types.
+# Native descriptor decorators receive the function just declared. Explicit
+# construction also requires evidence about the argument's metadata access.
 NATIVE_METHOD_DECORATORS = (classmethod, property, staticmethod)
 
 
@@ -57,87 +61,107 @@ class ClassNamespaceEffect(ABC):
             is ModuleBindingResolutionPhase.SOURCE_POSITION
         )
 
+    @property
+    def recording_node(self) -> ast.AST:
+        return self.node
+
     @abstractmethod
     def require_closed(
         self,
-        bindings: ModuleNominalBindingView,
-        module: ParsedModule,
-        owner: ast.ClassDef,
+        environment: NativeReferenceEnvironment,
     ) -> None:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class NativeClassNamespaceEffect(ClassNamespaceEffect, ABC):
+class ReferencedClassNamespaceEffect(ClassNamespaceEffect, ABC):
     node: ast.expr
-    root_resolution: LexicalNameResolution
-    native_declarations: ClassVar[tuple[type, ...]]
+    reference: ScopedNativeReference
+
+    recording_node = AliasProperty[ast.AST]("reference.node")
+
+
+class NativeClassNamespaceEffect(ReferencedClassNamespaceEffect, ABC):
+    native_declarations: ClassVar[tuple[NativeDeclaration, ...]]
 
     @classmethod
     def from_scope(
         cls, node: ast.expr, use: DeclarationDependencyUse, scope: LexicalScopeContext
     ) -> NativeClassNamespaceEffect:
-        chain = AstExpressionProjection.attribute_chain(node)
-        return cls(
-            node,
-            use,
-            (
-                LexicalNameResolution.UNPROVED
-                if chain is None
-                else scope._resolve_name(chain[0])
-            ),
-        )
+        return cls(node, use, ScopedNativeReference.from_scope(node, scope))
 
     def require_closed(
         self,
-        bindings: ModuleNominalBindingView,
-        module: ParsedModule,
-        owner: ast.ClassDef,
+        environment: NativeReferenceEnvironment,
     ) -> None:
-        if self.root_resolution is not LexicalNameResolution.EXTERNAL:
-            raise ValueError(
-                f"Class namespace execution at line {self.node.lineno} has no external binding proof"
-            )
-        witness = bindings.reference_or_builtin_witness_at(
-            module,
-            self.node,
-            line=owner.lineno,
-        )
-        if witness is None or not any(
-            witness.qualified_name == NativeDeclaration(native).qualified_name
-            for native in self.native_declarations
-        ):
-            raise ValueError(
-                f"Class namespace execution at line {self.node.lineno} remains unproved"
-            )
+        self.reference.require_native(environment, self.native_declarations)
 
 
 class DescriptorClassNamespaceEffect(NativeClassNamespaceEffect):
-    native_declarations = NATIVE_METHOD_DECORATORS
-
-
-class GenericAliasClassNamespaceEffect(NativeClassNamespaceEffect):
-    # Builtin generic alias construction stores its arguments without executing
-    # repository subscription implementations. Custom __class_getitem__ stays open.
     native_declarations = tuple(
-        declaration
-        for declaration in vars(builtins).values()
-        if isinstance(declaration, type)
-        and "__class_getitem__" in vars(declaration)
-        and isinstance(
-            vars(declaration)["__class_getitem__"], ClassMethodDescriptorType
-        )
+        NativeDeclaration(native) for native in NATIVE_METHOD_DECORATORS
     )
+
+
+@dataclass(frozen=True)
+class DescriptorCallClassNamespaceEffect(DescriptorClassNamespaceEffect):
+    node: ast.Call
+    arguments: tuple[NativeArgumentEvidence, ...]
+
+    @classmethod
+    def from_scope(
+        cls, node: ast.Call, use: DeclarationDependencyUse, scope: LexicalScopeContext
+    ) -> DescriptorCallClassNamespaceEffect:
+        return cls(
+            node,
+            use,
+            ScopedNativeReference.from_scope(node.func, scope),
+            tuple(
+                NativeArgumentEvidence.from_scope(argument, scope)
+                for argument in (
+                    *node.args,
+                    *(keyword.value for keyword in node.keywords),
+                )
+            ),
+        )
+
+    def require_closed(self, environment: NativeReferenceEnvironment) -> None:
+        super().require_closed(environment)
+        for argument in self.arguments:
+            NativeArgumentInspection(argument, environment).visit(argument.node)
+
+
+@dataclass(frozen=True)
+class SubscriptionClassNamespaceEffect(ReferencedClassNamespaceEffect):
+    node: ast.Subscript
+    argument: NativeArgumentEvidence
+
+    @classmethod
+    def from_scope(
+        cls,
+        node: ast.Subscript,
+        use: DeclarationDependencyUse,
+        scope: LexicalScopeContext,
+    ) -> SubscriptionClassNamespaceEffect:
+        return cls(
+            node,
+            use,
+            ScopedNativeReference.from_scope(node.value, scope),
+            NativeArgumentEvidence.from_scope(node.slice, scope),
+        )
+
+    def require_closed(self, environment: NativeReferenceEnvironment) -> None:
+        NativeSubscriptionAuthority.for_reference(
+            self.reference, environment
+        ).require_argument(self.argument, environment)
 
 
 class InstalledClassNamespaceValue(ClassNamespaceEffect):
     def require_closed(
         self,
-        bindings: ModuleNominalBindingView,
-        module: ParsedModule,
-        owner: ast.ClassDef,
+        environment: NativeReferenceEnvironment,
     ) -> None:
-        del bindings, module, owner
+        del environment
         if isinstance(self.node, (ast.Call, ast.Lambda, ast.Tuple, ast.List)):
             # Calls/defaults have separate evidence. Native sequence construction
             # has no element hashing or class installation hooks.
@@ -176,9 +200,10 @@ class ClassNamespaceExecutionEvidence:
         module: ParsedModule,
         owner: ast.ClassDef,
     ) -> None:
+        environment = NativeReferenceEnvironment(bindings, module, owner.lineno)
         for effect in self.effects:
             if effect.executes_at_definition(module):
-                effect.require_closed(bindings, module, owner)
+                effect.require_closed(environment)
 
 
 class _ClassNamespaceEffectProjection(ast.NodeVisitor):
@@ -191,9 +216,8 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
     def _record_effect(
         self, effect_type: type[ClassNamespaceEffect], node: ast.AST
     ) -> None:
-        self.effects_by_node.setdefault(
-            node, effect_type.from_scope(node, self.scope.use, self.scope)
-        )
+        effect = effect_type.from_scope(node, self.scope.use, self.scope)
+        self.effects_by_node.setdefault(effect.recording_node, effect)
 
     def generic_visit(self, node: ast.AST) -> None:
         # Unknown executable forms require proof rather than implicit trust.
@@ -207,10 +231,10 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
     visit_Pass = visit_Delete = visit_Lambda = visit_Tuple = visit_List = visit_Name
 
     def visit_Call(self, node: ast.Call) -> None:
-        self._record_effect(DescriptorClassNamespaceEffect, node.func)
+        self._record_effect(DescriptorCallClassNamespaceEffect, node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        self._record_effect(GenericAliasClassNamespaceEffect, node.value)
+        self._record_effect(SubscriptionClassNamespaceEffect, node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for decorator in node.decorator_list:
