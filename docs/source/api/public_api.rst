@@ -172,6 +172,24 @@ import reexports the same function. The
 :download:`native-compilation refactor <../../examples/native_compilation.json>`
 applies 11 authored DSL stages against ``22afe9f``.
 
+``CompactFunctionDeclaration.execution`` retains the native receipt selected by
+the original function's full source span. Its ``line`` and ``end_line`` properties
+derive from that receipt's ``SourceByteSpan``; they are not constructor fields.
+The declaration collector holds the existing ``ParsedModule`` and shares its
+lazy compilation owner. Collecting a module without function declarations does
+not request native compilation. Ordinary, coroutine and generator code remain
+distinguishable even when their captured bodies otherwise agree. Unavailable
+compiler evidence remains attached to the declaration as an open receipt.
+The :download:`declaration-execution refactor <../../examples/declaration_execution.json>`
+applies seven authored DSL stages against ``4515378``.
+
+Native indexing skips disassembly when a code object's constant tuple contains
+no child code objects. Child constants that do exist still require emitted
+instruction positions before they contribute evidence. Python 3.14 annotation
+helpers can share a function's full span and raw flags, so annotated definitions
+can have ambiguous receipts even without type parameters. No name-based helper
+filter resolves that ambiguity.
+
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.
 ``FunctionBindingProjection`` uses the same collector when deriving function

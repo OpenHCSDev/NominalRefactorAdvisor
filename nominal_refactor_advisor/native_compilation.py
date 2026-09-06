@@ -127,6 +127,8 @@ class _NativeExecutionIndex(_NativeCompilationOutcome):
         has_incomplete_ranges = False
         while pending:
             parent = pending.pop()
+            if not any(isinstance(value, CodeType) for value in parent.co_consts):
+                continue
             for instruction in dis.get_instructions(parent):
                 child = instruction.argval
                 if not isinstance(child, CodeType):

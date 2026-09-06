@@ -5,17 +5,16 @@ from dataclasses import fields, replace
 from pathlib import Path
 import runpy
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.product_flow import (
     CompactCallArguments,
     CompactFunctionBindingKind,
     CompactFunctionDeclaration,
-    CompactFunctionIdentity,
+    compact_product_flow_projection,
 )
 from nominal_refactor_advisor.call_binding import (
     CompactCallBindingViolation,
-    CompactFunctionSignature,
 )
 from nominal_refactor_advisor.value_expression import (
     CompactValueExpression,
@@ -24,14 +23,15 @@ from nominal_refactor_advisor.value_expression import (
 
 
 def _declaration() -> CompactFunctionDeclaration:
-    node = ast.parse("def consume(self, value): pass").body[0]
-    return CompactFunctionDeclaration(
-        identity=CompactFunctionIdentity("probe", "Owner.consume"),
-        line=1,
-        end_line=1,
-        owner_class_qualname="Owner",
-        signature=CompactFunctionSignature.from_arguments(node.args),
+    source = "class Owner:\n    def consume(self, value): pass\n"
+    module = ParsedModule(
+        path=Path("probe.py"),
+        module_name="probe",
+        is_package_init=False,
+        module=ast.parse(source),
+        source=source,
     )
+    return compact_product_flow_projection(module).function_declarations[0]
 
 
 def test_repeated_binding_uses_one_derived_signature() -> None:

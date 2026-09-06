@@ -1,0 +1,167 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "rationale": "",
+              "import_source": "from .native_compilation import NativeFunctionExecution"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/source_geometry.py",
+              "target_qualname": "SourceByteSpan",
+              "rationale": "",
+              "source": "@property\ndef end_line(self) -> int:\n    \"\"\"One-based final source line, derived from the retained span.\"\"\"\n    return self.end_line_index + 1\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    line: int\n    end_line: int\n",
+                  "new_source": "    execution: NativeFunctionExecution\n"
+                },
+                {
+                  "old_source": "    qualname = AliasProperty[str](\"identity.qualname\")",
+                  "new_source": "    qualname = AliasProperty[str](\"identity.qualname\")\n    line = AliasProperty[int](\"execution.source_span.start_line\")\n    end_line = AliasProperty[int](\"execution.source_span.end_line\")"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionDeclaration",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    def __init__(self, module_name: str) -> None:\n        self.module_name = module_name",
+                  "new_source": "    def __init__(self, module: ParsedModule) -> None:\n        self.module = module"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_DeclarationCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            identity=CompactFunctionIdentity(self.module_name, qualname),\n            line=node.lineno,\n            end_line=node.end_lineno or node.lineno,",
+                  "new_source": "            identity=CompactFunctionIdentity(self.module.module_name, qualname),\n            execution=self.module.native_compilation.execution_for(\n                SourceByteSpan.require_node(node)\n            ),"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_DeclarationCollector._visit_function",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "_DeclarationCollector(parsed_module.module_name)",
+                  "new_source": "_DeclarationCollector(parsed_module)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "compact_product_flow_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "_NativeExecutionIndex.from_code",
+              "rationale": "",
+              "body_source": "creations: list[ExactNativeFunctionExecution] = []\npending = [code]\nhas_incomplete_ranges = False\nwhile pending:\n    parent = pending.pop()\n    if not any(isinstance(value, CodeType) for value in parent.co_consts):\n        continue\n    for instruction in dis.get_instructions(parent):\n        child = instruction.argval\n        if not isinstance(child, CodeType):\n            continue\n        pending.append(child)\n        line, end_line, column, end_column = instruction.positions\n        if (\n            line is None\n            or end_line is None\n            or column is None\n            or end_column is None\n        ):\n            has_incomplete_ranges = True\n            continue\n        creations.append(\n            ExactNativeFunctionExecution(\n                compilation,\n                SourceByteSpan(line - 1, end_line - 1, column, end_column),\n                child.co_flags,\n            )\n        )\nreturn cls(\n    compilation,\n    UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(\n        creations, lambda creation: creation.source_span\n    ),\n    has_incomplete_ranges,\n)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

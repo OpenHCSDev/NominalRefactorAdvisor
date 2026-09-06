@@ -141,6 +141,11 @@ class SourceByteSpan:
     end_byte: int
 
     @property
+    def end_line(self) -> int:
+        """One-based final source line, derived from the retained span."""
+        return self.end_line_index + 1
+
+    @property
     def start_line(self) -> int:
         """One-based source line, derived from the retained span."""
         return self.start_line_index + 1

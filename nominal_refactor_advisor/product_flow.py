@@ -45,6 +45,7 @@ from .lexical_bindings import (
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
+from .native_compilation import NativeFunctionExecution
 from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import SourceByteSpan
 from .value_expression import (
@@ -1775,8 +1776,7 @@ class CompactNamespaceFlowOwner(CompactFlowOwner):
 @dataclass(frozen=True)
 class CompactFunctionDeclaration(CompactFlowOwner):
     identity: CompactFunctionIdentity
-    line: int
-    end_line: int
+    execution: NativeFunctionExecution
     owner_class_qualname: str | None
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
@@ -1785,6 +1785,8 @@ class CompactFunctionDeclaration(CompactFlowOwner):
     kind = CompactFlowOwnerKind.FUNCTION
 
     qualname = AliasProperty[str]("identity.qualname")
+    line = AliasProperty[int]("execution.source_span.start_line")
+    end_line = AliasProperty[int]("execution.source_span.end_line")
 
     def initial_binding_for(self, root_name: str) -> CompactBindingSource | None:
         return next(
@@ -2139,8 +2141,8 @@ class _ClassContext:
 class _DeclarationCollector(ast.NodeVisitor):
     """Collect declaration identities while preserving Python scope nesting."""
 
-    def __init__(self, module_name: str) -> None:
-        self.module_name = module_name
+    def __init__(self, module: ParsedModule) -> None:
+        self.module = module
         self.scope_names: list[str] = []
         self.scope_kinds: list[CompactFlowOwnerKind] = []
         self.function_qualnames: list[str] = []
@@ -2196,9 +2198,10 @@ class _DeclarationCollector(ast.NodeVisitor):
             for decorator in node.decorator_list
         )
         declaration = CompactFunctionDeclaration(
-            identity=CompactFunctionIdentity(self.module_name, qualname),
-            line=node.lineno,
-            end_line=node.end_lineno or node.lineno,
+            identity=CompactFunctionIdentity(self.module.module_name, qualname),
+            execution=self.module.native_compilation.execution_for(
+                SourceByteSpan.require_node(node)
+            ),
             owner_class_qualname=(
                 self.class_qualnames[-1] if direct_class_owner else None
             ),
@@ -2715,7 +2718,7 @@ def compact_product_flow_projection(
 ) -> CompactProductFlowModuleProjection:
     """Project one parsed module into AST-free closed-flow evidence."""
 
-    declarations = _DeclarationCollector(parsed_module.module_name)
+    declarations = _DeclarationCollector(parsed_module)
     declarations.visit(parsed_module.module)
     flows = [
         _CompactFlowCollector(

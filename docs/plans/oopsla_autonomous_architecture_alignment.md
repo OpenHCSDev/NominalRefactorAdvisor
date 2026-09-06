@@ -2507,3 +2507,73 @@ call capture remain prerequisites for the next shared invocation and selected
 object relation: raw-code execution mode still needs to be retained by function
 declarations, and call activation/effects must establish result identity before
 any of the pending native-identity gates can claim equivalence.
+
+### 2026-09-06: Declaration-owned execution receipts and native index pruning
+
+`CompactFunctionDeclaration.execution` now retains the actual native receipt
+selected for its source definition. The separately stored line and end-line
+fields are removed; their accessors derive from the receipt's `SourceByteSpan`.
+The latter now owns its one-based end-line projection alongside its start-line
+projection. `_DeclarationCollector` holds the existing `ParsedModule` instead
+of a copied module name and shares that module's lazy compiler. The one manual
+test declaration constructor now obtains its declaration from an actual class
+source projection. Modules without function declarations do not compile.
+
+The motivating native control produced equal compact flows for an ordinary and
+an async function with the same body. Their actual calls differed: one returned
+an integer and performed an effect immediately; the other returned a coroutine
+without that effect. Declaration receipts now retain the distinction already
+provided by the compiler. Fifteen new integration cases pass on Python 3.11
+with one generic-syntax skip, and all sixteen pass on Python 3.14. The controls
+also cover nested default yields, unavailable evidence, CRLF/UTF-8 geometry,
+shared receipts, compile-once/no-execution behaviour and compact pickle/spawn.
+A decorator-replacement control keeps raw execution evidence explicitly separate
+from the final object bound by executing the definition.
+
+Cold collection now requests compilation for modules containing functions.
+Profiling found that the native index disassembled every leaf body even when
+its native constant tuple contained no child code objects. A two-line guard
+skips that work. Parents with child constants still require actual emitted
+instruction positions: dead child constants are not promoted to evidence.
+Full native index objects compare equal before and after the guard on both
+interpreters. The new skip and dead-constant tests fail before the guard and
+pass after it; the native suite passes 19 cases with one syntax skip on 3.11
+and all 20 on 3.14.
+
+Across the measured 133-module, 6,190-definition corpus, compile/index medians
+drop from 1.5497 to 1.1085 seconds on 3.11 and from 3.9829 to 2.2101 seconds on
+3.14. Disassembled code objects fall from 11,943 to 3,690 and from 19,426 to
+3,508 respectively. These are indexing measurements, not an overall analysis
+speedup. A separate controlled integration comparison uses the identical
+`4515378` corpus, fresh module owners for each cold sample and three samples
+per variant: collection rises from 4.745 to 5.985 seconds, while projection
+pickle size rises from 25,655,288 to 25,986,447 bytes. Raw compiler evidence has
+a measurable cost even after pruning.
+
+The authored seven-stage artifact is `docs/examples/declaration_execution.json`,
+based on `4515378`; API replay matches all three production ASTs. It composes
+the six declaration/geometry steps with the one native pruning step. Source
+semantics remain on their existing declarations, with no duplicated mode or
+geometry fields, source-mode scanner, compilation cache or bytecode opcode table.
+
+The 3.14 corpus retains 6,188 ambiguous spans from annotation-generated code;
+pruning does not hide them. A read-only native probe establishes that an
+annotation helper and a user function named `__annotate__` can share names,
+qualified names, flags, arguments and first lines as well as their full emitted
+span. Public code-object metadata therefore does not by itself identify the raw
+source function. The next candidate relation is native function creation and
+annotation attachment, whose target preservation is expressed by the native
+instruction contract. No name filter or guessed annotation role is added.
+The investigation is `/var/tmp/nra_py314_native_creation_evidence.md`; current
+ambiguity remains explicit until that relation has executable validation.
+
+Final full suites pass 2,703 cases with 17 skipped on Python 3.11 and 2,720 on
+Python 3.14. Both retain exactly the preceding 14 integrity failure IDs;
+receipts are `/var/tmp/nra-declaration-final-{311,314}.log`. The seven-stage
+current-implementation CLI replay is clean. The automatic-package-context audit
+completes all 79 detectors with zero omissions or findings, and Sphinx succeeds
+with the two existing duplicate-description warnings. Diataxis keeps these
+validation and design notes separate from the API reference. The native-binding,
+definition-result and registry-identity regressions remain unsuppressed, and
+their files remain outside this prerequisite commit rather than being presented
+as repaired.

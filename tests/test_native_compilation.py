@@ -3,6 +3,7 @@
 import ast
 import builtins
 from dataclasses import fields, is_dataclass
+import dis
 import inspect
 import multiprocessing
 from pathlib import Path
@@ -188,6 +189,73 @@ def test_eliminated_definition_does_not_recover_by_name_or_line() -> None:
     assert isinstance(result, OpenNativeFunctionExecution)
     assert result.mode is None
     assert result.violation is NativeExecutionUnavailable.NO_EMITTED_CODE
+
+
+def test_leaf_bodies_are_not_disassembled_to_find_nonexistent_child_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module(
+        "def ordinary():\n    return None\n"
+        "def generator():\n    yield 1\n"
+        "async def coroutine():\n    return None\n"
+        "async def async_generator():\n    yield 1\n"
+    )
+    native_instructions = dis.get_instructions
+    disassembled = []
+
+    def observed_instructions(code):
+        assert any(isinstance(value, CodeType) for value in code.co_consts)
+        disassembled.append(code.co_name)
+        return native_instructions(code)
+
+    monkeypatch.setattr(dis, "get_instructions", observed_instructions)
+    modes = tuple(
+        module.native_compilation.execution_for(SourceByteSpan.require_node(node)).mode
+        for node in _definitions(module)
+    )
+    assert modes == (
+        NativeFunctionExecutionMode.ORDINARY,
+        NativeFunctionExecutionMode.GENERATOR,
+        NativeFunctionExecutionMode.COROUTINE,
+        NativeFunctionExecutionMode.ASYNC_GENERATOR,
+    )
+    assert disassembled == ["<module>"]
+
+
+def test_child_constants_still_require_emitted_instruction_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module(
+        "def outer():\n"
+        "    if False:\n"
+        "        def absent():\n"
+        "            yield 1\n"
+        "    def inner():\n"
+        "        yield 1\n"
+        "    return inner\n"
+    )
+    native_instructions = dis.get_instructions
+    disassembled = []
+
+    def observed_instructions(code):
+        assert any(isinstance(value, CodeType) for value in code.co_consts)
+        disassembled.append(code.co_name)
+        return native_instructions(code)
+
+    monkeypatch.setattr(dis, "get_instructions", observed_instructions)
+    definitions = {node.name: node for node in _definitions(module)}
+    compilation = module.native_compilation
+    absent = compilation.execution_for(
+        SourceByteSpan.require_node(definitions["absent"])
+    )
+    assert absent.violation is NativeExecutionUnavailable.NO_EMITTED_CODE
+    assert (
+        compilation.execution_for(
+            SourceByteSpan.require_node(definitions["inner"])
+        ).mode
+        is NativeFunctionExecutionMode.GENERATOR
+    )
+    assert disassembled == ["<module>", "outer"]
 
 
 @pytest.mark.skipif(
