@@ -533,6 +533,14 @@ objects or successful creation. The :download:`definition-owner refactor
 <../../examples/definition_flow_ownership.json>` applies authored DSL stages
 against ``72879a6``.
 
+``definition_sources_by_owner`` joins each body to its retained parent context
+and definition event. It counts all definition rows before excluding ambiguous
+or missing contexts; repeated equal rows do not establish a unique source.
+The repository's multi-attribute class lookup consumes this join using the
+actual context and event objects. Duplicate module projections and equal copies
+of those objects do not supply the same receipt. Source linkage establishes
+neither class-body activation nor final runtime object identity.
+
 ``CompactFlowRead`` retains a ``CompactCallableReferenceUse`` together with its
 actual ``CompactFlowContext``. The module projection's
 ``reference_reads_by_span`` derives unique reads from ``flow.reference_uses``,
@@ -1242,6 +1250,21 @@ activation integration described above; this routing does not close those
 pending integrity obligations. The :download:`gate and binding batch
 <../../examples/native_admission_binding_selection.json>` replays the two
 authored source changes against ``a398f6c``.
+
+Type-keyed behavior descent also admits ``mro_registry_value`` through this
+shared gate. The helper's lexical binding comes from the existing module
+dependency projection, joined to the actual reference node. A matching terminal
+name, parameter shadow or enclosing-function binding does not authenticate the
+native helper. This closes a consumer bypass without supplying the gate's
+remaining captured-object proof.
+
+``CodemodSelectorContext.module_lexical_dependency_projection_for_source_path``
+derives the dependency projection lazily for each canonical source path. Repeated
+queries retain the same AST references within one snapshot. A changed source
+overlay owns a fresh projection; an unchanged overlay reuses the original
+snapshot. The :download:`source-linkage and helper-admission batch
+<../../examples/definition_source_helper_admission.json>` replays 16 authored
+stages against ``82541e2``.
 
 These checks cover source declarations, forwarding and capture conditions.
 They do not establish arbitrary multiple-inheritance replacement equivalence,

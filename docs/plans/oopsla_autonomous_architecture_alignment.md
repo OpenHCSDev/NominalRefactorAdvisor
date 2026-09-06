@@ -3113,3 +3113,74 @@ Final independent producer review confirms the reserved-slot and nested-path
 contract. Lambda defaults remain inside their expression region; lambda bodies
 and statement suites are not entered. Existing comprehension scope, repetition
 and expression-effect limits remain separate obligations.
+
+### 2026-09-06: Retain definition source joins and consolidate helper admission
+
+The multi-attribute class-body consumer now uses the retained definition event
+and its actual parent context to select the source body. The module projection
+derives this join from all definition rows through the existing unique-handle
+authority, before filtering absent or ambiguous contexts. Duplicate equal rows,
+duplicate modules and equal copies of a context or event do not establish the
+same receipt. This replaces reconstruction from the class symbol at this
+consumer; source parentage does not establish class activation or final object
+identity.
+
+The 24 source-linkage tests cover positioned repeated definitions, nested and
+deferred bodies, loop-created objects, decorator capture, incomplete and
+ambiguous joins, exact event identity and warm/cold pickle sharing. The actual
+consumer fixture uses the already-supported nested static-method route
+`Other.Holder.saved()`; both baseline and changed code resolve the same method,
+and trusted native execution returns 37. An initial module-function alias
+fixture was unsupported before this change as well; its failure was a test
+assumption, not a new regression or a repaired runtime bug.
+
+Type-keyed behavior descent now submits the helper's actual lexical reference
+to `ScopedNativeReference.require_native`. A matching terminal name no longer
+bypasses that common gate. Seven committed helper tests cover canonical and
+counterfeit execution, explicit gate refusal, import aliases and parameter or
+closure shadowing. The separate Enum-key tests retain their original assertions:
+the source spellings `Mode.ALPHA` and `Mode.BETA` still do not prove distinct
+native member identities. No source-alias lookup was introduced to imitate that
+missing construction proof. The shared gate's captured-object and activation
+obligations remain open.
+
+Repeated helper admission exposed a full-module lexical traversal on every
+candidate. `CodemodSelectorContext` now derives that projection lazily per
+canonical source file using its existing source-state cache lifetime. Three
+additional tests verify one traversal for repeated checks, actual reference-node
+sharing, changed-overlay invalidation and unchanged-overlay reuse. The helper
+suite therefore has ten cases. On a controlled fixture with 1,000 extra inert
+functions, median time for ten warm candidate checks drops from 0.1506 to 0.00460
+seconds. This measures repeated lookup, not cold analysis or total refactor
+speed. The fixed 134-module source corpus has 8,328 definition rows with unique
+source joins; checking all rows takes 0.106 seconds cold and 0.028 seconds warm.
+
+The integrated 16-stage plan is
+`docs/examples/definition_source_helper_admission.json`, authored against
+`82541e2`. API replay reproduces the final ASTs of all four production files;
+the actual CLI completes all stages with valid output. The automatic repository-
+context audit runs all 79 detectors with no omissions or findings in the touched
+files. The source-linkage/flow/capture subset passes 257 tests on each interpreter.
+Ruff passes all four source files and both new test files; Black passes the
+touched source ranges and complete new test files. Sphinx builds with its two
+existing duplicate-object warnings. The preceding commit's CI run `34056520043`
+is green across Linux, macOS, Windows and documentation.
+
+With production and tests frozen, the full local suites report:
+
+- Python 3.11: **29 failed, 3,092 passed, 35 skipped** in 204.09 seconds.
+- Python 3.14: **29 failed, 3,105 passed, 22 skipped** in 208.52 seconds.
+
+Exact failure-ID comparison against the preceding annotation-order runs removes
+only the counterfeit-helper case and adds no failure. The remaining three
+untracked integrity suites preserve the 29 pending native capture, transformed
+definition-result and Enum-key failures. Passing helper controls were moved to
+the committed helper suite without duplicating or weakening their assertions.
+
+Receipts: `/var/tmp/nra-source-admission-replay.json`,
+`/var/tmp/nra-source-admission-cli-final.json`,
+`/var/tmp/nra-source-admission-audit.json`,
+`/var/tmp/nra-source-admission-full-{311,314}.log`,
+`/var/tmp/nra-source-admission-sphinx.log`,
+`/var/tmp/nra-definition-source-cost.jsonl` and
+`/var/tmp/nra_registry_helper_gate_handoff.md`.

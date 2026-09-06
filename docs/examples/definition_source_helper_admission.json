@@ -1,0 +1,353 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowRead",
+              "rationale": "",
+              "source": "CompactDefinitionSource: TypeAlias = tuple[\n    CompactFlowContext, CompactMutation[CompactDefinitionTarget]\n]\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactProductFlowModuleProjection",
+              "rationale": "",
+              "source": "@cached_property\ndef definition_sources_by_owner(self) -> dict[CompactDefinitionFlowOwner, CompactDefinitionSource]:\n    \"\"\"Unique actual parent/event/body joins, without an activation claim.\"\"\"\n    sources = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(\n        (\n            (context, cast(CompactMutation[CompactDefinitionTarget], mutation))\n            for context in self.flow_contexts\n            for mutation in context.flow.mutations\n            if mutation.kind.is_definition_binding\n        ),\n        lambda source: source[1].target.owner,\n    )\n    contexts = self.flow_contexts_by_owner\n    return {\n        owner: source for owner, source in sources.items()\n        if owner in contexts and contexts.get(source[0].flow.owner) is source[0]\n    }\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "@cached_property\ndef product_projections_by_module_name(self) -> dict[str, CompactProductFlowModuleProjection]:\n    return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(\n        self.product_projections, lambda projection: projection.module_name\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository",
+              "rationale": "",
+              "source": "def _definition_body_context(\n    self, context: CompactFlowContext, binding: CompactMutation[CompactDefinitionTarget]\n) -> CompactFlowContext | None:\n    \"\"\"Select a body only through its unique retained parent definition event.\"\"\"\n    projection = self.product_projections_by_module_name.get(context.module_name)\n    if projection is None or projection.file_path != context.file_path:\n        return None\n    source = projection.definition_sources_by_owner.get(binding.target.owner)\n    if source is None or source[0] is not context or source[1] is not binding:\n        return None\n    return projection.flow_contexts_by_owner[binding.target.owner]\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)",
+                  "new_source": "            class_context = self._definition_body_context(context, binding)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._definition_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "rationale": "",
+              "import_source": "from .declaration_dependencies import ModuleLexicalDependencyProjection"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "rationale": "",
+              "import_source": "from .native_declarations import NativeDeclaration"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "rationale": "",
+              "import_source": "from .native_reference import NativeReferenceEnvironment, ScopedNativeReference"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        binding_authority = ModuleNominalBindingAuthority(\n            snapshot.parsed_module_for_source_path(file_path)\n        )",
+                  "new_source": "        module = snapshot.parsed_module_for_source_path(file_path)\n        binding_authority = ModuleNominalBindingAuthority(module)"
+                },
+                {
+                  "old_source": "        return bool(\n            (\n                qualified_name := binding_authority.qualified_name_at(\n                    lookup_call.func,\n                    line=lookup_call.lineno,\n                )\n            )\n            is not None\n            and qualified_name.rsplit(\".\", 1)[-1] == mro_registry_value.__name__\n            and len(lookup_call.args) == 2",
+                  "new_source": "        lookup_nodes = frozenset(ast.walk(lookup_call.func))\n        references = tuple(\n            surface\n            for surface in ModuleLexicalDependencyProjection.from_module(\n                module.module\n            ).direct_name_surfaces\n            if surface.reference in lookup_nodes\n        )\n        if len(references) != 1:\n            return False\n        reference = ScopedNativeReference(\n            lookup_call.func, references[0].resolution\n        )\n        try:\n            # Admission belongs to the same native gate used by other consumers.\n            # Its remaining capture/activation obligations are not proved here.\n            reference.require_native(\n                NativeReferenceEnvironment(\n                    binding_authority, module, lookup_call.lineno\n                ),\n                (NativeDeclaration(mro_registry_value),),\n            )\n        except ValueError:\n            return False\n        return bool(\n            len(lookup_call.args) == 2"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "target_qualname": "_TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "rationale": "",
+              "import_source": "from .class_index import RepositoryModuleBindingProof, nominal_reference_root"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        lookup_nodes = frozenset(ast.walk(lookup_call.func))",
+                  "new_source": "        lookup_root = nominal_reference_root(lookup_call.func)"
+                },
+                {
+                  "old_source": "            if surface.reference in lookup_nodes",
+                  "new_source": "            if surface.reference is lookup_root"
+                },
+                {
+                  "old_source": "                    binding_authority, module, lookup_call.lineno",
+                  "new_source": "                    RepositoryModuleBindingProof(snapshot.parsed_modules),\n                    module,\n                    lookup_call.lineno,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "target_qualname": "_TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/codemod_selection_context.py",
+              "rationale": "",
+              "import_source": "from .declaration_dependencies import ModuleLexicalDependencyProjection"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/codemod_selection_context.py",
+              "target_qualname": "CodemodSelectorContext",
+              "rationale": "",
+              "source": "_module_lexical_dependency_projections_by_file_path: dict[\n    str, ModuleLexicalDependencyProjection\n] = field(default_factory=dict, init=False, repr=False, compare=False)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/codemod_selection_context.py",
+              "target_qualname": "CodemodSelectorContext",
+              "rationale": "",
+              "source": "def module_lexical_dependency_projection_for_source_path(\n    self, source_path: str,\n) -> ModuleLexicalDependencyProjection:\n    \"\"\"Retain actual reference nodes once for this source-state module.\"\"\"\n    module = self.parsed_module_for_source_path(source_path)\n    cache = self._module_lexical_dependency_projections_by_file_path\n    if module.file_path not in cache:\n        cache[module.file_path] = ModuleLexicalDependencyProjection.from_module(\n            module.module\n        )\n    return cache[module.file_path]\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            for surface in ModuleLexicalDependencyProjection.from_module(\n                module.module\n            ).direct_name_surfaces",
+                  "new_source": "            for surface in snapshot.module_lexical_dependency_projection_for_source_path(\n                file_path\n            ).direct_name_surfaces"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "target_qualname": "_TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+              "rationale": "",
+              "module_name": ".declaration_dependencies",
+              "import_names": [
+                "ModuleLexicalDependencyProjection"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

@@ -35,6 +35,7 @@ from .codemod_paths import (
     SourcePathResolutionAuthority,
 )
 from .codemod_selector_models import SourceRewriteTarget
+from .declaration_dependencies import ModuleLexicalDependencyProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 from .source_geometry import SourceLineSegmentAuthority
@@ -82,6 +83,23 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         repr=False,
         compare=False,
     )
+
+    _module_lexical_dependency_projections_by_file_path: dict[
+        str, ModuleLexicalDependencyProjection
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    def module_lexical_dependency_projection_for_source_path(
+        self,
+        source_path: str,
+    ) -> ModuleLexicalDependencyProjection:
+        """Retain actual reference nodes once for this source-state module."""
+        module = self.parsed_module_for_source_path(source_path)
+        cache = self._module_lexical_dependency_projections_by_file_path
+        if module.file_path not in cache:
+            cache[module.file_path] = ModuleLexicalDependencyProjection.from_module(
+                module.module
+            )
+        return cache[module.file_path]
 
     @cached_property
     def source_file_paths(self) -> tuple[str, ...]:

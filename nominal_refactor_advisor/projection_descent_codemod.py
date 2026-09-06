@@ -34,7 +34,9 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
+    RepositoryModuleBindingProof,
     build_compact_class_family_index,
+    nominal_reference_root,
 )
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,
@@ -62,6 +64,11 @@ from .enum_keyed_query import (
 from .lexical_bindings import (
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
+)
+from .native_declarations import NativeDeclaration
+from .native_reference import (
+    NativeReferenceEnvironment,
+    ScopedNativeReference,
 )
 from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
@@ -612,9 +619,8 @@ class _TypeKeyedBehaviorSourceDerivation:
         if len(parameters) < 2:
             return False
         cls_name, subject_name = parameters[0].arg, parameters[1].arg
-        binding_authority = ModuleNominalBindingAuthority(
-            snapshot.parsed_module_for_source_path(file_path)
-        )
+        module = snapshot.parsed_module_for_source_path(file_path)
+        binding_authority = ModuleNominalBindingAuthority(module)
         if not (
             len(method.decorator_list) == 1
             and isinstance(method.decorator_list[0], ast.Name)
@@ -636,16 +642,32 @@ class _TypeKeyedBehaviorSourceDerivation:
             return False
         result_name = body[0].targets[0].id
         lookup_call = body[0].value
-        return bool(
-            (
-                qualified_name := binding_authority.qualified_name_at(
-                    lookup_call.func,
-                    line=lookup_call.lineno,
-                )
+        lookup_root = nominal_reference_root(lookup_call.func)
+        references = tuple(
+            surface
+            for surface in snapshot.module_lexical_dependency_projection_for_source_path(
+                file_path
+            ).direct_name_surfaces
+            if surface.reference is lookup_root
+        )
+        if len(references) != 1:
+            return False
+        reference = ScopedNativeReference(lookup_call.func, references[0].resolution)
+        try:
+            # Admission belongs to the same native gate used by other consumers.
+            # Its remaining capture/activation obligations are not proved here.
+            reference.require_native(
+                NativeReferenceEnvironment(
+                    RepositoryModuleBindingProof(snapshot.parsed_modules),
+                    module,
+                    lookup_call.lineno,
+                ),
+                (NativeDeclaration(mro_registry_value),),
             )
-            is not None
-            and qualified_name.rsplit(".", 1)[-1] == mro_registry_value.__name__
-            and len(lookup_call.args) == 2
+        except ValueError:
+            return False
+        return bool(
+            len(lookup_call.args) == 2
             and not lookup_call.keywords
             and isinstance(lookup_call.args[0], ast.Attribute)
             and isinstance(lookup_call.args[0].value, ast.Name)

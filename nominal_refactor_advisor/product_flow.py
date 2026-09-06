@@ -2294,6 +2294,11 @@ class CompactFlowContext:
         return f"{self.module_name}.{self.flow.owner.qualname}"
 
 
+CompactDefinitionSource: TypeAlias = tuple[
+    CompactFlowContext, CompactMutation[CompactDefinitionTarget]
+]
+
+
 @dataclass(frozen=True)
 class CompactFlowRead:
     """A retained source read in its actual module and flow context."""
@@ -2309,6 +2314,27 @@ class CompactProductFlowModuleProjection(CompactModuleIdentity):
     """AST-free function declarations and source-ordered product-flow facts."""
 
     flows: tuple[CompactFunctionFlow, ...]
+
+    @cached_property
+    def definition_sources_by_owner(
+        self,
+    ) -> dict[CompactDefinitionFlowOwner, CompactDefinitionSource]:
+        """Unique actual parent/event/body joins, without an activation claim."""
+        sources = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                (context, cast(CompactMutation[CompactDefinitionTarget], mutation))
+                for context in self.flow_contexts
+                for mutation in context.flow.mutations
+                if mutation.kind.is_definition_binding
+            ),
+            lambda source: source[1].target.owner,
+        )
+        contexts = self.flow_contexts_by_owner
+        return {
+            owner: source
+            for owner, source in sources.items()
+            if owner in contexts and contexts.get(source[0].flow.owner) is source[0]
+        }
 
     @cached_property
     def reference_reads_by_span(self) -> dict[SourceByteSpan, CompactFlowRead]:

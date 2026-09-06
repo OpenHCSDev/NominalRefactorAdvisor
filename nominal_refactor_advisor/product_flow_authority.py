@@ -514,6 +514,28 @@ class CompactProductFlowRepository(
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
 
+    def _definition_body_context(
+        self,
+        context: CompactFlowContext,
+        binding: CompactMutation[CompactDefinitionTarget],
+    ) -> CompactFlowContext | None:
+        """Select a body only through its unique retained parent definition event."""
+        projection = self.product_projections_by_module_name.get(context.module_name)
+        if projection is None or projection.file_path != context.file_path:
+            return None
+        source = projection.definition_sources_by_owner.get(binding.target.owner)
+        if source is None or source[0] is not context or source[1] is not binding:
+            return None
+        return projection.flow_contexts_by_owner[binding.target.owner]
+
+    @cached_property
+    def product_projections_by_module_name(
+        self,
+    ) -> dict[str, CompactProductFlowModuleProjection]:
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            self.product_projections, lambda projection: projection.module_name
+        )
+
     def _imported_name_resolution(
         self,
         context: CompactFlowContext,
@@ -595,7 +617,7 @@ class CompactProductFlowRepository(
                     reference.attribute_path[0],
                     pending_bindings,
                 )
-            class_context = self.flow_contexts_by_owner_symbol.get(owner.symbol)
+            class_context = self._definition_body_context(context, binding)
             if class_context is not None:
                 resolution = self._scope_binding_resolution(
                     class_context,
