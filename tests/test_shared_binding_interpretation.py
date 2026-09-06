@@ -12,6 +12,7 @@ from nominal_refactor_advisor.product_flow import (
     CompactBindingVisit,
     CompactCallTargetResolverABC,
     CompactDefinitionResolverABC,
+    CompactDefinitionTarget,
     CompactExactValueAlias,
     CompactFlowContext,
     CompactFlowPosition,
@@ -71,7 +72,7 @@ class _SourceProbe(
         self,
         context: CompactFlowContext,
         reference: LexicalValueReference,
-        binding: CompactMutation,
+        binding: CompactMutation[CompactDefinitionTarget],
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> _Evidence:
         definition = binding.kind.resolve_definition(

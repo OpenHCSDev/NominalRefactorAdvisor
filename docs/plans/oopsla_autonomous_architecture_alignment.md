@@ -2754,3 +2754,76 @@ changed source/test files; Ruff passes seven, while `ast_tools.py` retains the
 same 42 pre-existing import/export diagnostics as the baseline. Sphinx builds
 with the same two duplicate-description warnings. Native object identity,
 annotation activation and enum-key identity remain explicit pending work.
+
+### 2026-09-06: Retain definition captures and separate function-object identity
+
+The definition binding now carries `CompactDefinitionTarget`, a nominal extension
+of the existing lexical binding target. Its `decorator_uses` retain actual source
+evaluation positions and value receipts from the enclosing flow. Factory
+expressions reference the same call-result objects already retained by that flow.
+The existing mutation kind remains the sole function/class-kind declaration;
+one constructor invariant enforces its relation to the target payload. A generic
+`CompactMutation` carries the refined target type to definition resolution without
+adding another stored field, kind registry or duplicate target argument.
+
+These captures differ from static function-decorator syntax metadata: one
+definition site can execute repeatedly, and earlier decorator expressions can
+capture values before later decorators or defaults change a binding. They do not
+yet prove decorator application, native class creation or final object identity.
+Class creation still requires the actual `__build_class__` binding and selected
+metaclass, including inherited and dynamically selected metaclasses. The current
+class-index member path also precedes definition-result projection; that bypass
+must be removed when shared bound-object evidence is integrated.
+
+`ResolvedCompactFunctionTarget.for_object_mutation` now leaves decorated and
+class-owned function objects unbounded. Neither a familiar decorator name nor a
+raw method declaration proves the object installed by decorator application or
+a custom class namespace. Free and local undecorated functions retain their
+distinct-object bound. Source declaration inspection stays available, but tests
+do not require the existing counterfeit-decorator runtime-call resolution to
+remain accepted: actual call admission is a separate pending correction.
+
+The combined seventeen-stage DSL batch is
+`docs/examples/definition_captures.json`, authored against `25aacf1`. API replay
+matches both integrated source ASTs. Twenty capture tests and sixteen function
+object tests pass on both Python 3.11 and 3.14, including native evaluation order,
+default/decorator rebinding, alias capture, loop ownership, constructor
+invariants, shared invocation identity after pickle, misleading decorator names
+and custom/inherited namespace setters. The shared binding probe uses the refined
+target type. Diataxis keeps this rationale and validation history separate from
+the API's supported-behaviour reference.
+
+The pending definition-result suite now checks direct and saved-alias writes,
+decorator factories, inherited/metaclass-call replacement, `__mro_entries__`,
+member aliases and replaced frame `__build_class__`. A module-global name with
+that spelling is a passing native control: class creation uses frame builtins.
+Trusted fixtures isolate their builtin namespace and require the actual final
+write in the failure index, so an earlier unrelated unknown effect cannot hide
+missing receiver evidence. Against the untouched baseline, the expanded three
+integrity files have 36 failures and 16 passing controls; the function-object
+projection resolves six of those failures. No cases are skipped or weakened to
+represent the remaining class and native-slot obligations as complete.
+
+Final frozen suites pass 2,858 cases with 34 skipped on Python 3.11, and 2,892 on
+Python 3.14. Both retain the same thirty expanded integrity failures: nineteen
+class-result cases, nine native-slot cases and two registry cases. Compared with
+the untouched baseline's expanded tests, there are six resolved failures and no
+new failing IDs. Logs are `/var/tmp/nra-definition-final-{311,314}.log`; the
+baseline receipt is `/var/tmp/nra-definition-pending-baseline.log`. The original
+three integrity files remain pending; the thirty count reflects additional
+native counterexamples, not thirty regressions introduced by this batch.
+
+On identical baseline source (133 modules, 8,360 flow owners and 26,451 calls),
+the compact pickle payload grows from 26,621,642 to 26,941,346 bytes, approximately
+1.2%, retaining the new capture receipts. Two sequential projection samples are
+5.72/4.64 seconds before and 5.81/4.74 seconds after; these shared-host samples are
+a cost observation, not a speedup claim. Raw receipts are
+`/var/tmp/nra-definition-{baseline,current}-cost.jsonl`.
+
+The actual CLI simulates all seventeen authored stages cleanly. The automatic
+package-context audit completes all 79 detectors without omissions or findings.
+Ruff passes both source files and all three changed/new passing test files.
+Black passes the changed source/test files and the touched range in the existing
+unformatted `product_flow_authority.py`. Sphinx succeeds with the same two
+duplicate-description warnings. Full native admission, class-result freshness,
+runtime call identity and enum-key identity remain active work.

@@ -45,8 +45,10 @@ from .product_flow import (
     CompactCallTargetReference,
     CompactCallTargetResolverABC,
     CompactCallableReferenceUse,
+    CompactDefinitionTarget,
     CompactDescriptorAccess,
     CompactExactValueAlias,
+    CompactFlowContext as CompactFlowContext,
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
@@ -54,7 +56,6 @@ from .product_flow import (
     CompactMutation,
     CompactMutationResolverABC,
     CompactProductConstruction,
-    CompactFlowContext as CompactFlowContext,
     CompactProductFlowModuleProjection,
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
@@ -153,6 +154,18 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
 
     resolved_declaration: CompactFunctionDeclaration
     descriptor_access: CompactDescriptorAccess = CompactDescriptorAccess.DIRECT
+
+    def for_object_mutation(self) -> CompactCallTargetResolution:
+        """A source callable does not prove its transformed namespace value."""
+        if (
+            self.declaration.decorators
+            or self.declaration.owner_class_qualname is not None
+        ):
+            return UnboundedCompactFunctionTarget(
+                self.possible_symbols,
+                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            )
+        return self
 
     @property
     def declaration(self) -> CompactFunctionDeclaration:
@@ -565,7 +578,7 @@ class CompactProductFlowRepository(
         self,
         context: CompactFlowContext,
         reference: LexicalValueReference,
-        binding: CompactMutation,
+        binding: CompactMutation[CompactDefinitionTarget],
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> CompactCallTargetResolution:
         binding_symbol = f"{context.owner_symbol}.{reference.root_name}"

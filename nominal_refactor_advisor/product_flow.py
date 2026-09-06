@@ -19,6 +19,7 @@ from typing import (
     Self,
     TypeAlias,
     TypeVar,
+    cast,
 )
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
@@ -396,7 +397,10 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
         pending: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
         return resolver._definition_binding_resolution(
-            context, reference, binding, pending
+            context,
+            reference,
+            cast(CompactMutation[CompactDefinitionTarget], binding),
+            pending,
         )
 
     def resolve_definition(
@@ -1083,6 +1087,13 @@ class CompactBindingTarget(CompactLexicalBindingTargetABC):
 
 
 @dataclass(frozen=True)
+class CompactDefinitionTarget(CompactBindingTarget):
+    """A definition binding retains decorator values captured during its creation."""
+
+    decorator_uses: tuple[CompactValueUse, ...]
+
+
+@dataclass(frozen=True)
 class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
     receiver_use: CompactValueUse
 
@@ -1130,9 +1141,12 @@ class CompactItemTarget(CompactReceiverTarget):
     index_use: CompactValueUse
 
 
+AssignmentTargetT = TypeVar("AssignmentTargetT", bound=CompactAssignmentTargetABC)
+
+
 @dataclass(frozen=True)
-class CompactMutation:
-    target: CompactAssignmentTargetABC
+class CompactMutation(Generic[AssignmentTargetT]):
+    target: AssignmentTargetT
     kind: CompactMutationKind
     position: CompactFlowPosition
     line: int
@@ -1149,6 +1163,12 @@ class CompactMutation:
 
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
+        if self.kind.is_definition_binding != isinstance(
+            self.target, CompactDefinitionTarget
+        ):
+            raise TypeError(
+                "Definition mutations require a definition target exclusively"
+            )
 
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactMutation]
@@ -1230,7 +1250,7 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
         self,
         context: CompactFlowContext,
         reference: LexicalValueReference,
-        binding: CompactMutation,
+        binding: CompactMutation[CompactDefinitionTarget],
         pending_bindings: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
         raise NotImplementedError
@@ -2603,10 +2623,17 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
 
     visit_ImportFrom = visit_Import
 
+    def _capture_decorators(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    ) -> tuple[CompactValueUse, ...]:
+        return tuple(
+            self._capture_value(decorator) for decorator in node.decorator_list
+        )
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_definition_expressions(node)
+        decorator_uses = self._visit_definition_expressions(node)
         self._record_mutation(
-            CompactBindingTarget(node.name),
+            CompactDefinitionTarget(node.name, decorator_uses),
             node,
             CompactMutationKind.FUNCTION_DEFINITION,
         )
@@ -2616,9 +2643,8 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
     def _visit_definition_expressions(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
+    ) -> tuple[CompactValueUse, ...]:
+        decorator_uses = self._capture_decorators(node)
         self.visit_argument_defaults(node.args)
         for annotation in (
             *(argument.annotation for argument in node.args.posonlyargs),
@@ -2630,16 +2656,18 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
         ):
             if annotation is not None:
                 self.visit(annotation)
+        return decorator_uses
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for decorator in node.decorator_list:
-            self.visit(decorator)
+        decorator_uses = self._capture_decorators(node)
         for base in node.bases:
             self.visit(base)
         for keyword in node.keywords:
             self.visit(keyword.value)
         self._record_mutation(
-            CompactBindingTarget(node.name), node, CompactMutationKind.CLASS_DEFINITION
+            CompactDefinitionTarget(node.name, decorator_uses),
+            node,
+            CompactMutationKind.CLASS_DEFINITION,
         )
 
     def visit_If(self, node: ast.If) -> None:

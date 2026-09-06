@@ -1,0 +1,393 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from typing import cast"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactReceiverTarget",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass CompactDefinitionTarget(CompactBindingTarget):\n    \"\"\"A definition binding retains decorator values captured during its creation.\"\"\"\n\n    decorator_uses: tuple[CompactValueUse, ...]\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": "",
+              "source": "AssignmentTargetT = TypeVar(\"AssignmentTargetT\", bound=CompactAssignmentTargetABC)\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "class CompactMutation:",
+                  "new_source": "class CompactMutation(Generic[AssignmentTargetT]):"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    target: CompactAssignmentTargetABC",
+                  "new_source": "    target: AssignmentTargetT"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        self.kind.validate_import_origin(self.imported_origin)",
+                  "new_source": "        self.kind.validate_import_origin(self.imported_origin)\n        if self.kind.is_definition_binding != isinstance(self.target, CompactDefinitionTarget):\n            raise TypeError(\"Definition mutations require a definition target exclusively\")"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation.__post_init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            context, reference, binding, pending",
+                  "new_source": "            context, reference, cast(CompactMutation[CompactDefinitionTarget], binding), pending"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactDefinitionBindingOperation.resolve_source",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "binding: CompactMutation,",
+                  "new_source": "binding: CompactMutation[CompactDefinitionTarget],"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingResolverABC._definition_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_FunctionDef",
+              "rationale": "",
+              "source": "    def _capture_decorators(\n        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef\n    ) -> tuple[CompactValueUse, ...]:\n        return tuple(self._capture_value(decorator) for decorator in node.decorator_list)\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_FunctionDef",
+              "rationale": "",
+              "body_source": "decorator_uses = self._visit_definition_expressions(node)\nself._record_mutation(\n    CompactDefinitionTarget(node.name, decorator_uses),\n    node,\n    CompactMutationKind.FUNCTION_DEFINITION,\n)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": ") -> None:\n        for decorator in node.decorator_list:\n            self.visit(decorator)",
+                  "new_source": ") -> tuple[CompactValueUse, ...]:\n        decorator_uses = self._capture_decorators(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._visit_definition_expressions",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                self.visit(annotation)",
+                  "new_source": "                self.visit(annotation)\n        return decorator_uses"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._visit_definition_expressions",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        for decorator in node.decorator_list:\n            self.visit(decorator)",
+                  "new_source": "        decorator_uses = self._capture_decorators(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_ClassDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "CompactBindingTarget(node.name)",
+                  "new_source": "CompactDefinitionTarget(node.name, decorator_uses)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_ClassDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "ResolvedCompactFunctionTarget",
+              "rationale": "",
+              "source": "def for_object_mutation(self) -> CompactCallTargetResolution:\n    \"\"\"A source callable does not prove its transformed namespace value.\"\"\"\n    if (\n        self.declaration.decorators\n        or self.declaration.owner_class_qualname is not None\n    ):\n        return UnboundedCompactFunctionTarget(\n            self.possible_symbols,\n            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,\n        )\n    return self\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "rationale": "",
+              "import_source": "from .product_flow import CompactDefinitionTarget"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "binding: CompactMutation,",
+                  "new_source": "binding: CompactMutation[CompactDefinitionTarget],"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._definition_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

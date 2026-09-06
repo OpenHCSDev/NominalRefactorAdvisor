@@ -472,6 +472,27 @@ and captured default values require separate execution evidence. The
 :download:`parameter-source refactor <../../examples/parameter_source_defaults.json>`
 applies 19 authored DSL stages against ``2ae5a55``.
 
+``CompactDefinitionTarget`` extends the ordinary lexical binding target with
+``decorator_uses`` captured by the enclosing flow. Each use retains its evaluation
+position and value expression; decorator factories retain the same
+``CallResultValue`` invocation as the flow's call record. Function, asynchronous
+function and class definitions supply this payload, including an empty tuple
+for an undecorated definition. ``CompactMutation`` validates the definition-kind
+and target relation once; its generic target type carries that contract into
+definition resolution. These are source evaluation receipts, including
+potentially repeated sites, rather than proofs of completed decorator application
+or class creation.
+
+``ResolvedCompactFunctionTarget.for_object_mutation`` projects decorated or
+class-owned function declarations to an unbounded object target. A decorator
+or class namespace can install a different object; recognised decorator spelling
+does not exempt that obligation. Raw free and local function declarations retain
+their existing distinct-object bound. The original source declaration remains
+available independently of this mutation projection. Class-result identity and
+runtime-call admission require additional evidence. The
+:download:`definition-capture refactor <../../examples/definition_captures.json>`
+applies 17 authored DSL stages against ``25aacf1``.
+
 ``InitialCompactParameterBinding`` retains the exact parameter object from the
 owning signature and has no mutation event. Its value origin is that entry
 parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an
