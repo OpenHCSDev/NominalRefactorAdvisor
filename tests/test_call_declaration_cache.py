@@ -17,7 +17,10 @@ from nominal_refactor_advisor.call_binding import (
     CompactCallBindingViolation,
     CompactFunctionSignature,
 )
-from nominal_refactor_advisor.value_expression import LexicalValueReference
+from nominal_refactor_advisor.value_expression import (
+    CompactValueExpression,
+    LexicalValueReference,
+)
 
 
 def _declaration() -> CompactFunctionDeclaration:
@@ -34,7 +37,7 @@ def _declaration() -> CompactFunctionDeclaration:
 def test_repeated_binding_uses_one_derived_signature() -> None:
     declaration = _declaration()
     arguments = CompactCallArguments.from_call(
-        ast.parse("consume(item)", mode="eval").body
+        ast.parse("consume(item)", mode="eval").body, CompactValueExpression.project
     )
     signature = declaration.call_signature
     first = arguments.bind_to(declaration)

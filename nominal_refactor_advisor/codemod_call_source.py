@@ -18,6 +18,7 @@ from .product_flow import CompactCallArguments
 from .product_flow_authority import CompactResolvedFunctionCall
 from .source_geometry import SourceByteSpan
 from .source_index import AstTargetDigest
+from .value_expression import CompactValueExpression
 
 if TYPE_CHECKING:
     from .codemod_runtime import CodemodSourceSnapshot
@@ -112,7 +113,7 @@ class DeclaredCallArgumentsRewrite(DeclaredCallRewriteABC):
     """Retain the callee and prove authored arguments bind to its declaration."""
 
     @cached_property
-    def arguments(self) -> CompactCallArguments:
+    def arguments(self) -> CompactCallArguments[CompactValueExpression]:
         expression = ast.parse(
             f"_nra_call_({self.replacement_source})", mode="eval"
         ).body
@@ -122,7 +123,9 @@ class DeclaredCallArgumentsRewrite(DeclaredCallRewriteABC):
             or expression.func.id != "_nra_call_"
         ):
             raise ValueError("Replacement must be one call argument list")
-        return CompactCallArguments.from_call(expression)
+        return CompactCallArguments[CompactValueExpression].from_call(
+            expression, CompactValueExpression.project
+        )
 
     def replacement_span(self, node: ast.Call) -> SourceTextSpan:
         return self.geometry.call_argument_span(node)

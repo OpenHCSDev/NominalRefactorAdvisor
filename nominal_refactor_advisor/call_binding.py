@@ -7,7 +7,11 @@ from abc import (
 )
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Self
+from typing import (
+    Generic,
+    Self,
+    TypeVar,
+)
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .value_expression import (
@@ -15,6 +19,8 @@ from .value_expression import (
     LexicalValueReference as LexicalValueReference,
     OpaqueValueExpression as OpaqueValueExpression,
 )
+
+CallValueT = TypeVar("CallValueT")
 
 
 class CompactParameterKind(StrEnum):
@@ -67,15 +73,15 @@ class CompactCallBindingViolation(StrEnum):
 
 
 @dataclass(frozen=True)
-class CompactCallArgument:
-    value: CompactValueExpression
+class CompactCallArgument(Generic[CallValueT]):
+    value: CallValueT
     is_unpacked: bool = False
 
 
 @dataclass(frozen=True)
-class CompactKeywordArgument:
+class CompactKeywordArgument(Generic[CallValueT]):
     name: str | None
-    value: CompactValueExpression
+    value: CallValueT
 
     @property
     def is_unpacked(self) -> bool:
@@ -134,15 +140,15 @@ class CompactFunctionParameter:
 
 
 @dataclass(frozen=True)
-class CompactBoundCallArgument:
+class CompactBoundCallArgument(Generic[CallValueT]):
     parameter_name: str
-    values: tuple[CompactValueExpression, ...]
+    values: tuple[CallValueT, ...]
     keyword_names: tuple[str | None, ...]
 
 
 @dataclass(frozen=True)
-class CompactCallBinding(ABC):
-    """Nominal result of applying a Python signature to one call."""
+class CompactCallBinding(ABC, Generic[CallValueT]):
+    """Nominal binding result retaining the supplied value type and objects."""
 
     @property
     @abstractmethod
@@ -158,13 +164,13 @@ class CompactCallBinding(ABC):
     def argument_for(
         self,
         parameter_name: str,
-    ) -> CompactBoundCallArgument | None:
+    ) -> CompactBoundCallArgument[CallValueT] | None:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class ExactCompactCallBinding(CompactCallBinding):
-    arguments: tuple[CompactBoundCallArgument, ...]
+class ExactCompactCallBinding(CompactCallBinding[CallValueT]):
+    arguments: tuple[CompactBoundCallArgument[CallValueT], ...]
 
     @property
     def is_exact(self) -> bool:
@@ -174,7 +180,9 @@ class ExactCompactCallBinding(CompactCallBinding):
     def violation(self) -> None:
         return None
 
-    def argument_for(self, parameter_name: str) -> CompactBoundCallArgument | None:
+    def argument_for(
+        self, parameter_name: str
+    ) -> CompactBoundCallArgument[CallValueT] | None:
         return next(
             (
                 argument
@@ -186,7 +194,7 @@ class ExactCompactCallBinding(CompactCallBinding):
 
 
 @dataclass(frozen=True)
-class ViolatedCompactCallBinding(CompactCallBinding):
+class ViolatedCompactCallBinding(CompactCallBinding[CallValueT]):
     violation_kind: CompactCallBindingViolation
 
     @property
@@ -257,9 +265,9 @@ class CompactFunctionSignature:
 
     def bind(
         self,
-        positional_arguments: tuple[CompactCallArgument, ...],
-        keyword_arguments: tuple[CompactKeywordArgument, ...],
-    ) -> CompactCallBinding:
+        positional_arguments: tuple[CompactCallArgument[CallValueT], ...],
+        keyword_arguments: tuple[CompactKeywordArgument[CallValueT], ...],
+    ) -> CompactCallBinding[CallValueT]:
         if any(argument.is_unpacked for argument in positional_arguments) or any(
             argument.is_unpacked for argument in keyword_arguments
         ):
@@ -267,9 +275,7 @@ class CompactFunctionSignature:
                 CompactCallBindingViolation.VARIADIC_UNPACKING
             )
 
-        values_by_parameter: dict[
-            str, list[tuple[CompactValueExpression, str | None]]
-        ] = {}
+        values_by_parameter: dict[str, list[tuple[CallValueT, str | None]]] = {}
         fixed_positional_parameters = tuple(
             parameter
             for parameter in self.parameters

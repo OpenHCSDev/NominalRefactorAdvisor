@@ -205,6 +205,16 @@ value model. Neither depends on product-flow collection. ``product_flow``
 re-exports their public declarations as the same objects; repository consumers
 import from the owning modules.
 
+Call arguments and binding results preserve a shared value type through
+``CallValueT``. ``CompactCallArguments.from_call(node, project_value)`` requires
+an explicit expression projector and invokes it once per argument, in Python's
+positional-then-keyword evaluation order. Signature binding retains those
+objects unchanged. Authored call edits supply ``CompactValueExpression.project``;
+other projections can carry richer source facts through the same binder.
+Unpacked arguments retain the existing explicit binding limit. The
+:download:`value-polymorphic binding refactor
+<../../examples/call_value_polymorphism.py>` applies this contract through the DSL.
+
 Method selection checks the selected binding against its source declaration.
 Exact aliases retain the captured declaration; other reassignments and deletions
 cannot authorise edits to an older method. A later method definition can

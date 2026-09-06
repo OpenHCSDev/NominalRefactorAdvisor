@@ -1420,3 +1420,49 @@ monkeypatch, and explicitly verifies restoration of the original registry and
 `ReplaceTargetOperation` entry. Production key inheritance is unchanged. The
 catalogue assertion compares the complete declaration-derived mapping, so a
 future failure identifies the missing or incorrect entry instead of only counts.
+
+The complete decorator file followed by the catalogue checks passes all 23
+cases in one process on Python 3.11 and Python 3.14 after isolation.
+
+## Preserve value type through the shared signature binder (2026-09-06)
+
+The argument-capture investigation found an unnecessary boundary restriction:
+the binder annotated every transported value as `CompactValueExpression`,
+although it only assigns objects to parameters. Captured source uses need to
+retain their evaluation events through that same assignment, not through a
+second parameter-to-value table or a separate binding implementation.
+
+`CallValueT` now connects positional/keyword arguments, bound arguments and
+exact/open binding results. The existing signature and descriptor-binding
+algorithms retain these supplied objects unchanged. `CompactCallArguments`
+uses an explicit expression projector, shared by source collection and authored
+call edits. Its classmethod still returns the selected nominal refinement.
+No new binder, runtime value-type dispatcher or fallback projection was added.
+
+Three regressions check arbitrary typed source tokens against Python's native
+signature binding, exact object identity through variadic parameters, explicit
+unpacking limits and subclass-preserving projection. Existing call and
+descriptor tests continue using the expression projector. The focused run
+passed 176 tests before adding the final subclass case.
+
+The 21-stage `docs/examples/call_value_polymorphism.py` plan was simulated and
+applied through the CLI. Replay from `92079cb` reproduces all four complete
+production module ASTs. All 81 detectors complete the touched-source audit
+with zero findings. Sphinx builds the updated reference with its two existing
+duplicate-description warnings. The seven-run alternating 10,000-binding
+probe measured medians of 0.2354 seconds before and 0.2448 seconds after under
+concurrent test load; this is not an isolated performance comparison.
+
+Full production-batch validation passed 2,393 tests with 15 skipped on Python
+3.11 and 2,408 tests on Python 3.14, using eight workers per suite. Python 3.14
+retains the existing 96 fork/thread warnings. These runs preceded the
+test-only registry isolation correction, which then passed the explicit
+23-case same-process checks on both versions. Ruff and whitespace checks pass.
+Receipts use `/tmp/nra-call-values-*` and `/tmp/nra-decorator-registry-*`.
+
+Per-argument capture and its origin consumers are next. This batch removes
+their typed-boundary obstacle; it does not yet change argument-origin timing
+or establish receiver lifetime. The source collector can now supply one
+positioned value per argument through its projector and eliminate its separate
+argument traversal. The constructor and forwarding consumers must keep those
+positioned values until origin resolution rather than strip them back to names.

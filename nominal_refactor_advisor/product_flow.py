@@ -27,6 +27,7 @@ from .ast_tools import (
     ParsedModule,
 )
 from .call_binding import (
+    CallValueT,
     CompactBoundCallArgument as CompactBoundCallArgument,
     CompactCallArgument as CompactCallArgument,
     CompactCallBinding as CompactCallBinding,
@@ -384,37 +385,41 @@ class CompactCallResult:
 
 
 @dataclass(frozen=True)
-class CompactCallArguments:
+class CompactCallArguments(Generic[CallValueT]):
     """One argument list, shared by collected calls and authored call edits."""
 
-    positional: tuple[CompactCallArgument, ...]
-    keywords: tuple[CompactKeywordArgument, ...]
+    positional: tuple[CompactCallArgument[CallValueT], ...]
+    keywords: tuple[CompactKeywordArgument[CallValueT], ...]
 
     @classmethod
-    def from_call(cls, node: ast.Call) -> Self:
+    def from_call(
+        cls, node: ast.Call, project_value: Callable[[ast.expr], CallValueT]
+    ) -> Self:
         return cls(
             positional=tuple(
                 CompactCallArgument(
-                    CompactValueExpression.project(
-                        argument.value if isinstance(argument, ast.Starred) else argument
+                    project_value(
+                        argument.value
+                        if isinstance(argument, ast.Starred)
+                        else argument
                     ),
                     is_unpacked=isinstance(argument, ast.Starred),
                 )
                 for argument in node.args
             ),
             keywords=tuple(
-                CompactKeywordArgument(keyword.arg, CompactValueExpression.project(keyword.value))
+                CompactKeywordArgument(keyword.arg, project_value(keyword.value))
                 for keyword in node.keywords
             ),
         )
 
     @property
-    def values(self) -> tuple[CompactValueExpression, ...]:
+    def values(self) -> tuple[CallValueT, ...]:
         return tuple(argument.value for argument in (*self.positional, *self.keywords))
 
     def bind_to(
         self, declaration: "CompactFunctionDeclaration"
-    ) -> "CompactCallBinding":
+    ) -> "CompactCallBinding[CallValueT]":
         return declaration.bind_call(self.positional, self.keywords)
 
 
@@ -920,7 +925,7 @@ class CompactCallableReferenceUse:
 @dataclass(frozen=True)
 class CompactFunctionCall:
     target_use: CompactCallableReferenceUse
-    arguments: CompactCallArguments
+    arguments: CompactCallArguments[CompactValueExpression]
     result: CompactCallResult
     position: CompactFlowPosition
     source_span: SourceByteSpan
@@ -939,7 +944,9 @@ class CompactFunctionCall:
     def result_binding(self) -> LexicalValueReference | None:
         return self.result.binding
 
-    def bind_to(self, declaration: "CompactFunctionDeclaration") -> CompactCallBinding:
+    def bind_to(
+        self, declaration: "CompactFunctionDeclaration"
+    ) -> CompactCallBinding[CompactValueExpression]:
         return self.arguments.bind_to(declaration)
 
     def product_construction(self) -> "CompactProductConstruction | None":
@@ -1045,7 +1052,7 @@ class CompactProductConstruction:
 
     target: CompactCallTargetReference
     result_binding: LexicalValueReference
-    field_arguments: tuple[CompactKeywordArgument, ...]
+    field_arguments: tuple[CompactKeywordArgument[CompactValueExpression], ...]
     position: CompactFlowPosition
     line: int
 
@@ -1142,11 +1149,11 @@ class CompactFunctionDeclaration:
 
     def bind_call(
         self,
-        positional_arguments: tuple[CompactCallArgument, ...],
-        keyword_arguments: tuple[CompactKeywordArgument, ...],
+        positional_arguments: tuple[CompactCallArgument[CallValueT], ...],
+        keyword_arguments: tuple[CompactKeywordArgument[CallValueT], ...],
         *,
         access: CompactDescriptorAccess = CompactDescriptorAccess.INSTANCE,
-    ) -> CompactCallBinding:
+    ) -> CompactCallBinding[CallValueT]:
         if self.signature_decorator_hazard:
             return ViolatedCompactCallBinding(
                 CompactCallBindingViolation.SIGNATURE_DECORATOR_HAZARD
@@ -1611,7 +1618,9 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.calls.append(
             CompactFunctionCall(
                 target_use=target_use,
-                arguments=CompactCallArguments.from_call(node),
+                arguments=CompactCallArguments[CompactValueExpression].from_call(
+                    node, CompactValueExpression.project
+                ),
                 result=result,
                 position=self._position(),
                 source_span=SourceByteSpan.require_node(node),

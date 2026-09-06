@@ -10,7 +10,11 @@ from functools import cached_property
 from typing import Callable, Self, TypeAlias, cast
 
 from .ast_tools import CollectedFamily, ParsedModule
-from .call_binding import CompactCallBinding, CompactFunctionSignature
+from .call_binding import (
+    CallValueT,
+    CompactCallBinding,
+    CompactFunctionSignature,
+)
 from .class_index import (
     CompactClassMemberDeclaration,
     CompactClassFamilyIndex,
@@ -47,7 +51,10 @@ from .product_flow import (
     CurrentClassMemberMethodReference,
     compact_product_flow_projection,
 )
-from .value_expression import LexicalValueReference
+from .value_expression import (
+    CompactValueExpression,
+    LexicalValueReference,
+)
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 
@@ -166,7 +173,7 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
             )
         return signature
 
-    def bind_arguments(self, arguments: CompactCallArguments) -> CompactCallBinding:
+    def bind_arguments(self, arguments: CompactCallArguments[CallValueT]) -> CompactCallBinding[CallValueT]:
         return self.declaration.bind_call(
             arguments.positional,
             arguments.keywords,
@@ -286,7 +293,7 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
         return self.resolved_target.call_signature
 
     @cached_property
-    def binding(self) -> CompactCallBinding:
+    def binding(self) -> CompactCallBinding[CompactValueExpression]:
         return self.resolved_target.bind_arguments(self.call.arguments)
 
     @property

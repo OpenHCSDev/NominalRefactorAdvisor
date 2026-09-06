@@ -23,6 +23,7 @@ from nominal_refactor_advisor.product_flow import (
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.product_flow_authority import CompactProductFlowRepository
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.call_binding import CompactCallBindingViolation
 
 
@@ -82,7 +83,7 @@ def test_resolved_call_signature_agrees_with_python_descriptor_lookup(
     ) == tuple(native_signature.parameters)
     assert resolved.target_resolution is resolved.resolved_target
     replacement = CompactCallArguments.from_call(
-        ast.parse("consume(value=3)", mode="eval").body
+        ast.parse("consume(value=3)", mode="eval").body, CompactValueExpression.project
     )
     try:
         native_signature.bind(value=3)
