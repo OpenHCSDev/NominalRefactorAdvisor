@@ -2097,8 +2097,11 @@ class CompactFunctionFlow(DataclassGraphValue):
             ):
                 return ExactCompactBindingMutation(selected)
         if any(
-            mutation.position.branch_path
-            and (use_position is None or mutation.position.may_precede(use_position))
+            (
+                mutation.position.branch_path
+                if use_position is None
+                else mutation.position.may_precede(use_position)
+            )
             for mutation in mutations
         ):
             return OpenCompactBindingMutation(

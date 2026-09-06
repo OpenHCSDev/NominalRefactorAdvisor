@@ -30,14 +30,19 @@ class NativeSubscriptionAuthority(ABC):
     def for_reference(
         cls, reference: ScopedNativeReference, environment: NativeReferenceEnvironment
     ) -> type[NativeSubscriptionAuthority]:
-        witness = reference.require_binding(environment)
+        authorities = loaded_concrete_nominal_descendants(cls)
+        native = reference.require_native(
+            environment,
+            tuple(
+                declaration
+                for authority in authorities
+                for declaration in authority.native_declarations
+            ),
+        )
         matches = tuple(
             authority
-            for authority in loaded_concrete_nominal_descendants(cls)
-            if any(
-                declaration.qualified_name == witness.qualified_name
-                for declaration in authority.native_declarations
-            )
+            for authority in authorities
+            if native in authority.native_declarations
         )
         if len(matches) != 1:
             raise ValueError(

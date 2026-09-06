@@ -3,6 +3,7 @@
 import ast
 from contextlib import nullcontext
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
@@ -10,6 +11,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import (
     ExactCompactBindingMutation,
     OpenCompactBindingMutation,
+    InitialCompactParameterBinding,
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.value_expression import LexicalValueReference
@@ -164,3 +166,56 @@ def test_header_binding_is_not_erased_by_selecting_an_older_dominating_write(bod
     )
     exec(compile(source, "overwrite.py", "exec"), namespace)
     assert len(observed) == 1 and observed[0] is not first
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "for chosen in items:\n    consume(chosen)\n",
+        "with context as chosen:\n    consume(chosen)\n",
+        "if (chosen := final):\n    consume(chosen)\n",
+        "while (chosen := final):\n    consume(chosen)\n    break\n",
+        "try:\n    raise ValueError()\nexcept ValueError as chosen:\n    consume(chosen)\n",
+        "match final:\n    case chosen:\n        consume(chosen)\n",
+    ),
+)
+def test_possible_header_write_cannot_recover_the_incoming_parameter(body):
+    source = "def run(chosen):\n" + "".join(
+        "    " + line for line in body.splitlines(keepends=True)
+    )
+    flow = _flow(source, "run")
+    read = flow.calls[-1].arguments.positional[0].value
+    assert isinstance(
+        flow.binding_resolution_for("chosen", read.position),
+        OpenCompactBindingMutation,
+    )
+    observed = []
+    initial, final = object(), object()
+    namespace = dict(
+        final=final, items=(final,), context=nullcontext(final), consume=observed.append
+    )
+    exec(compile(source, "parameter-overwrite.py", "exec"), namespace)
+    namespace["run"](initial)
+    assert len(observed) == 1 and observed[0] is not initial
+
+
+def test_future_write_preserves_the_actual_incoming_parameter_read():
+    flow = _flow("def run(chosen):\n    consume(chosen)\n    chosen = final\n", "run")
+    read = flow.calls[0].arguments.positional[0].value
+    assert isinstance(
+        flow.binding_resolution_for("chosen", read.position),
+        InitialCompactParameterBinding,
+    )
+
+
+def test_ambiguous_shared_event_cannot_recover_a_parameter_binding():
+    flow = _flow("def run(chosen):\n    chosen = final\n    consume(chosen)\n", "run")
+    read = flow.calls[-1].arguments.positional[0].value
+    mutation = replace(flow.mutations[0], position=read.position)
+    ambiguous = replace(flow, mutations=(mutation,))
+    assert mutation.position.may_precede(read.position)
+    assert not mutation.position.dominates(read.position)
+    assert isinstance(
+        ambiguous.binding_resolution_for("chosen", read.position),
+        OpenCompactBindingMutation,
+    )

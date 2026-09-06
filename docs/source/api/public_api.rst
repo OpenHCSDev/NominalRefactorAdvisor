@@ -76,8 +76,9 @@ possible bindings remains unresolved, including an entry value followed by a
 write. At an explicit read position, a dominating write supersedes earlier
 conditional writes when the flow ordering proves they cannot occur after it.
 Intervening or repeating writes remain unresolved; proved future writes do not
-obscure an earlier value. Header bindings are included even when the write itself
-has no child-suite branch path. This source-selection rule does not establish call
+obscure an earlier value. An unresolved possibly preceding write cannot recover
+the parameter's incoming value, including header writes without a child-suite
+branch path. This source-selection rule does not establish call
 activation or native-object integrity. The :download:`authored overwrite fix
 <../../examples/binding_overwrite_order.json>` applies it through the DSL.
 Bound call-result queries use the same write selection. For an attribute result
@@ -1191,7 +1192,7 @@ creation prevent the rewrite. Native generic applications require the inherited
 ``ClassNamespaceExecutionEvidence`` derives final member bindings and creation
 effects from the existing ordered lexical traversal. Deleted methods and
 annotation-only names do not become inherited method bindings. Native decorator
-references require an external binding at their evaluation point; deleting a
+references are checked for external lexical bindings; deleting a
 shadowing name later does not establish that proof. Calls, operators, imports,
 iteration and other executable forms require creation-effect evidence. Native
 method descriptors, literal values and sequence construction have dedicated
@@ -1200,7 +1201,17 @@ Annotation effects follow the module's annotation evaluation mode, including
 deferred annotations on Python 3.14. Deferred function and generator bodies are
 separate from their immediately evaluated defaults and outer iterables.
 
-These checks establish declaration identity, forwarding and capture conditions.
+``NativeSubscriptionAuthority.for_reference`` obtains its admitted declaration
+through ``ScopedNativeReference.require_native`` and selects a subscription
+family using ``NativeDeclaration`` identity equality. Candidates derive from
+the loaded family's declared native objects. It does not repeat qualified-name
+admission. The shared native-reference gate still needs the captured-object and
+activation integration described above; this routing does not close those
+pending integrity obligations. The :download:`gate and binding batch
+<../../examples/native_admission_binding_selection.json>` replays the two
+authored source changes against ``a398f6c``.
+
+These checks cover source declarations, forwarding and capture conditions.
 They do not establish arbitrary multiple-inheritance replacement equivalence,
 class-creation hook equivalence or unchanged annotation introspection. The
 recorded plans in ``docs/examples/collector_base_authority_refactor.py`` and

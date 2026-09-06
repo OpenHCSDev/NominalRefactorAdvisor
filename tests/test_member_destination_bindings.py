@@ -104,7 +104,8 @@ def test_subscription_guard_follows_native_annotation_evaluation(
     before = subprocess.check_output([sys.executable, str(path)])
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     if sys.version_info < (3, 14):
-        with pytest.raises(ValueError, match="no unique subscription proof"):
+        # Unsupported origins are rejected by the shared native-reference gate.
+        with pytest.raises(ValueError, match="remains unproved"):
             _plan(path).simulate(snapshot)
         assert path.read_bytes() == source.encode("utf-8")
     else:

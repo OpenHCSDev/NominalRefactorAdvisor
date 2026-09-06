@@ -1,0 +1,49 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/native_subscription.py",
+              "target_qualname": "NativeSubscriptionAuthority.for_reference",
+              "rationale": "",
+              "body_source": "authorities = loaded_concrete_nominal_descendants(cls)\nnative = reference.require_native(\n    environment,\n    tuple(\n        declaration\n        for authority in authorities\n        for declaration in authority.native_declarations\n    ),\n)\nmatches = tuple(\n    authority\n    for authority in authorities\n    if native in authority.native_declarations\n)\nif len(matches) != 1:\n    raise ValueError(\n        f\"Class namespace execution at line {reference.node.lineno} has no unique subscription proof\"\n    )\nreturn matches[0]\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            mutation.position.branch_path\n            and (use_position is None or mutation.position.may_precede(use_position))",
+                  "new_source": "            (\n                mutation.position.branch_path\n                if use_position is None\n                else mutation.position.may_precede(use_position)\n            )"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow._binding_resolution_for_mutations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

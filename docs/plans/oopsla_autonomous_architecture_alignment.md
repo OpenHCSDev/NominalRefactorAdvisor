@@ -2978,3 +2978,61 @@ boundary remains production effect/activation admission and migration of those
 gates, with explicit source-read selection rather than synthetic class-line
 references. Native eager annotation order, class construction, default/call
 activation and import traversal retain their separate proof obligations.
+
+### 2026-09-06: Remove a native gate bypass and stale parameter recovery
+
+`NativeSubscriptionAuthority.for_reference` repeated qualified-name admission
+instead of using the shared native-reference gate. It now derives candidates
+from the loaded family's declaration owners, calls `require_native` once, and
+selects the subscription family using existing `NativeDeclaration` identity
+equality. Four new regression cases failed before this change: shared rejection
+was ignored, lexical lookup was repeated despite a gate result, and matching
+spelling could select a family for a different object. The real existing gate
+control remains, alongside the native execution tests for subscription effects.
+The common gate's own object-capture migration is still pending.
+
+The annotation-order audit also exposed a current shared binding error. When a
+function parameter is overwritten in a for/with/walrus/exception/pattern header,
+the position relation conservatively leaves the write's dominance unresolved.
+The binding selector nevertheless recovered the incoming parameter because its
+ambiguity check only considered writes with child-suite branch paths. Seven new
+cases failed: six executable header examples and one deliberately unresolved
+same-position receipt. The shared guard now keeps any possibly preceding,
+unselected write open at a positioned read. Exact dominating writes still win;
+future-only writes preserve incoming parameters. The position=None deferred
+selection contract is unchanged. This removes a false proof rather than
+inventing a stronger header-order claim.
+
+Both production edits are replayable through the two-stage
+`docs/examples/native_admission_binding_selection.json` against `a398f6c`.
+Focused gates pass 117 cases on each Python version. Independent review found
+the positioned-read correction sound and the deferred rule unchanged. Diataxis
+keeps the API contract separate from this design and validation record.
+
+Integration design confirmed that class-body native reads need an admitted
+parent-frame entry route and a complete execution-prefix obligation. The exact
+parent definition target already owns the body relation; completed module
+lookup or a flattened mutation list cannot replace actual activation timing.
+The existing namespace collector's promotion checks are not a general global
+side-effect proof. The smallest useful next slice must admit ordinary plain
+class construction while leaving custom frames, unknown calls and omitted
+implicit effects open. Annotation ordering additionally needs compiler-derived
+root order and an explicit partial-order receipt when that evidence is missing.
+Read-only handoff: `/var/tmp/nra_annotation_order_owner_handoff.md`.
+
+Final frozen full suites pass 3,002 cases with 34 skipped on Python 3.11 and
+3,036 on Python 3.14, in 211 and 217 seconds respectively. Both retain exactly
+the same thirty pending integrity failure IDs as `a398f6c`. The three pending
+integrity suites remain untracked. Two existing Python 3.11 subscription tests
+now expect the shared gate's rejection message; their rejection and unchanged
+source checks remain intact. Logs are
+`/var/tmp/nra-gate-binding-final-{311,314}.log`.
+
+API replay reproduces both production ASTs from the frozen baseline, and the
+actual CLI simulates both stages cleanly. The automatic-package-context audit
+completes all 79 detectors without omissions or findings. Black and Ruff pass
+all five touched source/test files. Sphinx builds with the same two existing
+duplicate-object warnings. Receipts are
+`/var/tmp/nra-gate-binding-{replay,cli,audit}.json` and
+`/var/tmp/nra-gate-binding-sphinx.log`. The preceding `a398f6c` CI run
+`34053752637` passed Linux, macOS, Windows and documentation jobs.
