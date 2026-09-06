@@ -348,6 +348,12 @@ over their original declarations; they do not become replacement declaration
 identities. Native declarations with identical qualified names remain distinct
 when they refer to different Python objects.
 
+``SourceNativeClassMro`` derives reachable hierarchies lazily within one fixed
+source context and optional base substitution. Shared ancestors reuse their
+closed namespaces and inert C3 types. Replacing the context or substitution
+creates a fresh projection cache; unproved class construction is not stored as
+a successful resolution.
+
 Source namespace closure uses use-point lexical references and the module's
 annotation evaluation mode. Native generic aliases store their arguments;
 ``typing.ClassVar`` can inspect or hash them. Explicit native descriptor calls

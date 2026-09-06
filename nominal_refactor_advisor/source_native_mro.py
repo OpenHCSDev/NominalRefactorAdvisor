@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+    field,
+    replace,
+)
 from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 
@@ -45,6 +49,12 @@ class SourceNativeClassMro:
 
     context: CodemodSelectorContext
     native_roots: tuple[type, ...] = tuple(base.python_type for base in NativeMroBase)
+
+    substitution: NativeClassBaseSubstitution | None = None
+
+    _mro_types: dict[str, type] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @cached_property
     def native_declarations(self) -> dict[str, NativeClassMroDeclaration]:
@@ -96,14 +106,11 @@ class SourceNativeClassMro:
         return witness.qualified_name
 
     def for_source_class(
-        self,
-        source_class: IndexedClass,
-        *,
-        substitution: NativeClassBaseSubstitution | None = None,
+        self, source_class: IndexedClass
     ) -> DeclarationMroType[QualifiedDeclaration]:
         classes = self.context.required_class_family_index.classes_by_symbol
         dependencies: dict[str, tuple[str, ...]] = {}
-        projected: dict[str, type] = {}
+        projected = self._mro_types
         pending = [source_class.symbol]
         while pending:
             symbol = pending.pop()
@@ -131,10 +138,12 @@ class SourceNativeClassMro:
             bases = []
             for base in owner.node.bases:
                 base_symbol = self.required_base_symbol(owner, base)
-                if substitution is not None and substitution.replaces(owner, base):
+                if self.substitution is not None and self.substitution.replaces(
+                    owner, base
+                ):
                     if isinstance(base, ast.Subscript):
-                        substitution.replacement.require_generic_origin()
-                    base_symbol = substitution.replacement.qualified_name
+                        self.substitution.replacement.require_generic_origin()
+                    base_symbol = self.substitution.replacement.qualified_name
                 bases.append(base_symbol)
             dependencies[symbol] = tuple(bases)
             pending.extend(bases)
@@ -158,7 +167,9 @@ class SourceNativeClassMro:
         substitution: NativeClassBaseSubstitution,
         method_name: str,
     ) -> None:
-        projected = self.for_source_class(substitution.owner, substitution=substitution)
+        projected = replace(self, substitution=substitution).for_source_class(
+            substitution.owner
+        )
         expected = substitution.replacement.declaration
         expected_owner = NativeClassMroDeclaration(
             next(owner for owner in expected.__mro__ if method_name in vars(owner))

@@ -824,3 +824,50 @@ completed with no omissions or findings on the touched production paths using
 the whole package as context. Ruff and the whitespace check passed. A clean
 Sphinx rebuild retained the two existing duplicate-description warnings.
 The user-owned `uv.lock` is excluded from the batch.
+
+### Scenario-Scoped Source C3 Reuse Through the DSL
+
+The member-promotion cohort traversed shared ancestry independently for every
+class. A 51-class probe performed 891 namespace closure checks. The source MRO
+authority now owns a lazy cache for one fixed source context, native-root set
+and optional substitution. Shared ancestors are closed and constructed once.
+Changing the context or substitution creates a new authority with an empty
+derived cache, using the existing `dataclasses.replace` semantics for non-init
+fields. Python still computes C3 precedence.
+
+`source_mro_scenario_reuse.py` expresses this as seven DSL stages. The plan was
+simulated against the untouched checkout and its projected source was rescanned
+before application. The exact scan reported zero findings before and after,
+and produced an empty continuation plan. It therefore supplied no further
+executable semantic suggestion for this edit. Preflight did reject an ambiguous
+text replacement; the authored plan was narrowed to exact accesses before the
+successful simulation. The inspected plan then applied through the CLI as seven
+physical rewrites in one production module.
+
+The saved plan was then strengthened with the existing
+`ProjectFunctionParameterOperation` and `ReplaceDeclaredCallOperation`. These
+replace exact-text substitutions with lexical-binding projection and a
+declaration-resolved caller edit. Replaying the final seven-stage plan against
+`fd52e41` produces the complete working module AST, with no text-patch operations
+or whole-method replacements. The source-context and cache-lifetime decisions
+remain authored semantics; the DSL derives the owned reference edits.
+
+The same probe now performs 51 namespace checks and repeated lookups return the
+same inert class objects. Focused tests also exercise independent substitution
+and snapshot projections, retrying unproved construction, native base identity,
+collector migration and member promotion across branches. All 40 pass. Diagnostic
+probe times were approximately 46 ms before and 7 ms after; these timings cover
+the small hierarchy projection, not whole-repository analysis throughput.
+
+Initial full-suite runs hit the `/tmp` user quota while creating fixtures and
+cache entries. An inactive 667 MB relocated NRA cache was removed after checking
+for open handles and recent writes, freeing about 45,000 inodes. Replay sources,
+diagnostic logs and user files were retained. Those quota-affected runs are not
+accepted as validation gates.
+
+Four further inactive analysis caches (497 MB) were removed as inode use grew
+during the retry. The completed retry passed 2,307 tests with 15 skipped on
+Python 3.11 and 2,322 tests on Python 3.14. The 40-test focused ASCII run passed.
+All 81 architecture detectors completed with no findings or omissions, and
+Ruff and the whitespace check passed. Sphinx retained its two existing duplicate
+description warnings. `uv.lock` remains user-owned and excluded.
