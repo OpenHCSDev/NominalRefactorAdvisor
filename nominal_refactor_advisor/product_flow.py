@@ -41,7 +41,10 @@ from .call_binding import (
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
 from .descriptor_algebra import AliasProperty
-from .lexical_bindings import ImportBoundNameProjection
+from .lexical_bindings import (
+    ImportBoundNameProjection,
+    ImportedNameOrigin,
+)
 from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import SourceByteSpan
 from .value_expression import (
@@ -285,7 +288,7 @@ class CompactBindingOperationABC(ABC):
     ) -> frozenset[CompactBindingVisit]:
         return pending | {(context.owner_symbol, binding)}
 
-    def validate_import_origin(self, origin: str | None) -> None:
+    def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:
         if origin is not None:
             raise ValueError("Only import mutations carry an imported origin")
 
@@ -329,8 +332,9 @@ class CompactValueBindingOperation(CompactBindingOperationABC):
 class CompactImportBindingOperation(CompactBindingOperationABC):
     is_import_binding = True
 
-    def validate_import_origin(self, origin: str | None) -> None:
-        pass
+    def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:
+        if origin is None:
+            raise ValueError("Import mutations require their source declaration")
 
     def resolve_source(
         self,
@@ -340,17 +344,7 @@ class CompactImportBindingOperation(CompactBindingOperationABC):
         binding: CompactMutation,
         pending: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
-        origin = binding.imported_origin
-        if origin is None:
-            return resolver._possible_binding_resolution(
-                context,
-                reference,
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
-                pending,
-            )
-        return resolver._imported_name_resolution(
-            origin, reference.attribute_path, pending
-        )
+        return resolver._imported_name_resolution(context, reference, binding, pending)
 
 
 class CompactDefinitionBindingOperation(CompactBindingOperationABC):
@@ -444,7 +438,7 @@ class CompactMutationKind(StrEnum):
     ) -> TargetResolutionT:
         return self.binding_operation.resolve_definition(resolver, symbol, binding)
 
-    def validate_import_origin(self, origin: str | None) -> None:
+    def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:
         self.binding_operation.validate_import_origin(origin)
 
 
@@ -948,6 +942,8 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
 class CompactAssignmentTargetABC(ABC):
     """An evaluated write destination, distinct from the later write event."""
 
+    imported_origin: ImportedNameOrigin | None = None
+
     @abstractmethod
     def resolve_mutation(
         self,
@@ -979,11 +975,13 @@ class CompactAssignmentTargetABC(ABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class CompactBindingTarget(CompactAssignmentTargetABC):
-    name: str
+class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):
+    """Lexical write behaviour independent of how the binding name is supplied."""
 
-    bound_name = AliasProperty[str]("name")
+    @property
+    @abstractmethod
+    def bound_name(self) -> str:
+        raise NotImplementedError
 
     def may_replace(self, reference: LexicalValueReference) -> bool:
         return self.lexical_reference.is_prefix_of(reference)
@@ -994,18 +992,33 @@ class CompactBindingTarget(CompactAssignmentTargetABC):
         context: ResolutionContextT,
         mutation: CompactMutation,
     ) -> TargetResolutionT:
-        return resolver._binding_mutation_resolution(context, mutation, self.name)
+        return resolver._binding_mutation_resolution(context, mutation, self.bound_name)
 
     @cached_property
     def lexical_reference(self) -> LexicalValueReference:
-        return LexicalValueReference(self.name)
+        return LexicalValueReference(self.bound_name)
 
     def affected_roots_within(
         self,
         flow: CompactFunctionFlow,
         roots: frozenset[str],
     ) -> frozenset[str]:
-        return roots.intersection((self.name,))
+        return roots.intersection((self.bound_name,))
+
+
+@dataclass(frozen=True)
+class CompactImportTarget(CompactLexicalBindingTargetABC):
+    origin: ImportedNameOrigin
+
+    bound_name = AliasProperty[str]("origin.bound_name")
+    imported_origin = AliasProperty[ImportedNameOrigin]("origin")
+
+
+@dataclass(frozen=True)
+class CompactBindingTarget(CompactLexicalBindingTargetABC):
+    name: str
+
+    bound_name = AliasProperty[str]("name")
 
 
 @dataclass(frozen=True)
@@ -1062,7 +1075,7 @@ class CompactMutation:
     kind: CompactMutationKind
     position: CompactFlowPosition
     line: int
-    imported_origin: str | None = None
+    imported_origin = AliasProperty[ImportedNameOrigin | None]("target.imported_origin")
 
     reference = AliasProperty[LexicalValueReference | None]("target.lexical_reference")
 
@@ -1075,8 +1088,6 @@ class CompactMutation:
 
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
-        if self.imported_origin is not None and self.target.bound_name is None:
-            raise ValueError("An import requires a lexical binding target")
 
 
 CompactBindingVisit: TypeAlias = tuple[str, CompactMutation]
@@ -1146,8 +1157,9 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
     @abstractmethod
     def _imported_name_resolution(
         self,
-        origin: str,
-        attribute_path: tuple[str, ...],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
         pending: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
         raise NotImplementedError
@@ -2251,15 +2263,12 @@ class _CompactFlowCollector(ast.NodeVisitor):
         target: CompactAssignmentTargetABC,
         node: SourcePositionedNode,
         kind: CompactMutationKind | None = None,
-        *,
-        imported_origin: str | None = None,
     ) -> CompactMutation:
         mutation = CompactMutation(
             target=target,
             kind=self.mutation_kind if kind is None else kind,
             position=self._position(),
             line=node.lineno,
-            imported_origin=imported_origin,
         )
         self.mutations.append(mutation)
         return mutation
@@ -2473,10 +2482,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         for origin in ImportBoundNameProjection(node).origins(self.module_identity):
             self._record_mutation(
-                CompactBindingTarget(origin.bound_name),
-                node,
-                CompactMutationKind.IMPORT,
-                imported_origin=origin.qualified_name,
+                CompactImportTarget(origin), node, CompactMutationKind.IMPORT
             )
 
     visit_ImportFrom = visit_Import

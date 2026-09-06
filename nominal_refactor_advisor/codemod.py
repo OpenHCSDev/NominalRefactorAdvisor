@@ -351,15 +351,11 @@ from .codemod_import_scopes import (
     TypeCheckingGuardReference as TypeCheckingGuardReference,
 )
 from .codemod_imports import (
-    ImportAliasRequirement as ImportAliasRequirement,
     ImportBlockInsertionPointABC as ImportBlockInsertionPointABC,
     ImportSourceGroup as ImportSourceGroup,
 )
 from .codemod_imports import (
     ImportBoundNameRemoval as ImportBoundNameRemoval,
-)
-from .codemod_imports import (
-    ImportFromModuleName as ImportFromModuleName,
 )
 from .codemod_imports import (
     ImportFromSource as ImportFromSource,
@@ -609,7 +605,9 @@ from .json_reports import (
     json_report_property,
 )
 from .lexical_bindings import (
+    ImportAliasRequirement as ImportAliasRequirement,
     ImportBoundNameProjection,
+    ImportFromModuleName as ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .lexical_scopes import FunctionBindingProjection

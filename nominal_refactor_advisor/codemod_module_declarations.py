@@ -44,9 +44,6 @@ from .codemod_import_scopes import (
     TypeCheckingGuardProjection as TypeCheckingGuardProjection,
 )
 from .codemod_imports import (
-    ImportAliasRequirement as ImportAliasRequirement,
-)
-from .codemod_imports import (
     ModuleImportInsertionPoint as ModuleImportInsertionPoint,
 )
 from .codemod_imports import (
@@ -66,6 +63,7 @@ from .declaration_dependencies import (
     MovableDeclaration,
 )
 from .lexical_bindings import (
+    ImportAliasRequirement as ImportAliasRequirement,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )

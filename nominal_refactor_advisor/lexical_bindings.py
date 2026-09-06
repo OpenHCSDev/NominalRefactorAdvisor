@@ -3,80 +3,252 @@
 from __future__ import annotations
 
 import ast
+from abc import (
+    ABC,
+    abstractmethod,
+)
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from .assignment_projection import AssignmentTargetNameProjection
 from .python_module_identity import PythonModulePathIdentity
 
 
 @dataclass(frozen=True)
-class ImportedNameOrigin:
-    """One explicitly bound import name and its resolved nominal origin."""
+class ImportAliasRequirement:
+    """One requested import alias, including alias spelling when present."""
 
-    bound_name: str
-    qualified_name: str | None
+    name: str
+    asname: str | None
+
+    @property
+    def source(self) -> str:
+        return self.name if self.asname is None else f"{self.name} as {self.asname}"
+
+    @classmethod
+    def from_alias(cls, alias: ast.alias) -> "ImportAliasRequirement":
+        return cls(name=alias.name, asname=alias.asname)
+
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        """Return the source-spelling key for commutative import merging."""
+
+        return self.name, self.asname or ""
 
 
 @dataclass(frozen=True)
-class ImportBoundNameProjection:
-    """Project Python import statements to names bound in their lexical scope."""
+class ImportFromModuleName:
+    """Canonical source spelling for an ImportFrom module."""
 
-    statement: ast.Import | ast.ImportFrom
+    source: str
+
+    def resolve(self, module_identity: PythonModulePathIdentity) -> str | None:
+        module = self.source.lstrip(".")
+        return module_identity.resolve_import_from_module(
+            imported_module=module or None,
+            level=len(self.source) - len(module),
+        )
+
+    @classmethod
+    def from_node(cls, node: ast.ImportFrom) -> "ImportFromModuleName":
+        relative_prefix = "." * node.level
+        if node.module is None:
+            return cls(relative_prefix)
+        return cls(f"{relative_prefix}{node.module}")
+
+
+@dataclass(frozen=True)
+class ImportDeclarationABC(ABC):
+    """One AST-free import request; binding views derive from its aliases."""
+
+    aliases: tuple[ImportAliasRequirement, ...]
+
+    @property
+    @abstractmethod
+    def source_prefix(self) -> str:
+        raise NotImplementedError
+
+    def source_for(self, aliases: tuple[ImportAliasRequirement, ...]) -> str:
+        return f"{self.source_prefix} {', '.join(alias.source for alias in aliases)}\n"
+
+    @property
+    def source(self) -> str:
+        return self.source_for(self.aliases)
+
+    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
+        if alias.name == "*":
+            return None
+        return alias.asname or self._unaliased_bound_name(alias)
+
+    @abstractmethod
+    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def requested_module_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def qualified_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str | None:
+        """A source catalogue path, not a claim about the imported runtime object."""
+        raise NotImplementedError
 
     def names(self) -> tuple[str, ...]:
         return tuple(
             name
-            for alias in self.statement.names
-            if (name := self.alias_bound_name(alias))
+            for alias in self.aliases
+            if (name := self.bound_name(alias)) is not None
         )
 
     def origins(
         self, module_identity: PythonModulePathIdentity
     ) -> tuple[ImportedNameOrigin, ...]:
         return tuple(
-            ImportedNameOrigin(bound_name, self.alias_origin(alias, module_identity))
-            for alias in self.statement.names
-            if (bound_name := self.alias_bound_name(alias))
+            ImportedNameOrigin(self, index, module_identity)
+            for index, alias in enumerate(self.aliases)
+            if self.bound_name(alias) is not None
         )
-
-    def alias_origin(
-        self, alias: ast.alias, module_identity: PythonModulePathIdentity
-    ) -> str | None:
-        if isinstance(self.statement, ast.Import):
-            return alias.name if alias.asname else alias.name.split(".", 1)[0]
-        module_name = module_identity.resolve_import_from_module(
-            imported_module=self.statement.module,
-            level=self.statement.level,
-        )
-        return None if module_name is None else f"{module_name}.{alias.name}"
 
     def name_sources(self) -> tuple[tuple[str, str], ...]:
         return tuple(
-            (name, self.alias_import_source(alias))
-            for alias in self.statement.names
-            for name in (self.alias_bound_name(alias),)
-            if name
+            (name, self.source_for((alias,)))
+            for alias in self.aliases
+            if (name := self.bound_name(alias)) is not None
         )
 
-    def alias_bound_name(self, alias: ast.alias) -> str:
-        if alias.name == "*":
-            return ""
-        if alias.asname:
-            return alias.asname
-        if isinstance(self.statement, ast.Import):
-            return alias.name.split(".", maxsplit=1)[0]
+
+class ModuleImportDeclaration(ImportDeclarationABC):
+    source_prefix = "import"
+
+    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+        return alias.name.partition(".")[0]
+
+    def requested_module_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str:
         return alias.name
 
-    def alias_import_source(self, alias: ast.alias) -> str:
-        alias_source = alias.name
-        if alias.asname:
-            alias_source = f"{alias.name} as {alias.asname}"
+    def qualified_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str:
+        return (
+            alias.name
+            if alias.asname is not None
+            else self._unaliased_bound_name(alias)
+        )
+
+
+@dataclass(frozen=True)
+class FromImportDeclaration(ImportDeclarationABC):
+    module_name: ImportFromModuleName
+
+    @property
+    def source_prefix(self) -> str:
+        return f"from {self.module_name.source} import"
+
+    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+        return alias.name
+
+    def requested_module_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str | None:
+        return self.module_name.resolve(module_identity)
+
+    def qualified_name(
+        self,
+        alias: ImportAliasRequirement,
+        module_identity: PythonModulePathIdentity,
+    ) -> str | None:
+        module_name = self.requested_module_name(alias, module_identity)
+        return None if module_name is None else f"{module_name}.{alias.name}"
+
+
+@dataclass(frozen=True)
+class ImportedNameOrigin:
+    """A selected source position in the actual import declaration."""
+
+    declaration: ImportDeclarationABC
+    alias_index: int
+    module_identity: PythonModulePathIdentity
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.alias_index < len(self.declaration.aliases):
+            raise ValueError(
+                "Import origin requires an alias position within its declaration"
+            )
+        if self.declaration.bound_name(self.alias) is None:
+            raise ValueError("A star request has no explicit individual binding")
+
+    @property
+    def alias(self) -> ImportAliasRequirement:
+        return self.declaration.aliases[self.alias_index]
+
+    @property
+    def bound_name(self) -> str:
+        name = self.declaration.bound_name(self.alias)
+        assert name is not None
+        return name
+
+    @property
+    def qualified_name(self) -> str | None:
+        return self.declaration.qualified_name(self.alias, self.module_identity)
+
+    @property
+    def requested_module_name(self) -> str | None:
+        return self.declaration.requested_module_name(self.alias, self.module_identity)
+
+    @property
+    def source(self) -> str:
+        return self.declaration.source_for((self.alias,))
+
+
+@dataclass(frozen=True)
+class ImportBoundNameProjection:
+    """AST bridge to the declaration owning import syntax and binding rules."""
+
+    statement: ast.Import | ast.ImportFrom
+
+    @cached_property
+    def declaration(self) -> ImportDeclarationABC:
+        aliases = tuple(
+            ImportAliasRequirement.from_alias(alias) for alias in self.statement.names
+        )
         if isinstance(self.statement, ast.Import):
-            return f"import {alias_source}\n"
-        module_name = self.statement.module or ""
-        module_path = f"{'.' * self.statement.level}{module_name}"
-        return f"from {module_path} import {alias_source}\n"
+            return ModuleImportDeclaration(aliases)
+        return FromImportDeclaration(
+            aliases, ImportFromModuleName.from_node(self.statement)
+        )
+
+    def names(self) -> tuple[str, ...]:
+        return self.declaration.names()
+
+    def origins(
+        self, module_identity: PythonModulePathIdentity
+    ) -> tuple[ImportedNameOrigin, ...]:
+        return self.declaration.origins(module_identity)
+
+    def name_sources(self) -> tuple[tuple[str, str], ...]:
+        return self.declaration.name_sources()
+
+    def alias_bound_name(self, alias: ast.alias) -> str:
+        return (
+            self.declaration.bound_name(ImportAliasRequirement.from_alias(alias)) or ""
+        )
 
 
 @dataclass

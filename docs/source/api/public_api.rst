@@ -340,6 +340,29 @@ contracts in 21 stages, followed by two corrective stages that use Python's
 native relative-name resolver. Imports beyond the known package boundary remain
 unresolved instead of producing an invented module name.
 
+``ImportDeclarationABC`` in ``lexical_bindings`` owns an AST-free import request.
+``ModuleImportDeclaration`` and ``FromImportDeclaration`` derive binding names,
+requested module names and canonical source from their aliases. The existing
+``ImportAliasRequirement`` and ``ImportFromModuleName`` declarations live at this
+lower boundary; codemod exports retain the same objects. Higher-level import
+editing retains its formatting and insertion policies.
+
+``ImportedNameOrigin`` retains the declaration, selected alias position and
+source module identity. Its alias, bound name, requested module and qualified
+catalogue name are derived. Relative requests remain available when their
+absolute module cannot be resolved. ``CompactImportTarget`` retains that origin;
+``CompactMutation.imported_origin`` derives from its target rather than storing
+a separate string. Import and ordinary assignment targets share
+``CompactLexicalBindingTargetABC`` behaviour. The imported-source resolver
+receives the actual mutation, context and accessed reference.
+
+These declarations distinguish a module request from import-from member capture,
+including explicitly aliased dotted imports. They retain source binding evidence;
+qualified catalogue names do not prove runtime object identity or import
+activation. The :download:`nominal import evidence refactor
+<../../examples/nominal_import_evidence.json>` applies 31 authored DSL stages
+against ``2c1fa56``.
+
 ``InitialCompactParameterBinding`` retains the exact parameter object from the
 owning signature and has no mutation event. Its value origin is that entry
 parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an

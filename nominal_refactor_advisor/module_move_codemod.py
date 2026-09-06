@@ -15,7 +15,6 @@ from .codemod_import_bindings import FromModuleImportBindingIdentity
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
 from .codemod_imports import (
-    ImportFromModuleName,
     ImportFromSource,
     ModuleImportMutation,
 )
@@ -56,7 +55,7 @@ from .codemod_source_edits import (
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .declaration_dependencies import DeclarationDependencyProjection
-
+from .lexical_bindings import ImportFromModuleName
 
 @dataclass(frozen=True, kw_only=True)
 class SourceTopLevelSymbolClosureMoveCarrier:

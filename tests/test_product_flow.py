@@ -129,10 +129,15 @@ def test_import_origins_share_the_name_projection(source: str, expected: tuple) 
     flow = compact_product_flow_projection(module).flows[0]
     assert (
         tuple(
-            (mutation.reference.root_name, mutation.imported_origin)
+            (mutation.reference.root_name, mutation.imported_origin.qualified_name)
             for mutation in flow.mutations
         )
         == expected
+    )
+    assert all(
+        mutation.target.origin is mutation.imported_origin
+        and mutation.target.bound_name == mutation.imported_origin.bound_name
+        for mutation in flow.mutations
     )
 
 

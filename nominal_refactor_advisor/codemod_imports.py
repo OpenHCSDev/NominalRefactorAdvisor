@@ -12,6 +12,7 @@ from dataclasses import (
     replace,
 )
 from enum import StrEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
 from .codemod_import_scopes import (
@@ -32,7 +33,12 @@ from .codemod_source_edits import (
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
-from .lexical_bindings import ImportBoundNameProjection
+from .lexical_bindings import (
+    ImportAliasRequirement as ImportAliasRequirement,
+    ImportBoundNameProjection,
+    ImportDeclarationABC,
+    ImportFromModuleName as ImportFromModuleName,
+)
 
 if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
@@ -1002,24 +1008,6 @@ class ModuleImportMutation(NominalSourceEdit):
         )
 
 
-@dataclass(frozen=True)
-class ImportAliasRequirement:
-    """One requested import alias, including alias spelling when present."""
-
-    name: str
-    asname: str | None
-
-    @classmethod
-    def from_alias(cls, alias: ast.alias) -> "ImportAliasRequirement":
-        return cls(name=alias.name, asname=alias.asname)
-
-    @property
-    def canonical_key(self) -> tuple[str, str]:
-        """Return the source-spelling key for commutative import merging."""
-
-        return self.name, self.asname or ""
-
-
 def _future_import_source_group(root_module_name: str, level: int) -> bool:
     return level == 0 and root_module_name == "__future__"
 
@@ -1108,6 +1096,10 @@ class RequestedImportStatement:
     statement: ast.Import | ast.ImportFrom
     scope: ModuleImportScope = ModuleImportScope.RUNTIME
 
+    @cached_property
+    def declaration(self) -> ImportDeclarationABC:
+        return ImportBoundNameProjection(self.statement).declaration
+
     @classmethod
     def from_source(
         cls,
@@ -1145,9 +1137,7 @@ class RequestedImportStatement:
 
     @property
     def aliases(self) -> tuple[ImportAliasRequirement, ...]:
-        return tuple(
-            ImportAliasRequirement.from_alias(alias) for alias in self.statement.names
-        )
+        return self.declaration.aliases
 
     @property
     def module_name(self) -> "ImportFromModuleName | None":
@@ -1238,19 +1228,10 @@ class RequestedImportStatement:
 
     @property
     def bound_names(self) -> tuple[str, ...]:
-        """Return names introduced into the importing module."""
-
-        return tuple(
-            bound_name
-            for alias in self.aliases
-            if (bound_name := self.bound_name(alias)) is not None
-        )
+        return self.declaration.names()
 
     def bound_name(self, alias: ImportAliasRequirement) -> str | None:
-        bound_names = ImportBoundNameProjection(
-            self.with_aliases((alias,)).statement
-        ).names()
-        return bound_names[0] if bound_names else None
+        return self.declaration.bound_name(alias)
 
     @property
     def source(self) -> str:
@@ -1314,20 +1295,6 @@ class RequestedImportBlock:
 
 
 @dataclass(frozen=True)
-class ImportFromModuleName:
-    """Canonical source spelling for an ImportFrom module."""
-
-    source: str
-
-    @classmethod
-    def from_node(cls, node: ast.ImportFrom) -> "ImportFromModuleName":
-        relative_prefix = "." * node.level
-        if node.module is None:
-            return cls(relative_prefix)
-        return cls(f"{relative_prefix}{node.module}")
-
-
-@dataclass(frozen=True)
 class ImportFromSource:
     """Rendered from-import source for remaining aliases."""
 
@@ -1351,6 +1318,4 @@ class ImportFromSource:
 
     @staticmethod
     def alias_source(alias: ast.alias) -> str:
-        if alias.asname is None:
-            return alias.name
-        return f"{alias.name} as {alias.asname}"
+        return ImportAliasRequirement.from_alias(alias).source

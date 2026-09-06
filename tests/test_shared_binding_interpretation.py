@@ -60,11 +60,12 @@ class _SourceProbe(
 
     def _imported_name_resolution(
         self,
-        origin: str,
-        attribute_path: tuple[str, ...],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
         pending: frozenset[CompactBindingVisit],
     ) -> _Evidence:
-        return _Evidence("import", (origin, attribute_path), pending)
+        return _Evidence("import", (context, reference, binding), pending)
 
     def _definition_binding_resolution(
         self,
@@ -146,14 +147,21 @@ def test_shared_interpreter_dispatches_without_a_callable_resolver(
         assert result.pending == frozenset()
     else:
         assert result.pending == frozenset(((context.owner_symbol, mutation),))
-        if expected == "import":
-            assert result.source == ("builtins", ())
+        if expected in {"import", "missing"}:
+            assert result.kind == "import"
+            selected_context, reference, selected_binding = result.source
+            assert selected_context is context
+            assert selected_binding is mutation
+            assert reference == LexicalValueReference(name)
+            assert mutation.imported_origin is not None
+            assert mutation.imported_origin.qualified_name == (
+                "builtins" if expected == "import" else None
+            )
         else:
             assert result.kind == "open"
-            assert result.source is (
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
-                if expected == "missing"
-                else CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+            assert (
+                result.source
+                is CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
 
 

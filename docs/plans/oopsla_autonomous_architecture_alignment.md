@@ -2224,3 +2224,73 @@ No cases are excluded or marked as expected failures. The four package fixtures
 now pass in both full runs. Receipts are
 `/tmp/nra-shared-binding-final2-{311,314}.log`. The previous `e5b06b2` hosted
 integration run also completed successfully (`34033165074`).
+
+### 2026-09-06: Nominal import declarations and retained binding evidence
+
+Import syntax now has one lower declaration owner. The DSL moves the existing
+alias and relative-module records from `codemod_imports` to `lexical_bindings`,
+updating imports and preserving public re-exports as the same objects.
+`ImportDeclarationABC` factors shared alias selection and source rendering;
+module-import and from-import leaves own their distinct binding rules. The AST
+bridge derives names, origins and source from that declaration instead of three
+independent source-kind branches. Requested codemod imports derive their aliases
+and bound names from the same lower owner, while formatting remains higher.
+
+`ImportedNameOrigin` retains a declaration, selected alias position and source
+module identity. An unaliased dotted import, an explicitly same-root alias and
+an import-from member remain distinguishable even when their local or qualified
+names coincide. Invalid relative requests retain their syntax with unresolved
+absolute names; star declarations retain their request without inventing explicit
+individual bindings. An initial per-origin membership scan was quadratic. Using
+source position makes membership structural and linear to construct, without
+caching raw object IDs that would become stale after pickling.
+
+`CompactImportTarget` owns that origin and derives its local name. Ordinary and
+import bindings inherit the same lexical-write implementation. The mutation no
+longer separately stores an origin string, and the collector no longer passes a
+copied target name beside it. The imported-source hook receives the actual
+mutation/context/reference rather than a flattened path and suffix. Its current
+callable projection still resolves a source catalogue name; this change does not
+claim import activation or post-import native object identity is proved.
+
+The generated `docs/examples/nominal_import_evidence.json` contains 31 stages
+based on `2c1fa56`. Two authoring mistakes were rejected before application: an
+empty-string selector instead of a module selector, and decorators supplied to a
+decorator-excluding replacement. Corrected plans use declared import operations
+and preserve existing decorators. A forked independent test file checks native
+Python examples, AST-free payloads, alias grouping, relative requests and pickle
+identity. Its first collection failed because `request` is reserved by pytest;
+the corrected test names retain the intended assertions. The combined focused
+flow, declaration, identity and dispatch run passes 112 cases.
+
+API replay and real CLI simulation complete all 31 stages and produce matching
+ASTs for all eight production modules. Ruff, whitespace and Sphinx checks pass,
+with the same two existing duplicate-description warnings. The eight-module
+audit completes all 81 detectors with no omissions and one heuristic finding;
+the identical baseline audit returns the same finding. It concerns the untouched
+`SourceTopLevelDeclaration` registration family. Its report lists no consumers,
+although the class's `from_statement` uses registered-type traversal. This is an
+advisor evidence-quality issue to investigate, not a reason to replace that
+declaration family with a parallel table. Receipts are
+`/tmp/nra-nominal-import-{replay.log,cli-replay.json,audit.json,audit-baseline.json}`
+and `/tmp/nra-nominal-import-sphinx.log`.
+
+On the identical 131-module source corpus, both projections retain 26,761 calls,
+106,928 reads and 28,199 writes. Pickled size changes from 22,222,396 to 22,197,743
+bytes: origins retain more information, while ordinary mutations no longer
+store the redundant optional origin field. Three-sample collection medians are
+7.84 and 6.89 seconds under concurrent load. These are bounded observations,
+not a general speedup claim. Receipts are
+`/tmp/nra-nominal-import-cost-{before,after}.json`.
+
+A final forked integration review found no new semantic or ownership blocker.
+Import kind/target validation rejects missing or misplaced evidence; unresolved
+relative requests retain their nominal declaration. Source catalogue projection,
+import activation and post-definition runtime identity remain separate obligations.
+
+Final full suites pass 2,591 cases with 15 skipped on Python 3.11 and 2,606
+on Python 3.14, retaining exactly the same 12 native-identity counterexamples.
+No tests are excluded or marked as expected failures. Receipts are
+`/tmp/nra-nominal-import-final-{311,314}.log`. The native-identity investigations
+remain uncommitted and unsuppressed; this batch supplies the import evidence
+needed by their next proof step rather than claiming those cases are repaired.

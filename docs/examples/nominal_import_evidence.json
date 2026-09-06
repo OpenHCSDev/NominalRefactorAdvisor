@@ -1,0 +1,665 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-move_symbols_to_module",
+          "operations": [
+            {
+              "operation": "move_symbols_to_module",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "rationale": "",
+              "destination_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "symbol_qualnames": [
+                "ImportAliasRequirement",
+                "ImportFromModuleName"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "rationale": "",
+              "import_source": "from abc import ABC, abstractmethod\nfrom functools import cached_property\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportAliasRequirement",
+              "rationale": "",
+              "source": "@property\ndef source(self) -> str:\n    return self.name if self.asname is None else f\"{self.name} as {self.asname}\"\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportFromModuleName",
+              "rationale": "",
+              "source": "def resolve(self, module_identity: PythonModulePathIdentity) -> str | None:\n    module = self.source.lstrip(\".\")\n    return module_identity.resolve_import_from_module(\n        imported_module=module or None, level=len(self.source) - len(module),\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportedNameOrigin",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass ImportDeclarationABC(ABC):\n    \"\"\"One AST-free import request; binding views derive from its aliases.\"\"\"\n\n    aliases: tuple[ImportAliasRequirement, ...]\n\n    @property\n    @abstractmethod\n    def source_prefix(self) -> str:\n        raise NotImplementedError\n\n    def source_for(self, aliases: tuple[ImportAliasRequirement, ...]) -> str:\n        return f\"{self.source_prefix} {', '.join(alias.source for alias in aliases)}\\n\"\n\n    @property\n    def source(self) -> str:\n        return self.source_for(self.aliases)\n\n    def bound_name(self, alias: ImportAliasRequirement) -> str | None:\n        if alias.name == \"*\":\n            return None\n        return alias.asname or self._unaliased_bound_name(alias)\n\n    @abstractmethod\n    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:\n        raise NotImplementedError\n\n    @abstractmethod\n    def requested_module_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str | None:\n        raise NotImplementedError\n\n    @abstractmethod\n    def qualified_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str | None:\n        \"\"\"A source catalogue path, not a claim about the imported runtime object.\"\"\"\n        raise NotImplementedError\n\n    def names(self) -> tuple[str, ...]:\n        return tuple(name for alias in self.aliases if (name := self.bound_name(alias)) is not None)\n\n    def origins(self, module_identity: PythonModulePathIdentity) -> tuple[ImportedNameOrigin, ...]:\n        return tuple(\n            ImportedNameOrigin(self, alias, module_identity)\n            for alias in self.aliases if self.bound_name(alias) is not None\n        )\n\n    def name_sources(self) -> tuple[tuple[str, str], ...]:\n        return tuple(\n            (name, self.source_for((alias,)))\n            for alias in self.aliases if (name := self.bound_name(alias)) is not None\n        )\n\n\nclass ModuleImportDeclaration(ImportDeclarationABC):\n    source_prefix = \"import\"\n\n    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:\n        return alias.name.partition(\".\")[0]\n\n    def requested_module_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str:\n        return alias.name\n\n    def qualified_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str:\n        return alias.name if alias.asname is not None else self._unaliased_bound_name(alias)\n\n\n@dataclass(frozen=True)\nclass FromImportDeclaration(ImportDeclarationABC):\n    module_name: ImportFromModuleName\n\n    @property\n    def source_prefix(self) -> str:\n        return f\"from {self.module_name.source} import\"\n\n    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:\n        return alias.name\n\n    def requested_module_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str | None:\n        return self.module_name.resolve(module_identity)\n\n    def qualified_name(\n        self, alias: ImportAliasRequirement, module_identity: PythonModulePathIdentity,\n    ) -> str | None:\n        module_name = self.requested_module_name(alias, module_identity)\n        return None if module_name is None else f\"{module_name}.{alias.name}\"\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportedNameOrigin",
+              "rationale": "",
+              "replacement_source": "class ImportedNameOrigin:\n    \"\"\"A selected alias of the actual import declaration in its source module.\"\"\"\n\n    declaration: ImportDeclarationABC\n    alias: ImportAliasRequirement\n    module_identity: PythonModulePathIdentity\n\n    def __post_init__(self) -> None:\n        if not any(self.alias is alias for alias in self.declaration.aliases):\n            raise ValueError(\"Import origin requires an alias of its declaration\")\n        if self.declaration.bound_name(self.alias) is None:\n            raise ValueError(\"A star request has no explicit individual binding\")\n\n    @property\n    def bound_name(self) -> str:\n        name = self.declaration.bound_name(self.alias)\n        assert name is not None\n        return name\n\n    @property\n    def qualified_name(self) -> str | None:\n        return self.declaration.qualified_name(self.alias, self.module_identity)\n\n    @property\n    def requested_module_name(self) -> str | None:\n        return self.declaration.requested_module_name(self.alias, self.module_identity)\n\n    @property\n    def source(self) -> str:\n        return self.declaration.source_for((self.alias,))\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportBoundNameProjection",
+              "rationale": "",
+              "replacement_source": "class ImportBoundNameProjection:\n    \"\"\"AST bridge to the declaration owning import syntax and binding rules.\"\"\"\n\n    statement: ast.Import | ast.ImportFrom\n\n    @cached_property\n    def declaration(self) -> ImportDeclarationABC:\n        aliases = tuple(ImportAliasRequirement.from_alias(alias) for alias in self.statement.names)\n        if isinstance(self.statement, ast.Import):\n            return ModuleImportDeclaration(aliases)\n        return FromImportDeclaration(aliases, ImportFromModuleName.from_node(self.statement))\n\n    def names(self) -> tuple[str, ...]:\n        return self.declaration.names()\n\n    def origins(self, module_identity: PythonModulePathIdentity) -> tuple[ImportedNameOrigin, ...]:\n        return self.declaration.origins(module_identity)\n\n    def name_sources(self) -> tuple[tuple[str, str], ...]:\n        return self.declaration.name_sources()\n\n    def alias_bound_name(self, alias: ast.alias) -> str:\n        return self.declaration.bound_name(ImportAliasRequirement.from_alias(alias)) or \"\"\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "target_qualname": "ImportFromSource.alias_source",
+              "rationale": "",
+              "replacement_source": "def alias_source(alias: ast.alias) -> str:\n    return ImportAliasRequirement.from_alias(alias).source\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "rationale": "",
+              "import_source": "from functools import cached_property\nfrom .lexical_bindings import ImportDeclarationABC\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "target_qualname": "RequestedImportStatement",
+              "rationale": "",
+              "source": "@cached_property\ndef declaration(self) -> ImportDeclarationABC:\n    return ImportBoundNameProjection(self.statement).declaration\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "target_qualname": "RequestedImportStatement.aliases",
+              "rationale": "",
+              "replacement_source": "def aliases(self) -> tuple[ImportAliasRequirement, ...]:\n    return self.declaration.aliases\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "target_qualname": "RequestedImportStatement.bound_names",
+              "rationale": "",
+              "replacement_source": "def bound_names(self) -> tuple[str, ...]:\n    return self.declaration.names()\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/codemod_imports.py",
+              "target_qualname": "RequestedImportStatement.bound_name",
+              "rationale": "",
+              "replacement_source": "def bound_name(self, alias: ImportAliasRequirement) -> str | None:\n    return self.declaration.bound_name(alias)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import ImportedNameOrigin\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "origin: str | None",
+                  "new_source": "origin: ImportedNameOrigin | None"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingOperationABC.validate_import_origin",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "origin: str | None",
+                  "new_source": "origin: ImportedNameOrigin | None"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutationKind.validate_import_origin",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactImportBindingOperation.validate_import_origin",
+              "rationale": "",
+              "replacement_source": "def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:\n    if origin is None:\n        raise ValueError(\"Import mutations require their source declaration\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactImportBindingOperation.resolve_source",
+              "rationale": "",
+              "replacement_source": "def resolve_source(\n    self, resolver: CompactBindingResolverABC[TargetResolutionT],\n    context: CompactFlowContext, reference: LexicalValueReference,\n    binding: CompactMutation, pending: frozenset[CompactBindingVisit],\n) -> TargetResolutionT:\n    return resolver._imported_name_resolution(context, reference, binding, pending)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactAssignmentTargetABC",
+              "rationale": "",
+              "source": "imported_origin: ImportedNameOrigin | None = None\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingTarget",
+              "rationale": "",
+              "source": "class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):\n    \"\"\"Lexical write behaviour independent of how the binding name is supplied.\"\"\"\n\n    @property\n    @abstractmethod\n    def bound_name(self) -> str:\n        raise NotImplementedError\n\n    def may_replace(self, reference: LexicalValueReference) -> bool:\n        return self.lexical_reference.is_prefix_of(reference)\n\n    def resolve_mutation(\n        self, resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],\n        context: ResolutionContextT, mutation: CompactMutation,\n    ) -> TargetResolutionT:\n        return resolver._binding_mutation_resolution(context, mutation, self.bound_name)\n\n    @cached_property\n    def lexical_reference(self) -> LexicalValueReference:\n        return LexicalValueReference(self.bound_name)\n\n    def affected_roots_within(\n        self, flow: CompactFunctionFlow, roots: frozenset[str],\n    ) -> frozenset[str]:\n        return roots.intersection((self.bound_name,))\n\n\n@dataclass(frozen=True)\nclass CompactImportTarget(CompactLexicalBindingTargetABC):\n    origin: ImportedNameOrigin\n\n    bound_name = AliasProperty[str](\"origin.bound_name\")\n    imported_origin = AliasProperty[ImportedNameOrigin](\"origin\")\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingTarget",
+              "rationale": "",
+              "replacement_source": "class CompactBindingTarget(CompactLexicalBindingTargetABC):\n    name: str\n\n    bound_name = AliasProperty[str](\"name\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    imported_origin: str | None = None\n",
+                  "new_source": "    imported_origin = AliasProperty[ImportedNameOrigin | None](\"target.imported_origin\")\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutation.__post_init__",
+              "rationale": "",
+              "replacement_source": "def __post_init__(self) -> None:\n    self.kind.validate_import_origin(self.imported_origin)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactBindingResolverABC._imported_name_resolution",
+              "rationale": "",
+              "replacement_source": "def _imported_name_resolution(\n    self, context: CompactFlowContext, reference: LexicalValueReference,\n    binding: CompactMutation,\n    pending: frozenset[CompactBindingVisit],\n) -> TargetResolutionT:\n    raise NotImplementedError\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._record_mutation",
+              "rationale": "",
+              "replacement_source": "def _record_mutation(\n    self, target: CompactAssignmentTargetABC, node: SourcePositionedNode,\n    kind: CompactMutationKind | None = None,\n) -> CompactMutation:\n    mutation = CompactMutation(\n        target=target, kind=self.mutation_kind if kind is None else kind,\n        position=self._position(), line=node.lineno,\n    )\n    self.mutations.append(mutation)\n    return mutation\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Import",
+              "rationale": "",
+              "replacement_source": "def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:\n    for origin in ImportBoundNameProjection(node).origins(self.module_identity):\n        self._record_mutation(CompactImportTarget(origin), node, CompactMutationKind.IMPORT)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._imported_name_resolution",
+              "rationale": "",
+              "replacement_source": "def _imported_name_resolution(\n    self, context: CompactFlowContext, reference: LexicalValueReference,\n    binding: CompactMutation,\n    pending: frozenset[CompactBindingVisit],\n) -> CompactCallTargetResolution:\n    origin = binding.imported_origin\n    assert origin is not None\n    qualified_name = origin.qualified_name\n    if qualified_name is None:\n        return self._possible_binding_resolution(\n            context, reference, CompactFunctionTargetResolutionViolation.MISSING_DECLARATION, pending,\n        )\n    return self._function_resolution_for_symbol(\n        \".\".join((qualified_name, *reference.attribute_path)), pending,\n    )\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "(mutation.imported_origin, *reference.attribute_path)",
+                  "new_source": "(qualified_name, *reference.attribute_path)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._possible_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "if mutation.imported_origin is not None",
+                  "new_source": "if (origin := mutation.imported_origin) is not None\n                            and (qualified_name := origin.qualified_name) is not None"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository._possible_binding_resolution",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportDeclarationABC.origins",
+              "rationale": "",
+              "replacement_source": "def origins(self, module_identity: PythonModulePathIdentity) -> tuple[ImportedNameOrigin, ...]:\n    return tuple(\n        ImportedNameOrigin(self, index, module_identity)\n        for index, alias in enumerate(self.aliases) if self.bound_name(alias) is not None\n    )\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportedNameOrigin",
+              "rationale": "",
+              "replacement_source": "class ImportedNameOrigin:\n    \"\"\"A selected source position in the actual import declaration.\"\"\"\n\n    declaration: ImportDeclarationABC\n    alias_index: int\n    module_identity: PythonModulePathIdentity\n\n    def __post_init__(self) -> None:\n        if not 0 <= self.alias_index < len(self.declaration.aliases):\n            raise ValueError(\"Import origin requires an alias position within its declaration\")\n        if self.declaration.bound_name(self.alias) is None:\n            raise ValueError(\"A star request has no explicit individual binding\")\n\n    @property\n    def alias(self) -> ImportAliasRequirement:\n        return self.declaration.aliases[self.alias_index]\n\n    @property\n    def bound_name(self) -> str:\n        name = self.declaration.bound_name(self.alias)\n        assert name is not None\n        return name\n\n    @property\n    def qualified_name(self) -> str | None:\n        return self.declaration.qualified_name(self.alias, self.module_identity)\n\n    @property\n    def requested_module_name(self) -> str | None:\n        return self.declaration.requested_module_name(self.alias, self.module_identity)\n\n    @property\n    def source(self) -> str:\n        return self.declaration.source_for((self.alias,))\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

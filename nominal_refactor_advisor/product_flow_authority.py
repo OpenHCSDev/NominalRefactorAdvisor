@@ -503,12 +503,24 @@ class CompactProductFlowRepository(
 
     def _imported_name_resolution(
         self,
-        origin: str,
-        attribute_path: tuple[str, ...],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
         pending: frozenset[CompactBindingVisit],
     ) -> CompactCallTargetResolution:
+        origin = binding.imported_origin
+        assert origin is not None
+        qualified_name = origin.qualified_name
+        if qualified_name is None:
+            return self._possible_binding_resolution(
+                context,
+                reference,
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+                pending,
+            )
         return self._function_resolution_for_symbol(
-            ".".join((origin, *attribute_path)), pending
+            ".".join((qualified_name, *reference.attribute_path)),
+            pending,
         )
 
     def _installed_alias_resolution(
@@ -1414,11 +1426,10 @@ class CompactProductFlowRepository(
                 dict.fromkeys(
                     (
                         *(
-                            ".".join(
-                                (mutation.imported_origin, *reference.attribute_path)
-                            )
+                            ".".join((qualified_name, *reference.attribute_path))
                             for mutation in mutations
-                            if mutation.imported_origin is not None
+                            if (origin := mutation.imported_origin) is not None
+                            and (qualified_name := origin.qualified_name) is not None
                         ),
                         ".".join((context.owner_symbol, *reference.parts)),
                     )

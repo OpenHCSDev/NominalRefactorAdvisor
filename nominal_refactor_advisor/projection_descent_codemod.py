@@ -42,10 +42,7 @@ from .codemod_declaration_source import (
     ClassMemberSource,
     PythonExpressionSourceFormatter,
 )
-from .codemod_imports import (
-    ImportFromModuleName,
-    ImportFromSource,
-)
+from .codemod_imports import ImportFromSource
 from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
@@ -62,7 +59,10 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import (
+    ImportFromModuleName,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+)
 from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,
