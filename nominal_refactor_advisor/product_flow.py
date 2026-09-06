@@ -1722,6 +1722,16 @@ class _DeclarationCollector(ast.NodeVisitor):
 class _CompactFlowCollector(ast.NodeVisitor):
     """Collect one source scope without descending into nested scope bodies."""
 
+    def _record_target_mutation(
+        self,
+        node: ast.expr,
+        kind: CompactMutationKind | None = None,
+    ) -> None:
+        """Record the lexical write after its target has been evaluated."""
+        reference = LexicalValueReference.from_expression(node)
+        if reference is not None:
+            self._record_mutation(reference, node, kind)
+
     def _capture_argument(self, expression: ast.expr) -> CompactValueUse:
         self.visit(expression)
         return CompactValueUse(
@@ -1852,7 +1862,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        self._visit_call_target_evaluation(node.func)
+        self._visit_reference_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
         arguments = CompactCallArguments[CompactValueUse].from_call(
             node, self._capture_argument
@@ -1870,20 +1880,18 @@ class _CompactFlowCollector(ast.NodeVisitor):
             )
         )
 
-    def _visit_call_target_evaluation(self, expression: ast.expr) -> None:
-        """Retain receiver reads; the call itself owns its terminal lookup."""
+    def _visit_reference_evaluation(self, expression: ast.expr) -> None:
+        """Evaluate a reference's receiver and indices before its terminal access."""
         if isinstance(expression, ast.Attribute):
             self.visit(expression.value)
         elif not isinstance(expression, ast.Name):
             self.visit(expression)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        self._visit_reference_evaluation(node)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            reference = LexicalValueReference.from_expression(node)
-            if reference is not None:
-                self._record_mutation(reference, node)
+            self._record_target_mutation(node)
             return
-        self.visit(node.value)
         self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -1909,8 +1917,12 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_exact_value_aliases(node.targets, source, mutations)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is None and not self.owner.kind.is_function_scope:
-            return
+        if node.value is None:
+            self._visit_reference_evaluation(node.target)
+            if not (
+                isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope
+            ):
+                return
         if isinstance(node.value, ast.Call):
             binding = LexicalValueReference.from_expression(node.target)
             if binding is not None:
@@ -1932,9 +1944,11 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_exact_value_aliases((node.target,), source, mutations)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._visit_reference_evaluation(node.target)
+        self.callable_reference_uses.append(self._callable_reference_use(node.target))
         self.visit(node.value)
-        self._visit_mutation_targets(
-            (node.target,),
+        self._record_target_mutation(
+            node.target,
             CompactMutationKind.AUGMENTED_ASSIGNMENT,
         )
 

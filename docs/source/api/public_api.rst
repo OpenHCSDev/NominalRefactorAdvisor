@@ -338,6 +338,15 @@ resolves at that position. Opaque expressions return an explicit
 the shared binding-event resolver and tracks alias cycles by selected write,
 rather than rejecting every repeated name.
 
+Calls in attribute assignment and deletion targets retain their evaluation
+events. Augmented assignments evaluate and read the target before their
+right-hand side, then record the write. An attribute annotation without an
+assigned value evaluates its receiver without recording a write. These calls
+participate in declaration-resolved call edits. The :download:`assignment-target
+evaluation correction <../../examples/assignment_target_evaluation.py>` applies
+the collector change through the DSL. Receiver capture and namespace-slot
+integrity remain separate proof obligations.
+
 ``CompactResolvedFunctionCall.bound_value_uses`` and
 ``CompactProductConstruction.field_values`` derive their parameter and field
 views from these same captured objects. Constructor and forwarding consumers
@@ -840,6 +849,13 @@ name against that declaration at class creation. Module or class shadowing and
 unresolved wildcard exposure prevent the rewrite. Explicit builtin imports and
 wildcard imports whose export declarations exclude the name can establish the
 required binding.
+
+Native binding witnesses do not yet establish namespace-slot integrity.
+Source-visible replacement of a native module attribute can leave the qualified
+name unchanged while changing the object it selects. Such mutation remains an
+open proof gap for automatic class-member promotion. A saved object and a later
+attribute lookup through a saved module require distinct positioned evidence;
+neither qualified-name equality nor descriptor recognition proves that relation.
 
 .. automodule:: nominal_refactor_advisor.native_declarations
    :members: QualifiedDeclaration, ClassNamespaceDeclaration, NativeDeclaration

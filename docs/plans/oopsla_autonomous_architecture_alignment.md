@@ -1873,3 +1873,78 @@ existing duplicate-description warnings. Receipts use `/tmp/nra-replacement-*`.
 
 Diataxis separates the API contract from the investigation and the explicit
 proof limit recorded here.
+
+## Native binding integrity and target evaluation (2026-09-06)
+
+Investigating the blocked `cached_property` promotion exposed an existing native
+binding proof gap. Replacing `builtins.property` with a descriptor whose
+`__set_name__` observes the completed class namespace still lets member promotion
+report a clean simulation. Native execution changes the recorded observation
+from `[False]` to `[True]`. Initial probes reproduce the gap through direct and
+builtin reads, an import after the write, module aliases, conditional writes,
+class-body writes and a called function. Four controls preserve original object
+captures and unrelated namespace slots. These native-integrity regressions are
+pending implementation, not part of the completed target-evaluation increment.
+
+The required relation distinguishes an object captured earlier from an attribute
+looked up later through that object. Both the module nominal binder and the
+callable alias resolver currently flatten these relations into qualified paths.
+A parallel attribute-name blacklist would retain the wrong ownership model.
+The compact flow already owns imports, alias source reads and positioned writes;
+its shared binding relation is the migration target. No descriptor catalogue or
+automatic promotion gate was widened.
+
+Before using that evidence, target evaluation needed correction. Attribute
+assignment and deletion previously skipped evaluation of their receiver;
+augmented assignment visited its right-hand side before its target; an attribute
+annotation without a value could drop receiver calls or fabricate a write. The
+collector now reuses its reference-evaluation helper for these paths and records
+the lexical write separately. Augmented assignment retains its target read
+before the right-hand side and writes afterwards. Function-local bare-name
+annotations retain their existing lexical-binding evidence.
+
+The six-stage `docs/examples/assignment_target_evaluation.py` plan applies through
+the CLI and reproduces the production AST from `16a4911`. Its semantic changes
+are authored corrections, validated against native execution rather than claimed
+automatically equivalent. Eighteen new cases cover module/function scopes,
+chained and unpacked targets, deletion, annotations, augmented assignment,
+read/write timing and an actual declaration-resolved call edit inside an
+assignment target. Together with receiver tests, 35 focused cases pass. One
+existing product-flow expectation was corrected to retain the assignment
+receiver read after the right-hand side.
+
+Across 131 production modules, the corrected collector retains 506 additional
+reads and adds 28,543 bytes to the pickled projection. The number of explicit
+calls in that source sample is unchanged. Concurrent suite activity makes the
+timing sample unsuitable for a speed claim.
+
+A read-only subagent experiment in `/tmp/nra_positioned_origin_experiment.py`
+uses existing compact facts to distinguish captured object identity from a
+positioned namespace-slot read. Ten fixtures and 17 queries pass; cross-flow
+mutation use explicitly refuses unsupported analysis. It does not prove
+arbitrary-call effects, descriptor integrity or cross-flow activation and is not
+production code. The new target-evaluation evidence is a prerequisite for that
+work, not closure of the native binding gap.
+
+A subsequent adversarial probe also exposes computed receiver writes:
+`namespace().property = Replacement`, where `namespace()` returns `builtins`.
+The experiment reports the later property lookup as known because the compact
+collector omits writes without a lexical target path. The corrected collector
+retains the receiver call, but an explicit unknown-write record is still needed.
+That case is added to the pending native-integrity regressions. The experiment
+must not be installed as a proof gate before this missing evidence is addressed.
+
+Full validation of the target-evaluation increment passes 2,492 tests with 15
+skipped on Python 3.11 and 2,507 tests on Python 3.14, with eight workers each.
+These runs exclude the explicitly pending, uncommitted native-integrity tests;
+they do not establish that the broader proof gap is fixed. All 81 detectors
+complete the touched-source audit with no findings or omissions. Ruff and
+whitespace checks pass; Sphinx retains its two duplicate-description warnings.
+Receipts use `/tmp/nra-target-evaluation-*`.
+
+The home filesystem filled during this work. GitHub Actions log cache files
+(293 MB) were moved to `/tmp/nra-gh-cache-9YXdjX/gh`; they remain recoverable until
+the temporary filesystem is cleared. Project files, environments and the user's
+`uv.lock` changes were preserved. Diataxis keeps the verified collector contract
+and the outstanding native-proof limit in API reference, with investigation
+evidence and migration decisions here.

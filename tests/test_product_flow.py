@@ -81,7 +81,10 @@ def _value(name: str) -> LexicalValueReference:
             (LexicalValueReference("result"), LexicalValueReference("unknown")),
         ),
         ("result.execute()", (LexicalValueReference("result"),)),
-        ("result.callback = replacement", (LexicalValueReference("replacement"),)),
+        (
+            "result.callback = replacement",
+            (LexicalValueReference("replacement"), LexicalValueReference("result")),
+        ),
     ),
 )
 def test_flow_retains_reference_uses_without_a_callable_name_inventory(
