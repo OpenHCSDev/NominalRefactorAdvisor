@@ -28,11 +28,12 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
 )
 from .product_flow import (
-    CompactCallTargetReference,
     CompactCallArguments,
+    CompactCallTargetReference,
+    CompactCallTargetResolverABC,
     CompactCallableReferenceUse,
-    CompactExactValueAlias,
     CompactDescriptorAccess,
+    CompactExactValueAlias,
     CompactFlowPosition,
     CompactFunctionCall,
     CompactFunctionDeclaration,
@@ -414,11 +415,36 @@ class CompactProductRuntimeFailure:
 
 
 @dataclass(frozen=True)
-class CompactProductFlowRepository:
+class CompactProductFlowRepository(
+    CompactCallTargetResolverABC[
+        CompactProductFlowContext, CompactFunctionTargetResolution
+    ],
+):
     """Derived query authority over product flows and nominal class declarations."""
 
     product_projections: tuple[CompactProductFlowModuleProjection, ...]
     class_projections: tuple[CompactModuleClassProjection, ...]
+
+    def _local_function_target_resolution(
+        self,
+        context: CompactProductFlowContext,
+        target: CompactCallTargetReference,
+    ) -> CompactFunctionTargetResolution:
+        """Resolve source-local candidates without rediscovering target syntax."""
+        candidates = context.flow.local_candidate_symbols(target, context.module_name)
+        if not candidates:
+            return OpenCompactFunctionTarget(
+                (),
+                CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+            )
+        if len(candidates) != 1:
+            return OpenCompactFunctionTarget(
+                candidates,
+                CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
+            )
+        return self._function_resolution_for_symbol(candidates[0]).through_descriptor(
+            target.receiver_access(context.declaration)
+        )
 
     @classmethod
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
@@ -739,33 +765,8 @@ class CompactProductFlowRepository:
         target: CompactCallTargetReference,
         position: CompactFlowPosition,
     ) -> CompactFunctionTargetResolution:
-        if isinstance(target, CurrentClassMemberMethodReference):
-            return self._class_member_method_resolution(context, target, position)
-        reference = target.lexical_reference
-        if reference is None:
-            candidates = context.flow.local_candidate_symbols(
-                target,
-                context.module_name,
-            )
-            if not candidates:
-                return OpenCompactFunctionTarget(
-                    (),
-                    CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
-                )
-            if len(candidates) != 1:
-                return OpenCompactFunctionTarget(
-                    candidates,
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
-                )
-            return self._function_resolution_for_symbol(
-                candidates[0]
-            ).through_descriptor(target.receiver_access(context.declaration))
-
-        return self._lexical_function_target_resolution(
-            context,
-            reference,
-            position,
-        )
+        """Resolve through the target declaration rather than its concrete class."""
+        return target.resolve(self, context, position)
 
     def _class_member_method_resolution(
         self,

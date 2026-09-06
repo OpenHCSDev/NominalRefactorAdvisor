@@ -12,6 +12,8 @@ from nominal_refactor_advisor.class_index import (
     OpenCompactProductAuthority,
 )
 from nominal_refactor_advisor.product_flow import (
+    CurrentClassMemberMethodReference,
+    LexicalCallTargetReference,
     LexicalValueReference,
     compact_product_flow_projection,
 )
@@ -20,6 +22,32 @@ from nominal_refactor_advisor.product_flow_authority import (
     CompactOpenFunctionCall,
     CompactProductFlowRepository,
 )
+
+
+def test_target_resolution_obeys_declared_mro_instead_of_concrete_class_dispatch() -> (
+    None
+):
+    class LexicallyBoundMember(
+        LexicalCallTargetReference, CurrentClassMemberMethodReference
+    ):
+        @property
+        def lexical_reference(self) -> LexicalValueReference:
+            return LexicalValueReference(self.method_name)
+
+    repository = _repository(
+        _module(
+            "pkg.local",
+            "def consume(value): return value\n"
+            "def caller(value): return consume(value)\n",
+        )
+    )
+    context = repository.flow_contexts_by_owner_symbol["pkg.local.caller"]
+    target = LexicallyBoundMember("Owner", "member", "consume", False)
+    resolution = repository.resolve_function_target(
+        context, target, context.flow.calls[0].position
+    )
+    assert resolution.declaration is not None
+    assert resolution.declaration.identity.symbol == "pkg.local.consume"
 
 
 def _module(module_name: str, source: str) -> ParsedModule:

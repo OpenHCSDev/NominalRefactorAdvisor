@@ -1172,3 +1172,42 @@ needs a separate audit rather than hiding the warnings. Logs are
 architecture, benchmark and documentation receipts share the
 `/tmp/nra-binding-*` or `/tmp/nra-bound-result-*` prefix. Ruff and the whitespace
 check passed. The unrelated `uv.lock` change remains excluded.
+
+## Call-target-owned dispatch (2026-09-06)
+
+Before adding constructed-receiver lookup, removed the repository's concrete
+`CurrentClassMemberMethodReference` branch and lexical-presence dispatch.
+`CompactCallTargetReference.resolve` now selects its lookup through native MRO.
+Bare and qualified targets share the lexical refinement; current-class member
+targets supply the distinct member lookup. The repository consumes that
+declaration instead of rediscovering its syntax family.
+
+The resolver ABC declares the three repository obligations. Its context and
+result parameters keep the syntax module independent of the concrete
+repository records without a runtime import cycle, local imports or an
+untyped context. The existing resolution implementations satisfy the ABC;
+there is no delegate wrapper, secondary variant registry or numeric priority.
+
+An actual repository regression composes lexical lookup ahead of current-class
+member syntax using MI. The committed dispatch failed to find its free-function
+target because its concrete-class check overrode the declared MRO. The new
+dispatch resolves the function. A direct comparison against the committed
+method confirms the difference; the 145-case focused suite retains the
+existing descriptor, binding and unresolved-result behaviour.
+
+The eleven-stage `docs/examples/call_target_dispatch.py` sequence applies the
+production refactor. Replaying from `ba36274` reproduces both complete module
+ASTs. Shared method-body extraction remains authored in this plan; the DSL
+handles insertion, imports, base substitution and dependent-stage replay.
+All 81 detectors completed the touched-source audit with zero findings.
+
+This is the dispatch prerequisite, not constructed-instance resolution itself.
+That lookup still needs the class identity and mutation evidence described in
+the preceding entry.
+
+The full suites passed 2,355 tests with 15 skipped on Python 3.11 and 2,370
+tests on Python 3.14, with eight workers. Python 3.14 retained the same 96
+fork/thread warnings tracked above. Sphinx built the rendered API contract with
+the two existing duplicate-description warnings; Ruff and the whitespace check
+passed. Validation receipts use `/tmp/nra-target-dispatch-*`. CI for the
+preceding binding-resolution commit was still running at this handoff.

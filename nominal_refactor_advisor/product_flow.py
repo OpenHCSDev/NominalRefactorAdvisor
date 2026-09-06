@@ -12,7 +12,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
-from typing import Callable, Self, TypeAlias
+from typing import (
+    Callable,
+    Generic,
+    Self,
+    TypeAlias,
+    TypeVar,
+)
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
@@ -370,12 +376,60 @@ class CompactCallArguments:
     def values(self) -> tuple[CompactValueExpression, ...]:
         return tuple(argument.value for argument in (*self.positional, *self.keywords))
 
-    def bind_to(self, declaration: "CompactFunctionDeclaration") -> "CompactCallBinding":
+    def bind_to(
+        self, declaration: "CompactFunctionDeclaration"
+    ) -> "CompactCallBinding":
         return declaration.bind_call(self.positional, self.keywords)
+
+
+ResolutionContextT = TypeVar("ResolutionContextT")
+TargetResolutionT = TypeVar("TargetResolutionT")
+
+
+class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
+    """Repository obligations selected by nominal call-target syntax."""
+
+    @abstractmethod
+    def _local_function_target_resolution(
+        self,
+        context: ResolutionContextT,
+        target: CompactCallTargetReference,
+    ) -> TargetResolutionT:
+        """Resolve candidates supplied by a target's local lookup contract."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _lexical_function_target_resolution(
+        self,
+        context: ResolutionContextT,
+        reference: LexicalValueReference,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        """Resolve a lexical access path through its reaching bindings."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _class_member_method_resolution(
+        self,
+        context: ResolutionContextT,
+        target: CurrentClassMemberMethodReference,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        """Resolve a method through a declared current-class member."""
+        raise NotImplementedError
 
 
 class CompactCallTargetReference(ABC):
     """Nominal call-target syntax with leaf-owned resolution behavior."""
+
+    def resolve(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        """Select the target's nominal lookup contract."""
+        return resolver._local_function_target_resolution(context, self)
 
     @property
     @abstractmethod
@@ -402,6 +456,25 @@ class CompactCallTargetReference(ABC):
         """Return candidates provable without import or type resolution."""
 
 
+class LexicalCallTargetReference(CompactCallTargetReference, ABC):
+    """Call syntax whose target is supplied by an exact lexical path."""
+
+    @property
+    @abstractmethod
+    def lexical_reference(self) -> LexicalValueReference:
+        raise NotImplementedError
+
+    def resolve(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        return resolver._lexical_function_target_resolution(
+            context, self.lexical_reference, position
+        )
+
+
 class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
     """Call target whose terminal method is selected from the current class."""
 
@@ -418,7 +491,7 @@ class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
 
 
 @dataclass(frozen=True)
-class BareCallTargetReference(CompactCallTargetReference):
+class BareCallTargetReference(LexicalCallTargetReference):
     function_name: str
 
     @property
@@ -476,6 +549,14 @@ class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
     method_name: str
     uses_runtime_class_lookup: bool
 
+    def resolve(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        return resolver._class_member_method_resolution(context, self, position)
+
     @classmethod
     def from_expression(
         cls,
@@ -528,7 +609,7 @@ class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
 
 
 @dataclass(frozen=True)
-class QualifiedCallTargetReference(CompactCallTargetReference):
+class QualifiedCallTargetReference(LexicalCallTargetReference):
     reference: LexicalValueReference
 
     @property

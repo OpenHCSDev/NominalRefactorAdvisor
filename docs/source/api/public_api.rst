@@ -77,6 +77,13 @@ selection. For an attribute result such as ``owner.child.result``, replacing
 sibling attributes do not. An unresolved binding cannot supply the declared
 return type used by carrier-expansion refactor proofs.
 
+``CompactCallTargetReference.resolve`` selects the target's lookup contract
+through its declared MRO. Bare and qualified lexical targets share
+``LexicalCallTargetReference``; current-class member targets supply their
+member-lookup behaviour. ``CompactProductFlowRepository`` implements
+``CompactCallTargetResolverABC`` with its concrete context and resolution types.
+Unknown and ambiguous targets retain their nominal unresolved results.
+
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.
 ``FunctionBindingProjection`` uses the same collector when deriving function
