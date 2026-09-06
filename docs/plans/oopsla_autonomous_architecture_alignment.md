@@ -2827,3 +2827,66 @@ Black passes the changed source/test files and the touched range in the existing
 unformatted `product_flow_authority.py`. Sphinx succeeds with the same two
 duplicate-description warnings. Full native admission, class-result freshness,
 runtime call identity and enum-key identity remain active work.
+
+### 2026-09-06: Share exact definition owners and source header boundaries
+
+Class body owners previously retained only a kind and qualified name. Two
+same-name class statements therefore produced equal owner records even though
+they represented different source bodies. Definition bindings independently
+retained another name, and the function/class mutation tags duplicated the
+classification now carried by their actual declaration.
+
+`CompactDefinitionFlowOwner` provides the common source-body contract.
+`CompactClassDeclaration` retains the original full class span;
+`CompactFunctionDeclaration` derives that span from its native execution receipt.
+The existing declaration collector constructs each owner once. A transient join
+over its collected AST nodes supplies the same object to the enclosing binding
+target and separate body flow. `CompactDefinitionTarget.bound_name` derives from
+the owner. A single `CompactMutationKind.DEFINITION` now delegates source
+selection to the declaration leaf; the former function/class selector lambdas
+and duplicate mutation tags are removed.
+
+The target also retains `header_position`, the enclosing collector's boundary
+after header-expression traversal and before the final binding event. Native
+probes on Python 3.11 and 3.14 show why this cannot stand for body entry:
+`__build_class__` is captured before base expressions, while `__mro_entries__`
+and metaclass preparation run before the body. A replaced builder can skip the
+body, and preparation can raise before it. These effects and the existing
+annotation-order/activation gaps remain explicit pending proof obligations.
+No new event claims a class instance was created or a function body executed.
+
+`CompactProductFlowModuleProjection` now constructs the shared module/flow
+contexts consumed by the product repository. Its owner-keyed index derives
+through the existing uniqueness authority, distinguishing same-name source
+bodies and omitting duplicate handles. There is no second stored activation
+inventory, declaration-to-flow backreference or AST scanner.
+
+The 28-stage `docs/examples/definition_flow_ownership.json` batch is authored
+against `72879a6`. API replay reproduces both integrated source ASTs, and the
+actual CLI simulates all stages cleanly. Fourteen new controls cover owner
+sharing, source-span distinctions, native ordering, repeated/deferred sites,
+AST-free serialisation, duplicate-handle ambiguity, module-owned context reuse
+and declaration-leaf dispatch. Existing capture and flow tests now assert the
+single definition category and declaration-owned payload. Diataxis separates
+the supported API contract from this design and validation record.
+
+Frozen full suites pass 2,872 cases with 34 skipped on Python 3.11, and 2,906 on
+Python 3.14, in 209 and 215 seconds respectively. Both retain exactly the same
+thirty pending integrity failure IDs as `72879a6`; no failures were added,
+skipped or weakened. Logs are
+`/var/tmp/nra-definition-owner-final-{311,314}.log`. The automatic-package-context
+audit completes all 79 detectors without omissions or findings. Ruff passes
+both changed source files and all three changed/new test files; Black passes
+the formatted source and tests. Sphinx builds with the same two existing
+duplicate-object warnings. CI for the preceding `72879a6` batch also passed.
+
+On the same 133 baseline modules, 8,363 contexts and 26,459 calls, cold compact
+payload size grows from 26,948,803 to 27,194,235 bytes (0.9%). After the shared
+contexts are cached it is 27,458,519 bytes (1.9% above baseline). An initial
+context timing outlier was investigated with GC callbacks: 1.294 of its 1.299
+seconds was garbage collection, while context construction itself remained
+about 5-6 ms. Collection moved between measurement phases; combined projection
+and context time across two consecutive samples was 10.556 seconds before and
+10.560 seconds after. These are cost observations, not a speedup or tail-latency
+guarantee. Receipts are
+`/var/tmp/nra-definition-owner-{baseline,current}-gc-cost.jsonl`.

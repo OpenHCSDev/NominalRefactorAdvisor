@@ -472,16 +472,33 @@ and captured default values require separate execution evidence. The
 :download:`parameter-source refactor <../../examples/parameter_source_defaults.json>`
 applies 19 authored DSL stages against ``2ae5a55``.
 
-``CompactDefinitionTarget`` extends the ordinary lexical binding target with
-``decorator_uses`` captured by the enclosing flow. Each use retains its evaluation
-position and value expression; decorator factories retain the same
+``CompactDefinitionTarget`` retains the exact ``CompactDefinitionFlowOwner``
+shared with its separate body flow. Its lexical binding name derives from that
+owner. ``CompactClassDeclaration`` retains the class's full source span;
+``CompactFunctionDeclaration.source_span`` derives from its existing execution
+receipt. Repeated same-name definitions therefore retain distinct source owners.
+The single ``CompactMutationKind.DEFINITION`` delegates source-selection dispatch
+to the retained declaration rather than storing a second function/class tag.
+
+The target's ``decorator_uses`` are captured by the enclosing flow. Each use
+retains its evaluation position and value expression; decorator factories retain the same
 ``CallResultValue`` invocation as the flow's call record. Function, asynchronous
 function and class definitions supply this payload, including an empty tuple
-for an undecorated definition. ``CompactMutation`` validates the definition-kind
-and target relation once; its generic target type carries that contract into
-definition resolution. These are source evaluation receipts, including
-potentially repeated sites, rather than proofs of completed decorator application
-or class creation.
+for an undecorated definition. ``header_position`` follows the header expressions
+collected in the enclosing flow and precedes the final binding event. It records
+neither the earlier native builder capture nor entry into the class body.
+Builder, metaclass and decorator effects require separate execution evidence.
+``CompactMutation`` validates the definition-kind and target relation once; its
+generic target type carries that contract into definition resolution.
+
+``CompactProductFlowModuleProjection.flow_contexts`` owns the module/flow joins
+consumed by the repository. Its derived ``flow_contexts_by_owner`` index preserves
+distinct positioned owners and excludes duplicate owner handles. Definition
+targets and body contexts retain the same owner object after serialisation.
+These receipts describe potentially repeated source sites, not unique runtime
+objects or successful creation. The :download:`definition-owner refactor
+<../../examples/definition_flow_ownership.json>` applies authored DSL stages
+against ``72879a6``.
 
 ``ResolvedCompactFunctionTarget.for_object_mutation`` projects decorated or
 class-owned function declarations to an unbounded object target. A decorator

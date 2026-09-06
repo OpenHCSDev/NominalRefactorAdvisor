@@ -1,0 +1,640 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from .collection_algebra import UniqueIdentityIndexAuthority"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactDefinitionBindingOperation.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactDefinitionBindingOperation.resolve_definition",
+              "rationale": "",
+              "body_source": "definition = cast(CompactMutation[CompactDefinitionTarget], binding)\nreturn definition.target.owner.resolve_definition(resolver, symbol, definition)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    FUNCTION_DEFINITION = \"function_definition\", CompactDefinitionBindingOperation(\n        lambda resolver, symbol, binding: resolver._selected_function_resolution(\n            symbol, binding\n        )\n    )\n    CLASS_DEFINITION = \"class_definition\", CompactDefinitionBindingOperation(\n        lambda resolver, symbol, binding: resolver._selected_class_resolution(\n            symbol, binding\n        )\n    )",
+                  "new_source": "    DEFINITION = \"definition\", CompactDefinitionBindingOperation()"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactMutationKind",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactDefinitionTarget",
+              "rationale": "",
+              "replacement_source": "class CompactDefinitionTarget(CompactLexicalBindingTargetABC):\n    \"\"\"Captured header evidence and its exact source body, not final object identity.\"\"\"\n\n    owner: CompactDefinitionFlowOwner\n    decorator_uses: tuple[CompactValueUse, ...]\n    header_position: CompactFlowPosition\n\n    bound_name = AliasProperty[str](\"owner.bound_name\")\n\n    def __post_init__(self) -> None:\n        if not isinstance(self.owner, CompactDefinitionFlowOwner):\n            raise TypeError(\"Definition targets require their source declaration\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactNamespaceFlowOwner",
+              "rationale": "",
+              "source": "class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):\n    \"\"\"One exact source body shared by its binding event and separate flow.\"\"\"\n\n    source_span: SourceByteSpan\n\n    @property\n    def bound_name(self) -> str:\n        return self.qualname.rsplit(\".\", 1)[-1]\n\n    @abstractmethod\n    def resolve_definition(\n        self,\n        resolver: CompactDefinitionResolverABC[TargetResolutionT],\n        symbol: str,\n        binding: CompactMutation[CompactDefinitionTarget],\n    ) -> TargetResolutionT:\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass CompactClassDeclaration(CompactDefinitionFlowOwner):\n    \"\"\"A positioned class body, independent of builder or metaclass results.\"\"\"\n\n    qualname: str\n    source_span: SourceByteSpan\n\n    kind = CompactFlowOwnerKind.CLASS_BODY\n\n    @property\n    def declaration(self) -> None:\n        return None\n\n    def resolve_definition(\n        self,\n        resolver: CompactDefinitionResolverABC[TargetResolutionT],\n        symbol: str,\n        binding: CompactMutation[CompactDefinitionTarget],\n    ) -> TargetResolutionT:\n        return resolver._selected_class_resolution(symbol, binding)\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\"\"\"Module or class-body scope without a function signature.\"\"\"",
+                  "new_source": "\"\"\"A module scope; definition flows retain their actual source declaration.\"\"\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactNamespaceFlowOwner",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "if self.kind.is_function_scope:",
+                  "new_source": "if not self.kind.is_module_scope:"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactNamespaceFlowOwner.__post_init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "\"Function flows must be owned by their declaration\"",
+                  "new_source": "\"Definition flows must be owned by their declaration\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactNamespaceFlowOwner.__post_init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "class CompactFunctionDeclaration(CompactFlowOwner):",
+                  "new_source": "class CompactFunctionDeclaration(CompactDefinitionFlowOwner):"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionDeclaration",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    line = AliasProperty[int](\"execution.source_span.start_line\")",
+                  "new_source": "    source_span = AliasProperty[SourceByteSpan](\"execution.source_span\")\n    line = AliasProperty[int](\"source_span.start_line\")"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionDeclaration",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    end_line = AliasProperty[int](\"execution.source_span.end_line\")",
+                  "new_source": "    end_line = AliasProperty[int](\"source_span.end_line\")"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionDeclaration",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionDeclaration",
+              "rationale": "",
+              "source": "def resolve_definition(\n    self,\n    resolver: CompactDefinitionResolverABC[TargetResolutionT],\n    symbol: str,\n    binding: CompactMutation[CompactDefinitionTarget],\n) -> TargetResolutionT:\n    return resolver._selected_function_resolution(symbol, binding)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactProductFlowModuleProjection",
+              "rationale": "",
+              "source": "@cached_property\ndef flow_contexts(self) -> tuple[CompactFlowContext, ...]:\n    return tuple(\n        CompactFlowContext(self.module_name, self.file_path, flow)\n        for flow in self.flows\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactProductFlowModuleProjection",
+              "rationale": "",
+              "source": "@cached_property\ndef flow_contexts_by_owner(self) -> dict[CompactFlowOwner, CompactFlowContext]:\n    return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(\n        self.flow_contexts, lambda context: context.flow.owner\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_ClassContext",
+              "rationale": "",
+              "replacement_source": "class _ClassContext:\n    node: ast.ClassDef\n    declaration: CompactClassDeclaration\n    lexical_scope_qualnames: tuple[str, ...]\n\n    current_class_qualname = AliasProperty[str](\"declaration.qualname\")\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "_ClassContext(node, qualname, lexical_scopes, qualname)",
+                  "new_source": "_ClassContext(\n                node,\n                CompactClassDeclaration(qualname, SourceByteSpan.require_node(node)),\n                lexical_scopes,\n            )"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_DeclarationCollector.visit_ClassDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_DeclarationCollector",
+              "rationale": "",
+              "source": "@property\ndef owners_by_node(\n    self,\n) -> dict[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, CompactDefinitionFlowOwner]:\n    return {\n        context.node: context.declaration\n        for context in chain(self.function_contexts, self.class_contexts)\n    }\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-19-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        owner: CompactFlowOwner,",
+                  "new_source": "        owner: CompactFlowOwner,\n        definition_owners: dict[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, CompactDefinitionFlowOwner],"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-20-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        self.owner = owner",
+                  "new_source": "        self.owner = owner\n        self.definition_owners = definition_owners"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-21-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_FunctionDef",
+              "rationale": "",
+              "source": "    def _bind_definition(\n        self,\n        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,\n        decorator_uses: tuple[CompactValueUse, ...],\n    ) -> None:\n        self._record_mutation(\n            CompactDefinitionTarget(\n                self.definition_owners[node], decorator_uses, self._position()\n            ),\n            node,\n            CompactMutationKind.DEFINITION,\n        )\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-22-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_FunctionDef",
+              "rationale": "",
+              "body_source": "self._bind_definition(node, self._visit_definition_expressions(node))"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-23-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        self._record_mutation(\n            CompactDefinitionTarget(node.name, decorator_uses),\n            node,\n            CompactMutationKind.CLASS_DEFINITION,\n        )",
+                  "new_source": "        self._bind_definition(node, decorator_uses)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_ClassDef",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-24-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    declarations.visit(parsed_module.module)",
+                  "new_source": "    declarations.visit(parsed_module.module)\n    definition_owners = declarations.owners_by_node"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "compact_product_flow_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-25-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, \"\"),",
+                  "new_source": "            owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, \"\"),\n            definition_owners=definition_owners,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "compact_product_flow_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-26-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            owner=CompactNamespaceFlowOwner(\n                CompactFlowOwnerKind.CLASS_BODY,\n                context.qualname,\n            ),",
+                  "new_source": "            owner=context.declaration,\n            definition_owners=definition_owners,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "compact_product_flow_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-27-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            owner=context.declaration,\n            module_identity=parsed_module.module_path_identity,",
+                  "new_source": "            owner=context.declaration,\n            definition_owners=definition_owners,\n            module_identity=parsed_module.module_path_identity,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "compact_product_flow_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-28-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/product_flow_authority.py",
+              "target_qualname": "CompactProductFlowRepository.flow_contexts",
+              "rationale": "",
+              "body_source": "return tuple(\n    context\n    for projection in self.product_projections\n    for context in projection.flow_contexts\n)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

@@ -34,6 +34,7 @@ from nominal_refactor_advisor.product_flow import (
     compact_product_flow_projection,
 )
 
+
 def _parsed_module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("pkg/sample.py"),
@@ -161,7 +162,7 @@ def test_binding_selection_distinguishes_source_position_and_final_namespace() -
     deferred = flow.binding_resolution_for("consume")
     assert immediate is not None and immediate.mutation is not None
     assert deferred is not None and deferred.mutation is not None
-    assert immediate.mutation.kind is CompactMutationKind.FUNCTION_DEFINITION
+    assert immediate.mutation.kind is CompactMutationKind.DEFINITION
     assert deferred.mutation.kind is CompactMutationKind.ASSIGNMENT
     assert flow.binding_resolution_for("absent") is None
     assert pickle.loads(pickle.dumps(immediate)) == immediate
@@ -734,16 +735,13 @@ def test_function_declaration_is_the_flow_owner_and_module_view_is_derived() -> 
 def test_function_flow_ownership_requires_a_declaration() -> None:
     with pytest.raises(TypeError):
         CompactFlowOwner()
-    with pytest.raises(ValueError, match="owned by their declaration"):
-        CompactNamespaceFlowOwner(CompactFlowOwnerKind.FUNCTION, "run")
-    for kind, qualname in (
-        (CompactFlowOwnerKind.MODULE, ""),
-        (CompactFlowOwnerKind.CLASS_BODY, "Owner"),
-    ):
-        owner = CompactNamespaceFlowOwner(kind, qualname)
-        assert owner.declaration is None
-        assert owner.kind is kind
-        assert owner.qualname == qualname
+    for kind in (CompactFlowOwnerKind.FUNCTION, CompactFlowOwnerKind.CLASS_BODY):
+        with pytest.raises(ValueError, match="owned by their declaration"):
+            CompactNamespaceFlowOwner(kind, "Owner")
+    owner = CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, "")
+    assert owner.declaration is None
+    assert owner.kind is CompactFlowOwnerKind.MODULE
+    assert owner.qualname == ""
 
 
 def test_opaque_attribute_reads_remain_explicit_flow_evidence() -> None:

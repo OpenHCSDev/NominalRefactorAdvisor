@@ -817,13 +817,9 @@ class CompactProductFlowRepository(
     @cached_property
     def flow_contexts(self) -> tuple[CompactFlowContext, ...]:
         return tuple(
-            CompactFlowContext(
-                module_name=projection.module_name,
-                file_path=projection.file_path,
-                flow=flow,
-            )
+            context
             for projection in self.product_projections
-            for flow in projection.flows
+            for context in projection.flow_contexts
         )
 
     @cached_property

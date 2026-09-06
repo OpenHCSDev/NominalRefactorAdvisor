@@ -46,12 +46,12 @@ def _definition(flow, name="subject"):
 @pytest.mark.parametrize(
     "declaration, kind",
     (
-        ("def subject(value=tail()): pass", CompactMutationKind.FUNCTION_DEFINITION),
+        ("def subject(value=tail()): pass", CompactMutationKind.DEFINITION),
         (
             "async def subject(value=tail()): pass",
-            CompactMutationKind.FUNCTION_DEFINITION,
+            CompactMutationKind.DEFINITION,
         ),
-        ("class subject(tail()): pass", CompactMutationKind.CLASS_DEFINITION),
+        ("class subject(tail()): pass", CompactMutationKind.DEFINITION),
     ),
 )
 def test_factory_captures_match_native_evaluation_order_before_header_tail(
@@ -241,8 +241,9 @@ def test_undecorated_definition_has_explicit_empty_capture_payload(declaration):
     definition = _definition(_projection(declaration).flows[0])
     assert definition.target.decorator_uses == ()
     assert {field.name for field in fields(definition.target)} == {
-        "name",
+        "owner",
         "decorator_uses",
+        "header_position",
     }
 
 

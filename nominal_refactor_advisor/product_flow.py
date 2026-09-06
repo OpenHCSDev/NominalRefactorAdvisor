@@ -40,6 +40,7 @@ from .call_binding import (
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
+from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
@@ -371,15 +372,6 @@ class CompactImportBindingOperation(CompactBindingOperationABC):
 class CompactDefinitionBindingOperation(CompactBindingOperationABC):
     is_definition_binding = True
 
-    def __init__(
-        self,
-        selector: Callable[
-            [CompactDefinitionResolverABC[TargetResolutionT], str, CompactMutation],
-            TargetResolutionT,
-        ],
-    ) -> None:
-        self._selector = selector
-
     def pending_after(
         self,
         context: CompactFlowContext,
@@ -409,7 +401,8 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
         symbol: str,
         binding: CompactMutation,
     ) -> TargetResolutionT:
-        return self._selector(resolver, symbol, binding)
+        definition = cast(CompactMutation[CompactDefinitionTarget], binding)
+        return definition.target.owner.resolve_definition(resolver, symbol, definition)
 
 
 class CompactMutationKind(StrEnum):
@@ -418,16 +411,7 @@ class CompactMutationKind(StrEnum):
     ASSIGNMENT = "assignment"
     AUGMENTED_ASSIGNMENT = "augmented_assignment"
     DELETION = "deletion"
-    FUNCTION_DEFINITION = "function_definition", CompactDefinitionBindingOperation(
-        lambda resolver, symbol, binding: resolver._selected_function_resolution(
-            symbol, binding
-        )
-    )
-    CLASS_DEFINITION = "class_definition", CompactDefinitionBindingOperation(
-        lambda resolver, symbol, binding: resolver._selected_class_resolution(
-            symbol, binding
-        )
-    )
+    DEFINITION = "definition", CompactDefinitionBindingOperation()
     IMPORT = "import", CompactImportBindingOperation()
     ITERATION_BINDING = "iteration_binding"
     CONTEXT_BINDING = "context_binding"
@@ -1087,10 +1071,18 @@ class CompactBindingTarget(CompactLexicalBindingTargetABC):
 
 
 @dataclass(frozen=True)
-class CompactDefinitionTarget(CompactBindingTarget):
-    """A definition binding retains decorator values captured during its creation."""
+class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
+    """Captured header evidence and its exact source body, not final object identity."""
 
+    owner: CompactDefinitionFlowOwner
     decorator_uses: tuple[CompactValueUse, ...]
+    header_position: CompactFlowPosition
+
+    bound_name = AliasProperty[str]("owner.bound_name")
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner, CompactDefinitionFlowOwner):
+            raise TypeError("Definition targets require their source declaration")
 
 
 @dataclass(frozen=True)
@@ -1779,16 +1771,57 @@ class CompactFlowOwner(ABC):
         raise NotImplementedError
 
 
+class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):
+    """One exact source body shared by its binding event and separate flow."""
+
+    source_span: SourceByteSpan
+
+    @property
+    def bound_name(self) -> str:
+        return self.qualname.rsplit(".", 1)[-1]
+
+    @abstractmethod
+    def resolve_definition(
+        self,
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
+        symbol: str,
+        binding: CompactMutation[CompactDefinitionTarget],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CompactClassDeclaration(CompactDefinitionFlowOwner):
+    """A positioned class body, independent of builder or metaclass results."""
+
+    qualname: str
+    source_span: SourceByteSpan
+
+    kind = CompactFlowOwnerKind.CLASS_BODY
+
+    @property
+    def declaration(self) -> None:
+        return None
+
+    def resolve_definition(
+        self,
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
+        symbol: str,
+        binding: CompactMutation[CompactDefinitionTarget],
+    ) -> TargetResolutionT:
+        return resolver._selected_class_resolution(symbol, binding)
+
+
 @dataclass(frozen=True)
 class CompactNamespaceFlowOwner(CompactFlowOwner):
-    """Module or class-body scope without a function signature."""
+    """A module scope; definition flows retain their actual source declaration."""
 
     kind: CompactFlowOwnerKind
     qualname: str
 
     def __post_init__(self) -> None:
-        if self.kind.is_function_scope:
-            raise ValueError("Function flows must be owned by their declaration")
+        if not self.kind.is_module_scope:
+            raise ValueError("Definition flows must be owned by their declaration")
 
     @property
     def declaration(self) -> None:
@@ -1796,7 +1829,7 @@ class CompactNamespaceFlowOwner(CompactFlowOwner):
 
 
 @dataclass(frozen=True)
-class CompactFunctionDeclaration(CompactFlowOwner):
+class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     identity: CompactFunctionIdentity
     execution: NativeFunctionExecution
     owner_class_qualname: str | None
@@ -1807,8 +1840,17 @@ class CompactFunctionDeclaration(CompactFlowOwner):
     kind = CompactFlowOwnerKind.FUNCTION
 
     qualname = AliasProperty[str]("identity.qualname")
-    line = AliasProperty[int]("execution.source_span.start_line")
-    end_line = AliasProperty[int]("execution.source_span.end_line")
+    source_span = AliasProperty[SourceByteSpan]("execution.source_span")
+    line = AliasProperty[int]("source_span.start_line")
+    end_line = AliasProperty[int]("source_span.end_line")
+
+    def resolve_definition(
+        self,
+        resolver: CompactDefinitionResolverABC[TargetResolutionT],
+        symbol: str,
+        binding: CompactMutation[CompactDefinitionTarget],
+    ) -> TargetResolutionT:
+        return resolver._selected_function_resolution(symbol, binding)
 
     def initial_binding_for(self, root_name: str) -> CompactBindingSource | None:
         return next(
@@ -2152,6 +2194,19 @@ class CompactProductFlowModuleProjection(CompactModuleIdentity):
     flows: tuple[CompactFunctionFlow, ...]
 
     @cached_property
+    def flow_contexts_by_owner(self) -> dict[CompactFlowOwner, CompactFlowContext]:
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            self.flow_contexts, lambda context: context.flow.owner
+        )
+
+    @cached_property
+    def flow_contexts(self) -> tuple[CompactFlowContext, ...]:
+        return tuple(
+            CompactFlowContext(self.module_name, self.file_path, flow)
+            for flow in self.flows
+        )
+
+    @cached_property
     def function_declarations(self) -> tuple[CompactFunctionDeclaration, ...]:
         return tuple(
             declaration
@@ -2171,13 +2226,26 @@ class _FunctionContext:
 @dataclass(frozen=True)
 class _ClassContext:
     node: ast.ClassDef
-    qualname: str
+    declaration: CompactClassDeclaration
     lexical_scope_qualnames: tuple[str, ...]
-    current_class_qualname: str
+
+    current_class_qualname = AliasProperty[str]("declaration.qualname")
 
 
 class _DeclarationCollector(ast.NodeVisitor):
     """Collect declaration identities while preserving Python scope nesting."""
+
+    @property
+    def owners_by_node(
+        self,
+    ) -> dict[
+        ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        CompactDefinitionFlowOwner,
+    ]:
+        return {
+            context.node: context.declaration
+            for context in chain(self.function_contexts, self.class_contexts)
+        }
 
     def __init__(self, module: ParsedModule) -> None:
         self.module = module
@@ -2203,7 +2271,11 @@ class _DeclarationCollector(ast.NodeVisitor):
             (qualname, *reversed(self.function_qualnames), "")
         )
         self.class_contexts.append(
-            _ClassContext(node, qualname, lexical_scopes, qualname)
+            _ClassContext(
+                node,
+                CompactClassDeclaration(qualname, SourceByteSpan.require_node(node)),
+                lexical_scopes,
+            )
         )
         self.scope_names.append(node.name)
         self.scope_kinds.append(CompactFlowOwnerKind.CLASS_BODY)
@@ -2343,12 +2415,17 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
         self,
         *,
         owner: CompactFlowOwner,
+        definition_owners: dict[
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+            CompactDefinitionFlowOwner,
+        ],
         module_identity: PythonModulePathIdentity,
         lexical_scope_qualnames: tuple[str, ...],
         current_class_qualname: str | None,
         current_class_receiver_name: str | None,
     ) -> None:
         self.owner = owner
+        self.definition_owners = definition_owners
         self.module_identity = module_identity
         self.lexical_scope_qualnames = lexical_scope_qualnames
         self.current_class_qualname = current_class_qualname
@@ -2630,13 +2707,21 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             self._capture_value(decorator) for decorator in node.decorator_list
         )
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        decorator_uses = self._visit_definition_expressions(node)
+    def _bind_definition(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        decorator_uses: tuple[CompactValueUse, ...],
+    ) -> None:
         self._record_mutation(
-            CompactDefinitionTarget(node.name, decorator_uses),
+            CompactDefinitionTarget(
+                self.definition_owners[node], decorator_uses, self._position()
+            ),
             node,
-            CompactMutationKind.FUNCTION_DEFINITION,
+            CompactMutationKind.DEFINITION,
         )
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._bind_definition(node, self._visit_definition_expressions(node))
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -2664,11 +2749,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             self.visit(base)
         for keyword in node.keywords:
             self.visit(keyword.value)
-        self._record_mutation(
-            CompactDefinitionTarget(node.name, decorator_uses),
-            node,
-            CompactMutationKind.CLASS_DEFINITION,
-        )
+        self._bind_definition(node, decorator_uses)
 
     def visit_If(self, node: ast.If) -> None:
         self.visit(node.test)
@@ -2764,9 +2845,11 @@ def compact_product_flow_projection(
 
     declarations = _DeclarationCollector(parsed_module)
     declarations.visit(parsed_module.module)
+    definition_owners = declarations.owners_by_node
     flows = [
         _CompactFlowCollector(
             owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
+            definition_owners=definition_owners,
             module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=("",),
             current_class_qualname=None,
@@ -2775,10 +2858,8 @@ def compact_product_flow_projection(
     ]
     flows.extend(
         _CompactFlowCollector(
-            owner=CompactNamespaceFlowOwner(
-                CompactFlowOwnerKind.CLASS_BODY,
-                context.qualname,
-            ),
+            owner=context.declaration,
+            definition_owners=definition_owners,
             module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
@@ -2789,6 +2870,7 @@ def compact_product_flow_projection(
     flows.extend(
         _CompactFlowCollector(
             owner=context.declaration,
+            definition_owners=definition_owners,
             module_identity=parsed_module.module_path_identity,
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
