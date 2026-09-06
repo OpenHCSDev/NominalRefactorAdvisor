@@ -21,6 +21,7 @@ If you only need to run the advisor or consume its results, start with
    :caption: Generated Catalogs
 
    pattern_catalog
+   codemod_catalog
    detector_catalog
    detector_reference
 

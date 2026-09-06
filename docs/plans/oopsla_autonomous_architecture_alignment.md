@@ -871,3 +871,52 @@ Python 3.11 and 2,322 tests on Python 3.14. The 40-test focused ASCII run passed
 All 81 architecture detectors completed with no findings or omissions, and
 Ruff and the whitespace check passed. Sphinx retained its two existing duplicate
 description warnings. `uv.lock` remains user-owned and excluded.
+
+### Operation Catalogue and Portable Reference Generation
+
+The existing documentation generator now renders the complete registered
+`RefactorRecipeOperation` family. Each entry includes its operation key,
+canonical declaration path, source dependency scope, native constructor and
+declaration documentation. Sphinx derives the local contents and constructor
+parameters. There is no separately maintained operation roster or input schema.
+The generated reference currently contains 71 operations, including lexical
+parameter/local projection and declaration-resolved call edits that were easy
+to overlook in the broad facade module. Diataxis keeps this surface as reference
+material linked to the existing execution guide.
+
+The touched generator also uses `NativeDeclaration` for detector implementation
+paths and the shared exact-text reader for unchanged-file comparison. Its writer
+uses explicit UTF-8 and preserves supplied newlines. Tests reproduce the prior
+ASCII encoding failure and the unnecessary rewrite of unchanged CRLF text, and
+exercise automatic operation registration/removal without catalogue edits.
+
+`codemod_catalog_generation.py` records the seven-stage transformation. The DSL
+simulated the initial change before application; final refinements also used DSL
+operations. A replay from the committed baseline reproduces the entire working
+generator AST. The projected finding report explicitly used an evidence-local
+partial scan and offered no executable continuation. It is not an all-detector
+completion claim.
+
+The multi-root probe also exposed a remaining CLI path-boundary issue: relative
+live module paths reach the checkout-relative cache codec with multiple roots,
+where their origin is ambiguous. Explicit absolute roots and target paths allow
+the same scan to proceed. A future correction belongs at the live-path owner;
+the relocatable cache codec should retain its fail-closed origin contract.
+
+### Windows Replay Fixture Correction
+
+CI for `fd52e41` passed Linux, macOS and the documentation/wheel job. Both Windows
+jobs failed because the new namespace replay fixture removed its shared base
+with AST spans but reconstructed consumers using LF-only text patterns against
+CRLF source. An explicit CRLF case reproduced the same `NameError` locally.
+Commit `81a11d9` reconstructs in one spelling, writes the requested physical
+newline and compares unchanged source through the exact-text reader. LF and
+CRLF now both pass on Python 3.11 and 3.14, including the ASCII-locale probe.
+
+The combined batch passed 2,313 tests with 15 skipped on Python 3.11 and 2,328
+tests on Python 3.14. The rendered catalogue contains all 71 registered entries
+with visible declaration paths and typed constructor inputs. A fresh Sphinx
+build retained its two existing duplicate-description warnings. The first
+uncached audit exceeded its 60-second budget; the completed retry used the
+compact report with structural-overlap rendering disabled and ran all 81
+detectors without omissions or findings. Ruff and the whitespace check passed.

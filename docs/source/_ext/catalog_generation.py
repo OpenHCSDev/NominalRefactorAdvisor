@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+from nominal_refactor_advisor.codemod import RefactorRecipeOperation
+
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     DetectorRefactorCapability,
@@ -10,13 +12,16 @@ from nominal_refactor_advisor.detector_capabilities import (
 )
 from nominal_refactor_advisor.detectors import IssueDetector
 from nominal_refactor_advisor.models import NominalDeclarationIdentity
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.source_geometry import read_source_text
 
 
 def generate_api_reference_pages(source_dir: Path) -> None:
     generated_dir = source_dir / "api" / "_generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
     detector_types = IssueDetector.registered_detector_types()
+    _write_if_changed(generated_dir / "codemod_catalog.rst", _render_codemod_catalog())
     _write_if_changed(
         generated_dir / "pattern_catalog.rst",
         _render_pattern_catalog(list(PatternId)),
@@ -43,6 +48,33 @@ def generate_api_reference_pages(source_dir: Path) -> None:
             detector_reference_dir / f"{detector_type.detector_id}.rst",
             _render_detector_reference_page(detector_type),
         )
+
+
+def _render_codemod_catalog() -> str:
+    lines = [
+        ".. Generated from RefactorRecipeOperation.__registry__.",
+        ".. Do not edit manually.",
+        "",
+    ]
+    for operation in RefactorRecipeOperation.__registry__.values():
+        declaration = NativeDeclaration(operation)
+        title = operation.__name__
+        lines.extend(
+            [
+                title,
+                "-" * len(title),
+                "",
+                f":Declaration: ``{declaration.qualified_name}``",
+                f":Operation key: ``{operation.operation_key()}``",
+                f":Source proof scope: ``{operation.source_dependency_scope.value}``",
+                "",
+                f".. autoclass:: {declaration.qualified_name}",
+                "   :show-inheritance:",
+                "   :no-index:",
+                "",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _render_pattern_catalog(patterns: list[PatternId]) -> str:
@@ -187,7 +219,7 @@ def _render_detector_reference_index(
 
 
 def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
-    qualified_name = f"nominal_refactor_advisor.detectors.{detector_type.__name__}"
+    qualified_name = NativeDeclaration(detector_type).qualified_name
     title = detector_type.__name__
     finding_spec = detector_type.required_relation_finding_spec()
     capability = DetectorRefactorCapability(detector_type)
@@ -327,6 +359,6 @@ def _enum_name_list(values: Iterable[object]) -> str:
 
 
 def _write_if_changed(path: Path, content: str) -> None:
-    if path.exists() and path.read_text() == content:
+    if path.exists() and read_source_text(path) == content:
         return
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8", newline="")

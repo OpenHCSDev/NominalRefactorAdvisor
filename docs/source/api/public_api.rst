@@ -281,6 +281,8 @@ existing public imports retain object identity.
 Its cancelable-composition signal is generic: it treats pack, unpack, and
 field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
+The :doc:`codemod_catalog` lists every registered operation with its current
+constructor and declaration documentation.
 Codemod operations, selectors, and payload records declare wire semantics with
 ``codemod_payload_field`` on their dataclass fields.
 ``DataclassJsonReport`` derives a shallow JSON object from a concrete
