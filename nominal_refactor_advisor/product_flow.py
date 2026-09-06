@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from itertools import chain
 from typing import (
     Callable,
     Generic,
@@ -1220,13 +1221,28 @@ class CompactFlowOwner:
 class CompactFunctionFlow:
     owner: CompactFlowOwner
     lexical_scope_qualnames: tuple[str, ...]
-    loaded_value_root_names: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactLexicalMutation, ...]
     exact_value_aliases: tuple[CompactExactValueAlias, ...]
     global_binding_names: tuple[str, ...]
     nonlocal_binding_names: tuple[str, ...]
+
+    @cached_property
+    def loaded_value_root_names(self) -> tuple[str, ...]:
+        """Derive observed names from retained calls and value reads."""
+        return tuple(
+            sorted(
+                {
+                    reference.root_name
+                    for use in chain(
+                        self.callable_reference_uses,
+                        (call.target_use for call in self.calls),
+                    )
+                    if (reference := use.target.lexical_reference) is not None
+                }
+            )
+        )
 
     def _binding_resolution_for_mutations(
         self,
@@ -1525,7 +1541,6 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactLexicalMutation] = []
         self.exact_value_aliases: list[CompactExactValueAlias] = []
-        self.loaded_value_root_names: set[str] = set()
         self.global_binding_names: set[str] = set()
         self.nonlocal_binding_names: set[str] = set()
         self.branch_path: tuple[CompactControlBranch, ...] = ()
@@ -1539,7 +1554,6 @@ class _CompactFlowCollector(ast.NodeVisitor):
         return CompactFunctionFlow(
             owner=self.owner,
             lexical_scope_qualnames=self.lexical_scope_qualnames,
-            loaded_value_root_names=tuple(sorted(self.loaded_value_root_names)),
             calls=tuple(self.calls),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
@@ -1632,9 +1646,6 @@ class _CompactFlowCollector(ast.NodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        target_reference = LexicalValueReference.from_expression(node.func)
-        if target_reference is not None:
-            self.loaded_value_root_names.add(target_reference.root_name)
         self._visit_call_target_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
         arguments = CompactCallArguments[CompactValueUse].from_call(
@@ -1661,22 +1672,18 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self.visit(expression)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        reference = LexicalValueReference.from_expression(node)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
+            reference = LexicalValueReference.from_expression(node)
             if reference is not None:
                 self._record_mutation(reference, node)
             return
         self.visit(node.value)
-        if reference is not None:
-            self.loaded_value_root_names.add(reference.root_name)
-            self.callable_reference_uses.append(self._callable_reference_use(node))
+        self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Name(self, node: ast.Name) -> None:
-        reference = LexicalValueReference(node.id)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self._record_mutation(reference, node)
+            self._record_mutation(LexicalValueReference(node.id), node)
         elif isinstance(node.ctx, ast.Load):
-            self.loaded_value_root_names.add(node.id)
             self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Assign(self, node: ast.Assign) -> None:

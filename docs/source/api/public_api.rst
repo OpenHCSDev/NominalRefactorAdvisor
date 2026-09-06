@@ -260,6 +260,15 @@ by callable-escape checks. Bare calls do not create such an escape. The
 :download:`receiver capture refactor <../../examples/call_receiver_capture.py>`
 applies this collector rule through the DSL.
 
+Non-call attribute reads use the same nominal target projection as calls,
+including method values reached through ``type(self).member``. Unresolved
+attribute reads retain an explicit dynamic target instead of being discarded
+by a separate syntax filter. ``CompactFunctionFlow.loaded_value_root_names``
+is a cached view of retained call targets and value reads, not an independently
+supplied flow field. The :download:`reference ownership refactor
+<../../examples/reference_fact_ownership.py>` removes the collector's parallel
+loaded-name state.
+
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``
 resolves at that position. Opaque expressions return an explicit

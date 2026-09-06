@@ -759,6 +759,30 @@ def test_repository_resolves_annotated_member_method_from_current_class() -> Non
     assert incoming[0].context.owner_symbol == "pkg.member.Owner.execute"
 
 
+@pytest.mark.parametrize("receiver", ("self", "type(self)"))
+def test_annotated_member_method_value_retains_its_callable_escape(
+    receiver: str,
+) -> None:
+    source = (
+        "class Renderer:\n"
+        "    def render(self, value): return value\n"
+        "class Base:\n"
+        "    renderer: Renderer = Renderer()\n"
+        "class Left(Base): pass\n"
+        "class Right(Base): pass\n"
+        "class Owner(Left, Right):\n"
+        "    def callback(self):\n"
+        f"        return {receiver}.renderer.render\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["Owner"]().callback()(7) == 7
+    repository = _repository(_module("pkg.member_value", source))
+    escapes = repository.callable_escapes_for("pkg.member_value.Renderer.render")
+    assert len(escapes) == 1
+    assert repository.incoming_calls_for("pkg.member_value.Renderer.render") == ()
+
+
 @pytest.mark.parametrize("bases", ("Base", "Left, Right"))
 def test_repository_resolves_annotated_member_from_native_mro(bases: str) -> None:
     repository = _repository(

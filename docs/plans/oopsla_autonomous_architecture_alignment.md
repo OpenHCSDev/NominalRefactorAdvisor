@@ -1568,3 +1568,57 @@ Receiver reads establish evaluation evidence, not getter purity or receiver
 lifetime. The next proof boundary remains constructor results, native-MRO
 lookup hooks, intervening effects and escapes. A source declaration or return
 annotation alone cannot authorise an instance-selected rewrite.
+
+## Nominal reference facts own read summaries (2026-09-06)
+
+The follow-up audit found another dropped callable escape. Returning
+`type(self).renderer.render` produced a working bound method in real Python,
+but no escape for `Renderer.render`. The attribute visitor required a lexical
+path before invoking the nominal target projection, excluding the runtime-class
+member syntax that the projection already supports. Direct calls used that
+projection without this restriction.
+
+Non-call attribute loads now retain the shared target projection, including
+explicit dynamic results for unresolved syntax. The mutation path still uses
+lexical assignment targets; this change does not invent mutation or lifetime
+proof for dynamic receivers. Seven new cases exercise native-MRO inherited
+member values, opaque reads, and derived loaded-name summaries. Six failed
+before the change; the 243-case focused suite passes.
+
+`loaded_value_root_names` is now derived from retained calls and reference uses.
+The collector no longer owns a parallel set or updates it in three visitors,
+and no longer reparses call targets or loaded attributes merely to populate
+that set. Replacing a flow's read facts derives a new summary without carrying
+a stale constructor field or cached value across `dataclasses.replace`.
+
+An all-production comparison covers 131 modules and 8,184 flow scopes with
+zero loaded-name differences. The new collector retains 681 additional
+attribute reads. Raw serialised projection size falls from 25,412,782 to
+25,170,365 bytes before any summary property is accessed. One paired collection
+pass takes 1.86/1.99 seconds; this is not a throughput improvement claim.
+
+The eight-stage `docs/examples/reference_fact_ownership.py` plan was simulated
+and applied through the CLI. Receipts use `/tmp/nra-reference-ownership-*`.
+Receiver lifetime and constructor/descriptor effect evidence remain open;
+retaining the reference is a prerequisite to those proofs, not a substitute.
+
+The next audit has a concrete reproducer: `Owner.run` assigns `self = Other()`
+and then calls `self.method()`. Runtime selects `Other.method`; the repository
+still resolves `Owner.method`. Current-class local lookup discards the use
+position even though the call fact retains it, and member lookup also needs
+receiver-binding evidence. The fix must put that obligation on the shared
+current-class target family and reuse binding selection, rather than add
+separate rebinding checks to individual refactoring consumers.
+
+That next batch must also review unresolved escape consumption:
+`resolve_callable_escape` currently drops a resolution without a declaration,
+including its possible symbols. Making receiver lookup unresolved must not
+silently remove a relevant method-value use from the signature boundary proof.
+Call and non-call reference evidence need consistent fail-closed treatment.
+
+Full suites pass 2,414 tests with 15 skipped on Python 3.11 and 2,429 tests on
+Python 3.14, with eight workers each (217/219 seconds). Python 3.14 retains its
+96 existing warnings. All 81 detectors complete the touched-module audit with
+zero findings. Eight-stage full-module AST replay from `98de5c5`, Ruff and
+whitespace checks pass. Sphinx builds with its two existing duplicate-description
+warnings; Diataxis keeps the API contract separate from this investigation log.

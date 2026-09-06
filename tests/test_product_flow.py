@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 import pickle
 
@@ -672,6 +672,42 @@ def test_annotated_member_method_targets_retain_current_class_lookup_semantics()
         CurrentClassMemberMethodReference("Owner", "renderer", "render", False),
         CurrentClassMemberMethodReference("Owner", "renderer", "render", True),
     )
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    (
+        ("callback(value)", ("callback", "value")),
+        ("self.renderer.render(value)", ("self", "value")),
+        ("type(self).renderer.render(value)", ("self", "type", "value")),
+        ("factory().callback", ("factory",)),
+    ),
+)
+def test_loaded_names_are_derived_from_reference_facts(
+    expression: str, expected: tuple[str, ...]
+) -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module(
+            f"class Owner:\n    def run(self):\n        return {expression}\n"
+        )
+    )
+    flow = next(flow for flow in projection.flows if flow.owner.qualname == "Owner.run")
+    assert flow.loaded_value_root_names == expected
+    assert "loaded_value_root_names" not in {field.name for field in fields(flow)}
+    empty = replace(flow, calls=(), callable_reference_uses=())
+    assert empty.loaded_value_root_names == ()
+    assert pickle.loads(pickle.dumps(flow)).loaded_value_root_names == expected
+
+
+def test_opaque_attribute_reads_remain_explicit_flow_evidence() -> None:
+    projection = compact_product_flow_projection(
+        _parsed_module("def run():\n    return factory().callback\n")
+    )
+    flow = next(flow for flow in projection.flows if flow.owner.qualname == "run")
+    assert len(flow.callable_reference_uses) == 1
+    use = flow.callable_reference_uses[0]
+    assert isinstance(use.target, DynamicCallTargetReference)
+    assert flow.calls[0].position.dominates(use.position)
 
 
 def test_product_flow_family_payload_is_ast_free_and_pickle_stable() -> None:
