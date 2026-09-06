@@ -455,6 +455,23 @@ activation. The :download:`nominal import evidence refactor
 <../../examples/nominal_import_evidence.json>` applies 31 authored DSL stages
 against ``2c1fa56``.
 
+``FunctionParameterSource.from_arguments`` in ``lexical_bindings`` retains each
+actual ``ast.arg``, its ``CompactParameterKind`` and its default expression in
+signature order. Missing defaults remain ``None``; an explicit ``=None`` retains
+its ``ast.Constant`` node. Positional default-tail alignment and keyword-only
+default pairing belong to this projection. ``CompactFunctionParameter.from_source``
+derives the persisted, AST-free parameter used by ``CompactFunctionSignature``.
+``call_binding.CompactParameterKind`` re-exports the same enum declaration.
+
+``FunctionDefaultVisitor`` supplies shared default-expression traversal to eager
+name reads, declaration dependencies and compact flow collection. Creating a
+lambda visits its defaults without entering its body. Declaration dependency
+collection additionally retains body references in their deferred lexical scope.
+Signature order describes parameter binding; native annotation evaluation order
+and captured default values require separate execution evidence. The
+:download:`parameter-source refactor <../../examples/parameter_source_defaults.json>`
+applies 19 authored DSL stages against ``2ae5a55``.
+
 ``InitialCompactParameterBinding`` retains the exact parameter object from the
 owning signature and has no mutation event. Its value origin is that entry
 parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an

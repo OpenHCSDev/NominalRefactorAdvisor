@@ -1,0 +1,401 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-move_symbols_to_module",
+          "operations": [
+            {
+              "operation": "move_symbols_to_module",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "",
+              "rationale": "",
+              "destination_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "symbol_qualnames": [
+                "CompactParameterKind"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "ImportAliasRequirement",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass FunctionParameterSource:\n    \"\"\"Actual argument/default nodes in signature order, not execution evidence.\"\"\"\n\n    argument: ast.arg\n    kind: CompactParameterKind\n    default: ast.expr | None = None\n\n    @classmethod\n    def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:\n        positional = (*arguments.posonlyargs, *arguments.args)\n        defaults = (None,) * (len(positional) - len(arguments.defaults)) + tuple(\n            arguments.defaults\n        )\n        parameters = [\n            cls(\n                argument,\n                (\n                    CompactParameterKind.POSITIONAL_ONLY\n                    if index < len(arguments.posonlyargs)\n                    else CompactParameterKind.POSITIONAL_OR_KEYWORD\n                ),\n                default,\n            )\n            for index, (argument, default) in enumerate(\n                zip(positional, defaults, strict=True)\n            )\n        ]\n        if arguments.vararg is not None:\n            parameters.append(cls(arguments.vararg, CompactParameterKind.VAR_POSITIONAL))\n        parameters.extend(\n            cls(argument, CompactParameterKind.KEYWORD_ONLY, default)\n            for argument, default in zip(\n                arguments.kwonlyargs, arguments.kw_defaults, strict=True\n            )\n        )\n        if arguments.kwarg is not None:\n            parameters.append(cls(arguments.kwarg, CompactParameterKind.VAR_KEYWORD))\n        return tuple(parameters)\n\n\nclass FunctionDefaultVisitor(ast.NodeVisitor):\n    \"\"\"Visit defaults when a function is created, without entering its lambda body.\"\"\"\n\n    def visit_argument_defaults(self, arguments: ast.arguments) -> None:\n        for parameter in FunctionParameterSource.from_arguments(arguments):\n            if parameter.default is not None:\n                self.visit(parameter.default)\n\n    def visit_Lambda(self, node: ast.Lambda) -> None:\n        self.visit_argument_defaults(node.args)\n\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionParameterSource"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactFunctionParameter.from_argument",
+              "rationale": "",
+              "source": "    @classmethod\n    def from_source(cls, source: FunctionParameterSource) -> Self:\n        return cls(\n            name=source.argument.arg,\n            kind=source.kind,\n            has_default=source.default is not None,\n            annotation_expression=(\n                None\n                if source.argument.annotation is None\n                else ast.unparse(source.argument.annotation)\n            ),\n        )\n\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactFunctionParameter.from_argument",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/call_binding.py",
+              "target_qualname": "CompactFunctionSignature.from_arguments",
+              "rationale": "",
+              "body_source": "return cls(\n    tuple(\n        CompactFunctionParameter.from_source(source)\n        for source in FunctionParameterSource.from_arguments(arguments)\n    )\n)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector",
+              "rationale": "",
+              "base_name": "ast.NodeVisitor",
+              "replacement_base_name": "FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector",
+              "rationale": "",
+              "base_name": "ast.NodeVisitor",
+              "replacement_base_name": "FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "",
+              "rationale": "",
+              "import_source": "from .lexical_bindings import FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-replace_class_base",
+          "operations": [
+            {
+              "operation": "replace_class_base",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "base_name": "ast.NodeVisitor",
+              "replacement_base_name": "FunctionDefaultVisitor"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector.visit_Lambda",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "EagerNameLoadCollector.visit_argument_defaults",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector._visit_argument_defaults",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self._visit_argument_defaults(node.args)",
+                  "new_source": "super().visit_Lambda(node)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector.visit_Lambda",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "self._visit_argument_defaults(node.args)",
+                  "new_source": "self.visit_argument_defaults(node.args)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/declaration_dependencies.py",
+              "target_qualname": "_DeclarationDependencyCollector._visit_function",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        for default in (*node.args.defaults, *node.args.kw_defaults):\n            if default is not None:\n                self.visit(default)",
+                  "new_source": "        self.visit_argument_defaults(node.args)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector._visit_definition_expressions",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/lexical_bindings.py",
+              "target_qualname": "FunctionDefaultVisitor.visit_argument_defaults",
+              "rationale": "",
+              "body_source": "for default in (*arguments.defaults, *arguments.kw_defaults):\n    if default is not None:\n        self.visit(default)"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

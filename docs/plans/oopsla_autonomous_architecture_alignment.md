@@ -2698,3 +2698,59 @@ matches the integrated AST. The automatic-package-context audit completes all
 79 detectors with no omissions or findings. Black and Ruff pass, and Sphinx
 succeeds with the same two duplicate-description warnings. Diataxis keeps the
 supported selection rule in API reference and this rationale/evidence here.
+
+### 2026-09-06: Retain parameter sources and share default traversal
+
+`FunctionParameterSource` now retains the actual argument node, existing nominal
+parameter kind and actual default node. Compact signatures derive their AST-free
+parameters from that relation. The original kind declaration moves to the lower
+lexical module with identity-preserving exports and derived import updates.
+No separate parameter-kind roster or persisted AST payload is introduced.
+
+`FunctionDefaultVisitor` supplies the common default-expression traversal through
+native inheritance. Eager name reads and compact flow collection inherit its
+lambda default-only behaviour; dependency collection extends it with deferred
+body traversal. Previously, compact collection descended into lambda bodies and
+reported their calls as effects of creating the lambda. Actual annotation
+evaluation timing and order remain separate work; signature order does not
+establish native annotation execution order or captured default values.
+
+An independent review found an overconstraint in the initial integration:
+parameter binding analysis deliberately removes the binding while retaining
+default expressions. Traversing those expressions does not require a complete
+signature. The visitor therefore consumes the native AST default-expression
+sequences directly, while signature/default association remains in its source
+projection. Seven new parameter-removal controls retain the original body
+reference identity. This also avoids allocating parameter receipts merely to
+visit defaults. The first full run exposed the same regression in the historical
+renderer extraction-and-witness CLI example; that workflow passes after the
+correction.
+
+The nineteen-stage batch is authored in
+`docs/examples/parameter_source_defaults.json` against `2ae5a55`. API replay
+reproduces all six integrated source ASTs. Forty-four focused controls cover
+parameter/default identity and binding parity, malformed signature rejection,
+AST-free compact serialisation, native default order, deferred lambda bodies,
+and synthetic lexical binding removal. The corrected focused run including the
+real signature-codemod examples passes sixty cases with one syntax/capability
+skip on Python 3.11. Diataxis keeps supported behaviour in the API reference and
+the design rationale and validation history here.
+
+On the same 133 baseline modules and 8,358 flow owners, compact projection records
+26,445 calls instead of 26,790 after excluding deferred lambda-body traversal.
+Three fresh/repeated projection samples take 4.09-5.86 seconds on the baseline
+and 4.09-5.74 seconds on the new implementation. These shared-host samples do
+not establish a speedup; raw receipts are
+`/var/tmp/nra-parameter-{baseline,current}-cost.jsonl`.
+
+Final source-frozen suites pass 2,808 cases with 34 skipped on Python 3.11 and
+2,842 on Python 3.14. Both retain exactly the fourteen preceding native-binding,
+definition-result and registry-identity failure IDs, verified against the
+`2ae5a55` receipts. No failure is skipped or marked expected. Logs are
+`/var/tmp/nra-parameter-final-{311,314}.log`. The actual CLI simulates all nineteen
+stages cleanly against the frozen baseline. The automatic-package-context audit
+completes all 79 detectors with no omissions or findings. Black passes all eight
+changed source/test files; Ruff passes seven, while `ast_tools.py` retains the
+same 42 pre-existing import/export diagnostics as the baseline. Sphinx builds
+with the same two duplicate-description warnings. Native object identity,
+annotation activation and enum-key identity remain explicit pending work.

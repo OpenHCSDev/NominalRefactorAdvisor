@@ -41,6 +41,7 @@ from .implementation_identity import (
     declaration_implementation_module_names,
 )
 from .lexical_bindings import (
+    FunctionDefaultVisitor,
     ImportBoundNameProjection as ImportBoundNameProjection,
     ImportedNameOrigin as ImportedNameOrigin,
     LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -930,9 +931,7 @@ class PythonModulePathAuthority:
     @cached_property
     def import_roots(self) -> tuple[Path, ...]:
         return tuple(
-            dict.fromkeys(
-                identity.declared_import_root for identity in self.identities
-            )
+            dict.fromkeys(identity.declared_import_root for identity in self.identities)
         )
 
     @cached_property
@@ -940,8 +939,7 @@ class PythonModulePathAuthority:
         identities_by_path: dict[Path, PythonModulePathIdentity] = {}
         for identity in self.identities:
             resolved_path = (
-                identity.declared_import_root
-                / identity.declared_source_relative_path
+                identity.declared_import_root / identity.declared_source_relative_path
             ).resolve()
             previous = identities_by_path.get(resolved_path)
             if previous is not None and previous != identity:
@@ -1295,7 +1293,7 @@ class ModuleAnnotationEvaluationMode(StrEnum):
         return self is self.EAGER
 
 
-class EagerNameLoadCollector(ast.NodeVisitor):
+class EagerNameLoadCollector(FunctionDefaultVisitor):
     """Collect name loads evaluated while a syntax tree is declared."""
 
     def __init__(
@@ -1333,9 +1331,6 @@ class EagerNameLoadCollector(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_function_header(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self.visit_argument_defaults(node.args)
-
     def visit_function_header(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1369,11 +1364,6 @@ class EagerNameLoadCollector(ast.NodeVisitor):
             self.visit(arguments.vararg.annotation)
         if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
             self.visit(arguments.kwarg.annotation)
-
-    def visit_argument_defaults(self, arguments: ast.arguments) -> None:
-        for default in (*arguments.defaults, *arguments.kw_defaults):
-            if default is not None:
-                self.visit(default)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self.visit(node.target)
@@ -3633,8 +3623,6 @@ def _dynamic_method_injection_observations(
                 )
             )
     return sorted_tuple(observations, key=lambda item: item.line)
-
-
 
 
 def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:

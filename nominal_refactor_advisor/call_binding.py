@@ -14,6 +14,10 @@ from typing import (
 )
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .lexical_bindings import (
+    CompactParameterKind as CompactParameterKind,
+    FunctionParameterSource,
+)
 from .value_expression import (
     CompactValueExpression as CompactValueExpression,
     LexicalValueReference as LexicalValueReference,
@@ -22,42 +26,6 @@ from .value_expression import (
 from .value_graph import DataclassGraphValue
 
 CallValueT = TypeVar("CallValueT")
-
-
-class CompactParameterKind(StrEnum):
-    """Python parameter kinds with their binding behavior on each member."""
-
-    POSITIONAL_ONLY = "positional_only", True, False, False
-    POSITIONAL_OR_KEYWORD = "positional_or_keyword", True, True, False
-    VAR_POSITIONAL = "var_positional", True, False, True
-    KEYWORD_ONLY = "keyword_only", False, True, False
-    VAR_KEYWORD = "var_keyword", False, True, True
-
-    def __new__(
-        cls,
-        value: str,
-        accepts_positional: bool,
-        accepts_keyword: bool,
-        variadic: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._accepts_positional = accepts_positional
-        member._accepts_keyword = accepts_keyword
-        member._variadic = variadic
-        return member
-
-    @property
-    def accepts_positional(self) -> bool:
-        return self._accepts_positional
-
-    @property
-    def accepts_keyword(self) -> bool:
-        return self._accepts_keyword
-
-    @property
-    def variadic(self) -> bool:
-        return self._variadic
 
 
 class CompactCallBindingViolation(StrEnum):
@@ -97,21 +65,15 @@ class CompactFunctionParameter:
     annotation_expression: str | None = None
 
     @classmethod
-    def from_argument(
-        cls,
-        argument: ast.arg,
-        kind: CompactParameterKind,
-        *,
-        has_default: bool = False,
-    ) -> Self:
+    def from_source(cls, source: FunctionParameterSource) -> Self:
         return cls(
-            name=argument.arg,
-            kind=kind,
-            has_default=has_default,
+            name=source.argument.arg,
+            kind=source.kind,
+            has_default=source.default is not None,
             annotation_expression=(
                 None
-                if argument.annotation is None
-                else ast.unparse(argument.annotation)
+                if source.argument.annotation is None
+                else ast.unparse(source.argument.annotation)
             ),
         )
 
@@ -219,47 +181,12 @@ class CompactFunctionSignature:
 
     @classmethod
     def from_arguments(cls, arguments: ast.arguments) -> Self:
-        positional = (*arguments.posonlyargs, *arguments.args)
-        positional_default_start = len(positional) - len(arguments.defaults)
-        parameters = [
-            CompactFunctionParameter.from_argument(
-                argument,
-                (
-                    CompactParameterKind.POSITIONAL_ONLY
-                    if index < len(arguments.posonlyargs)
-                    else CompactParameterKind.POSITIONAL_OR_KEYWORD
-                ),
-                has_default=index >= positional_default_start,
-            )
-            for index, argument in enumerate(positional)
-        ]
-        if arguments.vararg is not None:
-            parameters.append(
-                CompactFunctionParameter.from_argument(
-                    arguments.vararg,
-                    CompactParameterKind.VAR_POSITIONAL,
-                )
-            )
-        parameters.extend(
-            CompactFunctionParameter.from_argument(
-                argument,
-                CompactParameterKind.KEYWORD_ONLY,
-                has_default=default is not None,
-            )
-            for argument, default in zip(
-                arguments.kwonlyargs,
-                arguments.kw_defaults,
-                strict=True,
+        return cls(
+            tuple(
+                CompactFunctionParameter.from_source(source)
+                for source in FunctionParameterSource.from_arguments(arguments)
             )
         )
-        if arguments.kwarg is not None:
-            parameters.append(
-                CompactFunctionParameter.from_argument(
-                    arguments.kwarg,
-                    CompactParameterKind.VAR_KEYWORD,
-                )
-            )
-        return cls(tuple(parameters))
 
     def without_leading_parameters(self, count: int) -> Self:
         return type(self)(self.parameters[count:])

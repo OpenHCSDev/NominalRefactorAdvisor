@@ -7,7 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .ast_tools import statements_without_docstring
-from .call_binding import CompactFunctionSignature, CompactParameterKind
+from .call_binding import CompactFunctionSignature
+from .lexical_bindings import CompactParameterKind
 from .native_declarations import NativeDeclaration
 
 

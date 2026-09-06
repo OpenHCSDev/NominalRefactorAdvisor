@@ -36,12 +36,13 @@ from .call_binding import (
     CompactFunctionParameter as CompactFunctionParameter,
     CompactFunctionSignature as CompactFunctionSignature,
     CompactKeywordArgument as CompactKeywordArgument,
-    CompactParameterKind as CompactParameterKind,
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
+    CompactParameterKind as CompactParameterKind,
+    FunctionDefaultVisitor,
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
@@ -2275,7 +2276,7 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
         )
 
 
-class _CompactFlowCollector(ast.NodeVisitor):
+class _CompactFlowCollector(FunctionDefaultVisitor):
     """Collect one source scope without descending into nested scope bodies."""
 
     def _capture_result(
@@ -2618,9 +2619,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
     ) -> None:
         for decorator in node.decorator_list:
             self.visit(decorator)
-        for default in (*node.args.defaults, *node.args.kw_defaults):
-            if default is not None:
-                self.visit(default)
+        self.visit_argument_defaults(node.args)
         for annotation in (
             *(argument.annotation for argument in node.args.posonlyargs),
             *(argument.annotation for argument in node.args.args),

@@ -32,6 +32,7 @@ from .lexical_scopes import (
     TypeParameterScope,
 )
 from .lexical_bindings import (
+    FunctionDefaultVisitor,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ScopeBindingCollector,
@@ -50,7 +51,8 @@ def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
         *(node.attr for node in nodes if isinstance(node, ast.Attribute)),
         *(node.arg for node in nodes if isinstance(node, ast.arg)),
         *(
-            node.name for node in nodes
+            node.name
+            for node in nodes
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         ),
     )
@@ -77,7 +79,9 @@ class ClassScopeDependency(StrEnum):
     predicate: Callable[[tuple[ast.AST, ...]], bool]
 
     def __new__(
-        cls, value: str, predicate: Callable[[tuple[ast.AST, ...]], bool],
+        cls,
+        value: str,
+        predicate: Callable[[tuple[ast.AST, ...]], bool],
     ) -> "ClassScopeDependency":
         member = str.__new__(cls, value)
         member._value_ = value
@@ -255,7 +259,9 @@ class ModuleLexicalDependencyProjection:
         if node.decorator_list or node.keywords or _type_parameter_names(node):
             raise ValueError("class scope header contains unrepresented declarations")
         if any(isinstance(statement, ast.AnnAssign) for statement in node.body):
-            raise ValueError("class scope contains annotations not carried by the declaration")
+            raise ValueError(
+                "class scope contains annotations not carried by the declaration"
+            )
         dependencies = ClassScopeDependency.from_node(node)
         if dependencies:
             raise ValueError(f"class scope dependencies: {', '.join(dependencies)}")
@@ -263,7 +269,8 @@ class ModuleLexicalDependencyProjection:
         flattened = cls.from_module(ast.Module(body=node.body, type_ignores=[]))
         original_references = frozenset(original.external_name_references)
         exposed = tuple(
-            reference for reference in flattened.external_name_references
+            reference
+            for reference in flattened.external_name_references
             if reference not in original_references
         )
         if exposed:
@@ -362,12 +369,14 @@ class FunctionBindingABC(ABC):
             raise ValueError(f"Binding {self.binding_name!r} has additional bindings")
         original_external = frozenset(self.external_references(self.node))
         return tuple(
-            reference for reference in self.external_references(without_binding)
+            reference
+            for reference in self.external_references(without_binding)
             if reference not in original_external
         )
 
     def external_references(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef,
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> tuple[ast.Name, ...]:
         return ModuleLexicalDependencyProjection.from_module(
             ast.Module(body=[node], type_ignores=[]),
@@ -442,7 +451,7 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
-class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
+class _DeclarationDependencyCollector(FunctionDefaultVisitor, LexicalScopeContext):
     """Resolve names against the lexical scopes carried by moved declarations."""
 
     def __init__(self) -> None:
@@ -486,7 +495,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
         self._visit_function(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_argument_defaults(node.args)
+        super().visit_Lambda(node)
         with self._scope(FunctionBindingProjection.from_function(node)):
             with self._binding_phase(ModuleBindingResolutionPhase.FINAL_MODULE):
                 self.visit(node.body)
@@ -567,7 +576,7 @@ class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
     ) -> None:
         for decorator in node.decorator_list:
             self.visit(decorator)
-        self._visit_argument_defaults(node.args)
+        self.visit_argument_defaults(node.args)
         with self._type_parameter_scope(node):
             self._visit_type_parameters(node)
             self._visit_argument_annotations(node.args)
@@ -590,11 +599,6 @@ class _DeclarationDependencyCollector(ast.NodeVisitor, LexicalScopeContext):
             with self._scope(ClassNamespaceScope(node=node)):
                 self._visit_nodes(node.body)
         self._record_class_binding((node.name,), LexicalNameResolution.INTERNAL)
-
-    def _visit_argument_defaults(self, arguments: ast.arguments) -> None:
-        for default in (*arguments.defaults, *arguments.kw_defaults):
-            if default is not None:
-                self.visit(default)
 
     def _visit_argument_annotations(self, arguments: ast.arguments) -> None:
         for argument in (

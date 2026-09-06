@@ -9,10 +9,103 @@ from abc import (
 )
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from functools import cached_property
+from typing import Self
 
 from .assignment_projection import AssignmentTargetNameProjection
 from .python_module_identity import PythonModulePathIdentity
+
+
+class CompactParameterKind(StrEnum):
+    """Python parameter kinds with their binding behavior on each member."""
+
+    POSITIONAL_ONLY = "positional_only", True, False, False
+    POSITIONAL_OR_KEYWORD = "positional_or_keyword", True, True, False
+    VAR_POSITIONAL = "var_positional", True, False, True
+    KEYWORD_ONLY = "keyword_only", False, True, False
+    VAR_KEYWORD = "var_keyword", False, True, True
+
+    def __new__(
+        cls,
+        value: str,
+        accepts_positional: bool,
+        accepts_keyword: bool,
+        variadic: bool,
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._accepts_positional = accepts_positional
+        member._accepts_keyword = accepts_keyword
+        member._variadic = variadic
+        return member
+
+    @property
+    def accepts_positional(self) -> bool:
+        return self._accepts_positional
+
+    @property
+    def accepts_keyword(self) -> bool:
+        return self._accepts_keyword
+
+    @property
+    def variadic(self) -> bool:
+        return self._variadic
+
+
+@dataclass(frozen=True)
+class FunctionParameterSource:
+    """Actual argument/default nodes in signature order, not execution evidence."""
+
+    argument: ast.arg
+    kind: CompactParameterKind
+    default: ast.expr | None = None
+
+    @classmethod
+    def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:
+        positional = (*arguments.posonlyargs, *arguments.args)
+        defaults = (None,) * (len(positional) - len(arguments.defaults)) + tuple(
+            arguments.defaults
+        )
+        parameters = [
+            cls(
+                argument,
+                (
+                    CompactParameterKind.POSITIONAL_ONLY
+                    if index < len(arguments.posonlyargs)
+                    else CompactParameterKind.POSITIONAL_OR_KEYWORD
+                ),
+                default,
+            )
+            for index, (argument, default) in enumerate(
+                zip(positional, defaults, strict=True)
+            )
+        ]
+        if arguments.vararg is not None:
+            parameters.append(
+                cls(arguments.vararg, CompactParameterKind.VAR_POSITIONAL)
+            )
+        parameters.extend(
+            cls(argument, CompactParameterKind.KEYWORD_ONLY, default)
+            for argument, default in zip(
+                arguments.kwonlyargs, arguments.kw_defaults, strict=True
+            )
+        )
+        if arguments.kwarg is not None:
+            parameters.append(cls(arguments.kwarg, CompactParameterKind.VAR_KEYWORD))
+        return tuple(parameters)
+
+
+class FunctionDefaultVisitor(ast.NodeVisitor):
+    """Visit defaults when a function is created, without entering its lambda body."""
+
+    def visit_argument_defaults(self, arguments: ast.arguments) -> None:
+        for default in (*arguments.defaults, *arguments.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit_argument_defaults(node.args)
 
 
 @dataclass(frozen=True)
