@@ -9,7 +9,10 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
-from nominal_refactor_advisor.product_flow import compact_product_flow_projection
+from nominal_refactor_advisor.product_flow import (
+    LexicalValueReference,
+    compact_product_flow_projection,
+)
 from nominal_refactor_advisor.product_flow_authority import CompactProductFlowRepository
 
 
@@ -144,3 +147,71 @@ def test_capture_does_not_survive_as_the_binding_for_a_later_call() -> None:
     assert first.declaration is not None
     assert first.declaration.identity.symbol == "capture.original"
     assert second.declaration is None
+
+
+@pytest.mark.parametrize(
+    "expression,receivers",
+    (
+        ("selected()", ()),
+        ("selected.__call__()", (LexicalValueReference("selected"),)),
+        (
+            "owner.child.execute()",
+            (
+                LexicalValueReference("owner"),
+                LexicalValueReference("owner", ("child",)),
+            ),
+        ),
+        ("factory().execute()", ()),
+    ),
+)
+def test_call_retains_receiver_reads_without_marking_direct_target_as_escaped(
+    expression: str, receivers: tuple[LexicalValueReference, ...]
+) -> None:
+    repository = repository_for(f"def run():\n    return {expression}\n")
+    flow = repository.flow_contexts_by_owner_symbol["capture.run"].flow
+    assert (
+        tuple(use.target.lexical_reference for use in flow.callable_reference_uses)
+        == receivers
+    )
+    assert all(
+        use.position.dominates(flow.calls[-1].target_use.position)
+        for use in flow.callable_reference_uses
+    )
+    if expression == "factory().execute()":
+        assert flow.calls[0].position.dominates(flow.calls[1].target_use.position)
+
+
+def test_receiver_property_is_evaluated_before_argument_call() -> None:
+    source = (
+        "events = []\n"
+        "class Owner:\n"
+        "    @property\n"
+        "    def child(self):\n"
+        "        events.append('receiver')\n"
+        "        return self\n"
+        "    def execute(self, value):\n"
+        "        events.append('invoke')\n"
+        "        return value\n"
+        "def argument():\n"
+        "    events.append('argument')\n"
+        "    return 7\n"
+        "def run(owner):\n"
+        "    return owner.child.execute(argument())\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["run"](namespace["Owner"]()) == 7
+    assert namespace["events"] == ["receiver", "argument", "invoke"]
+    flow = repository_for(source).flow_contexts_by_owner_symbol["capture.run"].flow
+    assert tuple(
+        use.target.lexical_reference for use in flow.callable_reference_uses
+    ) == (
+        LexicalValueReference("owner"),
+        LexicalValueReference("owner", ("child",)),
+    )
+    owner_use, child_use = flow.callable_reference_uses
+    inner, outer = flow.calls
+    assert owner_use.position.dominates(child_use.position)
+    assert child_use.position.dominates(outer.target_use.position)
+    assert outer.target_use.position.dominates(inner.target_use.position)
+    assert inner.position.dominates(outer.position)

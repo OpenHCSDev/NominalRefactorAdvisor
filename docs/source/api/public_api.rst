@@ -252,6 +252,14 @@ unresolved. The :download:`call target capture refactor
 <../../examples/call_target_capture.py>` applies this distinction through the DSL.
 This timing fact does not establish descriptor side effects or receiver lifetime.
 
+Attribute call targets retain each lexical receiver read before target capture:
+``owner.child.execute()`` records ``owner`` and ``owner.child``. The terminal
+``execute`` lookup belongs to the call, rather than an additional non-call use.
+Consequently ``function.__call__()`` retains the function-object use required
+by callable-escape checks. Bare calls do not create such an escape. The
+:download:`receiver capture refactor <../../examples/call_receiver_capture.py>`
+applies this collector rule through the DSL.
+
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``
 resolves at that position. Opaque expressions return an explicit

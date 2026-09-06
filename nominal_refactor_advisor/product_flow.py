@@ -798,7 +798,6 @@ class OpenCompactBindingMutation(CompactBindingMutationResolution):
 class CompactValueOriginViolation(StrEnum):
     """Reason one lexical value lacks a single unchanged local origin."""
 
-    CONTROL_FLOW_JOIN = "control_flow_join"
     INTERVENING_REBINDING = "intervening_rebinding"
     AMBIGUOUS_BINDING = "ambiguous_binding"
     CYCLIC_ALIAS = "cyclic_alias"
@@ -1655,12 +1654,11 @@ class _CompactFlowCollector(ast.NodeVisitor):
         )
 
     def _visit_call_target_evaluation(self, expression: ast.expr) -> None:
-        if LexicalValueReference.from_expression(expression) is not None:
-            return
+        """Retain receiver reads; the call itself owns its terminal lookup."""
         if isinstance(expression, ast.Attribute):
             self.visit(expression.value)
-            return
-        self.visit(expression)
+        elif not isinstance(expression, ast.Name):
+            self.visit(expression)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         reference = LexicalValueReference.from_expression(node)

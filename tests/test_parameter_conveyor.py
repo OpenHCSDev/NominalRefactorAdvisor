@@ -951,6 +951,27 @@ def test_callable_escape_blocks_the_whole_component() -> None:
     assert builder.proven_components() == ()
 
 
+@pytest.mark.parametrize("callee", ("_build.__call__", "_build.__call__.__call__"))
+def test_callable_used_as_attribute_receiver_blocks_signature_collapse(
+    callee: str,
+) -> None:
+    module = _module(
+        "pkg.receiver_escape",
+        _base_source()
+        + f"\ndef invoke(left, right):\n    return {callee}(left, right)\n",
+    )
+    namespace = {"__name__": module.module_name}
+    exec(compile(module.source, module.file_path, "exec", dont_inherit=True), namespace)
+    assert namespace["invoke"](1, 2) == (1, 2)
+    builder = _builder(module)
+    assert builder.repository.callable_escapes_for("pkg.receiver_escape._build")
+    assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
+        builder.assessed_components()[0].proof.violations
+    )
+    assert builder.proven_components() == ()
+    assert ClosedParameterConveyorDetector().detect([module], DetectorConfig()) == []
+
+
 def test_public_participant_is_not_treated_as_a_closed_repository_boundary() -> None:
     builder = _builder(
         _module(

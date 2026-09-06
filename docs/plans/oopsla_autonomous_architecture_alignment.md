@@ -1521,3 +1521,50 @@ effect evidence before the instance-selected `replacements_for` call can be
 authorised. The origin diagnostic taxonomy also retains an unused
 `CONTROL_FLOW_JOIN` member after moving selection to the shared resolver; it
 can be consolidated with the next binding-proof audit.
+
+## Call receiver evidence before instance-lifetime proof (2026-09-06)
+
+The receiver audit reproduced a broken automatic rewrite. Adding an ordinary
+`_build.__call__(left, right)` caller to a closed-conveyor fixture still produced
+a proven component. The resulting signature collapse left that caller unchanged:
+real Python execution returned `(1, 2)` before the rewrite and raised `TypeError`
+afterwards. No callable escape was recorded for `_build`.
+
+The shared collector skipped evaluation of every lexical callee chain, dropping
+its receiver reads along with the terminal call target. It now visits the
+receiver of an attribute call and lets the existing call fact own the terminal
+lookup. Bare names remain direct calls without additional non-call escapes;
+dynamic receiver expressions retain their normal evaluation. No callable-name
+inventory, consumer-specific exception or second escape registry was added.
+
+Seven new cases cover receiver-prefix order, bare and dynamic targets, real
+property-before-argument execution, and signature-collapse rejection for direct
+and chained `__call__` access. Five failed before the collector correction.
+The 130-case focused run passes. The actual NRA bootstrap caller now retains
+`authority` and `authority.geometry` reads before selecting `physical_edits`,
+followed by the receiver read for `replacements_for` inside its arguments.
+
+The two-stage `docs/examples/call_receiver_capture.py` plan was simulated and
+applied through the CLI. Full-module AST replay from `40bf222` matches the
+current implementation. Its second stage removes the unused `CONTROL_FLOW_JOIN`
+origin result left by the preceding shared-binding refactor. Receipts use
+`/tmp/nra-receiver-capture-*`.
+
+Full suites pass 2,407 tests with 15 skipped on Python 3.11 and 2,422 tests on
+Python 3.14, with eight workers each (215/216 seconds). Python 3.14 retains the
+96 existing fork/thread warnings. All 81 detectors complete the touched-module
+audit with zero findings. Ruff, whitespace checks and Sphinx pass; Sphinx retains
+its two existing duplicate-description warnings.
+
+A four-module probe retains the same 1,032 calls and adds 512 receiver reads
+(4,446 to 4,958). Serialised projection size grows from 1,056,911 to 1,100,675
+bytes. Ten alternating collector runs during the full suites have medians
+0.156/0.207 seconds, with minima 0.117/0.121 seconds. This is added evidence,
+not a demonstrated throughput improvement; concurrent-load timing is insufficient
+to isolate its cost. The existing collector still projects lexical call targets
+more than once, a potential subsequent factoring/performance investigation.
+
+Receiver reads establish evaluation evidence, not getter purity or receiver
+lifetime. The next proof boundary remains constructor results, native-MRO
+lookup hooks, intervening effects and escapes. A source declaration or return
+annotation alone cannot authorise an instance-selected rewrite.

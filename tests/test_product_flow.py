@@ -78,7 +78,7 @@ def _value(name: str) -> LexicalValueReference:
             "saved = [result, unknown]",
             (LexicalValueReference("result"), LexicalValueReference("unknown")),
         ),
-        ("result.execute()", ()),
+        ("result.execute()", (LexicalValueReference("result"),)),
         ("result.callback = replacement", (LexicalValueReference("replacement"),)),
     ),
 )
