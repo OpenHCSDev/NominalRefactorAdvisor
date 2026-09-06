@@ -232,6 +232,16 @@ Descriptor transfers across classes or through attribute access remain open
 where receiver binding has not been established. Callable identity alone does
 not prove that the original call signature applies to such transfers.
 
+``CompactFunctionCall.target_use`` retains a ``CompactCallableReferenceUse``
+at the callable's evaluation event, before argument evaluation.
+``CompactFunctionCall.position`` identifies invocation after the arguments.
+The reference-use contract resolves both call targets and non-call references
+at their captured positions. Rebinding a callable name inside an argument does
+not change the selected target; an unbound local at target evaluation remains
+unresolved. The :download:`call target capture refactor
+<../../examples/call_target_capture.py>` applies this distinction through the DSL.
+This timing fact does not establish descriptor side effects or receiver lifetime.
+
 ``ResolvedCompactFunctionTarget`` retains ``CompactDescriptorAccess`` alongside
 the declaration. Direct descriptor access, class lookup and instance lookup
 select their implicit-argument rules from ``CompactFunctionBindingKind``.

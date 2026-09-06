@@ -768,23 +768,14 @@ class CompactProductFlowRepository(
         context: CompactProductFlowContext,
         call: CompactFunctionCall,
     ) -> CompactFunctionCallResolution:
-        target_resolution = self.resolve_function_target(
-            context,
-            call.target,
-            call.position,
-        )
-        return target_resolution.resolve_call(context, call)
+        return call.target_use.resolve(self, context).resolve_call(context, call)
 
     def resolve_callable_escape(
         self,
         context: CompactProductFlowContext,
         use: CompactCallableReferenceUse,
     ) -> CompactResolvedCallableEscape | None:
-        declaration = self.resolve_function_target(
-            context,
-            use.target,
-            use.position,
-        ).declaration
+        declaration = use.resolve(self, context).declaration
         if declaration is None:
             return None
         return CompactResolvedCallableEscape(context, use, declaration)
@@ -928,9 +919,9 @@ class CompactProductFlowRepository(
         context: CompactProductFlowContext,
         call: CompactFunctionCall,
     ) -> CompactResolvedProductConstruction | None:
-        return self.resolve_function_target(
-            context, call.target, call.position
-        ).resolve_construction(self, context, call)
+        return call.target_use.resolve(self, context).resolve_construction(
+            self, context, call
+        )
 
     def incoming_calls_for(
         self,

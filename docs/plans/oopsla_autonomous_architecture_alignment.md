@@ -1351,3 +1351,57 @@ Full validation passes 2,381 tests with 15 skipped on Python 3.11 and 2,396
 tests on Python 3.14, with eight workers per suite. Python 3.14 retains the
 existing 96 fork/thread lifecycle warnings. Ruff and the whitespace check pass.
 Receiver-lifetime proof remains the next implementation task.
+
+## Callable capture precedes argument evaluation (2026-09-06)
+
+Tracing receiver lifetime exposed a timing gap in the shared flow facts.
+Python captures the callable before evaluating arguments. NRA retained only
+the later invocation position, so `selected((selected := replacement))`
+discarded a known original target. Runtime comparison reproduced this for
+positional, keyword, unpacked and nested-call arguments. The previous answer
+was unresolved, not a falsely exact replacement target.
+
+Each call now owns a `CompactCallableReferenceUse` captured before arguments.
+Its `target` view derives from that fact through `AliasProperty`; invocation
+keeps its existing later position. The reference-use contract owns positioned
+resolution for calls, constructors and callable escapes. The collector shares
+one fact factory and does not record direct call targets as non-call escapes.
+No second target identity, lookup timestamp rule or dispatch registry is kept.
+
+The nine regressions compare against executing Python, retain use-before-local-
+binding as unresolved, distinguish nested-call ordering and reject reuse of
+a captured callable as the later local binding. The constructor case uses a
+local import: an ordinary class-object alias remains excluded by the existing
+class-escape gate. Selecting that class's source declaration alone does not
+discharge its runtime product-authority requirements.
+
+The ten-stage `docs/examples/call_target_capture.py` plan was simulated and
+applied through the real CLI. Replaying it from `33f71fa` reproduces both
+complete edited module ASTs. All 81 detectors completed the touched-source
+audit with zero findings. Sphinx built the API reference with its two existing
+duplicate-description warnings. Receipts use `/tmp/nra-call-capture-*`.
+
+A four-module collector comparison retained the same 3,497 calls. Seven-run
+median collection times were 0.780 seconds before and 0.835 seconds after;
+serialized facts grew from 2,835,886 to 3,052,134 bytes. These were sequential
+measurements under concurrent test load, not an isolated throughput benchmark.
+The extra captured event costs space and collection work; this change is a
+correctness prerequisite, not a performance improvement.
+
+Receiver lifetime still requires source evidence for construction hooks,
+attribute/descriptor evaluation, intervening effects and escapes. In
+particular, the real bootstrap caller evaluates `authority.geometry` before
+the nested `authority.replacements_for(...)` call. The collector currently
+does not retain getter effects for a lexical attribute-chain callee. Individual
+argument origins also still use invocation timing. Neither gap is proved away
+by the new target-capture fact.
+
+A read-only runtime probe confirmed the corresponding argument gap:
+`consume(selected, (selected := None))` retains the original first argument,
+while the current argument-origin projection reports an ambiguous binding.
+This is another conservative loss of evidence, not an exact wrong origin.
+
+Full validation passed 2,390 tests with 15 skipped on Python 3.11 and 2,405
+tests on Python 3.14, using eight workers per suite. Python 3.14 retains the
+existing 96 fork/thread warnings. Both suites completed in about 217 seconds.
+Ruff and the whitespace check pass; the unrelated `uv.lock` remains excluded.

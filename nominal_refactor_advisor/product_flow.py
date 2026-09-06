@@ -38,6 +38,7 @@ from .call_binding import (
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
+from .descriptor_algebra import AliasProperty
 from .lexical_bindings import ImportBoundNameProjection
 from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import SourceByteSpan
@@ -907,14 +908,24 @@ class CompactCallableReferenceUse:
     position: CompactFlowPosition
     line: int
 
+    def resolve(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        """Resolve the reference at its evaluation event."""
+        return self.target.resolve(resolver, context, self.position)
+
 
 @dataclass(frozen=True)
 class CompactFunctionCall:
-    target: CompactCallTargetReference
+    target_use: CompactCallableReferenceUse
     arguments: CompactCallArguments
     result: CompactCallResult
     position: CompactFlowPosition
     source_span: SourceByteSpan
+
+    target = AliasProperty[CompactCallTargetReference]("target_use.target")
 
     @property
     def line(self) -> int:
@@ -1574,13 +1585,11 @@ class _CompactFlowCollector(ast.NodeVisitor):
             )
         return QualifiedCallTargetReference(reference)
 
-    def _record_callable_reference(self, node: ast.expr) -> None:
-        self.callable_reference_uses.append(
-            CompactCallableReferenceUse(
-                target=self._call_target(node),
-                position=self._position(),
-                line=node.lineno,
-            )
+    def _callable_reference_use(self, node: ast.expr) -> CompactCallableReferenceUse:
+        return CompactCallableReferenceUse(
+            target=self._call_target(node),
+            position=self._position(),
+            line=node.lineno,
         )
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -1588,6 +1597,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         if target_reference is not None:
             self.loaded_value_root_names.add(target_reference.root_name)
         self._visit_call_target_evaluation(node.func)
+        target_use = self._callable_reference_use(node.func)
         for argument in node.args:
             self.visit(
                 argument.value if isinstance(argument, ast.Starred) else argument
@@ -1600,7 +1610,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         )
         self.calls.append(
             CompactFunctionCall(
-                target=self._call_target(node.func),
+                target_use=target_use,
                 arguments=CompactCallArguments.from_call(node),
                 result=result,
                 position=self._position(),
@@ -1625,7 +1635,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.visit(node.value)
         if reference is not None:
             self.loaded_value_root_names.add(reference.root_name)
-            self._record_callable_reference(node)
+            self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Name(self, node: ast.Name) -> None:
         reference = LexicalValueReference(node.id)
@@ -1633,7 +1643,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self._record_mutation(reference, node)
         elif isinstance(node.ctx, ast.Load):
             self.loaded_value_root_names.add(node.id)
-            self._record_callable_reference(node)
+            self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) == 1 and isinstance(node.value, ast.Call):
