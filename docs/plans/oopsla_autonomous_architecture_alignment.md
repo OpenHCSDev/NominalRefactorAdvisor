@@ -2640,3 +2640,61 @@ code identity, native control-flow entry, unknown instructions, invalid operands
 unsupported compiler admission and absence of native objects from cached state.
 Full logs are `/var/tmp/nra-native-creation-final-{311,314}.log`. Sphinx succeeds
 with the two existing duplicate-description warnings; Black and Ruff are clean.
+
+### 2026-09-06: Recover source writes through the shared ordering relation
+
+The captured-object migration exposed a prerequisite in the existing compact
+binder: any possibly preceding conditional write permanently obscured a later
+unconditional overwrite. `CompactFunctionFlow` now selects a dominating write
+when every other potentially preceding write is proved to occur before it.
+The proof uses the existing `CompactFlowPosition` partial order, without a
+second branch interpreter or a native-specific exception. Value-origin and
+bound-call-result queries consume that same selection.
+
+The two-stage change is authored in `docs/examples/binding_overwrite_order.json`
+against `33fb9d8`. It recovers module, function and class-body source selections at
+actual read positions. Intervening writes, loop-carried uncertainty, unresolved
+finally completion and deferred closure alternatives stay open. Runtime object
+identity and activation are separate obligations; the fourteen pending native,
+definition-result and registry-integrity failures are not repaired by this step.
+
+The same proof also prevents an older dominating assignment from hiding a later
+loop, context-manager, conditional-expression, exception or match header binding.
+These header writes can lack a child-suite branch path. Six native controls
+demonstrate why dropping them from the obstacle set would restore stale-source
+claims. All potentially preceding writes remain obligations. The second DSL
+stage searches backwards for the candidate and short-circuits irrelevant
+obstacles, preserving the complete relation without constructing a predecessor
+tuple on every query.
+
+Forty-five focused regressions include native execution under both branch
+outcomes in module, function and class scopes, original-source/value-origin
+identity, bound-call-result reuse, and deliberately open iteration/finally
+boundaries. A 100-write microbenchmark decreases from approximately 84 to 43
+microseconds between the initial and lazy proof implementations; the old,
+incomplete baseline costs approximately 4.5 microseconds for that constructed
+case. On identical NRA facts (133 modules, 8,358 flows, 26,790 calls), complete
+call-source queries take 0.62-0.68 seconds before and after the change. These
+shared-host timings show no clear corpus-level regression and are not a speedup
+claim. Receipts are `/var/tmp/nra-overwrite-{lazy-cost,repository-cost}.jsonl`.
+
+The shared captured-value prototype passes eighteen compact-flow cases and
+twelve isolated native executions. Its migration investigation also identifies
+missing import/class activation receipts, deferred-expression phase errors,
+and differences between the old snapshot interpreter and compact binding
+selection. Those findings are implementation prerequisites, not additional
+heuristic detectors. The native subscription consumer must migrate alongside
+ordinary native reference lookup because both currently compare source names.
+Detailed integration notes remain in `/var/tmp/nra_captured_slot_handoff.md`,
+`/var/tmp/nra_nominal_binder_migration.md` and
+`/var/tmp/nra_activation_owner_integration.md`.
+
+Final source-frozen suites pass 2,764 cases with 34 skipped on Python 3.11,
+and 2,798 on Python 3.14. Both retain exactly the fourteen preceding integrity
+failure IDs; comparisons with the `33fb9d8` full-suite logs have empty diffs.
+Logs are `/var/tmp/nra-overwrite-final-full-{311,314}.log`. The actual CLI
+simulates both authored stages cleanly against the frozen baseline; API replay
+matches the integrated AST. The automatic-package-context audit completes all
+79 detectors with no omissions or findings. Black and Ruff pass, and Sphinx
+succeeds with the same two duplicate-description warnings. Diataxis keeps the
+supported selection rule in API reference and this rationale/evidence here.

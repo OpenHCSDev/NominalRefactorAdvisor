@@ -1393,6 +1393,7 @@ class CompactValueOriginViolation(StrEnum):
 
     OPAQUE_EXPRESSION = "opaque_expression"
 
+
 class CompactValueOriginResolution(ABC):
     """Nominal result of tracing one value through exact local aliases."""
 
@@ -1943,6 +1944,26 @@ class CompactFunctionFlow(DataclassGraphValue):
         root_name: str,
     ) -> CompactBindingSource | None:
         """Select a positioned write before materialising declaration entry evidence."""
+        if use_position is not None:
+            selected = next(
+                (
+                    mutation
+                    for mutation in reversed(mutations)
+                    if mutation.position.may_precede(use_position)
+                ),
+                None,
+            )
+            if (
+                selected is not None
+                and selected.position.dominates(use_position)
+                and all(
+                    other is selected
+                    or not selected.position.may_precede(other.position)
+                    or not other.position.may_precede(use_position)
+                    for other in mutations
+                )
+            ):
+                return ExactCompactBindingMutation(selected)
         if any(
             mutation.position.branch_path
             and (use_position is None or mutation.position.may_precede(use_position))
@@ -1951,10 +1972,6 @@ class CompactFunctionFlow(DataclassGraphValue):
             return OpenCompactBindingMutation(
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
-        if use_position is not None:
-            for mutation in reversed(mutations):
-                if mutation.position.dominates(use_position):
-                    return ExactCompactBindingMutation(mutation)
         initial_binding = self.owner.initial_binding_for(root_name)
         if not mutations:
             return initial_binding

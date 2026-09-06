@@ -70,11 +70,18 @@ unrelated class with the same terminal name does not establish a binding.
 ``CompactFunctionFlow.binding_resolution_for`` owns entry-binding and source-write
 selection for lexical and class-method lookup. Explicit use positions select
 the preceding write or the parameter's entry binding; deferred module and class
-namespace lookup uses the final write. Deferred closure lookup with multiple
+namespace lookup uses the final write when branch uncertainty is absent.
+Deferred closure lookup with multiple
 possible bindings remains unresolved, including an entry value followed by a
-write. Conditional writes that may precede the captured use also remain
-unresolved; proved future writes do not obscure an earlier value. Bound call-result queries use the same write
-selection. For an attribute result such as ``owner.child.result``, replacing
+write. At an explicit read position, a dominating write supersedes earlier
+conditional writes when the flow ordering proves they cannot occur after it.
+Intervening or repeating writes remain unresolved; proved future writes do not
+obscure an earlier value. Header bindings are included even when the write itself
+has no child-suite branch path. This source-selection rule does not establish call
+activation or native-object integrity. The :download:`authored overwrite fix
+<../../examples/binding_overwrite_order.json>` applies it through the DSL.
+Bound call-result queries use the same write selection. For an attribute result
+such as ``owner.child.result``, replacing
 ``owner`` or ``owner.child`` invalidates that result's provenance. Receiver
 writes also leave attribute results unproved: different lexical receiver names
 do not establish different objects, and attribute or item setters may affect

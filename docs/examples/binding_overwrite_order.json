@@ -1,0 +1,54 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        if any(\n            mutation.position.branch_path\n            and (use_position is None or mutation.position.may_precede(use_position))\n            for mutation in mutations\n        ):\n            return OpenCompactBindingMutation(\n                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING\n            )\n        if use_position is not None:\n            for mutation in reversed(mutations):\n                if mutation.position.dominates(use_position):\n                    return ExactCompactBindingMutation(mutation)\n",
+                  "new_source": "        if use_position is not None:\n            preceding = tuple(\n                mutation\n                for mutation in mutations\n                if mutation.position.may_precede(use_position)\n            )\n            if preceding:\n                selected = preceding[-1]\n                if selected.position.dominates(use_position) and all(\n                    other is selected\n                    or not selected.position.may_precede(other.position)\n                    for other in preceding\n                ):\n                    return ExactCompactBindingMutation(selected)\n        if any(\n            mutation.position.branch_path\n            and (use_position is None or mutation.position.may_precede(use_position))\n            for mutation in mutations\n        ):\n            return OpenCompactBindingMutation(\n                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING\n            )\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow._binding_resolution_for_mutations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            preceding = tuple(\n                mutation\n                for mutation in mutations\n                if mutation.position.may_precede(use_position)\n            )\n            if preceding:\n                selected = preceding[-1]\n                if selected.position.dominates(use_position) and all(\n                    other is selected\n                    or not selected.position.may_precede(other.position)\n                    for other in preceding\n                ):\n                    return ExactCompactBindingMutation(selected)\n",
+                  "new_source": "            selected = next(\n                (\n                    mutation\n                    for mutation in reversed(mutations)\n                    if mutation.position.may_precede(use_position)\n                ),\n                None,\n            )\n            if (\n                selected is not None\n                and selected.position.dominates(use_position)\n                and all(\n                    other is selected\n                    or not selected.position.may_precede(other.position)\n                    or not other.position.may_precede(use_position)\n                    for other in mutations\n                )\n            ):\n                return ExactCompactBindingMutation(selected)\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow._binding_resolution_for_mutations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}
