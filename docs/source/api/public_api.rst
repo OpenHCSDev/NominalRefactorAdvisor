@@ -772,9 +772,17 @@ assignment or annotation-only field binding one name. Imports and multi-member
 blocks are not member declarations for this operation.
 
 Coalescing retains the supplied member order within each destination class.
+For a multiline class, the insertion point is before its current first method,
+after any preceding assignments. With no methods it is at the end of the body;
+an inline suite is expanded and the members follow its existing statements.
+``CodemodPlanSequence.from_operations`` creates a separate document per
+operation, so each stage recalculates this position. Stage order therefore does
+not determine the final order of class-body statements. A single document
+coalesces its member insertions at one position in their supplied order.
 Identical insertions for one name merge; conflicting sources or collisions with
 existing direct members fail. Inherited members may be overridden. The operation
 does not establish behavioural equivalence of a new or overriding member.
+See :ref:`adding-cohesive-class-members` for a method and alias inserted together.
 ``EnumKeyedQueryMemberInsertion`` owns canonical name ordering for the separate,
 source-proved generated enum-query family, allowing independent query recipes
 to compose to identical source. Authored insertions do not use that policy.

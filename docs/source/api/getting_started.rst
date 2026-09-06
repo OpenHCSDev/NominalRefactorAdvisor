@@ -184,6 +184,46 @@ relation without copying source spans or resorting to a textual patch.
      "selection_count": {"exact": 1}
    }
 
+.. _adding-cohesive-class-members:
+
+Adding a Method and Its Alias Together
+--------------------------------------
+
+To make an alias capture a new class method, put both insertions in one
+``CodemodPlanDocument``, with the method first. For a file containing a
+``Visitor`` class, this example inserts ``visit`` and ``visit_alias`` together,
+then changes the new method's return value in a second stage:
+
+.. literalinclude:: ../../examples/cohesive_class_members.py
+   :language: python
+   :start-at: def build_plan
+   :end-before: if __name__
+
+Download the :download:`complete example <../../examples/cohesive_class_members.py>`
+and preview it against your file:
+
+.. code-block:: bash
+
+   python cohesive_class_members.py package/visitor.py | \
+     nominal-refactor-advisor package/visitor.py --codemod-plan - --codemod-simulate
+
+Review the diff, apply with ``--codemod-apply``, and test the resulting class:
+
+.. code-block:: python
+
+   assert Visitor.visit_alias is Visitor.visit
+   assert Visitor().visit_alias() == "updated"
+
+Keep the dependent insertions together. Passing them separately to
+``CodemodPlanSequence.from_operations`` recalculates the insertion point before
+the current first method at each stage; the alias can end up above its method
+and capture a same-named global instead. Simulation does not execute the class.
+
+If the method already exists, ``InsertAfterTargetOperation`` can anchor the
+alias directly after it. Supply the class indentation in that operation's
+``source``, for example ``"    visit_alias = visit"`` for a four-space class
+body, and target ``Visitor.visit``.
+
 Extracting Methods into an Ancestor
 -----------------------------------
 
