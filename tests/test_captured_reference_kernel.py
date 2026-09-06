@@ -2,12 +2,12 @@
 
 import ast
 import builtins
-from contextlib import contextmanager
-from dataclasses import dataclass
 import math
-from pathlib import Path
 import subprocess
 import sys
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -18,6 +18,7 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceEffectsABC,
     CapturedReferenceKernel,
     CapturedReferenceViolation,
+    InitialNativeFrame,
     InitialNativeIsland,
     OpenCapturedReference,
 )
@@ -41,10 +42,11 @@ class FixtureEffects(CapturedReferenceEffectsABC):
 
     module: ParsedModule
     context: CompactFlowContext
+    frame: InitialNativeFrame
 
-    def failure_for(
+    def admit(
         self, context: CompactFlowContext, position: CompactFlowPosition
-    ) -> OpenCapturedReference | None:
+    ) -> InitialNativeFrame | OpenCapturedReference:
         if context is not self.context:
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
         statement = (
@@ -115,7 +117,7 @@ class FixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return None
+        return self.frame
 
 
 def _fixture(source):
@@ -128,10 +130,16 @@ def _fixture(source):
     )
     projection = compact_product_flow_projection(module)
     context = projection.flow_contexts[0]
-    effects = FixtureEffects(module, context)
-    kernel = CapturedReferenceKernel(
-        InitialNativeIsland((builtins, math), builtins), effects
+    globals_storage = {}
+    island = InitialNativeIsland((builtins, math), (globals_storage,))
+    globals_namespace = island.namespace_for_storage(globals_storage)
+    frame = InitialNativeFrame(
+        globals_namespace,
+        globals_namespace,
+        island.namespace_for_storage(vars(builtins)),
     )
+    effects = FixtureEffects(module, context, frame)
+    kernel = CapturedReferenceKernel(island, effects)
     result = next(
         node
         for node in module.module.body
@@ -278,25 +286,25 @@ def test_effect_authority_has_no_default_or_cross_context_admission():
         CapturedReferenceEffectsABC()
     kernel, read, _ = _fixture("result = property\n")
     _, other, _ = _fixture("result = property\n")
-    assert kernel.effects.failure_for(read.context, read.use.position) is None
+    assert kernel.effects.admit(read.context, read.use.position) is kernel.effects.frame
     assert (
-        kernel.effects.failure_for(other.context, other.use.position).violation
+        kernel.effects.admit(other.context, other.use.position).violation
         is CapturedReferenceViolation.UNPROVED_EFFECTS
     )
 
 
-def test_initial_island_requires_plain_native_modules_and_real_builtin_membership():
+def test_initial_island_requires_plain_native_modules_and_admitted_storage():
     class CustomModule(type(builtins)):
         pass
 
     with pytest.raises(TypeError, match="plain native"):
-        InitialNativeIsland((CustomModule("custom"),), builtins)
-    with pytest.raises(ValueError, match="builtin module"):
-        InitialNativeIsland((math,), builtins)
+        InitialNativeIsland((CustomModule("custom"),))
+    with pytest.raises(ValueError, match="not admitted"):
+        InitialNativeIsland((math,)).namespace_for_storage(vars(builtins))
     with pytest.raises(ValueError, match="objects must be unique"):
-        InitialNativeIsland((builtins, builtins), builtins)
+        InitialNativeIsland((builtins, builtins))
     assert (
-        InitialNativeIsland((builtins,), builtins).module("missing").violation
+        InitialNativeIsland((builtins,)).module("missing").violation
         is CapturedReferenceViolation.UNADMITTED_IMPORT
     )
 
@@ -353,8 +361,9 @@ class PlainModuleFixtureEffects(CapturedReferenceEffectsABC):
 
     module: ParsedModule
     context: CompactFlowContext
+    frame: InitialNativeFrame
 
-    def failure_for(self, context, position):
+    def admit(self, context, position):
         allowed = {
             ast.Module,
             ast.Import,
@@ -377,7 +386,7 @@ class PlainModuleFixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return None
+        return self.frame
 
 
 @contextmanager
@@ -394,9 +403,7 @@ def _module_registry(entries):
                 del sys.modules[name]
 
 
-def _plain_module_fixture(
-    source, modules, builtin_module=builtins, registry_entries=None
-):
+def _plain_module_fixture(source, modules, builtin_storage=None, registry_entries=None):
     module = ParsedModule(
         path=Path("native_module_fixture.py"),
         module_name="native_module_fixture",
@@ -412,9 +419,19 @@ def _plain_module_fixture(
         else registry_entries
     )
     with _module_registry(entries):
+        globals_storage = {}
+        if builtin_storage is None:
+            builtin_storage = vars(builtins)
+        island = InitialNativeIsland(modules, (globals_storage, builtin_storage))
+        globals_namespace = island.namespace_for_storage(globals_storage)
+        frame = InitialNativeFrame(
+            globals_namespace,
+            globals_namespace,
+            island.namespace_for_storage(builtin_storage),
+        )
         kernel = CapturedReferenceKernel(
-            InitialNativeIsland(modules, builtin_module),
-            PlainModuleFixtureEffects(module, context),
+            island,
+            PlainModuleFixtureEffects(module, context, frame),
         )
         read = projection.reference_reads_by_span[
             SourceByteSpan.require_node(module.module.body[-1].value)
@@ -456,7 +473,7 @@ def test_bare_builtin_lookup_uses_dictionary_despite_module_descriptor(attribute
     module = ModuleType("frame_fixture")
     vars(module)[attribute] = property
     source = f"result = {attribute}\n"
-    resolution = _plain_module_fixture(source, (module,), module)
+    resolution = _plain_module_fixture(source, (module,), vars(module))
     assert (
         resolution.require_native_identity(NativeDeclaration(property)).declaration
         is property
@@ -572,7 +589,7 @@ def test_display_name_cannot_impersonate_actual_builtin_import():
     resolution = _plain_module_fixture(
         source,
         (frame,),
-        frame,
+        vars(frame),
         registry_entries={"registered_frame_fixture": frame},
     )
     assert isinstance(resolution, OpenCapturedReference)
@@ -594,13 +611,13 @@ def test_display_name_cannot_impersonate_actual_builtin_import():
 def test_unregistered_display_names_never_manufacture_import_handles():
     module = ModuleType("unregistered_display_name")
     with _module_registry({"real_registration": module}):
-        island = InitialNativeIsland((builtins, module), builtins)
+        island = InitialNativeIsland((builtins, module))
         assert island.module("real_registration").value is module
         assert (
             island.module("unregistered_display_name").violation
             is CapturedReferenceViolation.UNADMITTED_IMPORT
         )
-    dangling = InitialNativeIsland((builtins, module), builtins)
+    dangling = InitialNativeIsland((builtins, module))
     assert (
         dangling.module("real_registration").violation
         is CapturedReferenceViolation.UNADMITTED_IMPORT
@@ -617,7 +634,7 @@ def test_unregistered_module_can_still_supply_actual_frame_builtin_dictionary():
     resolution = _plain_module_fixture(
         "result = property\n",
         (frame,),
-        frame,
+        vars(frame),
         registry_entries={},
     )
     assert (
@@ -639,7 +656,7 @@ def test_import_registry_capture_is_eager_immutable_and_does_not_compare_values(
     with _module_registry(
         {"stable_handle": initial, "irrelevant_value": HostileValue()}
     ):
-        island = InitialNativeIsland((builtins, initial), builtins)
+        island = InitialNativeIsland((builtins, initial))
         sys.modules["stable_handle"] = replacement
         # Inspect the admission receipt, not a query claiming the changed ambient
         # registry still satisfies the mandatory effect authority's contract.
@@ -652,9 +669,9 @@ def test_import_registry_capture_is_eager_immutable_and_does_not_compare_values(
 def test_separate_initial_registry_admissions_are_distinct_query_authorities():
     module = ModuleType("display")
     with _module_registry({"first_admission": module, "later_alias": None}):
-        before = InitialNativeIsland((builtins, module), builtins)
+        before = InitialNativeIsland((builtins, module))
         sys.modules["later_alias"] = module
-        after = InitialNativeIsland((builtins, module), builtins)
+        after = InitialNativeIsland((builtins, module))
         assert before != after
         assert len({before, after}) == 2
         assert "later_alias" not in before.modules_by_name

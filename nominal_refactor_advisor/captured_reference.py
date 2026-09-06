@@ -7,16 +7,20 @@ accepted. Source-origin names alone never authenticate a runtime object.
 
 from __future__ import annotations
 
+import inspect
 import sys
-
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import (
+    Iterator,
+    Mapping,
+)
 from dataclasses import (
+    InitVar,
     dataclass,
     field,
+    replace,
 )
 from enum import StrEnum
-import inspect
 from types import (
     MappingProxyType,
     ModuleType,
@@ -35,8 +39,8 @@ from .product_flow import (
     CompactFlowPosition,
     CompactFlowRead,
     CompactFunctionTargetResolutionViolation,
-    CompactItemTarget,
     CompactImportTarget,
+    CompactItemTarget,
     CompactMutation,
     CompactMutationResolverABC,
     CompactPositionedReference,
@@ -57,6 +61,16 @@ class CapturedReferenceViolation(StrEnum):
 
 
 class CapturedReferenceResolution(ABC):
+
+    @abstractmethod
+    def item_write_effect(
+        self,
+        resolver: CapturedReferenceKernel,
+        query: CapturedSlotQuery,
+        mutation: CompactMutation[CompactItemTarget],
+    ) -> OpenCapturedReference | None:
+        raise NotImplementedError
+
     @abstractmethod
     def access(
         self,
@@ -90,6 +104,16 @@ class OpenCapturedReference(CapturedReferenceResolution):
     violation: CapturedReferenceViolation
     mutation: CompactMutation | None = None
 
+    def item_write_effect(
+        self,
+        resolver: CapturedReferenceKernel,
+        query: CapturedSlotQuery,
+        mutation: CompactMutation[CompactItemTarget],
+    ) -> OpenCapturedReference:
+        return OpenCapturedReference(
+            CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation
+        )
+
     def access(
         self,
         resolver: CapturedReferenceKernel,
@@ -122,6 +146,14 @@ class CapturedNativeObject(CapturedReferenceResolution):
 
     value: object
 
+    def item_write_effect(
+        self,
+        resolver: CapturedReferenceKernel,
+        query: CapturedSlotQuery,
+        mutation: CompactMutation[CompactItemTarget],
+    ) -> OpenCapturedReference | None:
+        return resolver.initial.item_write_effect(self, query, mutation)
+
     def access(
         self,
         resolver: CapturedReferenceKernel,
@@ -130,10 +162,15 @@ class CapturedNativeObject(CapturedReferenceResolution):
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit],
     ) -> CapturedReferenceResolution:
-        failure = resolver.initial.attribute_access_failure(self, attribute)
-        if failure is not None:
-            return failure
-        return resolver._slot(self, attribute, context, position, pending)
+        namespace = resolver.initial.attribute_namespace(self, attribute)
+        if isinstance(namespace, OpenCapturedReference):
+            return namespace
+        result = resolver._slot(namespace, attribute, context, position, pending)
+        return (
+            OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)
+            if result is None
+            else result
+        )
 
     def write_effect(
         self,
@@ -151,46 +188,125 @@ class CapturedNativeObject(CapturedReferenceResolution):
         return declaration
 
 
+@dataclass(frozen=True, eq=False)
+class NativeNamespace:
+    """One actual native dictionary and its admitted initial string-key state.
+
+    Key admission precedes lookup/copy: even an exact dict can contain foreign
+    keys whose equality runs code. The effect proof must preserve this invariant
+    and account for later index, destruction and external mutation effects.
+    """
+
+    storage: dict[str, object]
+    initial_entries: Mapping[str, object] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.storage) is not dict:
+            raise TypeError("A native namespace requires exact dictionary storage")
+        if any(type(key) is not str for key in self.storage):
+            raise TypeError("A native namespace requires only exact string keys")
+        object.__setattr__(
+            self, "initial_entries", MappingProxyType(self.storage.copy())
+        )
+
+    def member(self, key: str) -> CapturedNativeObject | None:
+        """None is proved initial absence, never an unproved lookup."""
+        if type(key) is not str:
+            raise TypeError("Native namespace lookup requires an exact string key")
+        if key not in self.initial_entries:
+            return None
+        return CapturedNativeObject(self.initial_entries[key])
+
+
+@dataclass(frozen=True, eq=False)
+class InitialNativeFrame:
+    """Actual admitted namespaces, not globals' mutable __builtins__ spelling.
+
+    The source/position admission must prove these native lookup and write
+    destinations apply to the current activation. Source parentage alone is
+    insufficient, including compiler-created generic frames. Nonlocal binding
+    requires a closure relation not represented by these namespace handles.
+    """
+
+    locals: NativeNamespace
+    globals: NativeNamespace
+    builtins: NativeNamespace
+
+    def binding_namespace(
+        self,
+        context: CompactFlowContext,
+        name: str,
+    ) -> NativeNamespace | OpenCapturedReference:
+        if name in context.flow.nonlocal_binding_names:
+            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
+        if name in context.flow.global_binding_names:
+            return self.globals
+        return self.locals
+
+    def initial_lookup_namespaces(
+        self,
+        context: CompactFlowContext,
+        name: str,
+    ) -> tuple[NativeNamespace, ...] | OpenCapturedReference:
+        binding_namespace = self.binding_namespace(context, name)
+        if isinstance(binding_namespace, OpenCapturedReference):
+            return binding_namespace
+        return tuple(dict.fromkeys((binding_namespace, self.globals, self.builtins)))
+
+
 class CapturedReferenceEffectsABC(ABC):
-    """Required proof of the source execution surrounding a capture.
+    """Required complete source-prefix proof and actual activation frame.
 
-    Returning None asserts that every possibly preceding effect at this exact
-    source/context/position is closed apart from direct slot identity effects
-    checked by the kernel. This includes implicit operators, destruction,
-    imports and import hooks, star imports, class construction, calls, and the
-    initial frame globals/builtins. Missing compact records prove none of these.
+    Admission supplies the actual locals/globals/captured-builtins relationship
+    at this source/context/position. It closes every possibly preceding effect
+    apart from direct namespace writes checked by the kernel: implicit operators,
+    destruction, imports and hooks, star imports, class construction and calls.
+    Missing compact records prove none of these. Initial exact-string-key
+    namespace admission, retained object identities, captured sys.modules
+    associations and native import behavior must remain valid at the query.
+    The admitted current-flow prefix belongs to one activation with fixed frame
+    namespace handles; repeated or contextual activations need an execution
+    relation rather than flattening different frames into this prefix.
 
-    An admitted context must have native-island initial global/builtin lookup
-    semantics for roots without a selected compact binding. Deferred scopes or
-    custom frame environments require their own proof, not module fallback.
-    The admitted native objects, captured initial sys.modules associations and
-    native import behavior must remain valid throughout the query. A module's
-    mutable display name is not an import handle. There is deliberately no
-    permissive production implementation.
+    Native name lookup and lexical write destinations must match the admitted
+    frame. Deferred scopes, custom locals/closures and compiler-created frames
+    require their own proof, never inference from source-parent containment.
+    There is deliberately no permissive production implementation.
     """
 
     @abstractmethod
-    def failure_for(
-        self, context: CompactFlowContext, position: CompactFlowPosition
-    ) -> OpenCapturedReference | None:
+    def admit(
+        self,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+    ) -> InitialNativeFrame | OpenCapturedReference:
         raise NotImplementedError
 
 
 @dataclass(frozen=True, eq=False)
 class InitialNativeIsland:
-    """Actual module objects and their eagerly captured initial import handles.
+    """Actual modules, import handles and shared initial dictionary admissions.
 
-    Only matching objects already in sys.modules acquire import handles.
-    Capturing its filtered registry is evidence, not a display-name projection;
-    analyzed imports are never run and later ambient changes cannot rewrite it.
+    Module dictionaries are derived from the admitted native modules. Additional
+    actual frame storages are admitted at construction, never guessed at lookup.
+    One namespace owner is captured per dictionary identity before any frame is
+    assembled. Unregistered modules need not acquire import handles.
     """
 
     modules: tuple[ModuleType, ...]
-    builtin_module: ModuleType
-
+    extra_storages: InitVar[tuple[dict[str, object], ...]] = ()
     modules_by_name: Mapping[str, ModuleType] = field(init=False, repr=False)
+    namespaces: tuple[NativeNamespace, ...] = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
+    def require_frame(self, frame: InitialNativeFrame) -> None:
+        """A frame reuses this admission's exact owners, not new snapshots."""
+        for namespace in (frame.locals, frame.globals, frame.builtins):
+            if not any(namespace is admitted for admitted in self.namespaces):
+                raise ValueError(
+                    "Frame namespace owner belongs to a different admission"
+                )
+
+    def __post_init__(self, extra_storages: tuple[dict[str, object], ...]) -> None:
         if any(type(module) is not ModuleType for module in self.modules):
             raise TypeError(
                 "Initial native modules must have plain native module storage"
@@ -198,10 +314,15 @@ class InitialNativeIsland:
         admitted_ids = {id(module) for module in self.modules}
         if len(admitted_ids) != len(self.modules):
             raise ValueError("Initial native module objects must be unique")
-        if id(self.builtin_module) not in admitted_ids:
-            raise ValueError(
-                "The actual frame builtin module must belong to the island"
-            )
+        storages = {
+            id(storage): storage
+            for storage in (*(vars(module) for module in self.modules), *extra_storages)
+        }
+        object.__setattr__(
+            self,
+            "namespaces",
+            tuple(NativeNamespace(storage) for storage in storages.values()),
+        )
         object.__setattr__(
             self,
             "modules_by_name",
@@ -213,6 +334,12 @@ class InitialNativeIsland:
                 }
             ),
         )
+
+    def namespace_for_storage(self, storage: dict[str, object]) -> NativeNamespace:
+        for namespace in self.namespaces:
+            if namespace.storage is storage:
+                return namespace
+        raise ValueError("Namespace storage was not admitted by this initial island")
 
     def module(self, name: str | None) -> CapturedReferenceResolution:
         if name is None or name not in self.modules_by_name:
@@ -228,8 +355,6 @@ class InitialNativeIsland:
             or origin.requested_module_name not in self.modules_by_name
         ):
             return OpenCapturedReference(CapturedReferenceViolation.UNADMITTED_IMPORT)
-        # A dotted bound path requires Python's import attribute traversal/fallback.
-        # Admission of a same-named module object alone cannot prove that traversal.
         if "." in bound_module:
             return OpenCapturedReference(
                 CapturedReferenceViolation.UNPROVED_IMPORT_TRAVERSAL
@@ -244,27 +369,16 @@ class InitialNativeIsland:
             return False
         return inspect.isdatadescriptor(descriptor)
 
-    def attribute_access_failure(
-        self, receiver: CapturedNativeObject, attribute: str
-    ) -> OpenCapturedReference | None:
-        if not any(
-            receiver.value is module for module in self.modules
-        ) or self._has_module_data_descriptor(attribute):
-            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)
-        return None
-
-    def namespace_member(
-        self, receiver: CapturedNativeObject, attribute: str
-    ) -> CapturedReferenceResolution:
-        """Read a raw namespace slot, including frame builtin dictionary lookup."""
+    def attribute_namespace(
+        self,
+        receiver: CapturedNativeObject,
+        attribute: str,
+    ) -> NativeNamespace | OpenCapturedReference:
         for module in self.modules:
-            if receiver.value is module:
-                try:
-                    return CapturedNativeObject(vars(module)[attribute])
-                except KeyError:
-                    return OpenCapturedReference(
-                        CapturedReferenceViolation.UNPROVED_ACCESS
-                    )
+            if receiver.value is module and not self._has_module_data_descriptor(
+                attribute
+            ):
+                return self.namespace_for_storage(vars(module))
         return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)
 
     def attribute_write_effect(
@@ -273,14 +387,27 @@ class InitialNativeIsland:
         query: CapturedSlotQuery,
         mutation: CompactMutation[CompactAttributeTarget],
     ) -> OpenCapturedReference | None:
-        attribute = mutation.target.attribute_name
-        if not any(
-            receiver.value is module for module in self.modules
-        ) or self._has_module_data_descriptor(attribute):
+        namespace = self.attribute_namespace(receiver, mutation.target.attribute_name)
+        if isinstance(namespace, OpenCapturedReference):
             return OpenCapturedReference(
                 CapturedReferenceViolation.UNPROVED_EFFECTS, mutation
             )
-        if receiver.value is query.receiver.value and attribute == query.attribute:
+        return query.write_effect(namespace, mutation.target.attribute_name, mutation)
+
+    def item_write_effect(
+        self,
+        receiver: CapturedNativeObject,
+        query: CapturedSlotQuery,
+        mutation: CompactMutation[CompactItemTarget],
+    ) -> OpenCapturedReference | None:
+        # Exact dict identity establishes distinct storage, not effect-free index
+        # evaluation. Admission separately closes index/hash/destruction effects.
+        if type(receiver.value) is not dict:
+            return OpenCapturedReference(
+                CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation
+            )
+        if receiver.value is query.namespace.storage:
+            # Compact item indices do not yet retain a proved exact string key.
             return OpenCapturedReference(
                 CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, mutation
             )
@@ -289,12 +416,65 @@ class InitialNativeIsland:
 
 @dataclass(frozen=True)
 class CapturedSlotQuery:
-    """A single object-slot obligation with its actual flow and recursion path."""
+    """An actual dictionary-slot obligation and its positioned source context."""
 
-    receiver: CapturedNativeObject
-    attribute: str
+    namespace: NativeNamespace
+    key: str
     context: CompactFlowContext
+    frame: InitialNativeFrame
     pending: frozenset[CompactBindingVisit]
+
+    installed: CompactMutation | None = None
+
+    def failure_before(
+        self,
+        resolver: CapturedReferenceKernel,
+        position: CompactFlowPosition,
+    ) -> OpenCapturedReference | None:
+        for mutation in self.mutations_before(position):
+            visit = (self.context.owner_symbol, mutation)
+            if visit in self.pending and mutation.target.bound_name is None:
+                return OpenCapturedReference(
+                    CapturedReferenceViolation.CYCLIC_BINDING, mutation
+                )
+            query = replace(self, pending=self.pending | {visit})
+            failure = mutation.resolve(resolver, query)
+            if failure is not None:
+                return failure
+        return None
+
+    def mutations_before(
+        self,
+        position: CompactFlowPosition,
+    ) -> Iterator[CompactMutation]:
+        """Retain any write possibly between installation and this actual use.
+
+        The selected installation is not an intervening write. Earlier writes are
+        excluded only by the shared positioned proof, never source line sorting;
+        loop and unordered-header possibilities consequently remain obligations.
+        """
+        for mutation in self.context.flow.mutations:
+            if mutation is self.installed or not mutation.position.may_precede(
+                position
+            ):
+                continue
+            if self.installed is not None and not self.installed.position.may_precede(
+                mutation.position
+            ):
+                continue
+            yield mutation
+
+    def write_effect(
+        self,
+        namespace: NativeNamespace,
+        key: str,
+        mutation: CompactMutation,
+    ) -> OpenCapturedReference | None:
+        if namespace.storage is self.namespace.storage and key == self.key:
+            return OpenCapturedReference(
+                CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, mutation
+            )
+        return None
 
 
 ImportQuery: TypeAlias = tuple[
@@ -310,6 +490,43 @@ class CapturedReferenceKernel(
 ):
     initial: InitialNativeIsland
     effects: CapturedReferenceEffectsABC
+
+    def _selected_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit],
+    ) -> CapturedReferenceResolution:
+        if use_position is None:
+            return OpenCapturedReference(
+                CapturedReferenceViolation.UNPROVED_BINDING, binding
+            )
+        frame = self._admitted_frame(context, use_position)
+        if isinstance(frame, OpenCapturedReference):
+            return frame
+        namespace = frame.binding_namespace(context, reference.root_name)
+        if isinstance(namespace, OpenCapturedReference):
+            return namespace
+        failure = CapturedSlotQuery(
+            namespace, reference.root_name, context, frame, pending_bindings, binding
+        ).failure_before(self, use_position)
+        if failure is not None:
+            return failure
+        return super()._selected_binding_resolution(
+            context, reference, binding, use_position, pending_bindings
+        )
+
+    def _admitted_frame(
+        self,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+    ) -> InitialNativeFrame | OpenCapturedReference:
+        frame = self.effects.admit(context, position)
+        if not isinstance(frame, OpenCapturedReference):
+            self.initial.require_frame(frame)
+        return frame
 
     def read(self, read: CompactFlowRead) -> CapturedReferenceResolution:
         return self._read_use(read.use, read.context, frozenset())
@@ -332,22 +549,27 @@ class CapturedReferenceKernel(
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit],
     ) -> CapturedReferenceResolution:
-        failure = self.effects.failure_for(context, position)
-        if failure is not None:
-            return failure
+        frame = self._admitted_frame(context, position)
+        if isinstance(frame, OpenCapturedReference):
+            return frame
         root = LexicalValueReference(reference.root_name)
         binding = context.flow.binding_resolution_for(root.root_name, position)
-        resolution = (
-            self._slot(
-                CapturedNativeObject(self.initial.builtin_module),
-                root.root_name,
-                context,
-                position,
-                pending,
+        if binding is None:
+            namespaces = frame.initial_lookup_namespaces(context, root.root_name)
+            if isinstance(namespaces, OpenCapturedReference):
+                return namespaces
+            resolution: CapturedReferenceResolution = OpenCapturedReference(
+                CapturedReferenceViolation.UNPROVED_BINDING
             )
-            if binding is None
-            else binding.resolve_binding(self, context, root, position, pending)
-        )
+            for namespace in namespaces:
+                result = self._slot(
+                    namespace, root.root_name, context, position, pending
+                )
+                if result is not None:
+                    resolution = result
+                    break
+        else:
+            resolution = binding.resolve_binding(self, context, root, position, pending)
         for attribute in reference.attribute_path:
             resolution = resolution.access(self, attribute, context, position, pending)
         return resolution
@@ -427,28 +649,19 @@ class CapturedReferenceKernel(
 
     def _slot(
         self,
-        receiver: CapturedNativeObject,
-        attribute: str,
+        namespace: NativeNamespace,
+        key: str,
         context: CompactFlowContext,
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit],
-    ) -> CapturedReferenceResolution:
-        failure = self.effects.failure_for(context, position)
-        if failure is not None:
-            return failure
-        for mutation in context.flow.mutations:
-            if not mutation.position.may_precede(position):
-                continue
-            visit = (context.owner_symbol, mutation)
-            if visit in pending and mutation.target.bound_name is None:
-                return OpenCapturedReference(
-                    CapturedReferenceViolation.CYCLIC_BINDING, mutation
-                )
-            query = CapturedSlotQuery(receiver, attribute, context, pending | {visit})
-            failure = mutation.resolve(self, query)
-            if failure is not None:
-                return failure
-        return self.initial.namespace_member(receiver, attribute)
+    ) -> CapturedReferenceResolution | None:
+        frame = self._admitted_frame(context, position)
+        if isinstance(frame, OpenCapturedReference):
+            return frame
+        failure = CapturedSlotQuery(
+            namespace, key, context, frame, pending
+        ).failure_before(self, position)
+        return namespace.member(key) if failure is None else failure
 
     def _binding_mutation_resolution(
         self,
@@ -456,9 +669,11 @@ class CapturedReferenceKernel(
         mutation: CompactMutation,
         name: str,
     ) -> OpenCapturedReference | None:
-        # The effect authority has separately admitted creation, import and
-        # destruction effects. Lexical rebinding does not change object slots.
-        return None
+        # The admitted prefix shares one actual activation's fixed frame handles.
+        namespace = context.frame.binding_namespace(context.context, name)
+        if isinstance(namespace, OpenCapturedReference):
+            return namespace
+        return context.write_effect(namespace, name, mutation)
 
     def _receiver_mutation_resolution(
         self,
@@ -484,7 +699,8 @@ class CapturedReferenceKernel(
         self,
         context: CapturedSlotQuery,
         mutation: CompactMutation[CompactItemTarget],
-    ) -> OpenCapturedReference:
-        return OpenCapturedReference(
-            CapturedReferenceViolation.UNPROVED_EFFECTS, mutation
+    ) -> OpenCapturedReference | None:
+        receiver = self._read_use(
+            mutation.target.receiver_use, context.context, context.pending
         )
+        return receiver.item_write_effect(self, context, mutation)

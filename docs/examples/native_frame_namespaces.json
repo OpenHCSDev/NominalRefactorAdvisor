@@ -1,0 +1,703 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "rationale": "",
+              "import_source": "from dataclasses import InitVar"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceEffectsABC",
+              "rationale": "",
+              "source": "@dataclass(frozen=True, eq=False)\nclass NativeNamespace:\n    \"\"\"One actual native dictionary and its admitted initial string-key state.\n\n    Key admission precedes lookup/copy: even an exact dict can contain foreign\n    keys whose equality runs code. The effect proof must preserve this invariant\n    and account for later index, destruction and external mutation effects.\n    \"\"\"\n\n    storage: dict[str, object]\n    initial_entries: Mapping[str, object] = field(init=False, repr=False)\n\n    def __post_init__(self) -> None:\n        if type(self.storage) is not dict:\n            raise TypeError(\"A native namespace requires exact dictionary storage\")\n        if any(type(key) is not str for key in self.storage):\n            raise TypeError(\"A native namespace requires only exact string keys\")\n        object.__setattr__(\n            self, \"initial_entries\", MappingProxyType(self.storage.copy())\n        )\n\n    def member(self, key: str) -> CapturedNativeObject | None:\n        \"\"\"None is proved initial absence, never an unproved lookup.\"\"\"\n        if key not in self.initial_entries:\n            return None\n        return CapturedNativeObject(self.initial_entries[key])\n\n\n@dataclass(frozen=True, eq=False)\nclass InitialNativeFrame:\n    \"\"\"Actual admitted namespaces, not globals' mutable __builtins__ spelling.\n\n    The source/position admission must prove these native lookup and write\n    destinations apply to the current activation. Source parentage alone is\n    insufficient, including compiler-created generic frames. Nonlocal binding\n    requires a closure relation not represented by these namespace handles.\n    \"\"\"\n\n    locals: NativeNamespace\n    globals: NativeNamespace\n    builtins: NativeNamespace\n\n    def binding_namespace(\n        self, context: CompactFlowContext, name: str,\n    ) -> NativeNamespace | OpenCapturedReference:\n        if name in context.flow.nonlocal_binding_names:\n            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)\n        if name in context.flow.global_binding_names:\n            return self.globals\n        return self.locals\n\n    def initial_lookup_namespaces(\n        self, context: CompactFlowContext, name: str,\n    ) -> tuple[NativeNamespace, ...] | OpenCapturedReference:\n        binding_namespace = self.binding_namespace(context, name)\n        if isinstance(binding_namespace, OpenCapturedReference):\n            return binding_namespace\n        return tuple({\n            id(namespace.storage): namespace\n            for namespace in (binding_namespace, self.globals, self.builtins)\n        }.values())\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceEffectsABC",
+              "rationale": "",
+              "replacement_source": "class CapturedReferenceEffectsABC(ABC):\n    \"\"\"Required complete source-prefix proof and actual activation frame.\n\n    Admission supplies the actual locals/globals/captured-builtins relationship\n    at this source/context/position. It closes every possibly preceding effect\n    apart from direct namespace writes checked by the kernel: implicit operators,\n    destruction, imports and hooks, star imports, class construction and calls.\n    Missing compact records prove none of these. Initial exact-string-key\n    namespace admission, retained object identities, captured sys.modules\n    associations and native import behavior must remain valid at the query.\n\n    Native name lookup and lexical write destinations must match the admitted\n    frame. Deferred scopes, custom locals/closures and compiler-created frames\n    require their own proof, never inference from source-parent containment.\n    There is deliberately no permissive production implementation.\n    \"\"\"\n\n    @abstractmethod\n    def admit(\n        self, context: CompactFlowContext, position: CompactFlowPosition,\n    ) -> InitialNativeFrame | OpenCapturedReference:\n        raise NotImplementedError\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "InitialNativeIsland",
+              "rationale": "",
+              "replacement_source": "class InitialNativeIsland:\n    \"\"\"Actual modules, import handles and shared initial dictionary admissions.\n\n    Module dictionaries are derived from the admitted native modules. Additional\n    actual frame storages are admitted at construction, never guessed at lookup.\n    One namespace owner is captured per dictionary identity before any frame is\n    assembled. Unregistered modules need not acquire import handles.\n    \"\"\"\n\n    modules: tuple[ModuleType, ...]\n    extra_storages: InitVar[tuple[dict[str, object], ...]] = ()\n    modules_by_name: Mapping[str, ModuleType] = field(init=False, repr=False)\n    namespaces: tuple[NativeNamespace, ...] = field(init=False, repr=False)\n\n    def __post_init__(self, extra_storages: tuple[dict[str, object], ...]) -> None:\n        if any(type(module) is not ModuleType for module in self.modules):\n            raise TypeError(\"Initial native modules must have plain native module storage\")\n        admitted_ids = {id(module) for module in self.modules}\n        if len(admitted_ids) != len(self.modules):\n            raise ValueError(\"Initial native module objects must be unique\")\n        storages = {\n            id(storage): storage\n            for storage in (*(vars(module) for module in self.modules), *extra_storages)\n        }\n        object.__setattr__(self, \"namespaces\", tuple(\n            NativeNamespace(storage) for storage in storages.values()\n        ))\n        object.__setattr__(self, \"modules_by_name\", MappingProxyType({\n            name: cast(ModuleType, module)\n            for name, module in tuple(sys.modules.items())\n            if type(name) is str and id(module) in admitted_ids\n        }))\n\n    def namespace_for_storage(self, storage: dict[str, object]) -> NativeNamespace:\n        for namespace in self.namespaces:\n            if namespace.storage is storage:\n                return namespace\n        raise ValueError(\"Namespace storage was not admitted by this initial island\")\n\n    def module(self, name: str | None) -> CapturedReferenceResolution:\n        if name is None or name not in self.modules_by_name:\n            return OpenCapturedReference(CapturedReferenceViolation.UNADMITTED_IMPORT)\n        return CapturedNativeObject(self.modules_by_name[name])\n\n    def imported_module(self, origin: ImportedNameOrigin) -> CapturedReferenceResolution:\n        bound_module = origin.qualified_name\n        if bound_module is None or origin.requested_module_name not in self.modules_by_name:\n            return OpenCapturedReference(CapturedReferenceViolation.UNADMITTED_IMPORT)\n        if \".\" in bound_module:\n            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_IMPORT_TRAVERSAL)\n        return self.module(bound_module)\n\n    @staticmethod\n    def _has_module_data_descriptor(attribute: str) -> bool:\n        try:\n            descriptor = inspect.getattr_static(ModuleType, attribute)\n        except AttributeError:\n            return False\n        return inspect.isdatadescriptor(descriptor)\n\n    def attribute_namespace(\n        self, receiver: CapturedNativeObject, attribute: str,\n    ) -> NativeNamespace | OpenCapturedReference:\n        for module in self.modules:\n            if receiver.value is module and not self._has_module_data_descriptor(attribute):\n                return self.namespace_for_storage(vars(module))\n        return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)\n\n    def attribute_write_effect(\n        self, receiver: CapturedNativeObject, query: CapturedSlotQuery,\n        mutation: CompactMutation[CompactAttributeTarget],\n    ) -> OpenCapturedReference | None:\n        namespace = self.attribute_namespace(receiver, mutation.target.attribute_name)\n        if isinstance(namespace, OpenCapturedReference):\n            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS, mutation)\n        return query.write_effect(namespace, mutation.target.attribute_name, mutation)\n\n    def item_write_effect(\n        self, receiver: CapturedNativeObject, query: CapturedSlotQuery,\n        mutation: CompactMutation[CompactItemTarget],\n    ) -> OpenCapturedReference | None:\n        # Exact dict identity establishes distinct storage, not effect-free index\n        # evaluation. Admission separately closes index/hash/destruction effects.\n        if type(receiver.value) is not dict:\n            return OpenCapturedReference(CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation)\n        if receiver.value is query.namespace.storage:\n            # Compact item indices do not yet retain a proved exact string key.\n            return OpenCapturedReference(CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, mutation)\n        return None\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedNativeObject.access",
+              "rationale": "",
+              "replacement_source": "def access(\n    self, resolver: CapturedReferenceKernel, attribute: str,\n    context: CompactFlowContext, position: CompactFlowPosition,\n    pending: frozenset[CompactBindingVisit],\n) -> CapturedReferenceResolution:\n    namespace = resolver.initial.attribute_namespace(self, attribute)\n    if isinstance(namespace, OpenCapturedReference):\n        return namespace\n    result = resolver._slot(namespace, attribute, context, position, pending)\n    return (\n        OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)\n        if result is None else result\n    )\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceResolution",
+              "rationale": "",
+              "source": "@abstractmethod\ndef item_write_effect(\n    self, resolver: CapturedReferenceKernel, query: CapturedSlotQuery,\n    mutation: CompactMutation[CompactItemTarget],\n) -> OpenCapturedReference | None:\n    raise NotImplementedError\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "OpenCapturedReference",
+              "rationale": "",
+              "source": "def item_write_effect(\n    self, resolver: CapturedReferenceKernel, query: CapturedSlotQuery,\n    mutation: CompactMutation[CompactItemTarget],\n) -> OpenCapturedReference:\n    return OpenCapturedReference(CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedNativeObject",
+              "rationale": "",
+              "source": "def item_write_effect(\n    self, resolver: CapturedReferenceKernel, query: CapturedSlotQuery,\n    mutation: CompactMutation[CompactItemTarget],\n) -> OpenCapturedReference | None:\n    return resolver.initial.item_write_effect(self, query, mutation)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery",
+              "rationale": "",
+              "replacement_source": "class CapturedSlotQuery:\n    \"\"\"An actual dictionary-slot obligation and its positioned source context.\"\"\"\n\n    namespace: NativeNamespace\n    key: str\n    context: CompactFlowContext\n    pending: frozenset[CompactBindingVisit]\n\n    def write_effect(\n        self, namespace: NativeNamespace, key: str, mutation: CompactMutation,\n    ) -> OpenCapturedReference | None:\n        if namespace.storage is self.namespace.storage and key == self.key:\n            return OpenCapturedReference(CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, mutation)\n        return None\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._read_reference",
+              "rationale": "",
+              "replacement_source": "def _read_reference(\n    self, reference: LexicalValueReference, context: CompactFlowContext,\n    position: CompactFlowPosition, pending: frozenset[CompactBindingVisit],\n) -> CapturedReferenceResolution:\n    frame = self.effects.admit(context, position)\n    if isinstance(frame, OpenCapturedReference):\n        return frame\n    root = LexicalValueReference(reference.root_name)\n    binding = context.flow.binding_resolution_for(root.root_name, position)\n    if binding is None:\n        namespaces = frame.initial_lookup_namespaces(context, root.root_name)\n        if isinstance(namespaces, OpenCapturedReference):\n            return namespaces\n        resolution: CapturedReferenceResolution = OpenCapturedReference(\n            CapturedReferenceViolation.UNPROVED_BINDING\n        )\n        for namespace in namespaces:\n            result = self._slot(namespace, root.root_name, context, position, pending)\n            if result is not None:\n                resolution = result\n                break\n    else:\n        resolution = binding.resolve_binding(self, context, root, position, pending)\n    for attribute in reference.attribute_path:\n        resolution = resolution.access(self, attribute, context, position, pending)\n    return resolution\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._slot",
+              "rationale": "",
+              "replacement_source": "def _slot(\n    self, namespace: NativeNamespace, key: str, context: CompactFlowContext,\n    position: CompactFlowPosition, pending: frozenset[CompactBindingVisit],\n) -> CapturedReferenceResolution | None:\n    frame = self.effects.admit(context, position)\n    if isinstance(frame, OpenCapturedReference):\n        return frame\n    for mutation in context.flow.mutations:\n        if not mutation.position.may_precede(position):\n            continue\n        visit = (context.owner_symbol, mutation)\n        if visit in pending and mutation.target.bound_name is None:\n            return OpenCapturedReference(CapturedReferenceViolation.CYCLIC_BINDING, mutation)\n        query = CapturedSlotQuery(namespace, key, context, pending | {visit})\n        failure = mutation.resolve(self, query)\n        if failure is not None:\n            return failure\n    return namespace.member(key)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._binding_mutation_resolution",
+              "rationale": "",
+              "replacement_source": "def _binding_mutation_resolution(\n    self, context: CapturedSlotQuery, mutation: CompactMutation, name: str,\n) -> OpenCapturedReference | None:\n    frame = self.effects.admit(context.context, mutation.position)\n    if isinstance(frame, OpenCapturedReference):\n        return frame\n    namespace = frame.binding_namespace(context.context, name)\n    if isinstance(namespace, OpenCapturedReference):\n        return namespace\n    return context.write_effect(namespace, name, mutation)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._item_mutation_resolution",
+              "rationale": "",
+              "replacement_source": "def _item_mutation_resolution(\n    self, context: CapturedSlotQuery, mutation: CompactMutation[CompactItemTarget],\n) -> OpenCapturedReference | None:\n    receiver = self._read_use(\n        mutation.target.receiver_use, context.context, context.pending\n    )\n    return receiver.item_write_effect(self, context, mutation)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        if key not in self.initial_entries:",
+                  "new_source": "        if type(key) is not str:\n            raise TypeError(\"Native namespace lookup requires an exact string key\")\n        if key not in self.initial_entries:"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "NativeNamespace.member",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        return tuple({\n            id(namespace.storage): namespace\n            for namespace in (binding_namespace, self.globals, self.builtins)\n        }.values())",
+                  "new_source": "        return tuple(dict.fromkeys((binding_namespace, self.globals, self.builtins)))"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "InitialNativeFrame.initial_lookup_namespaces",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "InitialNativeIsland",
+              "rationale": "",
+              "source": "def require_frame(self, frame: InitialNativeFrame) -> None:\n    \"\"\"A frame reuses this admission's exact owners, not new snapshots.\"\"\"\n    for namespace in (frame.locals, frame.globals, frame.builtins):\n        if not any(namespace is admitted for admitted in self.namespaces):\n            raise ValueError(\"Frame namespace owner belongs to a different admission\")\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel",
+              "rationale": "",
+              "source": "def _admitted_frame(\n    self, context: CompactFlowContext, position: CompactFlowPosition,\n) -> InitialNativeFrame | OpenCapturedReference:\n    frame = self.effects.admit(context, position)\n    if not isinstance(frame, OpenCapturedReference):\n        self.initial.require_frame(frame)\n    return frame\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        frame = self.effects.admit(context, position)",
+                  "new_source": "        frame = self._admitted_frame(context, position)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._read_reference",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        frame = self.effects.admit(context, position)",
+                  "new_source": "        frame = self._admitted_frame(context, position)"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._slot",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    context: CompactFlowContext\n    pending:",
+                  "new_source": "    context: CompactFlowContext\n    frame: InitialNativeFrame\n    pending:"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            query = CapturedSlotQuery(namespace, key, context, pending | {visit})",
+                  "new_source": "            query = CapturedSlotQuery(namespace, key, context, frame, pending | {visit})"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._slot",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._binding_mutation_resolution",
+              "rationale": "",
+              "replacement_source": "def _binding_mutation_resolution(\n    self, context: CapturedSlotQuery, mutation: CompactMutation, name: str,\n) -> OpenCapturedReference | None:\n    # The admitted prefix shares one actual activation's fixed frame handles.\n    namespace = context.frame.binding_namespace(context.context, name)\n    if isinstance(namespace, OpenCapturedReference):\n        return namespace\n    return context.write_effect(namespace, name, mutation)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    associations and native import behavior must remain valid at the query.",
+                  "new_source": "    associations and native import behavior must remain valid at the query.\n    The admitted current-flow prefix belongs to one activation with fixed frame\n    namespace handles; repeated or contextual activations need an execution\n    relation rather than flattening different frames into this prefix."
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceEffectsABC",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "rationale": "",
+              "import_source": "from dataclasses import replace"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "rationale": "",
+              "import_source": "from collections.abc import Iterator"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery",
+              "rationale": "",
+              "source": "installed: CompactMutation | None = None\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery",
+              "rationale": "",
+              "source": "def mutations_before(\n    self, position: CompactFlowPosition,\n) -> Iterator[CompactMutation]:\n    \"\"\"Retain any write possibly between installation and this actual use.\n\n    The selected installation is not an intervening write. Earlier writes are\n    excluded only by the shared positioned proof, never source line sorting;\n    loop and unordered-header possibilities consequently remain obligations.\n    \"\"\"\n    for mutation in self.context.flow.mutations:\n        if mutation is self.installed or not mutation.position.may_precede(position):\n            continue\n        if self.installed is not None and not self.installed.position.may_precede(mutation.position):\n            continue\n        yield mutation\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery",
+              "rationale": "",
+              "source": "def failure_before(\n    self, resolver: CapturedReferenceKernel, position: CompactFlowPosition,\n) -> OpenCapturedReference | None:\n    for mutation in self.mutations_before(position):\n        visit = (self.context.owner_symbol, mutation)\n        if visit in self.pending and mutation.target.bound_name is None:\n            return OpenCapturedReference(CapturedReferenceViolation.CYCLIC_BINDING, mutation)\n        query = replace(self, pending=self.pending | {visit})\n        failure = mutation.resolve(resolver, query)\n        if failure is not None:\n            return failure\n    return None\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel._slot",
+              "rationale": "",
+              "replacement_source": "def _slot(\n    self, namespace: NativeNamespace, key: str, context: CompactFlowContext,\n    position: CompactFlowPosition, pending: frozenset[CompactBindingVisit],\n) -> CapturedReferenceResolution | None:\n    frame = self._admitted_frame(context, position)\n    if isinstance(frame, OpenCapturedReference):\n        return frame\n    failure = CapturedSlotQuery(namespace, key, context, frame, pending).failure_before(\n        self, position\n    )\n    return namespace.member(key) if failure is None else failure\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedReferenceKernel",
+              "rationale": "",
+              "source": "def _selected_binding_resolution(\n    self, context: CompactFlowContext, reference: LexicalValueReference,\n    binding: CompactMutation, use_position: CompactFlowPosition | None,\n    pending_bindings: frozenset[CompactBindingVisit],\n) -> CapturedReferenceResolution:\n    if use_position is None:\n        return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING, binding)\n    frame = self._admitted_frame(context, use_position)\n    if isinstance(frame, OpenCapturedReference):\n        return frame\n    namespace = frame.binding_namespace(context, reference.root_name)\n    if isinstance(namespace, OpenCapturedReference):\n        return namespace\n    failure = CapturedSlotQuery(\n        namespace, reference.root_name, context, frame, pending_bindings, binding\n    ).failure_before(self, use_position)\n    if failure is not None:\n        return failure\n    return super()._selected_binding_resolution(\n        context, reference, binding, use_position, pending_bindings\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "import sys\n\nfrom abc",
+                  "new_source": "import inspect\nimport sys\nfrom abc"
+                },
+                {
+                  "old_source": "from enum import StrEnum\nimport inspect\n",
+                  "new_source": "from enum import StrEnum\n"
+                },
+                {
+                  "old_source": "    CompactItemTarget,\n    CompactImportTarget,",
+                  "new_source": "    CompactImportTarget,\n    CompactItemTarget,"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    The selected installation is not an intervening write. Earlier writes are\n    excluded only by the shared positioned proof, never source line sorting;\n    loop and unordered-header possibilities consequently remain obligations.\n    \"\"\"",
+                  "new_source": "        The selected installation is not an intervening write. Earlier writes are\n        excluded only by the shared positioned proof, never source line sorting;\n        loop and unordered-header possibilities consequently remain obligations.\n        \"\"\""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/captured_reference.py",
+              "target_qualname": "CapturedSlotQuery.mutations_before",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

@@ -3184,3 +3184,87 @@ Receipts: `/var/tmp/nra-source-admission-replay.json`,
 `/var/tmp/nra-source-admission-sphinx.log`,
 `/var/tmp/nra-definition-source-cost.jsonl` and
 `/var/tmp/nra_registry_helper_gate_handoff.md`.
+
+### 2026-09-06: Share actual frame namespace and positioned slot authority
+
+The conditional captured-reference kernel now receives actual locals, globals
+and captured-builtins namespace owners through its mandatory effect admission.
+`NativeNamespace` validates exact dictionary storage and exact string keys before
+lookup or copying. The initial island derives module storage and admits extra
+frame dictionaries once per storage identity; independently reconstructed
+snapshots cannot replace those retained owners.
+
+This removes the assumption that frame builtin lookup means reading the
+`builtins` module. Initial local/global shadows, copied builtin dictionaries,
+shared globals/builtins storage and later rebinding of global `__builtins__` now
+have distinct native controls. Only proved initial absence permits fallback to
+another namespace. Unproved access remains open.
+
+Module attributes, lexical bindings and raw dictionary writes meet at the same
+storage identity. Selected aliases and imported bindings also require their
+namespace slot to survive between installation and use: following an older
+source binding alone missed later writes through a globals dictionary alias.
+`CapturedSlotQuery` owns the common interval and write scan, using the existing
+position relation before delegating binding interpretation to the shared
+resolver. A proved later installation can supersede an earlier write; loop and
+unordered-evaluation possibilities remain obligations. Unknown item keys are
+conservative rather than reconstructed from source text.
+
+Each slot query shares its admitted activation frame across lexical effects.
+The admission-count control remains at three checks for an initial lookup with
+forty unrelated lexical writes, instead of rerunning prefix admission for each
+write. The 79 focused cases pass on Python 3.11 and 3.14: all 47 previous kernel
+cases plus 32 namespace/frame cases, including isolated native execution,
+hostile key admission, snapshot identity and positioned slot controls.
+
+The authored 32-stage batch is `docs/examples/native_frame_namespaces.json`,
+against `66fb646`. JSON roundtrip and API replay reproduce the reviewed production
+AST. The current CLI also simulates the batch against the frozen baseline.
+
+Separate native probes exposed a real additional class-body capture gap in the
+existing promotion gate. Both plain and generic class-body functions can capture
+a rebound globals `__builtins__` dictionary even while the enclosing module
+retains its earlier captured dictionary. Native builder lookup, body-function
+creation and body entry are separate obligations. Added pending regressions show
+a clean rewrite changing descriptor installation behaviour; qualified native
+lookup and base-expression timing controls preserve the distinction. Against
+frozen `66fb646`, the three pending integrity files now contain 30 failing cases
+on Python 3.11 and 31 on Python 3.14. These are baseline failures, not regressions
+introduced by the namespace kernel.
+
+This batch does not install a permissive production effect provider or migrate
+the native gates. Actual activation, complete prefix effects, class construction
+and final object identity still need proof at those consumers.
+
+With production and tests frozen, the full runs report:
+
+- Python 3.11: **30 failed, 3,126 passed, 37 skipped** in 221.83 seconds.
+- Python 3.14: **31 failed, 3,140 passed, 22 skipped** in 226.05 seconds.
+
+Exact failure-ID comparison against the frozen baseline pending-integrity runs
+adds and removes no cases. The three pending integrity files remain untracked
+and their assertions are preserved.
+
+Previous commit `66fb646` CI run `34057873014` passed Linux, macOS and
+documentation but failed both Windows jobs on one helper-test snapshot lookup.
+The rewrite completed cleanly; the fixture indexed slash-normalised source keys
+with a Windows backslash path. It now uses the snapshot's existing
+`parsed_module_for_source_path` accessor. An explicit Windows-spelled path probe
+confirms the identity owner resolves that spelling. After this test-only change,
+all 89 frame/kernel/helper cases pass on each interpreter. Windows validation of
+the fix remains the next CI run's responsibility.
+
+The repository-context audit completes all 79 detectors with no omissions or
+findings in the changed production module. Its initial 20-second scan budget
+expired during parsing alongside the full suites; a separately budgeted
+120-second run completes. Black and Ruff pass all four touched source/test files.
+Sphinx builds with the same two existing duplicate-object warnings.
+
+Receipts: `/var/tmp/nra_frame_namespace_replay.json`,
+`/var/tmp/nra-frame-cli-current.json`,
+`/var/tmp/nra-frame-audit-complete.json`,
+`/var/tmp/nra-frame-full-{311,314}.log`,
+`/var/tmp/nra-frame-final-focused-{311,314}.log`,
+`/var/tmp/nra-frame-sphinx.log`,
+`/var/tmp/nra_windows_66fb646_failed.log` and
+`/var/tmp/nra_native_frame_namespace_handoff.md`.

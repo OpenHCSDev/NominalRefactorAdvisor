@@ -68,7 +68,10 @@ def test_type_keyed_descent_preserves_selected_helper_behavior(
     outputs = []
     for name, text in (
         ("before", source),
-        ("after", result.final_snapshot.sources_by_file_path[str(path)]),
+        (
+            "after",
+            result.final_snapshot.parsed_module_for_source_path(str(path)).source,
+        ),
     ):
         runtime = ModuleType(f"registry_identity_{name}")
         monkeypatch.setitem(sys.modules, runtime.__name__, runtime)

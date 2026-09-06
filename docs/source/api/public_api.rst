@@ -574,23 +574,45 @@ against an explicit ``InitialNativeIsland`` of already-loaded plain modules.
 Import handles are captured from the initial ``sys.modules`` registry by object
 identity, including registered aliases; display names do not supply handles.
 It follows bindings at their capture position and applies subsequent attribute
-access at the later read position. Module-slot writes are checked against the
-actual receiver object. Frame-builtin dictionary lookup remains distinct from
-module attribute lookup; native module data-descriptor access stays open.
+access at the later read position. ``NativeNamespace`` owns an actual dictionary
+and its captured initial entries. Only exact dictionaries with exact string keys
+are admitted, before any lookup or copying; query keys are also exact strings.
+The island derives module storage from the modules themselves and admits extra
+frame storages explicitly. Each storage identity has one retained namespace owner.
+
+``InitialNativeFrame`` retains the admitted locals, globals and captured-builtins
+namespace owners. Initial absence is distinct from unproved access, so only proved
+absence permits lookup to continue to the next namespace. Module attribute writes,
+lexical bindings and raw dictionary writes refer to the same underlying storage
+identity. Unknown item keys remain conservative for writes to the queried storage.
+``CapturedSlotQuery`` checks writes between a selected binding's installation and
+its use through the shared positioned mutation relation. A raw dictionary write
+can invalidate a saved alias or import binding; an earlier write does not
+invalidate a later installation when that ordering is proved. Loops and unordered
+evaluation retain their possible-write obligations.
+Frame-builtin dictionary lookup remains distinct from module attribute lookup;
+native module data-descriptor access stays open.
 Aliased dotted imports also remain open until their attribute traversal is
 proved. Analysed imports are never executed.
 
-The mandatory ``CapturedReferenceEffectsABC`` provider admits the surrounding
-execution prefix, including implicit effects and initial frame lookup. There
-is no permissive production provider. Unproved effects, bindings, accesses or
-write receivers produce ``OpenCapturedReference``. Existing native-admission
-gates are not yet integrated with this kernel.
+The mandatory ``CapturedReferenceEffectsABC.admit`` provider supplies the actual
+frame for the source context and position, together with proof of the surrounding
+execution prefix, including implicit effects. The kernel verifies that the frame
+uses the island's namespace owners; independently reconstructed snapshots do not
+supply that receipt. Source parentage and a global named ``__builtins__`` do not
+establish the frame's captured dictionary. There is no permissive production
+provider. Unproved effects, bindings, accesses or write receivers produce
+``OpenCapturedReference``. Existing native-admission gates are not yet integrated
+with this kernel.
 
 ``CapturedNativeObject.require_native_identity`` compares the actual object
 with ``NativeDeclaration.declaration``. Identity alone does not establish that
 mutable implementation or execution behaviour is unchanged. The
 :download:`captured-reference batch <../../examples/captured_reference_queries.json>`
 replays the authored DSL stages against ``ab7f585``.
+The :download:`native-frame namespace batch <../../examples/native_frame_namespaces.json>`
+replays 32 stages against ``66fb646`` and replaces the initial module-only lookup
+contract with actual frame namespace admission.
 
 ``ResolvedCompactFunctionTarget.for_object_mutation`` projects decorated or
 class-owned function declarations to an unbounded object target. A decorator
