@@ -72,8 +72,8 @@ selection for lexical and class-method lookup. Explicit use positions select
 the preceding write or the parameter's entry binding; deferred module and class
 namespace lookup uses the final write. Deferred closure lookup with multiple
 possible bindings remains unresolved, including an entry value followed by a
-write. Conditional
-writes also remain unresolved. Bound call-result queries use the same write
+write. Conditional writes that may precede the captured use also remain
+unresolved; proved future writes do not obscure an earlier value. Bound call-result queries use the same write
 selection. For an attribute result such as ``owner.child.result``, replacing
 ``owner`` or ``owner.child`` invalidates that result's provenance. Receiver
 writes also leave attribute results unproved: different lexical receiver names
@@ -115,6 +115,25 @@ Attribute reads retain their lexical subexpressions in evaluation order, so
 derives ``callable_escapes`` from all retained non-call uses, including unresolved
 targets. Collection does not filter reads against a separate inventory of
 function, method or import names.
+
+``CompactFunctionFlow.evaluated_results`` retains immediate value dispositions
+for assignments, assignment expressions, expression statements and returns.
+``CompactEvaluatedResult`` owns the captured value use, destination, disposition
+position and exact statement span. A bare return has no value use; an explicit
+``return None`` retains its expression. A directly evaluated call shares the
+same ``CompactValueDestination`` object as its enclosing result. Nested calls
+retain their own destinations. Assignment destination selection belongs to
+``CompactValueDestination.for_assignment``. Exact alias recording derives its
+lexical reference from the captured result instead of projecting the RHS again.
+
+``CompactFlowPosition.may_precede`` excludes proved future events within one
+flow. ``CompactControlBranchKind`` owns repeating-suite and try-stage ordering.
+Shared loop bodies and repeated header evaluations remain conservative across
+iterations. These receipts describe captured values, not completed function
+paths: a later ``finally`` return can replace an earlier return, and unresolved
+calls or definition execution still need their own proof. The
+:download:`evaluated-result refactor <../../examples/evaluated_flow_results.json>`
+applies 22 authored DSL stages against ``ebb6476``.
 
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
 ``LexicalScopeBindingAuthority`` and import-name/origin projection.

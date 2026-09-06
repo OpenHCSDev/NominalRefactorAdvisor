@@ -1,0 +1,487 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-rename_top_level_declaration_authority",
+          "operations": [
+            {
+              "operation": "rename_top_level_declaration_authority",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallResultUse",
+              "rationale": "",
+              "new_name": "CompactValueDestinationKind"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-rename_top_level_declaration_authority",
+          "operations": [
+            {
+              "operation": "rename_top_level_declaration_authority",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallResult",
+              "rationale": "",
+              "new_name": "CompactValueDestination"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "Immediate call-result use with member-owned binding requirements.",
+                  "new_source": "Immediate value destination with member-owned binding requirements."
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueDestinationKind",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "Validated call-result use and its declaration-owned binding payload.",
+                  "new_source": "Validated value destination and its declaration-owned binding payload."
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueDestination",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "call-result binding",
+                  "new_source": "value binding"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueDestinationKind.validate_binding",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactValueDestination",
+              "rationale": "",
+              "source": "@classmethod\ndef for_assignment(cls, targets: tuple[ast.expr, ...] | list[ast.expr]) -> Self:\n    binding = LexicalValueReference.from_expression(targets[0]) if len(targets) == 1 else None\n    return cls(CompactValueDestinationKind.EMBEDDED) if binding is None else cls(CompactValueDestinationKind.BOUND, binding)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-insert_before_target",
+          "operations": [
+            {
+              "operation": "insert_before_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactCallableReferenceUse",
+              "rationale": "",
+              "source": "@dataclass(frozen=True)\nclass CompactEvaluatedResult:\n    \"\"\"An evaluated value and its immediate disposition, not a completed path proof.\n\n    A missing value use denotes the implicit None of a bare return.\n    The position records disposition after expression evaluation; a\n    finally suite or enclosing activation can still affect completion.\n    \"\"\"\n\n    destination: CompactValueDestination\n    value_use: CompactValueUse | None\n    position: CompactFlowPosition\n    source_span: SourceByteSpan\n\n    line = AliasProperty[int](\"source_span.start_line\")\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    calls: tuple[CompactFunctionCall, ...]\n",
+                  "new_source": "    calls: tuple[CompactFunctionCall, ...]\n    evaluated_results: tuple[CompactEvaluatedResult, ...]\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        self.calls: list[CompactFunctionCall] = []\n",
+                  "new_source": "        self.calls: list[CompactFunctionCall] = []\n        self.evaluated_results: list[CompactEvaluatedResult] = []\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.__init__",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            calls=tuple(self.calls),\n",
+                  "new_source": "            calls=tuple(self.calls),\n            evaluated_results=tuple(self.evaluated_results),\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.collect",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector",
+              "rationale": "",
+              "source": "def _capture_result(\n    self, expression: ast.expr | None, destination: CompactValueDestination,\n    statement: SourcePositionedNode,\n) -> CompactEvaluatedResult:\n    if isinstance(expression, ast.Call):\n        self.call_results[id(expression)] = destination\n    value_use = None if expression is None else self._capture_value(expression)\n    result = CompactEvaluatedResult(\n        destination, value_use, self._position(), SourceByteSpan.require_node(statement),\n    )\n    self.evaluated_results.append(result)\n    return result\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Assign",
+              "rationale": "",
+              "replacement_source": "def visit_Assign(self, node: ast.Assign) -> None:\n    self._capture_result(node.value, CompactValueDestination.for_assignment(node.targets), node)\n    mutations = self._visit_mutation_targets(node.targets, CompactMutationKind.ASSIGNMENT)\n    source = LexicalValueReference.from_expression(node.value)\n    self._record_exact_value_aliases(node.targets, source, mutations)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_AnnAssign",
+              "rationale": "",
+              "replacement_source": "def visit_AnnAssign(self, node: ast.AnnAssign) -> None:\n    if node.value is None:\n        self.mutation_targets.visit(node.target)\n        if not (isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope):\n            return\n    else:\n        self._capture_result(node.value, CompactValueDestination.for_assignment((node.target,)), node)\n    mutations = self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)\n    source = None if node.value is None else LexicalValueReference.from_expression(node.value)\n    self._record_exact_value_aliases((node.target,), source, mutations)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_NamedExpr",
+              "rationale": "",
+              "replacement_source": "def visit_NamedExpr(self, node: ast.NamedExpr) -> None:\n    self._capture_result(node.value, CompactValueDestination.for_assignment((node.target,)), node)\n    self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Return",
+              "rationale": "",
+              "replacement_source": "def visit_Return(self, node: ast.Return) -> None:\n    self._capture_result(node.value, CompactValueDestination(CompactValueDestinationKind.RETURNED), node)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Expr",
+              "rationale": "",
+              "replacement_source": "def visit_Expr(self, node: ast.Expr) -> None:\n    self._capture_result(node.value, CompactValueDestination(CompactValueDestinationKind.DISCARDED), node)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactControlBranchKind",
+              "rationale": "",
+              "replacement_source": "class CompactControlBranchKind(StrEnum):\n    \"\"\"Child-suite repetition and try completion order for flow reasoning.\"\"\"\n\n    IF_BODY = \"if_body\", False, None\n    IF_ELSE = \"if_else\", False, None\n    LOOP_BODY = \"loop_body\", True, None\n    LOOP_ELSE = \"loop_else\", False, None\n    TRY_BODY = \"try_body\", False, 0\n    TRY_HANDLER = \"try_handler\", False, 1\n    TRY_ELSE = \"try_else\", False, 2\n    TRY_FINALLY = \"try_finally\", False, 3\n    WITH_BODY = \"with_body\", False, None\n    MATCH_CASE = \"match_case\", False, None\n\n    def __new__(\n        cls, value: str, can_repeat: bool, completion_phase: int | None\n    ) -> Self:\n        member = str.__new__(cls, value)\n        member._value_ = value\n        member.can_repeat = can_repeat\n        member._completion_phase = completion_phase\n        return member\n\n    def may_precede(self, other: CompactControlBranchKind) -> bool:\n        \"\"\"Known try stages order execution; other sibling suites remain open.\"\"\"\n        return (\n            self._completion_phase is None\n            or other._completion_phase is None\n            or self._completion_phase <= other._completion_phase\n        )\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFlowPosition",
+              "rationale": "",
+              "source": "def may_precede(self, other: CompactFlowPosition) -> bool:\n    \"\"\"Exclude proved future events, retaining loop and header ambiguity.\"\"\"\n    for source, destination in zip(self.branch_path, other.branch_path):\n        if source != destination:\n            if source.parent_statement_index != destination.parent_statement_index:\n                return source.parent_statement_index < destination.parent_statement_index\n            return source.kind.may_precede(destination.kind)\n        if source.kind.can_repeat:\n            return True\n    common_depth = min(len(self.branch_path), len(other.branch_path))\n    if len(self.branch_path) > common_depth:\n        return self.branch_path[common_depth].parent_statement_index <= other.statement_index\n    if len(other.branch_path) > common_depth:\n        return self.statement_index <= other.branch_path[common_depth].parent_statement_index\n    return (self.statement_index, self.event_index) <= (\n        other.statement_index, other.event_index\n    )\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        if any(mutation.position.branch_path for mutation in mutations):\n",
+                  "new_source": "        if any(\n            mutation.position.branch_path\n            and (use_position is None or mutation.position.may_precede(use_position))\n            for mutation in mutations\n        ):\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactFunctionFlow._binding_resolution_for_mutations",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "CompactEvaluatedResult",
+              "rationale": "",
+              "source": "@property\ndef lexical_reference(self) -> LexicalValueReference | None:\n    return None if self.value_use is None else self.value_use.lexical_reference\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_Assign",
+              "rationale": "",
+              "replacement_source": "def visit_Assign(self, node: ast.Assign) -> None:\n    result = self._capture_result(\n        node.value, CompactValueDestination.for_assignment(node.targets), node\n    )\n    mutations = self._visit_mutation_targets(node.targets, CompactMutationKind.ASSIGNMENT)\n    self._record_exact_value_aliases(node.targets, result.lexical_reference, mutations)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_target",
+          "operations": [
+            {
+              "operation": "replace_target",
+              "file_path": "nominal_refactor_advisor/product_flow.py",
+              "target_qualname": "_CompactFlowCollector.visit_AnnAssign",
+              "rationale": "",
+              "replacement_source": "def visit_AnnAssign(self, node: ast.AnnAssign) -> None:\n    source = None\n    if node.value is None:\n        self.mutation_targets.visit(node.target)\n        if not (isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope):\n            return\n    else:\n        result = self._capture_result(\n            node.value, CompactValueDestination.for_assignment((node.target,)), node\n        )\n        source = result.lexical_reference\n    mutations = self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)\n    self._record_exact_value_aliases((node.target,), source, mutations)\n",
+              "contributors": []
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

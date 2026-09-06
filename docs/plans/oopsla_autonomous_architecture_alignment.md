@@ -2294,3 +2294,107 @@ No tests are excluded or marked as expected failures. Receipts are
 `/tmp/nra-nominal-import-final-{311,314}.log`. The native-identity investigations
 remain uncommitted and unsuppressed; this batch supplies the import evidence
 needed by their next proof step rather than claiming those cases are repaired.
+
+### 2026-09-06: Evaluated results and retirement of unsupported registry advice
+
+The existing call destination declaration now serves all immediate evaluated
+values. `CompactValueDestination` owns assignment destination selection;
+`CompactEvaluatedResult` retains the captured value, destination, disposition
+position and source span. Direct calls share the actual destination object with
+their enclosing result. The collector uses one capture method for assignments,
+named expressions, expression statements and returns, including bare returns.
+This preserves the missing return-to-caller evidence without adding a second
+call-only or return-only classification table.
+
+An independent native-backed test exposed an existing ordering defect: a later
+`finally` write made an earlier captured return value ambiguous. The shared
+`CompactFlowPosition.may_precede` relation now excludes proved future writes.
+Branch-kind declarations own repetition and try-stage ordering; consumers do
+not dispatch on branch names. Shared loop bodies and repeated loop headers keep
+prior-iteration effects possible. The original local mutation set remains
+available, so a local assigned only later cannot accidentally fall through to
+an outer binding. The 32-case new test file covers these distinctions, source
+spans, bare and explicit None, nested calls, pickle identity and AST-free records.
+These are capture and ordering proofs, not proof that a function completes with
+one of its syntactic return values.
+
+The registry audit traced the previous `SourceTopLevelDeclaration` warning to
+unavailable inherited configuration and a heuristic that missed delegated
+registered-type traversal. That warning prescribed a registry redesign without
+a supported equivalent transformation: its evaluator rejected every candidate.
+The detector, evaluator and exclusive metrics/helpers are removed. A second
+pass removes unused factory-reference records and the repeated AST walks that
+collected them. Live registry keys, projections and sparse receiver consumers
+remain covered. The six production files lose 632 net lines. Generated catalogues
+derive the retirement from the deleted declaration, including stale-page cleanup.
+
+The independent planner rejection gate now uses an explicitly introduced test
+obligation rather than depending on that misleading warning. A real supported
+registry factoring trajectory reaches a proved terminal, and native selection
+in the existing declaration family remains unchanged. Agent validation passes
+261 related tests. Its initial single-line class fixture separately exposed a
+header/body span conflict in the registry codemod; the multiline control passes.
+That source-edit conflict is recorded for repair, not represented as fixed here.
+
+The authored artifacts are `docs/examples/evaluated_flow_results.json` (22 stages)
+and `docs/examples/retire_registry_rent.json` (43 stages), both based on `ebb6476`.
+The result plan replays to matching production ASTs; the retirement plan matches
+all six files byte-for-byte. A result-plan mismatch was an inserted multiline
+docstring whose indentation Black changed; the final one-line description keeps
+the replay exact without normalising away AST differences. API facts and design
+rationale remain separate under the Diataxis reference/explanation distinction.
+
+Initial full suites encountered `/tmp` per-user quota errors despite available
+filesystem blocks. They are not acceptance runs. Subsequent validation uses
+independent temporary roots on `/var/tmp`. The retained 599 MiB preview cache
+was moved recoverably to `/var/tmp/nra-recovered-cache-LUq9K9/ranger`; project
+data and environments were not removed. CLI validation uses an explicit budget
+after the default 20-second deadline expired under parallel load.
+
+The next execution relation still needs actual call-result capture, invocation
+context and completion evidence. A read-only native probe demonstrates why:
+ordinary and async functions with the same return body currently produce equal
+compact flows but different native result kinds. Function execution mode must
+belong to its declaration before a source-known return can certify a call result.
+The 12 native/definition identity counterexamples remain pending and unsuppressed.
+
+The initial frozen batch passes 2,614 tests with 15 skipped on Python 3.11 and
+2,629 on Python 3.14, retaining exactly the same 12 pending failures. The full
+failure IDs match the preceding `ebb6476` runs. Receipts are
+`/tmp/nra-evaluated-retirement-final-{311,314}.log`. Current-implementation CLI
+replays pass, and the touched-source audit with package context completes all
+80 remaining detectors with zero omissions and findings. Sphinx succeeds with
+the two existing duplicate-description warnings on a fresh build. The
+retirement is committed and pushed as `19adc90`.
+
+On the identical 131-module source corpus, calls, reads and writes remain
+26,788 / 107,046 / 28,242. New evaluated receipts increase pickle size from
+22,226,970 to 25,402,920 bytes. Repeated construction while retaining the prior
+snapshot rises from about 2.6 to 4.2 seconds. Instrumentation attributes about
+96% of that difference to a second automatic full-heap collection; visitor
+counts remain identical. With no prior snapshot retained, measured construction
+is about 3.0 versus 3.2 seconds. This is a real retained-graph cost, not a general
+speedup or proof that collection overhead is resolved. Production GC settings
+and record layouts are unchanged.
+
+The profile also finds a concrete redundant RHS projection introduced by result
+capture. Assignment alias recording now derives the lexical reference from its
+captured result. Seven isolated controls retain byte-identical projections and
+the full corpus avoids 10,405 redundant lexical projections. This corrects
+ownership without a demonstrated wall-time gain or pickle-size reduction.
+Full profiling evidence is in `/var/tmp/nra_evaluated_result_performance.md`.
+
+Final post-sharing suites pass 2,618 tests with 15 skipped on Python 3.11 and
+2,633 on Python 3.14. Both retain exactly the preceding 12 failure IDs; none are
+excluded or marked as expected failures. The final 22-stage API and current-CLI
+replays pass, as does the package-context audit (80 detectors, zero omissions
+and findings). Receipts are `/tmp/nra-evaluated-flow-final-{311,314}.log`,
+`/tmp/nra-evaluated-result-{replay.log,cli-replay.json}` and
+`/tmp/nra-evaluated-flow-final-audit.json`.
+
+A further read-only audit finds a separate native counterexample in type-keyed
+descent: a counterfeit same-named `mro_registry_value` helper is accepted and
+the clean simulation changes native output. The reproducer is
+`/var/tmp/nra_registry_prescription_probe.py`. This points to another consumer
+needing the shared native-binding relation, rather than a separate terminal-name
+or module-name exception. It is not claimed repaired by this capture batch.

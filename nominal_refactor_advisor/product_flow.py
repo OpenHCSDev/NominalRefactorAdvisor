@@ -260,18 +260,35 @@ class CompactFlowOwnerKind(StrEnum):
 
 
 class CompactControlBranchKind(StrEnum):
-    """Typed child suites needed for conservative dominance reasoning."""
+    """Child-suite repetition and try completion order for flow reasoning."""
 
-    IF_BODY = "if_body"
-    IF_ELSE = "if_else"
-    LOOP_BODY = "loop_body"
-    LOOP_ELSE = "loop_else"
-    TRY_BODY = "try_body"
-    TRY_HANDLER = "try_handler"
-    TRY_ELSE = "try_else"
-    TRY_FINALLY = "try_finally"
-    WITH_BODY = "with_body"
-    MATCH_CASE = "match_case"
+    IF_BODY = "if_body", False, None
+    IF_ELSE = "if_else", False, None
+    LOOP_BODY = "loop_body", True, None
+    LOOP_ELSE = "loop_else", False, None
+    TRY_BODY = "try_body", False, 0
+    TRY_HANDLER = "try_handler", False, 1
+    TRY_ELSE = "try_else", False, 2
+    TRY_FINALLY = "try_finally", False, 3
+    WITH_BODY = "with_body", False, None
+    MATCH_CASE = "match_case", False, None
+
+    def __new__(
+        cls, value: str, can_repeat: bool, completion_phase: int | None
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.can_repeat = can_repeat
+        member._completion_phase = completion_phase
+        return member
+
+    def may_precede(self, other: CompactControlBranchKind) -> bool:
+        """Known try stages order execution; other sibling suites remain open."""
+        return (
+            self._completion_phase is None
+            or other._completion_phase is None
+            or self._completion_phase <= other._completion_phase
+        )
 
 
 class CompactBindingOperationABC(ABC):
@@ -442,8 +459,8 @@ class CompactMutationKind(StrEnum):
         self.binding_operation.validate_import_origin(origin)
 
 
-class CompactCallResultUse(StrEnum):
-    """Immediate call-result use with member-owned binding requirements."""
+class CompactValueDestinationKind(StrEnum):
+    """Immediate value destination with member-owned binding requirements."""
 
     BOUND = "bound", True
     RETURNED = "returned", False
@@ -458,7 +475,7 @@ class CompactCallResultUse(StrEnum):
 
     def validate_binding(self, binding: "LexicalValueReference | None") -> None:
         if (binding is not None) != self._requires_binding:
-            raise ValueError(f"{self.value} call-result binding does not match its use")
+            raise ValueError(f"{self.value} value binding does not match its use")
 
 
 @dataclass(frozen=True)
@@ -474,11 +491,24 @@ class CompactFunctionIdentity:
 
 
 @dataclass(frozen=True)
-class CompactCallResult:
-    """Validated call-result use and its declaration-owned binding payload."""
+class CompactValueDestination:
+    """Validated value destination and its declaration-owned binding payload."""
 
-    use: CompactCallResultUse
+    use: CompactValueDestinationKind
     binding: LexicalValueReference | None = None
+
+    @classmethod
+    def for_assignment(cls, targets: tuple[ast.expr, ...] | list[ast.expr]) -> Self:
+        binding = (
+            LexicalValueReference.from_expression(targets[0])
+            if len(targets) == 1
+            else None
+        )
+        return (
+            cls(CompactValueDestinationKind.EMBEDDED)
+            if binding is None
+            else cls(CompactValueDestinationKind.BOUND, binding)
+        )
 
     def __post_init__(self) -> None:
         self.use.validate_binding(self.binding)
@@ -902,6 +932,34 @@ class CompactFlowPosition:
     branch_path: tuple[CompactControlBranch, ...]
     statement_index: int
     event_index: int
+
+    def may_precede(self, other: CompactFlowPosition) -> bool:
+        """Exclude proved future events, retaining loop and header ambiguity."""
+        for source, destination in zip(self.branch_path, other.branch_path):
+            if source != destination:
+                if source.parent_statement_index != destination.parent_statement_index:
+                    return (
+                        source.parent_statement_index
+                        < destination.parent_statement_index
+                    )
+                return source.kind.may_precede(destination.kind)
+            if source.kind.can_repeat:
+                return True
+        common_depth = min(len(self.branch_path), len(other.branch_path))
+        if len(self.branch_path) > common_depth:
+            return (
+                self.branch_path[common_depth].parent_statement_index
+                <= other.statement_index
+            )
+        if len(other.branch_path) > common_depth:
+            return (
+                self.statement_index
+                <= other.branch_path[common_depth].parent_statement_index
+            )
+        return (self.statement_index, self.event_index) <= (
+            other.statement_index,
+            other.event_index,
+        )
 
     def dominates(self, other: "CompactFlowPosition") -> bool:
         if self.branch_path == other.branch_path:
@@ -1484,6 +1542,27 @@ class CompactValueUse:
 
 
 @dataclass(frozen=True)
+class CompactEvaluatedResult:
+    """An evaluated value and its immediate disposition, not a completed path proof.
+
+    A missing value use denotes the implicit None of a bare return.
+    The position records disposition after expression evaluation; a
+    finally suite or enclosing activation can still affect completion.
+    """
+
+    destination: CompactValueDestination
+    value_use: CompactValueUse | None
+    position: CompactFlowPosition
+    source_span: SourceByteSpan
+
+    line = AliasProperty[int]("source_span.start_line")
+
+    @property
+    def lexical_reference(self) -> LexicalValueReference | None:
+        return None if self.value_use is None else self.value_use.lexical_reference
+
+
+@dataclass(frozen=True)
 class CompactCallableReferenceUse:
     target: CompactCallTargetReference
     position: CompactFlowPosition
@@ -1513,7 +1592,7 @@ class CompactCallableReferenceUse:
 class CompactFunctionCall:
     target_use: CompactCallableReferenceUse
     arguments: CompactCallArguments[CompactValueUse]
-    result: CompactCallResult
+    result: CompactValueDestination
     position: CompactFlowPosition
     source_span: SourceByteSpan
 
@@ -1522,7 +1601,7 @@ class CompactFunctionCall:
     line = AliasProperty[int]("source_span.start_line")
 
     @property
-    def result_use(self) -> CompactCallResultUse:
+    def result_use(self) -> CompactValueDestinationKind:
         return self.result.use
 
     @property
@@ -1536,7 +1615,7 @@ class CompactFunctionCall:
 
     def product_construction(self) -> "CompactProductConstruction | None":
         if (
-            self.result.use is not CompactCallResultUse.BOUND
+            self.result.use is not CompactValueDestinationKind.BOUND
             or self.result.binding is None
             or self.arguments.positional
             or any(argument.is_unpacked for argument in self.arguments.keywords)
@@ -1815,6 +1894,7 @@ class CompactFunctionFlow:
     owner: CompactFlowOwner
     lexical_scope_qualnames: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
+    evaluated_results: tuple[CompactEvaluatedResult, ...]
     callable_reference_uses: tuple[CompactCallableReferenceUse, ...]
     mutations: tuple[CompactMutation, ...]
     exact_value_aliases: tuple[CompactExactValueAlias, ...]
@@ -1853,7 +1933,11 @@ class CompactFunctionFlow:
         root_name: str,
     ) -> CompactBindingSource | None:
         """Select a positioned write before materialising declaration entry evidence."""
-        if any(mutation.position.branch_path for mutation in mutations):
+        if any(
+            mutation.position.branch_path
+            and (use_position is None or mutation.position.may_precede(use_position))
+            for mutation in mutations
+        ):
             return OpenCompactBindingMutation(
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
@@ -2166,6 +2250,24 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
 class _CompactFlowCollector(ast.NodeVisitor):
     """Collect one source scope without descending into nested scope bodies."""
 
+    def _capture_result(
+        self,
+        expression: ast.expr | None,
+        destination: CompactValueDestination,
+        statement: SourcePositionedNode,
+    ) -> CompactEvaluatedResult:
+        if isinstance(expression, ast.Call):
+            self.call_results[id(expression)] = destination
+        value_use = None if expression is None else self._capture_value(expression)
+        result = CompactEvaluatedResult(
+            destination,
+            value_use,
+            self._position(),
+            SourceByteSpan.require_node(statement),
+        )
+        self.evaluated_results.append(result)
+        return result
+
     def visit_Subscript(self, node: ast.Subscript) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self._record_target_mutation(node)
@@ -2200,6 +2302,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.current_class_qualname = current_class_qualname
         self.current_class_receiver_name = current_class_receiver_name
         self.calls: list[CompactFunctionCall] = []
+        self.evaluated_results: list[CompactEvaluatedResult] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactMutation] = []
         self.exact_value_aliases: list[CompactExactValueAlias] = []
@@ -2208,7 +2311,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self.branch_path: tuple[CompactControlBranch, ...] = ()
         self.statement_index = 0
         self.event_index = 0
-        self.call_results: dict[int, CompactCallResult] = {}
+        self.call_results: dict[int, CompactValueDestination] = {}
         self.mutation_kind = CompactMutationKind.ASSIGNMENT
         self.mutation_targets = _CompactMutationTargetCollector(self)
 
@@ -2218,6 +2321,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             owner=self.owner,
             lexical_scope_qualnames=self.lexical_scope_qualnames,
             calls=tuple(self.calls),
+            evaluated_results=tuple(self.evaluated_results),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
             exact_value_aliases=tuple(self.exact_value_aliases),
@@ -2313,7 +2417,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             node, self._capture_value
         )
         result = self.call_results.get(
-            id(node), CompactCallResult(CompactCallResultUse.EMBEDDED)
+            id(node), CompactValueDestination(CompactValueDestinationKind.EMBEDDED)
         )
         self.calls.append(
             CompactFunctionCall(
@@ -2346,45 +2450,31 @@ class _CompactFlowCollector(ast.NodeVisitor):
             self.callable_reference_uses.append(self._callable_reference_use(node))
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if len(node.targets) == 1 and isinstance(node.value, ast.Call):
-            binding = LexicalValueReference.from_expression(node.targets[0])
-            if binding is not None:
-                self.call_results[id(node.value)] = CompactCallResult(
-                    CompactCallResultUse.BOUND,
-                    binding,
-                )
-        self.visit(node.value)
-        mutations = self._visit_mutation_targets(
-            node.targets,
-            CompactMutationKind.ASSIGNMENT,
+        result = self._capture_result(
+            node.value, CompactValueDestination.for_assignment(node.targets), node
         )
-        source = LexicalValueReference.from_expression(node.value)
-        self._record_exact_value_aliases(node.targets, source, mutations)
+        mutations = self._visit_mutation_targets(
+            node.targets, CompactMutationKind.ASSIGNMENT
+        )
+        self._record_exact_value_aliases(
+            node.targets, result.lexical_reference, mutations
+        )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        source = None
         if node.value is None:
             self.mutation_targets.visit(node.target)
             if not (
                 isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope
             ):
                 return
-        if isinstance(node.value, ast.Call):
-            binding = LexicalValueReference.from_expression(node.target)
-            if binding is not None:
-                self.call_results[id(node.value)] = CompactCallResult(
-                    CompactCallResultUse.BOUND,
-                    binding,
-                )
-        if node.value is not None:
-            self.visit(node.value)
+        else:
+            result = self._capture_result(
+                node.value, CompactValueDestination.for_assignment((node.target,)), node
+            )
+            source = result.lexical_reference
         mutations = self._visit_mutation_targets(
-            (node.target,),
-            CompactMutationKind.ASSIGNMENT,
-        )
-        source = (
-            None
-            if node.value is None
-            else LexicalValueReference.from_expression(node.value)
+            (node.target,), CompactMutationKind.ASSIGNMENT
         )
         self._record_exact_value_aliases((node.target,), source, mutations)
 
@@ -2395,33 +2485,27 @@ class _CompactFlowCollector(ast.NodeVisitor):
         self._record_mutation(target, node, CompactMutationKind.AUGMENTED_ASSIGNMENT)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        if isinstance(node.value, ast.Call):
-            binding = LexicalValueReference.from_expression(node.target)
-            if binding is not None:
-                self.call_results[id(node.value)] = CompactCallResult(
-                    CompactCallResultUse.BOUND,
-                    binding,
-                )
-        self.visit(node.value)
+        self._capture_result(
+            node.value, CompactValueDestination.for_assignment((node.target,)), node
+        )
         self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)
 
     def visit_Delete(self, node: ast.Delete) -> None:
         self._visit_mutation_targets(node.targets, CompactMutationKind.DELETION)
 
     def visit_Return(self, node: ast.Return) -> None:
-        if isinstance(node.value, ast.Call):
-            self.call_results[id(node.value)] = CompactCallResult(
-                CompactCallResultUse.RETURNED
-            )
-        if node.value is not None:
-            self.visit(node.value)
+        self._capture_result(
+            node.value,
+            CompactValueDestination(CompactValueDestinationKind.RETURNED),
+            node,
+        )
 
     def visit_Expr(self, node: ast.Expr) -> None:
-        if isinstance(node.value, ast.Call):
-            self.call_results[id(node.value)] = CompactCallResult(
-                CompactCallResultUse.DISCARDED
-            )
-        self.visit(node.value)
+        self._capture_result(
+            node.value,
+            CompactValueDestination(CompactValueDestinationKind.DISCARDED),
+            node,
+        )
 
     def _visit_mutation_targets(
         self,

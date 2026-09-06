@@ -12,7 +12,7 @@ from nominal_refactor_advisor.product_flow import (
     BareCallTargetReference,
     CompactCallArgument,
     CompactCallBindingViolation,
-    CompactCallResultUse,
+    CompactValueDestinationKind,
     CompactControlBranchKind,
     CompactFunctionBindingKind,
     CompactFunctionSignature,
@@ -33,7 +33,6 @@ from nominal_refactor_advisor.product_flow import (
     OpenCompactBindingMutation,
     compact_product_flow_projection,
 )
-
 
 def _parsed_module(source: str) -> ParsedModule:
     return ParsedModule(
@@ -432,7 +431,7 @@ def test_product_flow_projection_preserves_complete_construction_forwarding_cont
     assert construction.field_names == ("left", "right")
     assert construction.result_binding == LexicalValueReference("cache_key")
     assert construction.position.dominates(consumer_call.position)
-    assert consumer_call.result_use is CompactCallResultUse.RETURNED
+    assert consumer_call.result_use is CompactValueDestinationKind.RETURNED
     assert isinstance(consumer_call.target, BareCallTargetReference)
     assert wrapper.local_candidate_symbols(consumer_call.target, "pkg.sample") == (
         "pkg.sample.wrapper.consume",
