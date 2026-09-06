@@ -1248,7 +1248,9 @@ class CompactValueUse:
 class CompactCallableReferenceUse:
     target: CompactCallTargetReference
     position: CompactFlowPosition
-    line: int
+    source_span: SourceByteSpan
+
+    line = AliasProperty[int]("source_span.start_line")
 
     def resolve(
         self,
@@ -1278,9 +1280,7 @@ class CompactFunctionCall:
 
     target = AliasProperty[CompactCallTargetReference]("target_use.target")
 
-    @property
-    def line(self) -> int:
-        return self.source_span.start_line_index + 1
+    line = AliasProperty[int]("source_span.start_line")
 
     @property
     def result_use(self) -> CompactCallResultUse:
@@ -2048,7 +2048,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
         return CompactCallableReferenceUse(
             target=self._call_target(node),
             position=self._position(),
-            line=node.lineno,
+            source_span=SourceByteSpan.require_node(node),
         )
 
     def visit_Call(self, node: ast.Call) -> None:

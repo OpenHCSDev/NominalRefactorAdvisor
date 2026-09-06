@@ -258,6 +258,12 @@ not prove that the original call signature applies to such transfers.
 
 ``CompactFunctionCall.target_use`` retains a ``CompactCallableReferenceUse``
 at the callable's evaluation event, before argument evaluation.
+Each reference use retains its exact ``SourceByteSpan``. Its one-based ``line``
+is derived from that span, as it is for a call. Separate reads on the same line
+remain distinguishable, including UTF-8 names and multiline expressions. An
+exact alias retains the original reference-use object. The
+:download:`read-site geometry refactor <../../examples/read_site_geometry.py>`
+applies this representation change through five authored DSL stages.
 ``CompactFunctionCall.position`` identifies invocation after the arguments.
 The reference-use contract resolves both call targets and non-call references
 at their captured positions. Rebinding a callable name inside an argument does

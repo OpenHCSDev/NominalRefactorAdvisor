@@ -2063,3 +2063,47 @@ product. This existing gap is retained in
 safety metadata is a different obligation and cannot substitute for class
 creation identity. This batch supplies captured destinations and economical
 failure evidence, not a complete declaration-to-runtime-object proof.
+
+### 2026-09-06: Exact read sites before shared binding interpretation
+
+`CompactCallableReferenceUse` now retains the parser's full `SourceByteSpan`
+instead of a separately stored line. `SourceByteSpan.start_line` owns the
+one-based projection; calls and reference uses derive their line through
+`AliasProperty`. Same-line reads, UTF-8 names, multiline attribute access and
+call-target/argument sites remain distinguishable. Exact aliases retain their
+original source-use object. Five authored DSL stages in
+`docs/examples/read_site_geometry.py` implement this change from `bfa415e`.
+
+The focused span/flow checks pass 60 cases. Full suites include the pending
+native counterexamples: Python 3.11 passes 2,543 with 15 skipped and 12 failures;
+Python 3.14 passes 2,558 with the same 12 failures. Nine are the existing native
+namespace-integrity cases. Three newly retained native-execution cases show
+that a class decorator, function decorator or metaclass can bind a source
+definition name to `Product`, after which mutation through that name still
+leaves the product incorrectly authorised. Plain class/function controls pass.
+Those investigations remain uncommitted and unsuppressed. Receipts are
+`/tmp/nra-read-site-span-{311,314}.log`.
+
+The next shared boundary is the existing `CompactBindingSource` family, not
+another snapshot binder. Its positioned selection already exists; callers
+currently interpret nullable mutation and violation projections themselves.
+Moving that interpretation to nominal source dispatch must preserve current
+behaviour before changing alias suffix timing or post-definition identity.
+Captured geometry supplies an exact read-site join; it does not by itself prove
+native namespace integrity, decorator results or cross-flow effects.
+
+The five-stage plan replays through both the API and actual CLI against the
+baseline. Its generated ASTs match both current production modules. All 81
+detectors complete the touched-source audit with zero findings and omissions.
+Ruff, whitespace and Sphinx checks pass, with the same two pre-existing Sphinx
+duplicate-description warnings. The formatted focused rerun passes 60 cases.
+CLI and audit receipts are `/tmp/nra-read-site-cli-replay.json` and
+`/tmp/nra-read-site-audit.json`.
+
+On the same 131-module corpus, both versions retain 26,692 calls, 106,509 reads
+and 28,113 writes. Exact spans increase the pickled projection from 18,726,106
+to 22,137,667 bytes. Three-sample collection medians are 3.15 and 3.56 seconds
+under concurrent measurement; these are local cost observations, not a
+throughput guarantee. The added geometry buys an exact expression-site join
+that line numbers cannot supply. Receipts are
+`/tmp/nra-read-site-cost-{before,after}.json`.
