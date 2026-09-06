@@ -1721,3 +1721,50 @@ module ASTs from `81596d9`. All 81 detectors complete the touched-source audit
 with zero findings. Ruff and whitespace checks pass; Sphinx retains its two
 existing duplicate-description warnings. Diataxis keeps the ownership contract
 in the API reference and this investigation/measurement record here.
+
+## Declaration-derived initial binding sources (2026-09-06)
+
+Added parameter entry evidence to the shared binding selector without adding
+fake mutations or a parameter table. `CompactFlowOwner.initial_binding_for`
+supplies no entry binding for namespace scopes; the function declaration derives
+`InitialCompactParameterBinding` from its exact signature parameter object.
+
+The renamed `CompactBindingSource` owns two distinct questions. Its
+`value_origin` implementation can identify a parameter's entry value even when
+`target_lookup_violation` says that value is not a known callable. Selected
+mutation and unresolved-mutation leaves now own their value-origin execution;
+the flow no longer reconstructs that dispatch. The repository's separate
+parameter-name check is removed, allowing an actual assignment to a parameter
+to select its new callable normally.
+
+Entry evidence joins positioned writes in the existing selector. An entry value
+plus a later assignment remains ambiguous for a deferred closure, while a use
+before an unconditional reassignment retains the entry origin. Existing
+conditional-write conservatism remains unchanged. Six new runtime-backed cases
+failed before the change; all 254 focused cases pass afterwards, including
+self-aliasing entry values, captured arguments and deferred alternatives.
+
+The 21-stage `docs/examples/initial_binding_sources.py` plan applies through the
+CLI. Its final four stages make entry lookup lazy and search writes backwards,
+avoiding an entry-object construction when a positioned write already answers
+the query. Those final stages were applied as a continuation of the first 17;
+the complete plan retains the full replay. Receipts use `/tmp/nra-initial-binding-*`.
+
+Current-class receiver target selection still needs to consume this evidence at
+the captured target-use position. Receiver aliases now have an entry source to
+trace; uncertain lookups must preserve relevant candidate methods through the
+already-corrected escape boundary.
+
+Full suites pass 2,425 tests with 15 skipped on Python 3.11 and 2,440 tests on
+Python 3.14, with eight workers each (214/218 seconds). Python 3.14 retains
+its 96 existing warnings. The complete 21-stage plan reproduces both production
+module ASTs from `86f80dd`. All 81 detectors complete the touched-source audit
+with zero findings. Ruff and whitespace checks pass, and Sphinx retains its two
+existing duplicate-description warnings. Diataxis keeps the source contract
+and its control-flow limits in the API reference, separate from this work log.
+
+An eight-run alternating probe of 1,000 positioned lookups over 500 writes
+selects the same final write before and after the refactor. Median query time
+decreases from 0.0927 to 0.0162 seconds. This measures only repeated write
+selection, not whole-repository throughput; declaration entry lookup is skipped
+when the latest preceding write already supplies the binding.

@@ -1182,21 +1182,14 @@ class CompactProductFlowRepository(
                 ),
                 CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION,
             )
-        if context.declaration is not None and root_name in {
-            parameter.name for parameter in context.declaration.signature.parameters
-        }:
-            return OpenCompactFunctionTarget(
-                (".".join((context.owner_symbol, *reference.parts)),),
-                CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-            )
 
         selection = context.flow.binding_resolution_for(root_name, use_position)
         if selection is None:
             return None
-        if selection.violation is not None:
+        if selection.target_lookup_violation is not None:
             return OpenCompactFunctionTarget(
                 self._possible_binding_symbols(context, reference, pending_bindings),
-                selection.violation,
+                selection.target_lookup_violation,
             )
         binding = selection.mutation
         assert binding is not None

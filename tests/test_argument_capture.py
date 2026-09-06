@@ -28,6 +28,95 @@ def repository_for(source: str) -> CompactProductFlowRepository:
 
 
 @pytest.mark.parametrize(
+    "prefix,argument",
+    (
+        ("", "original"),
+        ("    selected = original\n", "selected"),
+        ("    original = original\n", "original"),
+    ),
+)
+def test_parameter_entry_origin_survives_later_argument_rebinding(
+    prefix: str,
+    argument: str,
+) -> None:
+    source = (
+        "def consume(first, second): return first\n"
+        "def run(original):\n"
+        f"{prefix}"
+        f"    return consume({argument}, (original := None))\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    original = object()
+    assert namespace["run"](original) is original
+    repository = repository_for(source)
+    context = repository.flow_contexts_by_owner_symbol["arguments.run"]
+    resolution = repository.resolve_function_call(context, context.flow.calls[-1])
+    assert resolution.argument_origin_resolutions[
+        0
+    ].exact_origin == LexicalValueReference("original")
+
+
+def test_parameter_entry_binding_uses_the_declared_parameter_not_a_fake_write() -> None:
+    repository = repository_for("def run(original):\n    return consume(original)\n")
+    context = repository.flow_contexts_by_owner_symbol["arguments.run"]
+    binding = context.flow.binding_resolution_for(
+        "original", context.flow.calls[0].target_use.position
+    )
+    assert binding is not None
+    assert binding.parameter is context.declaration.signature.parameters[0]
+    assert binding.mutation is None
+    assert context.flow.mutations == ()
+    assert (
+        context.flow.bound_call_result_for(
+            LexicalValueReference("original"), context.flow.calls[0].position
+        )
+        is None
+    )
+
+
+def test_rebinding_a_parameter_can_select_a_known_callable() -> None:
+    source = (
+        "def replacement(): return 'replacement'\n"
+        "def run(callback):\n"
+        "    callback = replacement\n"
+        "    return callback()\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["run"](None) == "replacement"
+    repository = repository_for(source)
+    context = repository.flow_contexts_by_owner_symbol["arguments.run"]
+    resolution = repository.resolve_function_call(context, context.flow.calls[-1])
+    assert resolution.target_resolution.declaration is not None
+    assert (
+        resolution.target_resolution.declaration.identity.symbol
+        == "arguments.replacement"
+    )
+
+
+def test_deferred_parameter_lookup_keeps_entry_and_assignment_alternatives_open() -> (
+    None
+):
+    source = (
+        "def replacement(): return 'replacement'\n"
+        "def run(callback):\n"
+        "    def invoke(): return callback()\n"
+        "    before = invoke()\n"
+        "    callback = replacement\n"
+        "    return before, invoke()\n"
+    )
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["run"](lambda: "entry") == ("entry", "replacement")
+    repository = repository_for(source)
+    context = repository.flow_contexts_by_owner_symbol["arguments.run.invoke"]
+    resolution = repository.resolve_function_call(context, context.flow.calls[0])
+    assert resolution.target_resolution.declaration is None
+    assert "arguments.replacement" in resolution.target_resolution.possible_symbols
+
+
+@pytest.mark.parametrize(
     "arguments",
     (
         "selected, (selected := None)",

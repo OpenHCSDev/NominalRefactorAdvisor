@@ -168,7 +168,7 @@ def test_deferred_closure_binding_keeps_multiple_writes_unresolved() -> None:
     resolution = flow.binding_resolution_for("value")
     assert isinstance(resolution, OpenCompactBindingMutation)
     assert (
-        resolution.violation
+        resolution.target_lookup_violation
         is CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
     )
 

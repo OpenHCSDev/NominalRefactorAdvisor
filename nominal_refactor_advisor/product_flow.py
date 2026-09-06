@@ -246,12 +246,11 @@ class CompactFlowOwnerKind(StrEnum):
         return member
 
     def deferred_binding_resolution(
-        self, mutations: tuple[CompactLexicalMutation, ...]
-    ) -> CompactBindingMutationResolution:
-        """Module and class bodies finish before deferred namespace lookup."""
-
-        if len(mutations) == 1 or not self.is_function_scope:
-            return ExactCompactBindingMutation(mutations[-1])
+        self, bindings: tuple[CompactBindingSource, ...]
+    ) -> CompactBindingSource:
+        """Completed namespaces select their final binding; closures retain alternatives."""
+        if len(bindings) == 1 or not self.is_function_scope:
+            return bindings[-1]
         return OpenCompactBindingMutation(
             CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
         )
@@ -756,44 +755,107 @@ class CompactFunctionTargetResolutionViolation(StrEnum):
     CYCLIC_BINDING = "cyclic_binding"
 
 
-class CompactBindingMutationResolution(ABC):
-    """The source write selected for a name, or an unresolved lookup obligation."""
+class CompactBindingSource(ABC):
+    """Selected source evidence, with distinct value and callable projections."""
+
+    @property
+    def mutation(self) -> CompactLexicalMutation | None:
+        return None
 
     @property
     @abstractmethod
-    def mutation(self) -> CompactLexicalMutation | None:
+    def target_lookup_violation(
+        self,
+    ) -> CompactFunctionTargetResolutionViolation | None:
+        """Whether this source cannot select a callable through a body write."""
         raise NotImplementedError
 
-    @property
     @abstractmethod
-    def violation(self) -> CompactFunctionTargetResolutionViolation | None:
+    def value_origin(
+        self,
+        flow: CompactFunctionFlow,
+        reference: LexicalValueReference,
+        visited_mutations: frozenset[CompactLexicalMutation],
+    ) -> CompactValueOriginResolution:
         raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class ExactCompactBindingMutation(CompactBindingMutationResolution):
+class ExactCompactBindingMutation(CompactBindingSource):
     selected_mutation: CompactLexicalMutation
+
+    def value_origin(
+        self,
+        flow: CompactFunctionFlow,
+        reference: LexicalValueReference,
+        visited_mutations: frozenset[CompactLexicalMutation],
+    ) -> CompactValueOriginResolution:
+        mutation = self.selected_mutation
+        possible_origins = flow._possible_alias_origins(
+            reference, flow.mutations_by_root_name[reference.root_name]
+        )
+        if mutation in visited_mutations:
+            return OpenCompactValueOrigin(
+                possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
+            )
+        alias = flow.exact_aliases_by_binding_mutation.get(mutation)
+        if alias is None:
+            return OpenCompactValueOrigin(
+                possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING
+            )
+        source_resolution = flow._value_origin_for(
+            alias.source, alias.source_position, visited_mutations | {mutation}
+        )
+        return source_resolution.through_alias(reference.attribute_path, mutation)
 
     @property
     def mutation(self) -> CompactLexicalMutation:
         return self.selected_mutation
 
     @property
-    def violation(self) -> None:
+    def target_lookup_violation(self) -> None:
         return None
 
 
 @dataclass(frozen=True)
-class OpenCompactBindingMutation(CompactBindingMutationResolution):
+class OpenCompactBindingMutation(CompactBindingSource):
     failure: CompactFunctionTargetResolutionViolation
 
-    @property
-    def mutation(self) -> None:
-        return None
+    def value_origin(
+        self,
+        flow: CompactFunctionFlow,
+        reference: LexicalValueReference,
+        visited_mutations: frozenset[CompactLexicalMutation],
+    ) -> CompactValueOriginResolution:
+        return OpenCompactValueOrigin(
+            flow._possible_alias_origins(
+                reference, flow.mutations_by_root_name[reference.root_name]
+            ),
+            CompactValueOriginViolation.AMBIGUOUS_BINDING,
+        )
 
     @property
-    def violation(self) -> CompactFunctionTargetResolutionViolation:
+    def target_lookup_violation(self) -> CompactFunctionTargetResolutionViolation:
         return self.failure
+
+
+@dataclass(frozen=True)
+class InitialCompactParameterBinding(CompactBindingSource):
+    """The entry value of the exact parameter declared by the flow owner."""
+
+    parameter: CompactFunctionParameter
+
+    @property
+    def target_lookup_violation(self) -> CompactFunctionTargetResolutionViolation:
+        return CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+
+    def value_origin(
+        self,
+        flow: CompactFunctionFlow,
+        reference: LexicalValueReference,
+        visited_mutations: frozenset[CompactLexicalMutation],
+    ) -> CompactValueOriginResolution:
+        return ExactCompactValueOrigin(reference)
 
 
 class CompactValueOriginViolation(StrEnum):
@@ -1110,6 +1172,9 @@ class CompactFlowOwner(ABC):
     kind: CompactFlowOwnerKind
     qualname: str
 
+    def initial_binding_for(self, root_name: str) -> CompactBindingSource | None:
+        return None
+
     @property
     @abstractmethod
     def declaration(self) -> CompactFunctionDeclaration | None:
@@ -1145,6 +1210,16 @@ class CompactFunctionDeclaration(CompactFlowOwner):
     kind = CompactFlowOwnerKind.FUNCTION
 
     qualname = AliasProperty[str]("identity.qualname")
+
+    def initial_binding_for(self, root_name: str) -> CompactBindingSource | None:
+        return next(
+            (
+                InitialCompactParameterBinding(parameter)
+                for parameter in self.signature.parameters
+                if parameter.name == root_name
+            ),
+            None,
+        )
 
     @property
     def declaration(self) -> CompactFunctionDeclaration:
@@ -1278,26 +1353,41 @@ class CompactFunctionFlow:
         self,
         mutations: tuple[CompactLexicalMutation, ...],
         use_position: CompactFlowPosition | None,
-    ) -> CompactBindingMutationResolution | None:
-        """Select a write once for both lexical and bound-result queries."""
-        if not mutations:
-            return None
+        root_name: str,
+    ) -> CompactBindingSource | None:
+        """Select a positioned write before materialising declaration entry evidence."""
         if any(mutation.position.branch_path for mutation in mutations):
             return OpenCompactBindingMutation(
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
+        if use_position is not None:
+            for mutation in reversed(mutations):
+                if mutation.position.dominates(use_position):
+                    return ExactCompactBindingMutation(mutation)
+        initial_binding = self.owner.initial_binding_for(root_name)
+        if not mutations:
+            return initial_binding
         if use_position is None:
-            return self.owner.kind.deferred_binding_resolution(mutations)
-        dominating = tuple(
-            mutation
-            for mutation in mutations
-            if mutation.position.dominates(use_position)
-        )
-        if not dominating:
-            return OpenCompactBindingMutation(
+            return self.owner.kind.deferred_binding_resolution(
+                tuple(
+                    binding
+                    for binding in chain(
+                        (initial_binding,),
+                        (
+                            ExactCompactBindingMutation(mutation)
+                            for mutation in mutations
+                        ),
+                    )
+                    if binding is not None
+                )
+            )
+        return (
+            initial_binding
+            if initial_binding is not None
+            else OpenCompactBindingMutation(
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
-        return ExactCompactBindingMutation(dominating[-1])
+        )
 
     @property
     def local_signature_is_observed(self) -> bool:
@@ -1314,10 +1404,10 @@ class CompactFunctionFlow:
 
     def binding_resolution_for(
         self, root_name: str, use_position: CompactFlowPosition | None = None
-    ) -> CompactBindingMutationResolution | None:
-        """Select one binding from ordered flow facts; absence permits outer lookup."""
+    ) -> CompactBindingSource | None:
+        """Select a declared entry binding or positioned write; absence permits outer lookup."""
         return self._binding_resolution_for_mutations(
-            self.mutations_by_root_name.get(root_name, ()), use_position
+            self.mutations_by_root_name.get(root_name, ()), use_position, root_name
         )
 
     @cached_property
@@ -1339,6 +1429,7 @@ class CompactFunctionFlow:
                 if mutation.reference.is_prefix_of(reference)
             ),
             use_position,
+            reference.root_name,
         )
         binding = None if selection is None else selection.mutation
         if binding is None or binding.kind is not CompactMutationKind.ASSIGNMENT:
@@ -1370,27 +1461,7 @@ class CompactFunctionFlow:
         selection = self.binding_resolution_for(reference.root_name, use_position)
         if selection is None:
             return ExactCompactValueOrigin(reference)
-        possible_origins = self._possible_alias_origins(
-            reference, self.mutations_by_root_name[reference.root_name]
-        )
-        mutation = selection.mutation
-        if mutation is None:
-            return OpenCompactValueOrigin(
-                possible_origins, CompactValueOriginViolation.AMBIGUOUS_BINDING
-            )
-        if mutation in visited_mutations:
-            return OpenCompactValueOrigin(
-                possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
-            )
-        alias = self.exact_aliases_by_binding_mutation.get(mutation)
-        if alias is None:
-            return OpenCompactValueOrigin(
-                possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING
-            )
-        source_resolution = self._value_origin_for(
-            alias.source, alias.source_position, visited_mutations | {mutation}
-        )
-        return source_resolution.through_alias(reference.attribute_path, mutation)
+        return selection.value_origin(self, reference, visited_mutations)
 
     def _possible_alias_origins(
         self,

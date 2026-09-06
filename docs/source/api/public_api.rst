@@ -67,10 +67,12 @@ hooks, cyclic graphs and inconsistent C3 orders remain open. Imported base
 resolution preserves qualified paths across analysis-root boundaries; an
 unrelated class with the same terminal name does not establish a binding.
 
-``CompactFunctionFlow.binding_resolution_for`` owns source-write selection for
-lexical and class-method lookup. Explicit use positions select the preceding
-write; deferred module and class namespace lookup uses the final write.
-Deferred closure lookup with multiple writes remains unresolved. Conditional
+``CompactFunctionFlow.binding_resolution_for`` owns entry-binding and source-write
+selection for lexical and class-method lookup. Explicit use positions select
+the preceding write or the parameter's entry binding; deferred module and class
+namespace lookup uses the final write. Deferred closure lookup with multiple
+possible bindings remains unresolved, including an entry value followed by a
+write. Conditional
 writes also remain unresolved. Bound call-result queries use the same write
 selection. For an attribute result such as ``owner.child.result``, replacing
 ``owner`` or ``owner.child`` invalidates that result's provenance; writes to
@@ -288,6 +290,19 @@ function names therefore retain their individual signatures and source sites;
 repository ambiguity checks remain separate. The :download:`flow ownership
 refactor <../../examples/flow_declaration_ownership.py>` removes the former
 name-based declaration join through the DSL.
+
+``CompactBindingSource`` separates value-origin evidence from callable lookup.
+``InitialCompactParameterBinding`` retains the exact parameter object from the
+owning signature and has no mutation event. Its value origin is that entry
+parameter; ``target_lookup_violation`` remains ``DYNAMIC_BINDING`` because an
+entry value does not identify a callable. Selected writes and unresolved writes
+implement the same value-origin contract through their own leaves. Parameters
+reassigned to known functions therefore use the ordinary write resolver.
+Entry bindings are constructed only when positioned write selection needs them.
+The :download:`initial binding refactor <../../examples/initial_binding_sources.py>`
+applies the shared source contract and removes the repository's separate
+parameter-name check. Current-class receiver rebinding is a remaining lookup
+obligation, not established by this entry-binding evidence alone.
 
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``
