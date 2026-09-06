@@ -500,6 +500,57 @@ objects or successful creation. The :download:`definition-owner refactor
 <../../examples/definition_flow_ownership.json>` applies authored DSL stages
 against ``72879a6``.
 
+``CompactFlowRead`` retains a ``CompactCallableReferenceUse`` together with its
+actual ``CompactFlowContext``. The module projection's
+``reference_reads_by_span`` derives unique reads from ``flow.reference_uses``,
+including call targets captured before argument evaluation. Duplicate or absent
+source spans have no selected read. A computed expression does not acquire the
+identity of a child expression. The index is module-qualified through its
+projection; iteration order is not execution order.
+
+The flow collector records eager module/class variable-annotation reads after
+assignment or target evaluation. Function-local annotations are not evaluated
+as body expressions. Lazy and stringised annotations are excluded from immediate
+variable and function-header evaluation, while declaration metadata remains
+available. Evaluation derives from ``ModuleAnnotationEvaluationMode`` and the
+actual flow owner's scope policy.
+These are retained source events, not a proof that evaluation reached them;
+native eager function-annotation order still needs separate compiler evidence.
+
+``ImportOriginResolverABC`` in ``lexical_bindings`` receives the actual
+``ImportedNameOrigin`` and consumer-owned execution context. Existing module-
+and from-import declarations select their respective operation through
+``origin.resolve``. ``CompactMutationResolverABC`` similarly exposes typed
+attribute/item operations selected by the actual target leaf. Consumers that
+need only receiver identity retain the shared receiver projection.
+
+``CompactPositionedReference`` shares captured-origin and alias-equivalence
+operations between value uses and callable-reference uses. Each leaf supplies
+its lexical reference; the existing value-use graph equality is preserved.
+
+``CapturedReferenceKernel`` in ``captured_reference`` resolves positioned reads
+against an explicit ``InitialNativeIsland`` of already-loaded plain modules.
+Import handles are captured from the initial ``sys.modules`` registry by object
+identity, including registered aliases; display names do not supply handles.
+It follows bindings at their capture position and applies subsequent attribute
+access at the later read position. Module-slot writes are checked against the
+actual receiver object. Frame-builtin dictionary lookup remains distinct from
+module attribute lookup; native module data-descriptor access stays open.
+Aliased dotted imports also remain open until their attribute traversal is
+proved. Analysed imports are never executed.
+
+The mandatory ``CapturedReferenceEffectsABC`` provider admits the surrounding
+execution prefix, including implicit effects and initial frame lookup. There
+is no permissive production provider. Unproved effects, bindings, accesses or
+write receivers produce ``OpenCapturedReference``. Existing native-admission
+gates are not yet integrated with this kernel.
+
+``CapturedNativeObject.require_native_identity`` compares the actual object
+with ``NativeDeclaration.declaration``. Identity alone does not establish that
+mutable implementation or execution behaviour is unchanged. The
+:download:`captured-reference batch <../../examples/captured_reference_queries.json>`
+replays the authored DSL stages against ``ab7f585``.
+
 ``ResolvedCompactFunctionTarget.for_object_mutation`` projects decorated or
 class-owned function declarations to an unbounded object target. A decorator
 or class namespace can install a different object; recognised decorator spelling

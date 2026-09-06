@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -26,6 +27,7 @@ from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
+    ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
 from .call_binding import (
@@ -238,6 +240,16 @@ class CompactFlowOwnerKind(StrEnum):
     is_module_scope: bool
     is_function_scope: bool
     is_class_body_scope: bool
+
+    def visit_assignment_annotation(
+        self,
+        visitor: ast.NodeVisitor,
+        node: ast.AnnAssign,
+        mode: ModuleAnnotationEvaluationMode,
+    ) -> None:
+        """Function-local annotations are declarations, never body evaluation."""
+        if not self.is_function_scope and mode.annotations_execute_at_declaration:
+            visitor.visit(node.annotation)
 
     def __new__(
         cls,
@@ -978,6 +990,24 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
     ) -> TargetResolutionT:
         raise NotImplementedError
 
+    def _attribute_mutation_resolution(
+        self,
+        context: ResolutionContextT,
+        mutation: CompactMutation[CompactAttributeTarget],
+    ) -> TargetResolutionT:
+        return self._receiver_mutation_resolution(
+            context, mutation, mutation.target.receiver_use
+        )
+
+    def _item_mutation_resolution(
+        self,
+        context: ResolutionContextT,
+        mutation: CompactMutation[CompactItemTarget],
+    ) -> TargetResolutionT:
+        return self._receiver_mutation_resolution(
+            context, mutation, mutation.target.receiver_use
+        )
+
     @abstractmethod
     def _receiver_mutation_resolution(
         self,
@@ -1115,6 +1145,16 @@ class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
 class CompactAttributeTarget(CompactReceiverTarget):
     attribute_name: str
 
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        return resolver._attribute_mutation_resolution(
+            context, cast(CompactMutation[CompactAttributeTarget], mutation)
+        )
+
     @cached_property
     def lexical_reference(self) -> LexicalValueReference | None:
         receiver = self.receiver_use.lexical_reference
@@ -1131,6 +1171,16 @@ class CompactAttributeTarget(CompactReceiverTarget):
 @dataclass(frozen=True)
 class CompactItemTarget(CompactReceiverTarget):
     index_use: CompactValueUse
+
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        return resolver._item_mutation_resolution(
+            context, cast(CompactMutation[CompactItemTarget], mutation)
+        )
 
 
 AssignmentTargetT = TypeVar("AssignmentTargetT", bound=CompactAssignmentTargetABC)
@@ -1504,7 +1554,7 @@ class CompactExactValueAlias:
     source_use: CompactCallableReferenceUse
     binding_mutation: CompactMutation
 
-    source = AliasProperty[LexicalValueReference]("source_use.target.lexical_reference")
+    source = AliasProperty[LexicalValueReference]("source_use.lexical_reference")
     source_position = AliasProperty[CompactFlowPosition]("source_use.position")
 
     target = AliasProperty[LexicalValueReference]("binding_mutation.reference")
@@ -1523,24 +1573,10 @@ class CompactExactValueAlias:
         )
 
 
-@dataclass(frozen=True, eq=False)
-class CompactValueUse(DataclassGraphValue):
-    """One evaluated expression value, retaining its source event."""
+class CompactPositionedReference(ABC):
+    """A captured expression/reference with its actual source flow position."""
 
-    value: CompactValueExpression
     position: CompactFlowPosition
-
-    lexical_reference = AliasProperty[LexicalValueReference | None](
-        "value.lexical_reference"
-    )
-
-    def origin_in(self, flow: CompactFunctionFlow) -> CompactValueOriginResolution:
-        reference = self.lexical_reference
-        if reference is None:
-            return OpenCompactValueOrigin(
-                (), CompactValueOriginViolation.OPAQUE_EXPRESSION
-            )
-        return flow.value_origin_for(reference, self.position)
 
     def reference_equivalents_in(
         self, flow: CompactFunctionFlow
@@ -1555,6 +1591,31 @@ class CompactValueUse(DataclassGraphValue):
                 if reference is not None
             )
         )
+
+    def origin_in(self, flow: CompactFunctionFlow) -> CompactValueOriginResolution:
+        reference = self.lexical_reference
+        if reference is None:
+            return OpenCompactValueOrigin(
+                (), CompactValueOriginViolation.OPAQUE_EXPRESSION
+            )
+        return flow.value_origin_for(reference, self.position)
+
+    @property
+    @abstractmethod
+    def lexical_reference(self) -> LexicalValueReference | None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, eq=False)
+class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
+    """One evaluated expression value, retaining its source event."""
+
+    value: CompactValueExpression
+    position: CompactFlowPosition
+
+    lexical_reference = AliasProperty[LexicalValueReference | None](
+        "value.lexical_reference"
+    )
 
 
 @dataclass(frozen=True, eq=False)
@@ -1579,12 +1640,15 @@ class CompactEvaluatedResult(DataclassGraphValue):
 
 
 @dataclass(frozen=True)
-class CompactCallableReferenceUse:
+class CompactCallableReferenceUse(CompactPositionedReference):
     target: CompactCallTargetReference
     position: CompactFlowPosition
     source_span: SourceByteSpan
 
     line = AliasProperty[int]("source_span.start_line")
+    lexical_reference = AliasProperty[LexicalValueReference | None](
+        "target.lexical_reference"
+    )
 
     def resolve(
         self,
@@ -1975,6 +2039,14 @@ class CompactFunctionFlow(DataclassGraphValue):
     global_binding_names: tuple[str, ...]
     nonlocal_binding_names: tuple[str, ...]
 
+    @property
+    def reference_uses(self) -> Iterator[CompactCallableReferenceUse]:
+        """Actual source reads, including callees captured before their arguments."""
+        return chain(
+            self.callable_reference_uses,
+            (call.target_use for call in self.calls),
+        )
+
     def mutated_roots_within(self, roots: frozenset[str]) -> frozenset[str]:
         """Derive possible affected roots from captured mutation targets."""
         return frozenset(
@@ -1991,10 +2063,7 @@ class CompactFunctionFlow(DataclassGraphValue):
             sorted(
                 {
                     reference.root_name
-                    for use in chain(
-                        self.callable_reference_uses,
-                        (call.target_use for call in self.calls),
-                    )
+                    for use in self.reference_uses
                     if (reference := use.target.lexical_reference) is not None
                 }
             )
@@ -2188,10 +2257,32 @@ class CompactFlowContext:
 
 
 @dataclass(frozen=True)
+class CompactFlowRead:
+    """A retained source read in its actual module and flow context."""
+
+    context: CompactFlowContext
+    use: CompactCallableReferenceUse
+
+    source_span = AliasProperty[SourceByteSpan]("use.source_span")
+
+
+@dataclass(frozen=True)
 class CompactProductFlowModuleProjection(CompactModuleIdentity):
     """AST-free function declarations and source-ordered product-flow facts."""
 
     flows: tuple[CompactFunctionFlow, ...]
+
+    @cached_property
+    def reference_reads_by_span(self) -> dict[SourceByteSpan, CompactFlowRead]:
+        """Only uniquely retained source reads; computed values are not inferred."""
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                CompactFlowRead(context, use)
+                for context in self.flow_contexts
+                for use in context.flow.reference_uses
+            ),
+            lambda read: read.source_span,
+        )
 
     @cached_property
     def flow_contexts_by_owner(self) -> dict[CompactFlowOwner, CompactFlowContext]:
@@ -2420,6 +2511,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             CompactDefinitionFlowOwner,
         ],
         module_identity: PythonModulePathIdentity,
+        annotation_mode: ModuleAnnotationEvaluationMode,
         lexical_scope_qualnames: tuple[str, ...],
         current_class_qualname: str | None,
         current_class_receiver_name: str | None,
@@ -2427,6 +2519,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
         self.owner = owner
         self.definition_owners = definition_owners
         self.module_identity = module_identity
+        self.annotation_mode = annotation_mode
         self.lexical_scope_qualnames = lexical_scope_qualnames
         self.current_class_qualname = current_class_qualname
         self.current_class_receiver_name = current_class_receiver_name
@@ -2589,7 +2682,7 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             node.targets, result.lexical_reference, mutations
         )
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_annotated_assignment(self, node: ast.AnnAssign) -> None:
         source = None
         if node.value is None:
             self.mutation_targets.visit(node.target)
@@ -2606,6 +2699,10 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
             (node.target,), CompactMutationKind.ASSIGNMENT
         )
         self._record_exact_value_aliases((node.target,), source, mutations)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._visit_annotated_assignment(node)
+        self.owner.kind.visit_assignment_annotation(self, node, self.annotation_mode)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         target = self.mutation_targets.visit(node.target)
@@ -2731,6 +2828,8 @@ class _CompactFlowCollector(FunctionDefaultVisitor):
     ) -> tuple[CompactValueUse, ...]:
         decorator_uses = self._capture_decorators(node)
         self.visit_argument_defaults(node.args)
+        if not self.annotation_mode.annotations_execute_at_declaration:
+            return decorator_uses
         for annotation in (
             *(argument.annotation for argument in node.args.posonlyargs),
             *(argument.annotation for argument in node.args.args),
@@ -2846,11 +2945,13 @@ def compact_product_flow_projection(
     declarations = _DeclarationCollector(parsed_module)
     declarations.visit(parsed_module.module)
     definition_owners = declarations.owners_by_node
+    annotation_mode = ModuleAnnotationEvaluationMode.from_module(parsed_module.module)
     flows = [
         _CompactFlowCollector(
             owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
             definition_owners=definition_owners,
             module_identity=parsed_module.module_path_identity,
+            annotation_mode=annotation_mode,
             lexical_scope_qualnames=("",),
             current_class_qualname=None,
             current_class_receiver_name=None,
@@ -2864,6 +2965,7 @@ def compact_product_flow_projection(
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
             current_class_receiver_name=None,
+            annotation_mode=annotation_mode,
         ).collect(context.node.body)
         for context in declarations.class_contexts
     )
@@ -2875,6 +2977,7 @@ def compact_product_flow_projection(
             lexical_scope_qualnames=context.lexical_scope_qualnames,
             current_class_qualname=context.current_class_qualname,
             current_class_receiver_name=context.declaration.nominal_receiver_name,
+            annotation_mode=annotation_mode,
         ).collect(context.node.body)
         for context in declarations.function_contexts
     )

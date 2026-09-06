@@ -2890,3 +2890,91 @@ and context time across two consecutive samples was 10.556 seconds before and
 10.560 seconds after. These are cost observations, not a speedup or tail-latency
 guarantee. Receipts are
 `/var/tmp/nra-definition-owner-{baseline,current}-gc-cost.jsonl`.
+
+### 2026-09-06: Join actual source reads and resolve conditioned native captures
+
+`CompactFlowRead` joins a retained reference use to its actual flow context.
+The module projection derives the unique source-span index from existing
+reference uses and call targets. Duplicate handles remain unresolved; computed
+expressions cannot borrow a child's reference identity. Context and use sharing
+survive a populated pickle round-trip.
+
+The collector now records eager module/class variable annotations after the
+assignment or target evaluation. Scope ownership and the existing annotation-mode
+declaration exclude function-local, stringised and lazy annotation execution
+from the immediate flow. Native probes cover scope, assignment, target shape
+and Python version. These receipts do not establish that execution reached a read; eager
+function-parameter annotation ordering still requires native compiler evidence.
+
+Existing import declarations and mutation targets now dispatch typed consumer
+hooks. `CompactPositionedReference` factors origin and equivalence operations
+above value and callable-reference uses, retaining existing graph equality.
+The authored high-level method-promotion operation refused the new ABC because
+its native-admission proof does not yet cover the abstract-method namespace.
+The chosen move is instead expressed through explicit DSL member insertion and
+deletion. The refusal remains intact; improving this higher-level operation is
+a concrete bootstrapping obligation.
+
+`CapturedReferenceKernel` follows the selected binding at its capture position
+and applies later attribute access at the actual later read. Its initial island
+contains real already-loaded module objects, and its mandatory effect-provider
+contract covers surrounding execution and initial frame lookup. It executes no
+analysed imports. Unproved effects and receivers remain open. There is no general
+production effect provider, and existing native-admission gates are unchanged.
+Matching a captured object's identity does not prove its mutable implementation
+unchanged. Native controls exercise both counterfeit names and mutation of an
+otherwise identical function object.
+
+Independent review identified a dictionary/attribute distinction within the
+initial island: native module data descriptors override same-named dictionary
+entries during attribute access. Bare frame-builtin lookup instead reads its
+dictionary. This distinction is part of the lookup contract, not an assumption
+to delegate to the surrounding-effect provider.
+
+Two further native probes exercise import identity. An aliased dotted import
+walks package attributes, which may differ from a same-named cached module;
+that traversal remains open. Import names themselves must come from the actual
+initial registry, because an already-loaded module's display name can differ
+from its registration. Neither case can be authenticated by a source-qualified
+name. Controls retain safe unaliased root imports and real registry aliases.
+
+Diataxis keeps the supported API contract in the reference page and the design,
+remaining obligations and validation receipts here.
+
+Cost comparison uses the same 133 baseline modules, 8,374 contexts and 26,473
+calls. Excluding immediate reads from deferred/stringised annotations reduces
+the cold compact pickle from 27,215,742 to 25,636,902 bytes (5.8%). Two sequential
+projection-plus-context samples total 11.98 seconds before and 11.23 after;
+garbage collection moved between phases, so this is not a speedup guarantee.
+The optional exact-read index covers 112,133 unique reads: its first build takes
+1.77 seconds and cached access 0.21 ms in this sample. Populating it grows the
+context-cached payload from 25,901,471 to 29,829,261 bytes. It remains a lazy
+derived index, not an unconditional scan cost. Receipts are
+`/var/tmp/nra-captured-query-{baseline,current}-cost.jsonl` and
+`/var/tmp/nra-captured-read-index-cost.json`.
+
+The final 54-stage `docs/examples/captured_reference_queries.json` batch replays
+against `ab7f585`. API simulation reproduces all three integrated source ASTs;
+the actual CLI also simulates every stage cleanly with valid Python output.
+The independent review's three demonstrated false-proof paths are covered by
+native controls on both Python versions. Initial registry snapshots are eager,
+immutable and identity-owned, so separate admissions cannot compare equal while
+holding different import associations.
+
+Frozen full suites pass 2,989 cases with 34 skipped on Python 3.11 and 3,023 on
+Python 3.14, in 224 and 228 seconds respectively. Both retain exactly the same
+thirty pending integrity failure IDs as `ab7f585`: nineteen class-result, nine
+native-slot and two registry cases. No failures were added, skipped or weakened.
+The three existing pending integrity files remain untracked. Logs are
+`/var/tmp/nra-captured-query-final-{311,314}.log`. The automatic-package-context
+audit completes all 79 detectors without omissions or findings. Black and Ruff
+pass all six source/new-test files; Sphinx builds with the same two existing
+duplicate-object warnings. Replay, CLI and audit receipts are
+`/var/tmp/nra-captured-query-{replay,cli,audit}.json`.
+
+The kernel is a conditioned lookup primitive, not a general execution-effect
+proof or a replacement for the current native gates. The next load-bearing
+boundary remains production effect/activation admission and migration of those
+gates, with explicit source-read selection rather than synthetic class-line
+references. Native eager annotation order, class construction, default/call
+activation and import traversal retain their separate proof obligations.

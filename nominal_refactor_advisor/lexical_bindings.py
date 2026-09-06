@@ -11,7 +11,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
-from typing import Self
+from typing import (
+    Generic,
+    Self,
+    TypeVar,
+)
 
 from .assignment_projection import AssignmentTargetNameProjection
 from .python_module_identity import PythonModulePathIdentity
@@ -151,6 +155,26 @@ class ImportFromModuleName:
         return cls(f"{relative_prefix}{node.module}")
 
 
+ImportContextT = TypeVar("ImportContextT")
+ImportResolutionT = TypeVar("ImportResolutionT")
+
+
+class ImportOriginResolverABC(ABC, Generic[ImportContextT, ImportResolutionT]):
+    """Interpret an actual import origin with consumer-owned execution evidence."""
+
+    @abstractmethod
+    def _module_import_resolution(
+        self, origin: ImportedNameOrigin, context: ImportContextT
+    ) -> ImportResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _member_import_resolution(
+        self, origin: ImportedNameOrigin, context: ImportContextT
+    ) -> ImportResolutionT:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class ImportDeclarationABC(ABC):
     """One AST-free import request; binding views derive from its aliases."""
@@ -195,6 +219,15 @@ class ImportDeclarationABC(ABC):
         """A source catalogue path, not a claim about the imported runtime object."""
         raise NotImplementedError
 
+    @abstractmethod
+    def resolve_origin(
+        self,
+        resolver: ImportOriginResolverABC[ImportContextT, ImportResolutionT],
+        origin: ImportedNameOrigin,
+        context: ImportContextT,
+    ) -> ImportResolutionT:
+        raise NotImplementedError
+
     def names(self) -> tuple[str, ...]:
         return tuple(
             name
@@ -221,6 +254,14 @@ class ImportDeclarationABC(ABC):
 
 class ModuleImportDeclaration(ImportDeclarationABC):
     source_prefix = "import"
+
+    def resolve_origin(
+        self,
+        resolver: ImportOriginResolverABC[ImportContextT, ImportResolutionT],
+        origin: ImportedNameOrigin,
+        context: ImportContextT,
+    ) -> ImportResolutionT:
+        return resolver._module_import_resolution(origin, context)
 
     def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
         return alias.name.partition(".")[0]
@@ -252,6 +293,14 @@ class FromImportDeclaration(ImportDeclarationABC):
     def source_prefix(self) -> str:
         return f"from {self.module_name.source} import"
 
+    def resolve_origin(
+        self,
+        resolver: ImportOriginResolverABC[ImportContextT, ImportResolutionT],
+        origin: ImportedNameOrigin,
+        context: ImportContextT,
+    ) -> ImportResolutionT:
+        return resolver._member_import_resolution(origin, context)
+
     def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
         return alias.name
 
@@ -278,6 +327,13 @@ class ImportedNameOrigin:
     declaration: ImportDeclarationABC
     alias_index: int
     module_identity: PythonModulePathIdentity
+
+    def resolve(
+        self,
+        resolver: ImportOriginResolverABC[ImportContextT, ImportResolutionT],
+        context: ImportContextT,
+    ) -> ImportResolutionT:
+        return self.declaration.resolve_origin(resolver, self, context)
 
     def __post_init__(self) -> None:
         if not 0 <= self.alias_index < len(self.declaration.aliases):
