@@ -1820,3 +1820,56 @@ constructor result identity. Those remain explicit follow-up proof obligations;
 the new unbounded query can conservatively block unrelated signature edits.
 Diataxis keeps these guarantees and limits in the API reference, with the
 investigation and replay evidence here.
+
+## Declaration-owned replacement layout (2026-09-06)
+
+Confirmed the previous batch's replacement gap with an executable DSL plan:
+replacing `Owner.run` with an unindented function reported a clean simulation
+while removing the method from `Owner` and creating a module function. Fourteen
+initial regression cases failed, including decorated methods, tabs, nested
+classes/functions and literals whose continuation lines have their own spacing.
+
+`PythonBlockSource` now owns authored-suite parsing and structural relocation.
+It identifies initial indentation from a lazy token prefix and parses an
+indented suite under a synthetic enclosing block. Original literal spans remain
+intact, including their continuation indentation. Code and comments relocate to
+the destination indentation. The synthetic parse context is a derived view of
+the authored source, not another editable payload. A suite that escapes its
+initial indentation is rejected.
+
+The former generic geometry indentation method moved into this Python-specific
+owner. Class-member validation/rendering, function-body rendering, decorator
+scaffolds, assignment rendering and whole-declaration replacement consume it.
+Replacement identity and output no longer use independently parsed/dedented
+representations. A counted-parse contract confirms that member validation and
+rendering share one parse. The generic geometry's token iterator also permits
+prefix reads without materialising all tokens.
+
+Header indentation now belongs to `NamedDeclarationSourceAuthority`, where it
+applies to functions and classes. The class-header view derives its existing
+`indentation` accessor from that property; body indentation remains a separate
+layout concept. Whole-target replacement uses this declaration-owned value and
+retains its existing kind/name, decorator-policy and contributor checks.
+
+The native promotion operation rejected the getter transfer because its class
+namespace proof does not cover unchanged `cached_property` declarations in the
+ancestor. That gate was not weakened. The final plan expresses the reviewed
+transfer as explicit member insertion/deletion: the getter uses only inherited
+source geometry and the declaration node, and the destination name had no
+existing repository consumers or overrides. Extending descriptor evidence is a
+remaining automatic-promotion capability gap, not a proved automated transfer.
+
+The 27-stage plan in `docs/examples/declaration_replacement_layout.py` applies
+through the CLI. Its final direct-import removal was applied as a continuation.
+The original focused run passes 835 tests; expanded layout/block/statement
+contracts pass 49 cases. Full suites pass 2,474 tests with 15 skipped on Python
+3.11 and 2,489 tests on Python 3.14, with eight workers each (223/226 seconds).
+Python 3.14 retains its 96 existing warnings. All 27 stages reproduce the four
+touched production ASTs from `4b84859`. The preceding 40-stage receiver/alias
+bootstrap also replays successfully under the corrected replacement engine.
+All 81 detectors complete the touched-source audit with zero findings and no
+omitted detectors. Ruff and whitespace checks pass; Sphinx retains its two
+existing duplicate-description warnings. Receipts use `/tmp/nra-replacement-*`.
+
+Diataxis separates the API contract from the investigation and the explicit
+proof limit recorded here.

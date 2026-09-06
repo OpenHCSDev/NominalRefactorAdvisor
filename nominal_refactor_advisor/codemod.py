@@ -12,7 +12,6 @@ import copy
 import hashlib
 import keyword as keyword_module
 import re
-import textwrap
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
@@ -36,7 +35,10 @@ from .codemod_declaration_operations import (
     DeclarationMutationOperationABC as DeclarationMutationOperationABC,
     ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
 )
-from .codemod_statement_source import AssignmentDeletionSource
+from .codemod_statement_source import (
+    AssignmentDeletionSource,
+    PythonBlockSource,
+)
 from .codemod_class_operations import InsertClassMemberOperation as InsertClassMemberOperation
 from .codemod_assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
@@ -801,27 +803,24 @@ class ReplaceTargetOperation(SourceReprovedOperation):
     )
 
     @cached_property
-    def replacement_declaration(self) -> AstTargetNode:
-        """Parse the one declaration represented by the replacement source."""
+    def replacement_block(self) -> PythonBlockSource:
+        return PythonBlockSource(self.replacement_source)
 
+    @cached_property
+    def replacement_declaration(self) -> AstTargetNode:
+        """Validate the declaration against the same block used for rendering."""
         try:
-            replacement_module = ast.parse(
-                textwrap.dedent(self.replacement_source),
-                filename=f"<{self.operation_key()}-replacement>",
-            )
+            statements = self.replacement_block.statements
         except SyntaxError as error:
             raise ValueError(
                 f"Replacement source is not valid Python: {error}"
             ) from error
-        if len(replacement_module.body) != 1 or not isinstance(
-            replacement_module.body[0], AstTargetNode
-        ):
+        if len(statements) != 1 or not isinstance(statements[0], AstTargetNode):
             raise ValueError(
-                "Replacement source must contain exactly one class or function "
-                "declaration"
+                "Replacement source must contain exactly one class or function declaration"
             )
-        self.decorator_policy.validate_replacement(replacement_module.body[0])
-        return replacement_module.body[0]
+        self.decorator_policy.validate_replacement(statements[0])
+        return statements[0]
 
     def source_edits_from_snapshot(
         self,
@@ -840,16 +839,22 @@ class ReplaceTargetOperation(SourceReprovedOperation):
                 f"{type(target_node).__name__} {target_node.name!r}; got "
                 f"{type(replacement_node).__name__} {replacement_node.name!r}"
             )
-        span = SourceTextGeometry(
-            snapshot.sources_by_file_path[target.file_path]
-        ).node_line_span(SourceNodeSpan(target_node, self.decorator_policy))
+        declaration = NamedDeclarationSourceAuthority(
+            target_node,
+            snapshot.sources_by_file_path[target.file_path],
+        )
+        span = declaration.geometry.node_line_span(
+            SourceNodeSpan(target_node, self.decorator_policy),
+        )
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
                 start_line=span.start_line,
                 end_line=span.end_line,
                 replacement_lines=SourceTargetEditor.source_lines(
-                    self.replacement_source
+                    self.replacement_block.indented_source(
+                        declaration.declaration_indentation,
+                    )
                 ),
                 rationale=self.rationale,
                 contributors=self.contributors,

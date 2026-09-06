@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import tokenize
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import groupby
+from typing import cast
 
 from .assignment_projection import (
     NamedAssignmentSelection,
@@ -20,6 +22,53 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from .source_geometry import SourceByteSpan
+
+
+@dataclass(frozen=True)
+class PythonBlockSource(SourceTextGeometry):
+    """An authored Python suite whose structural indentation can be relocated."""
+
+    @cached_property
+    def leading_indentation(self) -> str:
+        for token in self.iter_tokens():
+            if token.type in (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE):
+                continue
+            return token.string if token.type == tokenize.INDENT else ""
+        return ""
+
+    @property
+    def parse_prefix(self) -> str:
+        return "if True:\n" if self.leading_indentation else ""
+
+    @cached_property
+    def parsed_module(self) -> ast.Module:
+        return ast.parse(self.parse_prefix + self.source)
+
+    @cached_property
+    def statements(self) -> tuple[ast.stmt, ...]:
+        statements = self.parsed_module.body
+        if self.leading_indentation:
+            if len(statements) != 1:
+                raise ValueError("Python block escapes its initial indentation")
+            statements = cast(ast.If, statements[0]).body
+        return tuple(statements)
+
+    def indented_source(self, indentation: str) -> str:
+        """Relocate code and comments while preserving complete literal spans."""
+        if not self.statements:
+            raise ValueError("Replacement source block must contain a statement")
+        continuation_lines = self.literal_continuation_lines(self.parsed_module)
+        return "".join(
+            (
+                indentation + line.removeprefix(self.leading_indentation)
+                if number not in continuation_lines and line.strip()
+                else line
+            )
+            for number, line in enumerate(
+                self.lines,
+                start=1 + self.parse_prefix.count("\n"),
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -134,7 +183,7 @@ class AssignmentSource(SourceTextGeometry):
     def replacement_source(self, indentation: str) -> str:
         start, end = self.required_node_offsets(self.statement)
         return (
-            SourceTextGeometry(self.source[start:end])
+            PythonBlockSource(self.source[start:end])
             .indented_source(indentation)
             .removeprefix(indentation)
         )

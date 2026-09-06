@@ -556,6 +556,22 @@ decorator block independently; both operations can compose on one snapshot.
 A nominal operation refinement can select the inclusive decorator policy.
 The same policy then validates the payload and selects the complete decorated
 source span, including multiline decorator markers.
+
+Replacement indentation derives from
+``NamedDeclarationSourceAuthority.declaration_indentation``. The payload can be
+unindented or already indented; its class or function remains in the selected
+enclosing scope. ``PythonBlockSource`` owns parsing and structural relocation
+for declaration replacements, class-member insertion, function bodies,
+decorator scaffolds and assignment rendering. It preserves comments, line
+endings and multiline literal contents while adjusting code indentation.
+An indented payload cannot introduce statements outside its initial suite.
+Validation and rendering share the same parsed block; no separately dedented
+copy supplies declaration identity. ``SourceTextGeometry.iter_tokens`` permits
+prefix inspection without tokenising the complete payload first.
+The :download:`declaration replacement layout refactor
+<../../examples/declaration_replacement_layout.py>` records this change through
+the DSL, including the explicitly authored indentation-getter transfer.
+
 ``SourceTextPatch`` owns a non-empty ordered sequence of exact old/new source
 transformations and applies each transformation to the preceding result.
 ``PatchTargetOperation`` composes that declaration with the source-reproved

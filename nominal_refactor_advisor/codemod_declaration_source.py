@@ -38,11 +38,15 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
     _joined_rationales,
 )
-from .codemod_statement_source import StatementSource
+from .codemod_statement_source import (
+    PythonBlockSource,
+    StatementSource,
+)
 from .declaration_dependencies import (
     FunctionBindingABC,
     FunctionParameterBinding,
 )
+from .descriptor_algebra import AliasProperty
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .source_geometry import (
     ClassHeaderSourceSpan,
@@ -159,6 +163,15 @@ class NamedDeclarationSourceAuthority:
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
     source: str
 
+    @property
+    def declaration_indentation(self) -> str:
+        """Project the declaration header's actual enclosing indentation."""
+        lines = self.geometry.lines
+        if not 1 <= self.node.lineno <= len(lines):
+            raise ValueError("Declaration header is outside its source geometry")
+        line = lines[self.node.lineno - 1]
+        return line[: len(line) - len(line.lstrip())]
+
     def __post_init__(self) -> None:
         if not isinstance(
             self.node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
@@ -229,6 +242,8 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
 
     single_line_header_limit: ClassVar[int] = 88
 
+    indentation = AliasProperty[str]("declaration_indentation")
+
     @cached_property
     def signature_span(self) -> SourceTextSpan:
         """Resolve the header suffix, including generic parameters, through the colon."""
@@ -284,13 +299,6 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     @property
     def end_line(self) -> int:
         return self.source_span.end_line
-
-    @property
-    def indentation(self) -> str:
-        if self.node.lineno < 1 or self.node.lineno > len(self.source_lines):
-            return ""
-        line = self.source_lines[self.node.lineno - 1]
-        return line[: len(line) - len(line.lstrip())]
 
     @property
     def keyword_items(self) -> tuple[str, ...]:
@@ -536,13 +544,14 @@ class ClassMemberSource:
     def from_source(cls, source: str, *, indentation: str) -> "ClassMemberSource":
         """Derive the member identity and indented text from one authored declaration."""
         try:
-            module = ast.parse(source)
+            block = PythonBlockSource(source)
+            statements = block.statements
         except SyntaxError as error:
             raise ValueError(
                 f"Class member source is not valid Python: {error}"
             ) from error
-        if len(module.body) != 1 or not isinstance(
-            module.body[0],
+        if len(statements) != 1 or not isinstance(
+            statements[0],
             ast.ClassDef
             | ast.FunctionDef
             | ast.AsyncFunctionDef
@@ -550,12 +559,12 @@ class ClassMemberSource:
             | ast.AnnAssign,
         ):
             raise ValueError("Class member source must contain one declaration")
-        names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
         if len(names) != 1:
             raise ValueError("Class member source must bind exactly one member name")
         return cls(
             name=next(iter(names)),
-            source=SourceTextGeometry(source).indented_source(indentation),
+            source=block.indented_source(indentation),
         )
 
 
@@ -743,8 +752,8 @@ class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
         prefix = decorators_source
         if prefix and not prefix.endswith(("\n", "\r")):
             prefix += header.newline or "\n"
-        scaffold = SourceTextGeometry(prefix + "def _decorated(): pass\n")
-        module = ast.parse(scaffold.source)
+        scaffold = PythonBlockSource(prefix + "def _decorated(): pass\n")
+        module = scaffold.parsed_module
         if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
             raise ValueError("Replacement must contain only declaration decorators")
         rendered = scaffold.indented_source(header.indent)
@@ -806,7 +815,7 @@ class FunctionSuiteLayout:
     is_inline: bool
 
     def render(self, source: str) -> str:
-        body = SourceTextGeometry(source).indented_source(self.indentation)
+        body = PythonBlockSource(source).indented_source(self.indentation)
         return body if body.endswith(("\n", "\r")) else body + self.newline
 
 

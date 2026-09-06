@@ -15,6 +15,7 @@ from abc import (
 from collections import defaultdict
 from collections.abc import (
     Iterable,
+    Iterator,
     Mapping,
 )
 from dataclasses import (
@@ -940,9 +941,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
 
+    def iter_tokens(self) -> Iterator[tokenize.TokenInfo]:
+        """Read source tokens lazily when only a prefix is required."""
+        return tokenize.generate_tokens(io.StringIO(self.source).readline)
+
     @cached_property
     def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
-        return tuple(tokenize.generate_tokens(io.StringIO(self.source).readline))
+        return tuple(self.iter_tokens())
 
     @cached_property
     def line_offsets(self) -> tuple[int, ...]:
@@ -981,20 +986,6 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
 
     def span_contains_comment(self, span: SourceTextSpan) -> bool:
         return any(token.type == tokenize.COMMENT for token in self.tokens_in_span(span))
-
-    def indented_source(self, indentation: str) -> str:
-        """Indent a Python block while preserving complete literal source spans."""
-
-        module = ast.parse(self.source)
-        if not module.body:
-            raise ValueError("Replacement source block must contain a statement")
-        continuation_lines = self.literal_continuation_lines(module)
-        return "".join(
-            indentation + line
-            if line_number not in continuation_lines and line.strip()
-            else line
-            for line_number, line in enumerate(self.lines, start=1)
-        )
 
     def literal_continuation_lines(self, root: ast.AST) -> frozenset[int]:
         """Lines whose source belongs to literals and must retain its indentation."""
