@@ -920,3 +920,45 @@ build retained its two existing duplicate-description warnings. The first
 uncached audit exceeded its 60-second budget; the completed retry used the
 compact report with structural-overlap rendering disabled and ran all 81
 detectors without omissions or findings. Ruff and the whitespace check passed.
+
+### Live Root Binding Before Cache Projection
+
+The relative multi-root CLI failure is reproduced by a real subprocess scan.
+Live path requests were entering the relocatable cache codec without their
+working-directory origin. `AnalysisPathScope.from_requested_roots` now binds
+both requested and explicit context roots through the existing lexical absolute
+path operation before deriving analysis and reporting scopes. The codec still
+rejects ambiguous root-relative paths; no cache-side fallback was added.
+
+The neighbouring file-context resolver previously dereferenced symlinks while
+the cache contract preserves the admitted path spelling. It now derives the
+parent through the same lexical path operation. Regression cases cover file
+and directory requests through a symlink, roots captured before a working
+directory change, explicit two-root scans, and a verified cold miss followed
+by a warm hit.
+
+`docs/examples/live_analysis_root_binding.py` expresses the three-stage change.
+The initial two-stage simulation preceded all production edits. After the
+symlink regression exposed the adjoining inconsistency, the third operation
+was appended and the complete sequence was simulated before application. Both
+projected scans were explicitly evidence-local partial and offered no automatic
+continuation. All three production rewrites were applied through the CLI DSL.
+
+The focused path/cache suite passed all 146 cases. The original relative
+two-root repository scan now completes: all 81 detectors, no omissions or
+findings, with caches disabled. Its measured wall time was approximately
+10 seconds. This is a completed analysis probe, not a throughput benchmark.
+
+The forecast also exposed a separate agent-interface cost: requesting a
+continuation serialises the complete source index inside the continuation
+report, even without `--codemod-project-source-index`. This small three-stage
+forecast emitted about 5 MB despite having no continuation candidates. The
+typed continuation must retain its index for proof and planning; its default
+external projection need not duplicate the opt-in source-index surface.
+This is the next concrete reporting boundary to audit.
+
+The completed full runs passed 2,317 tests with 15 skipped on Python 3.11 and
+2,332 tests on Python 3.14. The four path regressions also pass with Python UTF-8
+mode and locale coercion disabled. Ruff and the whitespace check passed; a
+fresh Sphinx build retained its two existing duplicate-description warnings.
+The unrelated `uv.lock` changes remain excluded.

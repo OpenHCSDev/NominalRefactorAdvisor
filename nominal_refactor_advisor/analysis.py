@@ -59,7 +59,10 @@ from .cache_paths import (
     default_analysis_cache_dir,
     semantic_descent_cache_sibling,
 )
-from .cache_checkout import absolute_checkout_path
+from .cache_checkout import (
+    absolute_checkout_path,
+    lexical_absolute_path,
+)
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassProjectionDemand,
@@ -122,6 +125,10 @@ class AnalysisPathScope:
         *,
         auto_context: bool = True,
     ) -> "AnalysisPathScope":
+        requested_roots, context_roots = (
+            tuple(lexical_absolute_path(root) for root in group)
+            for group in (requested_roots, context_roots)
+        )
         if context_roots:
             return cls(
                 analysis_roots=context_roots,
@@ -212,7 +219,7 @@ class AnalysisContextRootResolver:
 
     @classmethod
     def context_root_for_file(cls, file_path: Path) -> Path:
-        parent = file_path.resolve().parent
+        parent = lexical_absolute_path(file_path).parent
         context_root = parent
         cursor = parent
         while (cursor / "__init__.py").is_file():
