@@ -45,6 +45,7 @@ class DeclaredCallRewriteABC(ABC):
         source_index = self.snapshot.source_index
         caller_symbol = source_index.symbol_for_target(self.caller)
         callee_symbol = source_index.symbol_for_target(self.callee)
+        callee_symbols = frozenset((callee_symbol,))
         repository = self.snapshot.product_flow_repository
         context = repository.flow_contexts_by_owner_symbol.get(caller_symbol)
         if context is None:
@@ -63,7 +64,7 @@ class DeclaredCallRewriteABC(ABC):
         )
         if any(
             resolution.resolved_call is None
-            and callee_symbol in resolution.target_resolution.possible_symbols
+            and resolution.target_resolution.candidate_symbols_within(callee_symbols)
             for resolution in calls
         ):
             raise ValueError(f"Call authority is unresolved for {callee_symbol!r}")

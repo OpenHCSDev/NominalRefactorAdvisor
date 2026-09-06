@@ -1768,3 +1768,55 @@ selects the same final write before and after the refactor. Median query time
 decreases from 0.0927 to 0.0162 seconds. This measures only repeated write
 selection, not whole-repository throughput; declaration entry lookup is skipped
 when the latest preceding write already supplies the binding.
+
+## Receiver provenance and captured alias authority (2026-09-06)
+
+An executable counterexample rebinding `self` to another class selected the
+original class's method in the analyser. Current-class targets now require the
+receiver's entry origin at their captured read position. This shared obligation
+also covers class receivers, annotated members and runtime class lookup. It
+preserves self-aliases and targets captured before an argument rebinds the
+receiver. Unproved receiver lookup carries an unbounded target, rather than
+pretending the original class's methods form a complete candidate set.
+
+The first regression then exposed a deeper loss: `callback = self.method`
+discarded the nominal method read when resolving the alias. `CompactExactValueAlias`
+now retains the existing `CompactCallableReferenceUse`; lexical source and
+capture position derive from that object. Alias resolution preserves the target's
+polymorphic lookup and cycle evidence. Native target MRO still selects the lookup
+contract, independent of the availability of lexical source spelling.
+
+A conditional callback assignment exposed the same loss at a join. The previous
+helper flattened alternative resolutions to strings. `AlternativeCompactFunctionTargets`
+retains those resolutions and derives both diagnostic names and the union of
+candidate queries. Consumers use `candidate_symbols_within`, including the
+authored declared-call edit boundary. No caller-side concrete target dispatch
+or extra candidate registry was added.
+
+All 283 focused tests pass, including 17 new receiver cases with runtime
+counterexamples, shared-object/pickle checks, chained and conditional aliases,
+attribute suffixes and declared-call refusal. The 12-stage receiver plan,
+24-stage alias capture plan and four-stage bounds plan all apply through the
+CLI and together reproduce the three touched production ASTs from `04741d0`.
+Receipts use `/tmp/nra-receiver-*`, `/tmp/nra-alias-capture-*` and
+`/tmp/nra-alias-bounds-*`.
+
+Full suites pass 2,442 tests with 15 skipped on Python 3.11 and 2,457 tests on
+Python 3.14, with eight workers each (225/229 seconds). Python 3.14 retains its
+96 existing warnings. All 81 detectors complete the touched-source audit with
+zero findings and no omitted detectors. Ruff and whitespace checks pass, and
+Sphinx retains its two existing duplicate-description warnings.
+
+This batch also exposed a DSL usability gap: whole-target replacement currently
+expects payload indentation matching the target's location. A dedented method
+can leave its class while remaining syntactically valid, or fail syntax validation
+when decorators remain indented. The recorded plan supplies the required current
+indentation. A subsequent DSL increment should derive target indentation and
+verify the replacement remains at the same qualified owner. This is distinct
+from receiver proof and has not been implemented in this batch.
+
+The receiver guard does not establish member lifetime, descriptor effects or
+constructor result identity. Those remain explicit follow-up proof obligations;
+the new unbounded query can conservatively block unrelated signature edits.
+Diataxis keeps these guarantees and limits in the API reference, with the
+investigation and replay evidence here.

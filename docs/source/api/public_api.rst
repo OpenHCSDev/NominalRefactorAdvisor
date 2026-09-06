@@ -106,8 +106,8 @@ call-target positions, including names whose callable identity is unknown.
 Attribute reads retain their lexical subexpressions in evaluation order, so
 ``function.__call__`` preserves the use of ``function`` itself. Call targets belong to
 ``calls``; assignments and deletions belong to ``mutations``. The repository
-derives ``callable_escapes`` only from uses that resolve to a function
-declaration. Collection does not filter reads against a separate inventory of
+derives ``callable_escapes`` from all retained non-call uses, including unresolved
+targets. Collection does not filter reads against a separate inventory of
 function, method or import names.
 
 ``lexical_bindings`` owns ``ScopeBindingCollector``,
@@ -231,14 +231,20 @@ chains, including relative imports and class aliases. Rebound exports cannot
 authorise edits to an older declaration; cyclic re-exports carry
 ``CYCLIC_BINDING`` rather than selecting an arbitrary declaration.
 
-``CompactExactValueAlias`` records the source reference and its evaluation
-position before assignment targets are written. Callable lookup follows those
+``CompactExactValueAlias.source_use`` retains the already-collected nominal
+source read. Its lexical reference and evaluation position derive from that
+object, before assignment targets are written. Callable lookup follows those
 facts through module and local aliases and same-class method aliases, including
 inherited static and class methods. Later rebinding of the source name does not
 change the captured declaration. Alias cycles are tracked by source binding
 events, allowing repeated assignments to the same name without treating them as
 cycles. Conditional aliases remain unresolved and retain their possible callee
-identities for codemod selection checks.
+identities and candidate bounds for codemod selection checks. Capturing
+``self.method`` retains its receiver lookup contract rather than converting it
+into an ordinary lexical path. Attribute suffixes on captured non-lexical
+targets remain unbounded until their lookup behaviour is established. The
+:download:`alias source capture refactor <../../examples/alias_source_capture.py>`
+applies this contract after the receiver-binding refactor.
 
 Descriptor transfers across classes or through attribute access remain open
 where receiver binding has not been established. Callable identity alone does
@@ -301,8 +307,29 @@ reassigned to known functions therefore use the ordinary write resolver.
 Entry bindings are constructed only when positioned write selection needs them.
 The :download:`initial binding refactor <../../examples/initial_binding_sources.py>`
 applies the shared source contract and removes the repository's separate
-parameter-name check. Current-class receiver rebinding is a remaining lookup
-obligation, not established by this entry-binding evidence alone.
+parameter-name check.
+
+Current-class method and annotated-member lookup requires the receiver's value
+origin to remain its entry parameter at the captured read position. Self-aliases
+preserve that origin; reassignment to another object or class leaves the target
+unresolved. Argument evaluation after target capture does not change that
+earlier lookup. The :download:`receiver-binding refactor
+<../../examples/receiver_binding_proof.py>` adds this shared obligation.
+
+``CompactCallTargetResolution.candidate_symbols_within(symbols)`` projects the
+participants a target can reference. ``UnboundedCompactFunctionTarget`` cannot
+exclude any supplied participant; its ``possible_symbols`` are diagnostic
+names, not a complete bound. ``AlternativeCompactFunctionTargets`` retains
+binding alternatives and unions their candidate queries without flattening
+unbounded evidence into names. Escape checks, callable-component proofs and
+declared-call edits use this contract. The :download:`alias candidate bounds
+refactor <../../examples/alias_candidate_bounds.py>` preserves it across
+conditional bindings.
+
+These checks establish receiver-root provenance, not a complete instance
+lifetime proof. Member reassignment, descriptor effects and constructor result
+types require additional evidence. An unbounded receiver can conservatively
+prevent an otherwise unrelated closed-signature edit within the analysed scope.
 
 Collected arguments carry ``CompactValueUse`` through signature binding.
 Each use owns its expression and evaluation position; ``origin_in(flow)``

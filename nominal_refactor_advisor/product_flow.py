@@ -431,6 +431,25 @@ class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolu
     """Repository obligations selected by nominal call-target syntax."""
 
     @abstractmethod
+    def _through_attribute_suffix(
+        self,
+        resolution: TargetResolutionT,
+        attribute_path: tuple[str, ...],
+    ) -> TargetResolutionT:
+        """Project attributes of a captured non-lexical target conservatively."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def _through_receiver_binding(
+        self,
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+        resolution: TargetResolutionT,
+    ) -> TargetResolutionT:
+        """Require the current-class receiver to retain its entry origin."""
+        raise NotImplementedError
+
+    @abstractmethod
     def _selected_class_resolution(
         self, symbol: str, binding: CompactLexicalMutation
     ) -> TargetResolutionT:
@@ -459,6 +478,7 @@ class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolu
         context: ResolutionContextT,
         reference: LexicalValueReference,
         position: CompactFlowPosition,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
     ) -> TargetResolutionT:
         """Resolve a lexical access path through its reaching bindings."""
         raise NotImplementedError
@@ -477,14 +497,28 @@ class CompactCallTargetResolverABC(ABC, Generic[ResolutionContextT, TargetResolu
 class CompactCallTargetReference(ABC):
     """Nominal call-target syntax with leaf-owned resolution behavior."""
 
-    def resolve(
+    def resolve_target(
         self,
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         context: ResolutionContextT,
         position: CompactFlowPosition,
     ) -> TargetResolutionT:
-        """Select the target's nominal lookup contract."""
         return resolver._local_function_target_resolution(context, self)
+
+    def resolve(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+        *,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        attribute_path: tuple[str, ...] = (),
+    ) -> TargetResolutionT:
+        """Select the nominal lookup, then project any captured attribute access."""
+        return resolver._through_attribute_suffix(
+            self.resolve_target(resolver, context, position),
+            attribute_path,
+        )
 
     @property
     @abstractmethod
@@ -524,25 +558,60 @@ class LexicalCallTargetReference(CompactCallTargetReference, ABC):
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         context: ResolutionContextT,
         position: CompactFlowPosition,
+        *,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        attribute_path: tuple[str, ...] = (),
     ) -> TargetResolutionT:
+        reference = self.lexical_reference
         return resolver._lexical_function_target_resolution(
-            context, self.lexical_reference, position
+            context,
+            LexicalValueReference(
+                reference.root_name, (*reference.attribute_path, *attribute_path)
+            ),
+            position,
+            pending_bindings,
         )
 
 
 class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
     """Call target whose terminal method is selected from the current class."""
 
+    receiver_name: str
     owner_class_qualname: str
     method_name: str
+
+    @property
+    def lexical_attribute_path(self) -> tuple[str, ...] | None:
+        return (self.method_name,)
+
+    def resolve_current_class_target(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        return resolver._local_function_target_resolution(context, self)
+
+    def resolve_target(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        return resolver._through_receiver_binding(
+            context,
+            position,
+            self.resolve_current_class_target(resolver, context, position),
+        )
 
     @property
     def terminal_name(self) -> str:
         return self.method_name
 
     @property
-    def lexical_reference(self) -> None:
-        return None
+    def lexical_reference(self) -> LexicalValueReference | None:
+        path = self.lexical_attribute_path
+        return None if path is None else LexicalValueReference(self.receiver_name, path)
 
 
 @dataclass(frozen=True)
@@ -574,6 +643,7 @@ class BareCallTargetReference(LexicalCallTargetReference):
 
 @dataclass(frozen=True)
 class CurrentClassMethodReference(CurrentClassCallTargetReference):
+    receiver_name: str
     owner_class_qualname: str
     method_name: str
 
@@ -599,12 +669,21 @@ class CurrentClassMethodReference(CurrentClassCallTargetReference):
 class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
     """Method reached through an annotated member of the current class."""
 
+    receiver_name: str
     owner_class_qualname: str
     member_name: str
     method_name: str
     uses_runtime_class_lookup: bool
 
-    def resolve(
+    @property
+    def lexical_attribute_path(self) -> tuple[str, ...] | None:
+        return (
+            None
+            if self.uses_runtime_class_lookup
+            else (self.member_name, self.method_name)
+        )
+
+    def resolve_current_class_target(
         self,
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         context: ResolutionContextT,
@@ -645,6 +724,7 @@ class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
         else:
             return None
         return cls(
+            receiver_name=receiver_name,
             owner_class_qualname=owner_class_qualname,
             member_name=member_access.attr,
             method_name=expression.attr,
@@ -742,6 +822,9 @@ class CompactLexicalMutation:
 
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
+
+
+CompactBindingVisit: TypeAlias = tuple[str, CompactLexicalMutation]
 
 
 class CompactFunctionTargetResolutionViolation(StrEnum):
@@ -951,19 +1034,24 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
 
 @dataclass(frozen=True)
 class CompactExactValueAlias:
-    """One exact lexical binding to an unchanged value in a supported scope."""
+    """An exact binding retaining the already-collected source read."""
 
-    source: LexicalValueReference
-    source_position: CompactFlowPosition
+    source_use: CompactCallableReferenceUse
     binding_mutation: CompactLexicalMutation
+
+    source = AliasProperty[LexicalValueReference]("source_use.target.lexical_reference")
+    source_position = AliasProperty[CompactFlowPosition]("source_use.position")
+
+    def __post_init__(self) -> None:
+        if self.source is None:
+            raise ValueError("Exact value aliases require a lexical source read")
 
     @property
     def target(self) -> LexicalValueReference:
         return self.binding_mutation.reference
 
     def source_for(self, reference: LexicalValueReference) -> LexicalValueReference:
-        """Project a use's attribute suffix onto the captured source reference."""
-
+        """Project lexical origin syntax without replacing nominal lookup evidence."""
         return LexicalValueReference(
             self.source.root_name,
             (*self.source.attribute_path, *reference.attribute_path),
@@ -1014,9 +1102,18 @@ class CompactCallableReferenceUse:
         self,
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         context: ResolutionContextT,
+        *,
+        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        attribute_path: tuple[str, ...] = (),
     ) -> TargetResolutionT:
-        """Resolve the reference at its evaluation event."""
-        return self.target.resolve(resolver, context, self.position)
+        """Resolve the captured target, retaining lexical cycle and suffix evidence."""
+        return self.target.resolve(
+            resolver,
+            context,
+            self.position,
+            pending_bindings=pending_bindings,
+            attribute_path=attribute_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -1741,6 +1838,7 @@ class _CompactFlowCollector(ast.NodeVisitor):
             and len(reference.attribute_path) == 1
         ):
             return CurrentClassMethodReference(
+                self.current_class_receiver_name,
                 self.current_class_qualname,
                 reference.terminal_name,
             )
@@ -1909,11 +2007,11 @@ class _CompactFlowCollector(ast.NodeVisitor):
     ) -> None:
         if not self._is_exact_value_alias_assignment(targets, source):
             return
-        assert source is not None
+        source_use = self.callable_reference_uses[-1]
+        assert source_use.target.lexical_reference == source
         self.exact_value_aliases.extend(
             CompactExactValueAlias(
-                source=source,
-                source_position=mutations[0].position,
+                source_use=source_use,
                 binding_mutation=mutation,
             )
             for mutation in mutations

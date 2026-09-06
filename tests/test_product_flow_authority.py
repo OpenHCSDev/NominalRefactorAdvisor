@@ -44,7 +44,7 @@ def test_target_resolution_obeys_declared_mro_instead_of_concrete_class_dispatch
         )
     )
     context = repository.flow_contexts_by_owner_symbol["pkg.local.caller"]
-    target = LexicallyBoundMember("Owner", "member", "consume", False)
+    target = LexicallyBoundMember("self", "Owner", "member", "consume", False)
     resolution = repository.resolve_function_target(
         context, target, context.flow.calls[0].position
     )

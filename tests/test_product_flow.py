@@ -671,8 +671,8 @@ def test_annotated_member_method_targets_retain_current_class_lookup_semantics()
     )
 
     assert targets == (
-        CurrentClassMemberMethodReference("Owner", "renderer", "render", False),
-        CurrentClassMemberMethodReference("Owner", "renderer", "render", True),
+        CurrentClassMemberMethodReference("self", "Owner", "renderer", "render", False),
+        CurrentClassMemberMethodReference("self", "Owner", "renderer", "render", True),
     )
 
 
