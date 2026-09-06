@@ -51,7 +51,6 @@ from ..factorization import (
     ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
-from ..models import AutoRegisterMetaRentSignal
 from ..native_syntax import NativePythonSyntaxIndex
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
@@ -1345,107 +1344,6 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
         if call is not None and name_id(call.func) == "dataclass":
             return True
     return False
-
-
-def _autoregister_membership_object_count(
-    *,
-    concrete_class_names: tuple[str, ...],
-    dynamic_factory_symbols: tuple[str, ...],
-    behavior_method_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-    registry_projection_names: tuple[str, ...],
-    consumer_symbols: tuple[str, ...],
-) -> int:
-    leaf_objects = max(1, len(behavior_method_names)) + 2
-    leaf_axis_count = len(concrete_class_names) + len(dynamic_factory_symbols)
-    root_objects = (
-        len(abstract_method_names)
-        + len(registry_projection_names)
-        + len(consumer_symbols)
-        + 2
-    )
-    return leaf_axis_count * leaf_objects + root_objects
-
-
-def _autoregister_derived_projection_count(
-    *,
-    registry_key_attr_name: str | None,
-    key_extractor_name: str | None,
-    behavior_method_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-    registry_projection_names: tuple[str, ...],
-    consumer_symbols: tuple[str, ...],
-) -> int:
-    projection_count = 1
-    if registry_key_attr_name is not None:
-        projection_count += 1
-    if key_extractor_name is not None:
-        projection_count += 1
-    if behavior_method_names:
-        projection_count += 1
-    if abstract_method_names:
-        projection_count += 1
-    projection_count += len(registry_projection_names)
-    if consumer_symbols:
-        projection_count += 1
-    return projection_count
-
-
-def _autoregister_rent_certificate(
-    *,
-    manual_object_count: int,
-    class_name: str,
-    registry_axis_name: str,
-    semantic_axis_names: tuple[str, ...],
-    residual_object_count: int,
-    independent_source_count: int,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=manual_object_count,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("autoregister_meta", "semantic_family_root"),
-            per_axis_objects=("registered_leaf_key",),
-        ),
-        semantic_axes=(
-            class_name,
-            registry_axis_name,
-            *semantic_axis_names,
-        ),
-        residual_object_count=residual_object_count,
-        independent_source_count=independent_source_count,
-    )
-
-
-def _autoregister_missing_rent_signals(
-    *,
-    concrete_class_names: tuple[str, ...],
-    dynamic_factory_symbols: tuple[str, ...],
-    registry_key_attr_name: str | None,
-    key_extractor_name: str | None,
-    behavior_method_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-    registry_projection_names: tuple[str, ...],
-    consumer_symbols: tuple[str, ...],
-    min_leaf_count: int,
-) -> tuple[AutoRegisterMetaRentSignal, ...]:
-    missing: list[AutoRegisterMetaRentSignal] = []
-    if not dynamic_factory_symbols and len(concrete_class_names) < min_leaf_count:
-        missing.append(AutoRegisterMetaRentSignal.REGISTERED_LEAF_AXIS)
-    if registry_key_attr_name is None and key_extractor_name is None:
-        missing.append(AutoRegisterMetaRentSignal.STABLE_KEY_AXIS)
-    if not behavior_method_names and not abstract_method_names:
-        missing.append(AutoRegisterMetaRentSignal.BEHAVIOR_CONTRACT)
-    projection_rent_axes = (
-        behavior_method_names,
-        abstract_method_names,
-        registry_projection_names,
-        consumer_symbols,
-    )
-    if not any(projection_rent_axes):
-        missing.append(
-            AutoRegisterMetaRentSignal.EXPLICIT_REGISTRY_PROJECTION_OR_CONSUMER
-        )
-    return tuple(missing)
 
 
 def _reflective_lookup_shape(

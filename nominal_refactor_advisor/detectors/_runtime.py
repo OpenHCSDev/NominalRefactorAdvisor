@@ -12,7 +12,7 @@ import os
 import re
 import tempfile
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -25,7 +25,6 @@ from ._regex_bundle import RepeatedLocalRegexBundleDetector
 from ..ast_tools import (
     CollectedFamily,
     ParsedModule,
-    PythonSourcePathPolicy,
     SourceModule,
     collect_family_items,
     walk_function_body_nodes,
@@ -54,7 +53,6 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
 from ..codemod import (
-    AutoRegisterMetaUnderRentedFindingRecipeEvaluator,
     EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
@@ -65,8 +63,6 @@ from ..codemod import (
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
-    AutoRegisterMetaRentMetrics,
-    AutoRegisterMetaRentSignal,
     ConstructorOwnedMappingMetrics,
     HierarchyCandidateMetrics,
     RefactorFinding,
@@ -1648,23 +1644,6 @@ def _target_has_latent_roster(
     )
 
 
-def _target_has_autoregister_meta_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
-    config: DetectorConfig,
-) -> bool:
-    """Under-rent evidence is always the class that declares AutoRegisterMeta."""
-
-    del config
-    return any(
-        indexed_class.declares_autoregister_meta
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
-        for indexed_class in projection.classes
-    )
-
-
 def _target_has_predicate_selected_root(
     projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
     config: DetectorConfig,
@@ -2192,331 +2171,6 @@ def _compact_family_has_registration_authority(
         )
         for candidate in (class_index.class_for(symbol),)
     )
-
-
-def _compact_inherited_autoregister_registry_key_attr_name(
-    class_index: CompactClassFamilyIndex,
-    indexed_class: CompactIndexedClass,
-) -> str | None:
-    for symbol in (
-        indexed_class.symbol,
-        *class_index.ancestor_symbols(indexed_class.symbol),
-    ):
-        current_class = class_index.class_for(symbol)
-        if (
-            current_class is not None
-            and current_class.autoregister_registry_key_attr_name is not None
-        ):
-            return current_class.autoregister_registry_key_attr_name
-    return None
-
-
-def _compact_inherited_autoregister_key_extractor_name(
-    class_index: CompactClassFamilyIndex,
-    indexed_class: CompactIndexedClass,
-) -> str | None:
-    for symbol in (
-        indexed_class.symbol,
-        *class_index.ancestor_symbols(indexed_class.symbol),
-    ):
-        current_class = class_index.class_for(symbol)
-        if (
-            current_class is not None
-            and current_class.autoregister_key_extractor_name is not None
-        ):
-            return current_class.autoregister_key_extractor_name
-    return None
-
-
-def _compact_autoregister_dynamic_factory_symbols(
-    projections: tuple[CompactModuleClassProjection, ...],
-    *,
-    family_name: str,
-    concrete_class_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    symbol_names = frozenset((family_name, *concrete_class_names))
-    return sorted_tuple(
-        {
-            reference.qualname
-            for projection in projections
-            for reference in projection.autoregister_function_references
-            if reference.calls_autoregister_meta
-            and not frozenset(reference.referenced_symbols).isdisjoint(symbol_names)
-        }
-    )
-
-
-def _compact_autoregister_behavior_method_names(
-    indexed_class: CompactIndexedClass,
-    concrete_descendants: tuple[CompactIndexedClass, ...],
-) -> tuple[str, ...]:
-    registry_projection_names = set(
-        indexed_class.autoregister_registry_projection_names
-    )
-    return sorted_tuple(
-        {
-            method_name
-            for candidate in (indexed_class, *concrete_descendants)
-            for method_name in candidate.method_names
-            if not method_name.startswith("__")
-            and method_name not in registry_projection_names
-        }
-    )
-
-
-def _compact_autoregister_consumer_index(
-    projections: tuple[CompactModuleClassProjection, ...],
-    relevant_keys: frozenset[tuple[str, str]],
-) -> dict[tuple[str, str], frozenset[str]]:
-    consumers: dict[tuple[str, str], set[str]] = {}
-    for projection in projections:
-        reference_index = projection.autoregister_reference_index
-        if reference_index is None:
-            continue
-        for (
-            function_index,
-            receiver_index,
-            attribute_index,
-        ) in _compact_autoregister_reference_edges(reference_index.encoded_edges):
-            key = (
-                reference_index.receiver_names[receiver_index],
-                reference_index.attribute_names[attribute_index],
-            )
-            if key not in relevant_keys:
-                continue
-            consumers.setdefault(key, set()).add(
-                reference_index.function_qualnames[function_index]
-            )
-    return {key: frozenset(symbols) for key, symbols in consumers.items()}
-
-
-def _compact_autoregister_reference_edges(
-    encoded_edges: str,
-) -> Iterator[tuple[int, int, int]]:
-    for encoded_edge in encoded_edges.split(";"):
-        if not encoded_edge:
-            continue
-        function_index, receiver_index, attribute_index = encoded_edge.split(",")
-        yield int(function_index), int(receiver_index), int(attribute_index)
-
-
-def _compact_autoregister_consumer_symbols(
-    consumer_index: dict[tuple[str, str], frozenset[str]],
-    *,
-    family_name: str,
-    lookup_method_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    consumer_symbols = {
-        qualname
-        for method_name in lookup_method_names
-        for qualname in consumer_index.get((family_name, method_name), ())
-        if not qualname.startswith(f"{family_name}.")
-    }
-    return sorted_tuple(consumer_symbols)
-
-
-def _compact_autoregister_meta_rent_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
-    config: DetectorConfig,
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[AutoRegisterMetaRentCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(projections)
-    relevant_consumer_keys = frozenset(
-        (family_name, method_name)
-        for indexed_class in class_index.classes_by_symbol.values()
-        if indexed_class.declares_autoregister_meta
-        for family_name in (_compact_class_display_name(indexed_class, class_index),)
-        for method_name in indexed_class.autoregister_registry_projection_names
-    )
-    consumer_index = _compact_autoregister_consumer_index(
-        projections, relevant_consumer_keys
-    )
-    min_leaf_count = max(2, config.min_registration_sites)
-    candidates: list[AutoRegisterMetaRentCandidate] = []
-    for indexed_class in sorted(
-        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-    ):
-        if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
-            continue
-        if not indexed_class.declares_autoregister_meta:
-            continue
-        concrete_descendants = _compact_concrete_descendants(class_index, indexed_class)
-        concrete_class_names = tuple(
-            _compact_class_display_name(descendant, class_index)
-            for descendant in concrete_descendants
-        )
-        family_name = _compact_class_display_name(indexed_class, class_index)
-        dynamic_factory_symbols = _compact_autoregister_dynamic_factory_symbols(
-            projections,
-            family_name=family_name,
-            concrete_class_names=concrete_class_names,
-        )
-        registry_key_attr_name = _compact_inherited_autoregister_registry_key_attr_name(
-            class_index, indexed_class
-        )
-        key_extractor_name = _compact_inherited_autoregister_key_extractor_name(
-            class_index, indexed_class
-        )
-        registry_projection_names = indexed_class.autoregister_registry_projection_names
-        consumer_symbols = _compact_autoregister_consumer_symbols(
-            consumer_index,
-            family_name=family_name,
-            lookup_method_names=registry_projection_names,
-        )
-        behavior_method_names = _compact_autoregister_behavior_method_names(
-            indexed_class, concrete_descendants
-        )
-        abstract_method_names = indexed_class.abstract_method_names
-        missing_rent_signals = _autoregister_missing_rent_signals(
-            concrete_class_names=concrete_class_names,
-            dynamic_factory_symbols=dynamic_factory_symbols,
-            registry_key_attr_name=registry_key_attr_name,
-            key_extractor_name=key_extractor_name,
-            behavior_method_names=behavior_method_names,
-            abstract_method_names=abstract_method_names,
-            registry_projection_names=registry_projection_names,
-            consumer_symbols=consumer_symbols,
-            min_leaf_count=min_leaf_count,
-        )
-        if missing_rent_signals == (
-            AutoRegisterMetaRentSignal.REGISTERED_LEAF_AXIS,
-        ) and (
-            behavior_method_names
-            or abstract_method_names
-            or registry_projection_names
-            or consumer_symbols
-        ):
-            continue
-        if not missing_rent_signals:
-            continue
-        membership_object_count = _autoregister_membership_object_count(
-            concrete_class_names=concrete_class_names,
-            dynamic_factory_symbols=dynamic_factory_symbols,
-            behavior_method_names=behavior_method_names,
-            abstract_method_names=abstract_method_names,
-            registry_projection_names=registry_projection_names,
-            consumer_symbols=consumer_symbols,
-        )
-        certificate = _autoregister_rent_certificate(
-            manual_object_count=membership_object_count,
-            class_name=family_name,
-            registry_axis_name=registry_key_attr_name
-            or key_extractor_name
-            or "class_identity",
-            semantic_axis_names=(
-                *behavior_method_names,
-                *abstract_method_names,
-                *registry_projection_names,
-                *dynamic_factory_symbols,
-            ),
-            residual_object_count=len(concrete_class_names)
-            + len(dynamic_factory_symbols),
-            independent_source_count=max(
-                1, len(concrete_class_names) + len(dynamic_factory_symbols)
-            ),
-        )
-        candidates.append(
-            AutoRegisterMetaRentCandidate(
-                file_path=indexed_class.file_path,
-                line=indexed_class.line,
-                class_name=family_name,
-                concrete_class_names=concrete_class_names,
-                dynamic_factory_symbols=dynamic_factory_symbols,
-                registry_key_attr_name=registry_key_attr_name,
-                key_extractor_name=key_extractor_name,
-                behavior_method_names=behavior_method_names,
-                abstract_method_names=abstract_method_names,
-                registry_projection_names=registry_projection_names,
-                consumer_symbols=consumer_symbols,
-                missing_rent_signals=missing_rent_signals,
-                membership_object_count=membership_object_count,
-                derived_projection_count=_autoregister_derived_projection_count(
-                    registry_key_attr_name=registry_key_attr_name,
-                    key_extractor_name=key_extractor_name,
-                    behavior_method_names=behavior_method_names,
-                    abstract_method_names=abstract_method_names,
-                    registry_projection_names=registry_projection_names,
-                    consumer_symbols=consumer_symbols,
-                ),
-                rent_margin=certificate.certified_description_length_savings,
-                compression_certificate=certificate,
-            )
-        )
-    return tuple(candidates)
-
-
-class AutoRegisterMetaUnderRentedDetector(
-    CompactClassRepositoryCandidateDetector[AutoRegisterMetaRentCandidate],
-    AutoRegisterMetaUnderRentedFindingRecipeEvaluator,
-):
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_autoregister_meta_root
-    )
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "AutoRegisterMeta family should prove its rent",
-        "A metaclass registry pays rent when it derives a semantic family membership surface: a stable key axis, multiple registered leaves, and a behavioral or abstract contract. Explicit registry projections and consumers strengthen that proof. Without those coordinates, the metaclass is mostly signature noise and the same information usually belongs in a typed declaration table, enum, or ordinary ABC.",
-        "AutoRegisterMeta-backed family with computed rent evidence over key axis, leaves, behavior, projections, and consumers",
-        "class declares AutoRegisterMeta but lacks enough generic rent signals to justify metaclass registration",
-        (
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
-    )
-    detector_id = "autoregister_meta_under_rented"
-
-    def _candidates_from_compact_context(
-        self,
-        context: CompactClassRepositoryContext,
-        config: DetectorConfig,
-    ) -> tuple[AutoRegisterMetaRentCandidate, ...]:
-        return _compact_autoregister_meta_rent_candidates(
-            context.projections,
-            config,
-            class_index=context.class_index,
-        )
-
-    def _finding_for_candidate(
-        self, rent_candidate: AutoRegisterMetaRentCandidate
-    ) -> RefactorFinding:
-        key_summary = (
-            f"key `{rent_candidate.registry_key_attr_name}`"
-            if rent_candidate.registry_key_attr_name is not None
-            else (
-                f"key extractor `{rent_candidate.key_extractor_name}`"
-                if rent_candidate.key_extractor_name is not None
-                else "no stable key axis"
-            )
-        )
-        concrete_preview = ", ".join(rent_candidate.concrete_class_names[:4]) or "none"
-        return self.build_finding(
-            (
-                f"`{rent_candidate.class_name}` declares AutoRegisterMeta with {key_summary}, "
-                f"{len(rent_candidate.concrete_class_names)} concrete leaf/leaves ({concrete_preview}), "
-                f"dynamic factories {rent_candidate.dynamic_factory_symbols}, "
-                f"behavior methods {rent_candidate.behavior_method_names}, abstract hooks "
-                f"{rent_candidate.abstract_method_names}, projections {rent_candidate.registry_projection_names}, "
-                f"and consumers {rent_candidate.consumer_symbols}; missing rent signal(s): "
-                f"{tuple(signal.value for signal in rent_candidate.missing_rent_signals)}. "
-                f"Rent margin {rent_candidate.rent_margin}."
-            ),
-            (rent_candidate.evidence,),
-            compression_certificate=rent_candidate.compression_certificate,
-            metrics=AutoRegisterMetaRentMetrics(
-                registration_site_count=len(rent_candidate.concrete_class_names),
-                registry_name=rent_candidate.class_name,
-                class_names=rent_candidate.concrete_class_names,
-                missing_signals=rent_candidate.missing_rent_signals,
-                rent_margin=rent_candidate.rent_margin,
-            ),
-        )
 
 
 class PredicateSelectedConcreteFamilyDetector(

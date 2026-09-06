@@ -657,7 +657,6 @@ class CompactIndexedClass(CompactClassHeader):
     declares_autoregister_meta: bool = False
     is_registration_authority: bool = False
     autoregister_registry_key_attr_name: str | None = None
-    autoregister_key_extractor_name: str | None = None
     autoregister_registry_projection_names: tuple[str, ...] = ()
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
@@ -1067,9 +1066,6 @@ class CompactClassSyntaxFacets:
 
     closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
     exact_type_guards: tuple["CompactExactTypeGuard", ...] = ()
-    autoregister_function_references: tuple[
-        "CompactAutoRegisterFunctionReference", ...
-    ] = ()
     autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
 
 
@@ -1818,16 +1814,6 @@ class CompactSourceLocation:
 
     file_path: str
     line: int
-
-
-@dataclass(frozen=True)
-class CompactAutoRegisterFunctionReference:
-    """Sparse AST-free function facts used by AutoRegister rent analysis."""
-
-    qualname: str
-    referenced_symbols: tuple[str, ...]
-    calls_autoregister_meta: bool
-    receiver_attribute_refs: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -3710,7 +3696,6 @@ def _compact_indexed_classes(
                 parsed_module,
                 node,
             ),
-            autoregister_key_extractor_name=_autoregister_key_extractor_name(node),
             autoregister_registry_projection_names=(
                 _autoregister_registry_projection_names(node)
                 if include_body_facets
@@ -3871,11 +3856,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     for method in item.class_methods
                     if method.method_name in demand.class_method_names
                 ),
-                autoregister_function_references=(
-                    item.autoregister_function_references
-                    if demand.include_autoregister_references
-                    else ()
-                ),
                 autoregister_reference_index=(
                     item.autoregister_reference_index
                     if demand.include_autoregister_references
@@ -4018,9 +3998,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     )
                 ),
                 exact_type_guards=syntax_facets.exact_type_guards,
-                autoregister_function_references=(
-                    syntax_facets.autoregister_function_references
-                ),
                 autoregister_reference_index=(
                     syntax_facets.autoregister_reference_index
                 ),
@@ -5141,19 +5118,6 @@ def _autoregister_registry_key_attr_name(
     return _registry_family_key_attr_name(assignments.get("__registry_family__"))
 
 
-def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
-    assignments = _direct_class_assignments(node)
-    extractor = assignments.get("__key_extractor__")
-    if extractor is None:
-        extractor = _registry_config_keyword(
-            assignments.get("__registry_config__"),
-            "key_extractor",
-        )
-    if isinstance(extractor, ast.Constant) and extractor.value is None:
-        return None
-    return ast.unparse(extractor) if extractor is not None else None
-
-
 def _autoregister_registry_projection_names(
     node: ast.ClassDef,
 ) -> tuple[str, ...]:
@@ -5279,33 +5243,17 @@ def _compact_repeated_keyed_family_roots(
 @dataclass
 class _CompactAutoRegisterFunctionReferenceBuilder:
     qualname: str
-    node: ast.FunctionDef | ast.AsyncFunctionDef
     receiver_attribute_refs: set[tuple[str, str]]
-    referenced_symbols: set[str]
-    calls_autoregister_meta: bool = False
 
 
 def _compact_autoregister_reference_projection(
     builders: tuple[_CompactAutoRegisterFunctionReferenceBuilder, ...],
-) -> tuple[
-    tuple[CompactAutoRegisterFunctionReference, ...],
-    CompactAutoRegisterReferenceIndex | None,
-]:
-    references = tuple(
-        CompactAutoRegisterFunctionReference(
-            qualname=builder.qualname,
-            referenced_symbols=sorted_tuple(builder.referenced_symbols),
-            calls_autoregister_meta=True,
-            receiver_attribute_refs=sorted_tuple(builder.receiver_attribute_refs),
-        )
-        for builder in builders
-        if builder.calls_autoregister_meta
-    )
+) -> CompactAutoRegisterReferenceIndex | None:
     consumer_builders = tuple(
         builder for builder in builders if builder.receiver_attribute_refs
     )
     if not consumer_builders:
-        return references, None
+        return None
     receiver_names = sorted_tuple(
         {
             receiver_name
@@ -5322,7 +5270,7 @@ def _compact_autoregister_reference_projection(
     )
     receiver_indexes = {name: index for index, name in enumerate(receiver_names)}
     attribute_indexes = {name: index for index, name in enumerate(attribute_names)}
-    return references, CompactAutoRegisterReferenceIndex(
+    return CompactAutoRegisterReferenceIndex(
         function_qualnames=tuple(builder.qualname for builder in consumer_builders),
         receiver_names=receiver_names,
         attribute_names=attribute_names,
@@ -5359,9 +5307,7 @@ def _compact_class_syntax_facets(
         {
             id(function): _CompactAutoRegisterFunctionReferenceBuilder(
                 qualname=qualname,
-                node=function,
                 receiver_attribute_refs=set(),
-                referenced_symbols=set(),
             )
             for qualname, function in syntax_index.named_functions
         }
@@ -5420,12 +5366,6 @@ def _compact_class_syntax_facets(
             receiver_reference = (node.value.id, node.attr)
             for builder in active_builders_by_scope[syntax_index.scope_ids[node_index]]:
                 builder.receiver_attribute_refs.add(receiver_reference)
-        for node_index in indices_by_type.get(ast.Call, ()):
-            node = syntax_index.depth_first_nodes[node_index]
-            if _terminal_reference_name(node.func) != "AutoRegisterMeta":
-                continue
-            for builder in active_builders_by_scope[syntax_index.scope_ids[node_index]]:
-                builder.calls_autoregister_meta = True
 
     for node_index in indices_by_type.get(ast.If, ()):
         active_function_ids = active_function_ids_by_scope[
@@ -5516,31 +5456,7 @@ def _compact_class_syntax_facets(
         if collect_autoregister
         else ()
     )
-    for builder in builders:
-        if not builder.calls_autoregister_meta:
-            continue
-        builder.referenced_symbols.update(
-            symbol
-            for subnode in ast.walk(builder.node)
-            for symbol in (
-                (
-                    subnode.id
-                    if isinstance(subnode, ast.Name)
-                    else (
-                        subnode.value
-                        if isinstance(subnode, ast.Constant)
-                        and isinstance(subnode.value, str)
-                        else (
-                            subnode.attr if isinstance(subnode, ast.Attribute) else None
-                        )
-                    )
-                ),
-            )
-            if symbol is not None
-        )
-    autoregister_references, autoregister_index = (
-        _compact_autoregister_reference_projection(builders)
-    )
+    autoregister_index = _compact_autoregister_reference_projection(builders)
     closed_axis_functions: list[CompactClosedAxisBranchFunction] = []
     for qualname, function in syntax_index.named_functions:
         function_id = id(function)
@@ -5566,7 +5482,6 @@ def _compact_class_syntax_facets(
                 )
             )
     return CompactClassSyntaxFacets(
-        autoregister_function_references=autoregister_references,
         autoregister_reference_index=autoregister_index,
         closed_axis_branch_functions=tuple(closed_axis_functions),
         exact_type_guards=tuple(exact_type_guards),

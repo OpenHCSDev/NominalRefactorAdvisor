@@ -106,7 +106,6 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import (
-    AutoRegisterMetaRentSignal,
     FindingSpec,
     RefactorFinding,
     SourceLocation,
@@ -2953,10 +2952,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         declared_base_names=(),
         base_references=(),
     )
-    autoregister_projection = replace(
-        empty_projection,
-        classes=(replace(base_class, declares_autoregister_meta=True),),
-    )
     predicate_projection = replace(
         empty_projection,
         classes=(
@@ -3007,10 +3002,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         (
             runtime_detectors.LatentImplementationRosterDetector,
             replace(empty_projection, latent_rosters=(object(),)),
-        ),
-        (
-            runtime_detectors.AutoRegisterMetaUnderRentedDetector,
-            autoregister_projection,
         ),
         (
             runtime_detectors.PredicateSelectedConcreteFamilyDetector,
@@ -3123,7 +3114,6 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     demanded = family.collect_demanded(parsed_module, demand)
 
     assert demanded is not None
-    assert demanded[0].autoregister_function_references == ()
     assert demanded[0].autoregister_reference_index is None
     assert collect_autoregister_values == [False]
 
@@ -4505,14 +4495,9 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
     assert "_findings_from_compact_context" not in type(detector).__dict__
 
 
-def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
+def test_compact_autoregister_projection_retains_neutral_registry_evidence(
     tmp_path: Path,
 ) -> None:
-    assert not hasattr(helper_detectors, "_autoregister_meta_rent_candidates")
-    assert not hasattr(helper_detectors, "AutoRegisterFunctionReference")
-    assert not hasattr(helper_detectors, "_autoregister_function_references")
-    assert not hasattr(helper_detectors, "_autoregister_dynamic_factory_symbols")
-
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "family.py").write_text(
@@ -4542,34 +4527,38 @@ def test_compact_autoregister_rent_projection_matches_legacy_ast_candidates(
         "        Exporter.for_format(name)\n"
         "        return AutoRegisterMeta(name, (Exporter,), body)\n"
         "    return build(*spec)\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
-    config = DetectorConfig()
-    projections = runtime_detectors.AutoRegisterMetaUnderRentedDetector.compact_module_projections(
+    projections = class_index_module.CompactModuleClassProjectionFamily.collect_modules(
         modules
     )
-
-    candidates = runtime_detectors._compact_autoregister_meta_rent_candidates(
-        projections,
-        config,
+    assert len(projections) == 1
+    projection = projections[0]
+    root = next(cls for cls in projection.classes if cls.simple_name == "Exporter")
+    assert root.declares_autoregister_meta
+    assert root.abstract_method_names == ("emit",)
+    assert root.autoregister_registry_projection_names == ("for_format",)
+    assert root.autoregister_registry_key_attr_name is None
+    assert tuple(cls.simple_name for cls in projection.classes) == (
+        "Exporter",
+        "CsvExporter",
+        "JsonExporter",
     )
-
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.class_name == "Exporter"
-    assert candidate.concrete_class_names == ("CsvExporter", "JsonExporter")
-    assert candidate.behavior_method_names == ("emit",)
-    assert candidate.abstract_method_names == ("emit",)
-    detector = runtime_detectors.AutoRegisterMetaUnderRentedDetector()
-    assert detector._candidate_items(list(modules), config) == candidates
-    assert "_candidate_items" not in type(detector).__dict__
-    assert "_findings_from_compact_projections" not in type(detector).__dict__
-    assert "_findings_from_compact_context" not in type(detector).__dict__
-    assert candidate.registry_projection_names == ("for_format",)
-    assert candidate.missing_rent_signals == (
-        AutoRegisterMetaRentSignal.STABLE_KEY_AXIS,
+    reference_index = projection.autoregister_reference_index
+    assert reference_index is not None
+    assert "select_exporter" in reference_index.function_qualnames
+    assert "Exporter" in reference_index.receiver_names
+    assert "for_format" in reference_index.attribute_names
+    consumers = systemic_detectors._compact_registry_consumer_index(
+        projections, frozenset({("Exporter", "for_format")})
     )
+    assert consumers == {
+        ("Exporter", "for_format"): frozenset(
+            {"select_exporter", "materialize_nested", "build"}
+        )
+    }
 
 
 def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
@@ -4829,7 +4818,6 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
     detector_types = (
         runtime_detectors.ManualConcreteSubclassRosterDetector,
         runtime_detectors.LatentImplementationRosterDetector,
-        runtime_detectors.AutoRegisterMetaUnderRentedDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
         systemic_detectors.CrossModuleAxisShadowFamilyDetector,
         systemic_detectors.PrematureRegistryInfrastructureDetector,
@@ -5297,7 +5285,6 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.LatentImplementationRosterDetector,
         runtime_detectors.PredicateSelectedConcreteFamilyDetector,
         runtime_detectors.ParallelMirroredLeafFamilyDetector,
-        runtime_detectors.AutoRegisterMetaUnderRentedDetector,
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
     )
     assert {
@@ -6184,9 +6171,6 @@ def test_global_projection_partition_tracks_migrated_detector_boundary() -> None
         partition.compact_global_detector_types
     )
     assert runtime_detectors.ExactTypeGuardInheritanceRetreatDetector in (
-        partition.compact_global_detector_types
-    )
-    assert runtime_detectors.AutoRegisterMetaUnderRentedDetector in (
         partition.compact_global_detector_types
     )
     assert systemic_detectors.NonInjectiveTypeRegistryDetector in (

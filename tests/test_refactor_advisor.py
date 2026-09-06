@@ -277,8 +277,6 @@ from nominal_refactor_advisor.lean_export import (
     findings_from_lean_export_payload,
 )
 from nominal_refactor_advisor.models import (
-    AutoRegisterMetaRentMetrics,
-    AutoRegisterMetaRentSignal,
     DispatchCountMetrics,
     FindingBuildContext,
     FindingSpec,
@@ -19521,7 +19519,32 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
         ),
     )
 
-    report = CodemodRefactorGoalRunner(
+    original_source = (tmp_path / "pkg/mod.py").read_text()
+    introduced = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "New authority obligation",
+        "A projected state must discharge new obligations before commitment.",
+        "single nominal owner",
+        "projection repeats a nominal authority without descent",
+    ).build(
+        "semantic_mirror_without_descent",
+        "The test projection introduces an unresolved authority relation.",
+        (SourceLocation((tmp_path / "pkg/mod.py").as_posix(), 1, "REGISTRY"),),
+    )
+
+    class NewObligationRunner(CodemodRefactorGoalRunner):
+        """Exercise the gate independently of incidental detector heuristics."""
+
+        def exact_scan(self, scan):
+            exact = super().exact_scan(scan)
+            if (
+                any(module.source != original_source for module in exact.modules)
+                and introduced not in exact.findings
+            ):
+                return replace(exact, findings=[*exact.findings, introduced])
+            return exact
+
+    report = NewObligationRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
         parse_workers=1,
@@ -19542,9 +19565,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     assert rejected_terminal.finding_count_increase == 1
     assert len(rejected_terminal.finding_class_changes) == 1
     finding_class_change = rejected_terminal.finding_class_changes[0]
-    assert finding_class_change.detector_ids.after_ids == (
-        runtime_detectors.AutoRegisterMetaUnderRentedDetector.effective_detector_id(),
-    )
+    assert finding_class_change.detector_ids.after_ids == (introduced.detector_id,)
     assert finding_class_change.status is CodemodFindingClassStatus.INTRODUCED
     payload = json_report_object(report)["trajectory_proof"]
     assert payload["unjustified_debt_terminal_count"] == 1
@@ -22520,80 +22541,6 @@ def test_detects_inherited_autoregister_config_boilerplate(
     assert "__skip_if_no_key__" in finding.summary
 
 
-def test_autoregister_rent_counts_inherited_registry_config(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/base.py",
-        '\nfrom abc import ABC\n\nPROCESSOR_METHOD_REGISTRY_KEY = "method"\n\n\nclass RegisteredMethodStrategy(ABC):\n    __registry_key__ = PROCESSOR_METHOD_REGISTRY_KEY\n    __skip_if_no_key__ = True\n    method = None\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/processors.py",
-        '\nfrom abc import abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .base import RegisteredMethodStrategy\n\n\nclass SpatialBinStrategy(RegisteredMethodStrategy, metaclass=AutoRegisterMeta):\n    @abstractmethod\n    def apply(self, array):\n        raise NotImplementedError\n\n\nclass MeanSpatialBinStrategy(SpatialBinStrategy):\n    method = "mean"\n\n    def apply(self, array):\n        return array\n\n\nclass MaxSpatialBinStrategy(SpatialBinStrategy):\n    method = "max"\n\n    def apply(self, array):\n        return array\n',
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        and "SpatialBinStrategy" in finding.summary
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_autoregister_rent_counts_member_derived_stable_key_axis(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/cases.py",
-        '\nfrom abc import ABC\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass CaseKeyFamily(ABC):\n    __registry_key__ = "case_key"\n    __skip_if_no_key__ = True\n    case_key: ClassVar[str | None] = None\n\n\nclass RuntimeCase(CaseKeyFamily, metaclass=AutoRegisterMeta):\n    stable_key_axis: ClassVar[str] = CaseKeyFamily.__registry_key__\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    case_key = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    case_key = "beta"\n\n    def run(self, value):\n        return value\n',
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        and "RuntimeCase" in finding.summary
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_autoregister_rent_counts_enum_value_stable_key_axis(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/cases.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom enum import StrEnum\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass RegistryAxis(StrEnum):\n    case_key = "case_key"\n\n\nclass RuntimeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = RegistryAxis.case_key.value\n    __skip_if_no_key__ = True\n    stable_key_axis: ClassVar[str] = RegistryAxis.case_key.value\n    case_key: ClassVar[str | None] = None\n\n    @classmethod\n    def for_key(cls, case_key):\n        return cls.__registry__[case_key]\n\n    @abstractmethod\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    case_key = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    case_key = "beta"\n\n    def run(self, value):\n        return value\n',
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        and "RuntimeCase" in finding.summary
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_autoregister_rent_counts_imported_registry_key_constant(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/constants.py",
-        '\nRUNTIME_KIND_KEY = "kind"\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/cases.py",
-        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .constants import RUNTIME_KIND_KEY\n\n\nclass RuntimeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = RUNTIME_KIND_KEY\n    __skip_if_no_key__ = True\n    kind = None\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    kind = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    kind = "beta"\n\n    def run(self, value):\n        return value\n',
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        and "RuntimeCase" in finding.summary
-        for finding in analyze_path(tmp_path)
-    )
-
-
 def test_detects_autoregister_family_priority_axis_ordering(
     tmp_path: Path,
 ) -> None:
@@ -22699,163 +22646,6 @@ def test_ignores_autoregister_root_owning_registry_config(
 
     assert not any(
         finding.detector_id == "inherited_autoregister_config_boilerplate"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_detects_autoregister_meta_family_without_rent_proof(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Marker(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "kind"\n\n\nclass AlphaMarker(Marker):\n    kind = "alpha"\n\n\nclass BetaMarker(Marker):\n    kind = "beta"\n',
-    )
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "autoregister_meta_under_rented"
-    )
-    assert "Marker" in finding.summary
-    assert "behavior_contract" in finding.summary
-    assert "explicit_registry_projection_or_consumer" in finding.summary
-    assert "AutoRegisterMeta" in finding.summary
-    assert "Rent margin" in finding.summary
-    assert finding.compression_certificate is not None
-    assert isinstance(finding.metrics, AutoRegisterMetaRentMetrics)
-    assert finding.metrics.missing_signals == (
-        AutoRegisterMetaRentSignal.BEHAVIOR_CONTRACT,
-        AutoRegisterMetaRentSignal.EXPLICIT_REGISTRY_PROJECTION_OR_CONSUMER,
-    )
-
-    snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path),
-        (finding,),
-    )
-    synthesis = snapshot.plan_from_findings((finding,))
-    record = synthesis.records[0]
-    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    assert record.action_keys
-    assert "choosing between declaring" in record.reason
-    assert "complete reference closure" in record.reason
-    assert synthesis.unsupported_count == 0
-
-
-def test_autoregister_rent_ignores_unrelated_registry_metaclass(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nclass ServiceRegistryMeta(type):\n    pass\n\n\nclass ManagerServices(metaclass=ServiceRegistryMeta):\n    pass\n",
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_autoregister_rent_derives_key_axis_from_registry_config(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta, RegistryConfig\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_config__ = RegistryConfig(\n        key_attribute="format_name",\n        skip_if_no_key=True,\n    )\n\n    @classmethod\n    def loaded_types(cls):\n        return tuple(cls.__registry__.values())\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format_name = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format_name = "json"\n\n    def emit(self, rows):\n        return rows\n',
-    )
-
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_ignores_autoregister_meta_family_with_computed_rent_proof(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "format"\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_ignores_autoregister_meta_family_with_module_constant_registry_key(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nEXPORTER_REGISTRY_KEY = "format"\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = EXPORTER_REGISTRY_KEY\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_ignores_autoregister_meta_family_with_explicit_stable_axis_marker(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .constants import EXPORTER_REGISTRY_KEY\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = EXPORTER_REGISTRY_KEY\n    stable_key_axis = __registry_key__\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/constants.py",
-        '\nEXPORTER_REGISTRY_KEY = "format"\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_ignores_autoregister_meta_family_with_registry_family_axis(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta, RegistryFamily, RegistryKeyAttribute\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_family__ = RegistryFamily(RegistryKeyAttribute.STRATEGY_LABEL)\n\n    @classmethod\n    def for_strategy(cls, strategy_label):\n        return cls.__registry__[strategy_label]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    strategy_label = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    strategy_label = "json"\n\n    def emit(self, rows):\n        return rows\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path)
-    )
-
-
-def test_ignores_partial_scan_autoregister_root_with_projection_rent(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/base.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass PluginRoot(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "kind"\n\n    @classmethod\n    def registered_plugins(cls):\n        return tuple(cls.__registry__.values())\n\n    @abstractmethod\n    def run(self, value): ...\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
-        for finding in analyze_path(tmp_path / "pkg/base.py")
-    )
-
-
-def test_ignores_autoregister_meta_family_with_dynamic_factory_rent_proof(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass GeneratedStep(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "step_name"\n\n    @abstractmethod\n    def run(self, value): ...\n\n\ndef materialize_steps(declarations):\n    for step_name, transform in declarations:\n        AutoRegisterMeta(step_name, (GeneratedStep,), {"step_name": step_name, "run": transform})\n',
-    )
-    assert not any(
-        finding.detector_id == "autoregister_meta_under_rented"
         for finding in analyze_path(tmp_path)
     )
 

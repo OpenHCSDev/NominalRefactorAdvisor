@@ -169,7 +169,6 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
 
     assert evaluator_only_types == frozenset(
         {
-            detectors.AutoRegisterMetaUnderRentedDetector,
             detectors.EnvironmentBooleanAuthorityDriftDetector,
             detectors.ExternalEnumCaseRecoveryDetector,
             detectors.FormalBoundaryExternalStringRegistryMirrorDetector,

@@ -618,7 +618,6 @@ from .manual_registry import (
     SourceClassKeyEntry,
 )
 from .models import (
-    AutoRegisterMetaRentMetrics,
     EnvironmentBooleanDriftMetrics,
     FindingMetrics,
     MappingMetrics,
@@ -5025,26 +5024,6 @@ class EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator(
         return self.rejected_evaluation(
             metrics.recipe_rejection_reason(authority_symbol)
         )
-
-
-class AutoRegisterMetaUnderRentedFindingRecipeEvaluator(
-    PrimaryEvidenceActionKeysMixin,
-    FindingRecipeEvaluator,
-):
-    """Reject a metaclass edit until its missing rent semantics are proven."""
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        del context
-        metrics = finding.metrics
-        if not isinstance(metrics, AutoRegisterMetaRentMetrics):
-            return self.rejected_evaluation(
-                "under-rented AutoRegisterMeta finding lacks typed rent evidence"
-            )
-        return self.rejected_evaluation(metrics.recipe_rejection_reason())
 
 
 class CarrierCollapseFindingRecipeSynthesizer(

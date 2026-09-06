@@ -1,0 +1,933 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_target_has_autoregister_meta_root",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_inherited_autoregister_registry_key_attr_name",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_inherited_autoregister_key_extractor_name",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_dynamic_factory_symbols",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_behavior_method_names",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_consumer_index",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_reference_edges",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_consumer_symbols",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "_compact_autoregister_meta_rent_candidates",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "target_qualname": "AutoRegisterMetaUnderRentedDetector",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_helpers.py",
+              "target_qualname": "_autoregister_membership_object_count",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_helpers.py",
+              "target_qualname": "_autoregister_derived_projection_count",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_helpers.py",
+              "target_qualname": "_autoregister_rent_certificate",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_helpers.py",
+              "target_qualname": "_autoregister_missing_rent_signals",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_base.py",
+              "target_qualname": "AutoRegisterMetaRentCandidate",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/detectors/_base.py",
+              "target_qualname": "InheritanceFamilyRentSurface",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/models.py",
+              "target_qualname": "AutoRegisterMetaRentSignal",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-18-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/models.py",
+              "target_qualname": "AutoRegisterMetaRentMetrics",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-19-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/codemod.py",
+              "target_qualname": "AutoRegisterMetaUnderRentedFindingRecipeEvaluator",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-20-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "rationale": "",
+              "module_name": "..codemod",
+              "import_names": [
+                "AutoRegisterMetaUnderRentedFindingRecipeEvaluator"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-21-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "rationale": "",
+              "module_name": "..models",
+              "import_names": [
+                "AutoRegisterMetaRentMetrics",
+                "AutoRegisterMetaRentSignal"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-22-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_helpers.py",
+              "rationale": "",
+              "module_name": "..models",
+              "import_names": [
+                "AutoRegisterMetaRentSignal"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-23-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_base.py",
+              "rationale": "",
+              "module_name": "..models",
+              "import_names": [
+                "AutoRegisterMetaRentSignal"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-24-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/codemod.py",
+              "rationale": "",
+              "module_name": ".models",
+              "import_names": [
+                "AutoRegisterMetaRentMetrics"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-25-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "rationale": "",
+              "module_name": "collections.abc",
+              "import_names": [
+                "Iterator"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-26-remove_import_names",
+          "operations": [
+            {
+              "operation": "remove_import_names",
+              "file_path": "nominal_refactor_advisor/detectors/_runtime.py",
+              "rationale": "",
+              "module_name": "..ast_tools",
+              "import_names": [
+                "PythonSourcePathPolicy"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "CompactAutoRegisterFunctionReference",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_autoregister_key_extractor_name",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    autoregister_key_extractor_name: str | None = None\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "CompactIndexedClass",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    autoregister_function_references: tuple[\n        \"CompactAutoRegisterFunctionReference\", ...\n    ] = ()\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "CompactClassSyntaxFacets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "            autoregister_key_extractor_name=_autoregister_key_extractor_name(node),\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_indexed_classes",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                autoregister_function_references=(\n                    item.autoregister_function_references\n                    if demand.include_autoregister_references\n                    else ()\n                ),\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "CompactModuleClassProjectionFamily.project_cached_demand",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-7-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                autoregister_function_references=(\n                    syntax_facets.autoregister_function_references\n                ),\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "CompactModuleClassProjectionFamily._collect",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-8-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    node: ast.FunctionDef | ast.AsyncFunctionDef\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_CompactAutoRegisterFunctionReferenceBuilder",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-9-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    referenced_symbols: set[str]\n    calls_autoregister_meta: bool = False\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_CompactAutoRegisterFunctionReferenceBuilder",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-10-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": ") -> tuple[\n    tuple[CompactAutoRegisterFunctionReference, ...],\n    CompactAutoRegisterReferenceIndex | None,\n]:\n    references = tuple(\n        CompactAutoRegisterFunctionReference(\n            qualname=builder.qualname,\n            referenced_symbols=sorted_tuple(builder.referenced_symbols),\n            calls_autoregister_meta=True,\n            receiver_attribute_refs=sorted_tuple(builder.receiver_attribute_refs),\n        )\n        for builder in builders\n        if builder.calls_autoregister_meta\n    )\n",
+                  "new_source": ") -> CompactAutoRegisterReferenceIndex | None:\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_autoregister_reference_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-11-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        return references, None",
+                  "new_source": "        return None"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_autoregister_reference_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-12-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    return references, CompactAutoRegisterReferenceIndex(",
+                  "new_source": "    return CompactAutoRegisterReferenceIndex("
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_autoregister_reference_projection",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-13-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                node=function,\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_class_syntax_facets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-14-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "                referenced_symbols=set(),\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_class_syntax_facets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-15-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        for node_index in indices_by_type.get(ast.Call, ()):\n            node = syntax_index.depth_first_nodes[node_index]\n            if _terminal_reference_name(node.func) != \"AutoRegisterMeta\":\n                continue\n            for builder in active_builders_by_scope[syntax_index.scope_ids[node_index]]:\n                builder.calls_autoregister_meta = True\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_class_syntax_facets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-16-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "    for builder in builders:\n        if not builder.calls_autoregister_meta:\n            continue\n        builder.referenced_symbols.update(\n            symbol\n            for subnode in ast.walk(builder.node)\n            for symbol in (\n                (\n                    subnode.id\n                    if isinstance(subnode, ast.Name)\n                    else (\n                        subnode.value\n                        if isinstance(subnode, ast.Constant)\n                        and isinstance(subnode.value, str)\n                        else (\n                            subnode.attr if isinstance(subnode, ast.Attribute) else None\n                        )\n                    )\n                ),\n            )\n            if symbol is not None\n        )\n    autoregister_references, autoregister_index = (\n        _compact_autoregister_reference_projection(builders)\n    )\n",
+                  "new_source": "    autoregister_index = _compact_autoregister_reference_projection(builders)\n"
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_class_syntax_facets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-17-patch_target",
+          "operations": [
+            {
+              "operation": "patch_target",
+              "replacements": [
+                {
+                  "old_source": "        autoregister_function_references=autoregister_references,\n",
+                  "new_source": ""
+                }
+              ],
+              "file_path": "nominal_refactor_advisor/class_index.py",
+              "target_qualname": "_compact_class_syntax_facets",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}

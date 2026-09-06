@@ -149,7 +149,6 @@ from ..models import (
     CERTIFIED,
     STRONG_HEURISTIC,
     BranchCountMetrics,
-    AutoRegisterMetaRentSignal,
     CallSiteCountMetric,
     CertifiedFindingSpec,
     DispatchCountMetrics,
@@ -6405,27 +6404,6 @@ class NominalAuthorityShape:
     method_names: tuple[str, ...]
     is_abstract: bool
     is_dataclass_family: bool
-
-
-@dataclass(frozen=True)
-class InheritanceFamilyRentSurface(ClassLineWitnessCandidate):
-    concrete_class_names: tuple[str, ...]
-    abstract_method_names: tuple[str, ...]
-    membership_object_count: int
-    derived_projection_count: int
-    rent_margin: int
-    compression_certificate: CompressionCertificate
-
-
-@dataclass(frozen=True)
-class AutoRegisterMetaRentCandidate(InheritanceFamilyRentSurface):
-    dynamic_factory_symbols: tuple[str, ...]
-    registry_key_attr_name: str | None
-    key_extractor_name: str | None
-    behavior_method_names: tuple[str, ...]
-    registry_projection_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    missing_rent_signals: tuple[AutoRegisterMetaRentSignal, ...]
 
 
 @dataclass(frozen=True)
