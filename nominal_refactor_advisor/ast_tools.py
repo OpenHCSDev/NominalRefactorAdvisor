@@ -46,6 +46,7 @@ from .lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
     LexicalScopeBindingAuthority as LexicalScopeBindingAuthority,
 )
+from .native_compilation import NativePythonCompilation
 from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
@@ -73,7 +74,11 @@ from .python_module_identity import (
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .source_geometry import SourceLineSegmentAuthority, read_source_text
-from .source_identity import SourceFileIdentity, resolved_source_path_text
+from .source_identity import (
+    SourceFileIdentity,
+    python_source_cache_signature as python_source_cache_signature,
+    resolved_source_path_text,
+)
 from .semantic_match import (
     GuardedEffectStep,
     Maybe,
@@ -448,22 +453,12 @@ class PythonModuleParseContext(ParseCacheDirectory):
     )
 
 
-def _source_signature(source: str) -> str:
-    return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
-
-
 def _collected_family_implementation_module_names(
     family: type["CollectedFamily[object]"],
 ) -> tuple[str, ...]:
     """Project cache dependencies from the collected-family declaration itself."""
 
     return declaration_implementation_module_names((family,))
-
-
-def python_source_cache_signature(source: str) -> str:
-    """Return the raw-source token used by AST and collected-family caches."""
-
-    return _source_signature(source)
 
 
 def semantic_python_source_hash(source: str) -> str:
@@ -654,7 +649,7 @@ def _parse_source_module(
     source_semantic_hash: PythonSourceSemanticHash | None = None,
 ) -> ParsedModule:
     source = read_source_text(path)
-    source_signature = _source_signature(source)
+    source_signature = python_source_cache_signature(source)
     cached_payload = (
         _load_cached_ast(path, source_signature, cache_dir=context.parse_cache_dir)
         if context.use_parse_cache
@@ -759,6 +754,11 @@ class ParsedModule(SourceFileIdentity):
     source: str
     semantic_hash: str | None = None
     family_cache_dir: Path | None = None
+
+    @cached_property
+    def native_compilation(self) -> NativePythonCompilation:
+        """Share lazy compiler evidence over this module's original source context."""
+        return NativePythonCompilation(self.source, self.file_path)
 
     @cached_property
     def collected_family_cache(self) -> "CollectedFamilyCacheContext":
@@ -1998,7 +1998,7 @@ class CollectedFamilyCacheContext:
         return cls(
             path=path,
             module_name=module_name,
-            source_signature=_source_signature(source),
+            source_signature=python_source_cache_signature(source),
             family_cache_dir=family_cache_dir,
         )
 

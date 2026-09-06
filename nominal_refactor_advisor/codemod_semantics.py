@@ -7,6 +7,8 @@ from collections.abc import (
 from enum import StrEnum
 from typing import ClassVar
 
+from .native_compilation import NativePythonCompilation
+
 
 class RewriteOperation(StrEnum):
     """Supported source-index anchored rewrite operations."""
@@ -50,7 +52,7 @@ class CodemodSourceDependencyScope(StrEnum):
 
 
 def _validate_ast_span_source(source: str, file_path: str) -> None:
-    compile(source, file_path, "exec", dont_inherit=True)
+    NativePythonCompilation(source, file_path).compile()
 
 
 class CodemodBackend(StrEnum):

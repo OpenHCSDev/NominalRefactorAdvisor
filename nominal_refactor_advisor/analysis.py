@@ -49,7 +49,6 @@ from .ast_tools import (
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
-    python_source_cache_signature,
     retains_python_ast,
     semantic_python_source_hash,
 )
@@ -101,7 +100,11 @@ from .semantic_descent import (
     build_compact_semantic_descent_graph,
     build_semantic_descent_graph,
 )
-from .source_identity import resolved_source_path_text, source_path_text
+from .source_identity import (
+    python_source_cache_signature,
+    resolved_source_path_text,
+    source_path_text,
+)
 
 
 @dataclass(frozen=True)

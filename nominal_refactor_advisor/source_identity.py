@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from abc import ABC
 from collections.abc import Mapping
 from functools import cached_property
 from os import PathLike, fspath
 from pathlib import Path
+
+
+def python_source_cache_signature(source: str) -> str:
+    """Return the exact UTF-8 source identity shared by analysis and compilation."""
+    return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
 
 
 class SourceFileIdentity(ABC):

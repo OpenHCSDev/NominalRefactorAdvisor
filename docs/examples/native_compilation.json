@@ -1,0 +1,221 @@
+{
+  "stages": [
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-create_file",
+          "operations": [
+            {
+              "operation": "create_file",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "source": "\"\"\"Native raw-code execution evidence without executing analyzed modules.\"\"\"\n\nfrom __future__ import annotations\n\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\nimport dis\nfrom enum import IntEnum, StrEnum\nfrom functools import cached_property\nimport inspect\nimport sys\nfrom types import CodeType\nfrom typing import Self\n\nfrom .collection_algebra import (\n    IdentityHandleMultiplicityProjection,\n    UniqueIdentityIndexAuthority,\n)\nfrom .source_geometry import SourceByteSpan\nfrom .source_identity import (\n    python_source_cache_signature,\n    source_path_text,\n)\n\n\nclass NativeFunctionExecutionMode(IntEnum):\n    \"\"\"Native raw-code flags, not the identity of a decorated binding.\"\"\"\n\n    ORDINARY = 0\n    GENERATOR = inspect.CO_GENERATOR\n    COROUTINE = inspect.CO_COROUTINE\n    ASYNC_GENERATOR = inspect.CO_ASYNC_GENERATOR\n\n    @classmethod\n    def from_flags(cls, flags: int) -> Self:\n        return cls(flags & sum(member.value for member in cls))\n\n\nclass NativeExecutionUnavailable(StrEnum):\n    COMPILATION_REJECTED = \"compilation_rejected\"\n    INCOMPLETE_SOURCE_RANGES = \"incomplete_source_ranges\"\n    NO_EMITTED_CODE = \"no_emitted_code\"\n    AMBIGUOUS_SOURCE_SPAN = \"ambiguous_source_span\"\n\n\n@dataclass(frozen=True)\nclass NativeCompilationIdentity:\n    \"\"\"Exact source and interpreter provenance of one native compilation.\"\"\"\n\n    file_path: str\n    source_digest: str\n    interpreter: tuple[str, str]\n\n\n@dataclass(frozen=True)\nclass NativeFunctionExecution(ABC):\n    \"\"\"Compact declaration evidence; no AST or executable code is retained.\"\"\"\n\n    compilation: NativeCompilationIdentity\n    source_span: SourceByteSpan\n\n    @property\n    @abstractmethod\n    def mode(self) -> NativeFunctionExecutionMode | None:\n        raise NotImplementedError\n\n    @property\n    def violation(self) -> NativeExecutionUnavailable | None:\n        return None\n\n\n@dataclass(frozen=True)\nclass ExactNativeFunctionExecution(NativeFunctionExecution):\n    \"\"\"One emitted raw code object at the exact requested source span.\"\"\"\n\n    native_flags: int\n\n    @property\n    def mode(self) -> NativeFunctionExecutionMode:\n        return NativeFunctionExecutionMode.from_flags(self.native_flags)\n\n\n@dataclass(frozen=True)\nclass OpenNativeFunctionExecution(NativeFunctionExecution):\n    \"\"\"The native compiler did not provide a unique positioned code object.\"\"\"\n\n    reason: NativeExecutionUnavailable\n\n    @property\n    def mode(self) -> None:\n        return None\n\n    @property\n    def violation(self) -> NativeExecutionUnavailable:\n        return self.reason\n\n\n@dataclass(frozen=True)\nclass _NativeCompilationOutcome(ABC):\n    compilation: NativeCompilationIdentity\n\n    @abstractmethod\n    def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:\n        raise NotImplementedError\n\n\nclass _RejectedNativeCompilation(_NativeCompilationOutcome):\n    def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:\n        return OpenNativeFunctionExecution(\n            self.compilation,\n            source_span,\n            NativeExecutionUnavailable.COMPILATION_REJECTED,\n        )\n\n\n@dataclass(frozen=True)\nclass _NativeExecutionIndex(_NativeCompilationOutcome):\n    declarations: IdentityHandleMultiplicityProjection[\n        SourceByteSpan, ExactNativeFunctionExecution\n    ]\n    has_incomplete_ranges: bool\n\n    @classmethod\n    def from_code(cls, code: CodeType, compilation: NativeCompilationIdentity) -> Self:\n        creations: list[ExactNativeFunctionExecution] = []\n        pending = [code]\n        has_incomplete_ranges = False\n        while pending:\n            parent = pending.pop()\n            for instruction in dis.get_instructions(parent):\n                child = instruction.argval\n                if not isinstance(child, CodeType):\n                    continue\n                pending.append(child)\n                line, end_line, column, end_column = instruction.positions\n                if (\n                    line is None\n                    or end_line is None\n                    or column is None\n                    or end_column is None\n                ):\n                    has_incomplete_ranges = True\n                    continue\n                creations.append(\n                    ExactNativeFunctionExecution(\n                        compilation,\n                        SourceByteSpan(line - 1, end_line - 1, column, end_column),\n                        child.co_flags,\n                    )\n                )\n        return cls(\n            compilation,\n            UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(\n                creations, lambda creation: creation.source_span\n            ),\n            has_incomplete_ranges,\n        )\n\n    def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:\n        reason = self.unavailability_for(source_span)\n        if reason is not None:\n            return OpenNativeFunctionExecution(self.compilation, source_span, reason)\n        return self.declarations.unambiguous_declarations_by_handle[source_span]\n\n    def unavailability_for(\n        self, source_span: SourceByteSpan\n    ) -> NativeExecutionUnavailable | None:\n        if self.has_incomplete_ranges:\n            return NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES\n        if source_span in self.declarations.ambiguous_handles:\n            return NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN\n        if source_span not in self.declarations.unambiguous_declarations_by_handle:\n            return NativeExecutionUnavailable.NO_EMITTED_CODE\n        return None\n\n\n@dataclass(frozen=True)\nclass NativePythonCompilation:\n    \"\"\"Lazily project original module context without importing or executing it.\n\n    Only compact receipts are cached; native executable code is transient.\n    \"\"\"\n\n    source: str\n    file_path: str\n\n    def __post_init__(self) -> None:\n        object.__setattr__(self, \"file_path\", source_path_text(self.file_path))\n\n    @cached_property\n    def identity(self) -> NativeCompilationIdentity:\n        return NativeCompilationIdentity(\n            self.file_path,\n            python_source_cache_signature(self.source),\n            (sys.implementation.name, sys.version),\n        )\n\n    def compile(self) -> CodeType:\n        \"\"\"Return transient native code, preserving compiler errors for validation.\"\"\"\n        return compile(\n            self.source, self.file_path, \"exec\", dont_inherit=True, optimize=0\n        )\n\n    @cached_property\n    def _execution_outcome(self) -> _NativeCompilationOutcome:\n        try:\n            return _NativeExecutionIndex.from_code(self.compile(), self.identity)\n        except SyntaxError:\n            return _RejectedNativeCompilation(self.identity)\n\n    def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:\n        return self._execution_outcome.execution_for(source_span)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "rationale": "",
+              "import_source": "from .native_compilation import NativePythonCompilation\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-insert_class_member",
+          "operations": [
+            {
+              "operation": "insert_class_member",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "ParsedModule",
+              "rationale": "",
+              "source": "@cached_property\ndef native_compilation(self) -> NativePythonCompilation:\n    \"\"\"Share lazy compiler evidence over this module's original source context.\"\"\"\n    return NativePythonCompilation(self.source, self.file_path)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/codemod_semantics.py",
+              "rationale": "",
+              "import_source": "from .native_compilation import NativePythonCompilation\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/codemod_semantics.py",
+              "target_qualname": "_validate_ast_span_source",
+              "rationale": "",
+              "body_source": "NativePythonCompilation(source, file_path).compile()\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-1-delete_target",
+          "operations": [
+            {
+              "operation": "delete_target",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "python_source_cache_signature",
+              "rationale": ""
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-2-rename_top_level_declaration_authority",
+          "operations": [
+            {
+              "operation": "rename_top_level_declaration_authority",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "_source_signature",
+              "rationale": "",
+              "new_name": "python_source_cache_signature"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-3-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "target_qualname": "python_source_cache_signature",
+              "rationale": "",
+              "body_source": "\"\"\"Return the exact UTF-8 source identity shared by analysis and compilation.\"\"\"\nreturn hashlib.blake2s(source.encode(\"utf-8\"), digest_size=16).hexdigest()\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-4-move_symbols_to_module",
+          "operations": [
+            {
+              "operation": "move_symbols_to_module",
+              "file_path": "nominal_refactor_advisor/ast_tools.py",
+              "rationale": "",
+              "destination_path": "nominal_refactor_advisor/source_identity.py",
+              "symbol_qualnames": [
+                "python_source_cache_signature"
+              ]
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-5-ensure_import",
+          "operations": [
+            {
+              "operation": "ensure_import",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "rationale": "",
+              "import_source": "from .source_identity import python_source_cache_signature\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    },
+    {
+      "recipes": [
+        {
+          "recipe_id": "stage-6-replace_function_body",
+          "operations": [
+            {
+              "operation": "replace_function_body",
+              "file_path": "nominal_refactor_advisor/native_compilation.py",
+              "target_qualname": "NativePythonCompilation.identity",
+              "rationale": "",
+              "body_source": "return NativeCompilationIdentity(\n    self.file_path,\n    python_source_cache_signature(self.source),\n    (sys.implementation.name, sys.version),\n)\n"
+            }
+          ],
+          "architecture_guards": [],
+          "reason": "",
+          "authority_claims": []
+        }
+      ],
+      "architecture_guards": []
+    }
+  ]
+}
