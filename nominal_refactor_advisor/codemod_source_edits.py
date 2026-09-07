@@ -6,7 +6,10 @@ import ast
 import io
 import sys
 import tokenize
-from bisect import bisect_left
+from bisect import (
+    bisect_left,
+    bisect_right,
+)
 from abc import (
     ABC,
     abstractmethod,
@@ -23,6 +26,7 @@ from dataclasses import (
 )
 from enum import StrEnum
 from functools import cached_property
+from itertools import pairwise
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -781,11 +785,61 @@ class SourceFileCreation(NominalSourceEdit):
 
 
 @dataclass(frozen=True)
-class SourceTextSpanReplacement(ReplacementSource):
-    """Replacement of one character-offset span inside a source string."""
+class SourceOffsetSpan:
+    """Character interval shared independently of each source object's factory."""
 
     start_offset: int
     end_offset: int
+
+    def is_within(self, other: SourceOffsetSpan) -> bool:
+        return (
+            other.start_offset
+            <= self.start_offset
+            <= self.end_offset
+            <= other.end_offset
+        )
+
+    def overlaps(self, other: SourceOffsetSpan) -> bool:
+        """Retain interior insertions while excluding touching endpoints."""
+        return (
+            self.start_offset < other.end_offset
+            and other.start_offset < self.end_offset
+        )
+
+
+@dataclass(frozen=True)
+class SourceTextSpan(SourceOffsetSpan):
+    """Character-offset span over one source string."""
+
+    @classmethod
+    def from_offsets(cls, offsets: tuple[int, int]) -> "SourceTextSpan":
+        start_offset, end_offset = offsets
+        return cls(start_offset=start_offset, end_offset=end_offset)
+
+    def source_text(self, source: str) -> str:
+        return source[self.start_offset : self.end_offset]
+
+    def contains_comment(self, source: str) -> bool:
+        try:
+            return any(
+                token.type == tokenize.COMMENT
+                for token in tokenize.generate_tokens(
+                    io.StringIO(self.source_text(source)).readline
+                )
+            )
+        except (IndentationError, tokenize.TokenError):
+            return True
+
+    def replacement(self, source: str, new_source: str) -> "SourceTextReplacement":
+        return SourceTextReplacement(
+            old_source=self.source_text(source),
+            new_source=new_source,
+        )
+
+
+@dataclass(frozen=True)
+class SourceTextSpanReplacement(ReplacementSource, SourceOffsetSpan):
+    """Replacement of one character-offset span inside a source string."""
 
     @classmethod
     def from_offsets(
@@ -859,39 +913,6 @@ class SourceTextMutation(NominalSourceEdit):
     ) -> tuple[PhysicalSourceEdit, ...]:
         return cast(
             tuple[PhysicalSourceEdit, ...], self.coalesced_with_peers((self,), context)
-        )
-
-
-@dataclass(frozen=True)
-class SourceTextSpan:
-    """Character-offset span over one source string."""
-
-    start_offset: int
-    end_offset: int
-
-    @classmethod
-    def from_offsets(cls, offsets: tuple[int, int]) -> "SourceTextSpan":
-        start_offset, end_offset = offsets
-        return cls(start_offset=start_offset, end_offset=end_offset)
-
-    def source_text(self, source: str) -> str:
-        return source[self.start_offset : self.end_offset]
-
-    def contains_comment(self, source: str) -> bool:
-        try:
-            return any(
-                token.type == tokenize.COMMENT
-                for token in tokenize.generate_tokens(
-                    io.StringIO(self.source_text(source)).readline
-                )
-            )
-        except (IndentationError, tokenize.TokenError):
-            return True
-
-    def replacement(self, source: str, new_source: str) -> "SourceTextReplacement":
-        return SourceTextReplacement(
-            old_source=self.source_text(source),
-            new_source=new_source,
         )
 
 
@@ -998,9 +1019,58 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     """Line and offset geometry for source-index anchored rewrites."""
 
     literal_node_types: ClassVar[tuple[type[ast.expr], ...]] = (
-        ast.Constant, ast.JoinedStr,
+        ast.Constant,
+        ast.JoinedStr,
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
+
+    def project_unchanged_spans(
+        self,
+        spans: Iterable[SourceTextSpan],
+        replacements: Iterable[SourceTextSpanReplacement],
+    ) -> tuple[SourceTextSpan, ...]:
+        """Transport retained character spans through one exact edit batch.
+
+        Insertions at a span's start precede the retained text; insertions at its
+        end follow it. Interior insertions and replacements reject correspondence,
+        even when their new text matches. Empty spans carry no retained text.
+        This establishes text provenance only, not syntax or execution equivalence.
+        """
+        domain = SourceTextSpan(0, self.end_offset)
+        ordered = tuple(
+            replacement
+            for replacement in self.replacements_in_span(
+                0, self.end_offset, replacements
+            )
+            if replacement.start_offset != replacement.end_offset
+            or replacement.replacement_source
+        )
+        starts = tuple(replacement.start_offset for replacement in ordered)
+        ends = tuple(replacement.end_offset for replacement in ordered)
+        deltas = [0]
+        for replacement in ordered:
+            deltas.append(
+                deltas[-1]
+                + len(replacement.replacement_source)
+                - (replacement.end_offset - replacement.start_offset)
+            )
+        projected = []
+        for span in spans:
+            if not span.is_within(domain) or span.start_offset == span.end_offset:
+                raise ValueError(
+                    "Retained source span must be nonempty and fit its source"
+                )
+            preceding = bisect_right(ends, span.start_offset)
+            following = bisect_left(starts, span.end_offset)
+            if preceding != following:
+                raise ValueError(
+                    "Edited source span has no unchanged-text correspondence"
+                )
+            delta = deltas[preceding]
+            projected.append(
+                SourceTextSpan(span.start_offset + delta, span.end_offset + delta)
+            )
+        return tuple(projected)
 
     def physical_edit_projections(
         self,
@@ -1125,7 +1195,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         return self.tokens[start:end]
 
     def span_contains_comment(self, span: SourceTextSpan) -> bool:
-        return any(token.type == tokenize.COMMENT for token in self.tokens_in_span(span))
+        return any(
+            token.type == tokenize.COMMENT for token in self.tokens_in_span(span)
+        )
 
     def literal_continuation_lines(self, root: ast.AST) -> frozenset[int]:
         """Lines whose source belongs to literals and must retain its indentation."""
@@ -1152,7 +1224,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             elif token.string == "(":
                 depth -= 1
                 if depth == 0:
-                    return SourceTextSpan(self.token_position_offset(token.end), end - 1)
+                    return SourceTextSpan(
+                        self.token_position_offset(token.end), end - 1
+                    )
         raise ValueError("Call argument parentheses are unavailable")
 
     def function_parameter_span(
@@ -1333,18 +1407,20 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         span_end: int,
         replacements: Iterable[SourceTextSpanReplacement],
     ) -> str:
-        span_source = self.source[span_start:span_end]
-        for replacement in reversed(
-            self.replacements_in_span(span_start, span_end, replacements)
+        fragments = []
+        cursor = span_start
+        for replacement in self.replacements_in_span(
+            span_start, span_end, replacements
         ):
-            relative_start = replacement.start_offset - span_start
-            relative_end = replacement.end_offset - span_start
-            span_source = (
-                f"{span_source[:relative_start]}"
-                f"{replacement.replacement_source}"
-                f"{span_source[relative_end:]}"
+            fragments.extend(
+                (
+                    self.source[cursor : replacement.start_offset],
+                    replacement.replacement_source,
+                )
             )
-        return span_source
+            cursor = replacement.end_offset
+        fragments.append(self.source[cursor:span_end])
+        return "".join(fragments)
 
     def physical_edits(
         self,
@@ -1390,19 +1466,15 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """Return one unambiguous replacement per offset span."""
 
-        if not 0 <= span_start <= span_end <= self.end_offset:
+        target = SourceTextSpan(span_start, span_end)
+        if not target.is_within(SourceTextSpan(0, self.end_offset)):
             raise ValueError(
                 "Replacement target span must fit the source geometry: "
                 f"{span_start}:{span_end}"
             )
         replacement_by_span: dict[SourceTextSpan, SourceTextSpanReplacement] = {}
         for replacement in replacements:
-            if not (
-                span_start
-                <= replacement.start_offset
-                <= replacement.end_offset
-                <= span_end
-            ):
+            if not replacement.is_within(target):
                 raise ValueError(
                     "Offset replacement must fit its target span: "
                     f"{replacement.start_offset}:{replacement.end_offset} "
@@ -1426,31 +1498,14 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             replacement_by_span.values(),
             key=lambda item: (item.start_offset, item.end_offset),
         )
-        for index, first in enumerate(ordered):
-            for second in ordered[index + 1 :]:
-                if second.start_offset > first.end_offset:
-                    break
-                if self.replacement_spans_overlap(first, second):
-                    raise ValueError(
-                        "Offset replacement spans overlap: "
-                        f"{first.start_offset}:{first.end_offset} and "
-                        f"{second.start_offset}:{second.end_offset}"
-                    )
+        for first, second in pairwise(ordered):
+            if first.overlaps(second):
+                raise ValueError(
+                    "Offset replacement spans overlap: "
+                    f"{first.start_offset}:{first.end_offset} and "
+                    f"{second.start_offset}:{second.end_offset}"
+                )
         return ordered
-
-    @staticmethod
-    def replacement_spans_overlap(
-        first: SourceTextSpanReplacement,
-        second: SourceTextSpanReplacement,
-    ) -> bool:
-        if first.start_offset == first.end_offset:
-            return second.start_offset < first.start_offset < second.end_offset
-        if second.start_offset == second.end_offset:
-            return first.start_offset < second.start_offset < first.end_offset
-        return (
-            first.start_offset < second.end_offset
-            and second.start_offset < first.end_offset
-        )
 
     def _line_span_offsets(self, start_line: int, end_line: int) -> tuple[int, int]:
         line_offsets = self.line_offsets

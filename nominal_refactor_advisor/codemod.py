@@ -503,6 +503,7 @@ from .codemod_source_edits import (
     PlannedSourceRewrite as PlannedSourceRewrite,
     ResolvedSourceRewrite as ResolvedSourceRewrite,
     SimulatedSourceRewrite as SimulatedSourceRewrite,
+    SourceOffsetSpan as SourceOffsetSpan,
     SourceRewriteDelta as SourceRewriteDelta,
     SourceTextMutation as SourceTextMutation,
 )
