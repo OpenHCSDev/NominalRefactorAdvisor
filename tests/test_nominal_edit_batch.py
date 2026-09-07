@@ -1,6 +1,7 @@
 """The compiler retains original records under the source that produced them."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.json_reports import json_report_object
 
-PATH = "/repo/edit_batch.py"
+PATH = str(Path(__file__).with_name("edit_batch_fixture.py").resolve())
 SOURCE = "class Handler:\n    value = object\n"
 
 
