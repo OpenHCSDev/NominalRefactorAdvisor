@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -27,13 +28,16 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 
 
-@pytest.fixture
-def invalid_proposal():
+@pytest.fixture(params=(False, True), ids=("relative-source", "absolute-source"))
+def invalid_proposal(request, tmp_path):
+    source_path = (
+        tmp_path / "simple.py" if request.param else Path("simple.py")
+    ).as_posix()
     snapshot = CodemodSourceSnapshot.from_source_mapping(
-        {"/repo/simple.py": "def chosen(): return 1\n"}
+        {source_path: "def chosen(): return 1\n"}
     )
     operation = PatchTargetOperation(
-        target=SourceRewriteTarget(file_path="/repo/simple.py", qualname="chosen"),
+        target=SourceRewriteTarget(file_path=source_path, qualname="chosen"),
         replacements=(
             SourceTextReplacement(old_source="missing text", new_source="replacement"),
         ),
