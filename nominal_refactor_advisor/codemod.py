@@ -509,7 +509,9 @@ from .codemod_source_edits import (
     ResolvedSourceRewrite as ResolvedSourceRewrite,
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceEditWindowABC as SourceEditWindowABC,
+    SourceIntervalProjectionABC as SourceIntervalProjectionABC,
     SourceOffsetSpan as SourceOffsetSpan,
+    SourceRetainedSpanIndex as SourceRetainedSpanIndex,
     SourceRewriteDelta as SourceRewriteDelta,
     SourceTextMutation as SourceTextMutation,
 )

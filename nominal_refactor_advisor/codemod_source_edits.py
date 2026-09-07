@@ -372,18 +372,22 @@ class PhysicalSourceEditConflictError(ValueError):
     """Physical source edits cannot coexist in one nominal rewrite."""
 
 
-class SourceEditWindowABC(ABC):
-    """Physical output and original-text interiors of one resolved source window."""
+class SourceIntervalProjectionABC(ABC):
+    """Original geometry, output extent, and retained text owned by one edit."""
+
+    @abstractmethod
+    def original_span(self, geometry: SourceTextGeometry) -> SourceOffsetSpan:
+        """Admit the source geometry and project this declaration's original span."""
 
     @property
     @abstractmethod
-    def physical_edit(self) -> PhysicalSourceEdit:
-        """Derive the physical declaration consumed by the existing renderer."""
+    def replacement_length(self) -> int:
+        """Derive the character extent of this declaration's replacement output."""
 
     def project_retained_interiors(
         self, spans: Iterable[SourceTextSpan]
     ) -> tuple[SourceTextSpan, ...]:
-        """Map original absolute interiors to output-window-relative offsets.
+        """Map original absolute interiors to output-relative offsets.
 
         This is source origin only, not syntax or execution equivalence.
         Empty input has no retained-text obligation.
@@ -391,11 +395,26 @@ class SourceEditWindowABC(ABC):
         spans = tuple(spans)
         return self._project_retained_interiors(spans) if spans else ()
 
-    @abstractmethod
     def _project_retained_interiors(
         self, spans: tuple[SourceTextSpan, ...]
     ) -> tuple[SourceTextSpan, ...]:
-        """Prove and project a nonempty batch of original source interiors."""
+        raise ValueError("Opaque source window has no unchanged-text correspondence")
+
+
+class SourceEditWindowABC(SourceIntervalProjectionABC):
+    """Physical output and original-text interiors of one resolved source window."""
+
+    @property
+    def replacement_length(self) -> int:
+        return sum(len(line) for line in self.physical_edit.replacement_lines)
+
+    def original_span(self, geometry: SourceTextGeometry) -> SourceOffsetSpan:
+        return self.physical_edit.original_span(geometry)
+
+    @property
+    @abstractmethod
+    def physical_edit(self) -> PhysicalSourceEdit:
+        """Derive the physical declaration consumed by the existing renderer."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -442,13 +461,6 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         """Project this physical declaration's original character interval."""
 
-    def _project_retained_interiors(
-        self, spans: tuple[SourceTextSpan, ...]
-    ) -> tuple[SourceTextSpan, ...]:
-        raise ValueError(
-            "Opaque source window has no unchanged interior correspondence"
-        )
-
     @property
     def physical_edit(self) -> PhysicalSourceEdit:
         return self
@@ -493,6 +505,11 @@ class CoalescedSourceWindow(SourceEditWindowABC):
     """One actual peer group, with derived output and intersected text evidence."""
 
     windows: tuple[SourceEditWindowABC, ...]
+
+    def original_span(self, geometry: SourceTextGeometry) -> SourceOffsetSpan:
+        for window in self.windows:
+            window.original_span(geometry)
+        return super().original_span(geometry)
 
     def __post_init__(self) -> None:
         if not self.windows:
@@ -1014,8 +1031,18 @@ class SourceTextSpan(SourceOffsetSpan):
 
 
 @dataclass(frozen=True)
-class SourceTextSpanReplacement(ReplacementSource, SourceOffsetSpan):
+class SourceTextSpanReplacement(
+    ReplacementSource, SourceOffsetSpan, SourceIntervalProjectionABC
+):
     """Replacement of one character-offset span inside a source string."""
+
+    @property
+    def replacement_length(self) -> int:
+        return len(self.replacement_source)
+
+    def original_span(self, geometry: SourceTextGeometry) -> SourceOffsetSpan:
+        del geometry
+        return self
 
     @classmethod
     def from_offsets(
@@ -1154,6 +1181,17 @@ class ExactSourceWindow(SourceEditWindowABC):
     resolution: ExactSourceEditResolution
     projection_index: int
 
+    @cached_property
+    def retained_span_index(self) -> SourceRetainedSpanIndex:
+        return self.resolution.geometry.exact_span_index(self.replacements)
+
+    def original_span(self, geometry: SourceTextGeometry) -> SourceOffsetSpan:
+        if geometry.source != self.resolution.geometry.source:
+            raise ValueError(
+                "Exact source window requires its original source geometry"
+            )
+        return super().original_span(geometry)
+
     def __post_init__(self) -> None:
         if not 0 <= self.projection_index < len(self.resolution.projections):
             raise ValueError(
@@ -1183,8 +1221,7 @@ class ExactSourceWindow(SourceEditWindowABC):
     def _project_retained_interiors(
         self, spans: tuple[SourceTextSpan, ...]
     ) -> tuple[SourceTextSpan, ...]:
-        geometry = self.resolution.geometry
-        domain = self.physical_edit.original_span(geometry)
+        domain = self.original_span(self.resolution.geometry)
         if any(not span.is_within(domain) for span in spans):
             raise ValueError(
                 "Retained source interiors must belong to their physical window"
@@ -1194,7 +1231,7 @@ class ExactSourceWindow(SourceEditWindowABC):
                 span.start_offset - domain.start_offset,
                 span.end_offset - domain.start_offset,
             )
-            for span in geometry.project_unchanged_spans(spans, self.replacements)
+            for span in self.retained_span_index.project(spans)
         )
 
 
@@ -1297,6 +1334,124 @@ class SourceNodeSpan:
 
 
 @dataclass(frozen=True)
+class SourceRetainedSpanIndex:
+    """Cached coordinate transport through actual owner-ordered source edits."""
+
+    geometry: SourceTextGeometry
+    ordered_inputs: tuple[SourceIntervalProjectionABC, ...]
+
+    def __post_init__(self) -> None:
+        self._prefix_deltas
+
+    @cached_property
+    def _domain(self) -> SourceTextSpan:
+        return SourceTextSpan(0, self.geometry.end_offset)
+
+    @cached_property
+    def _input_spans(self) -> tuple[SourceOffsetSpan, ...]:
+        spans = tuple(item.original_span(self.geometry) for item in self.ordered_inputs)
+        if any(not span.is_within(self._domain) for span in spans):
+            raise ValueError("Projection input interval must fit its original source")
+        if any(
+            second.start_offset < first.end_offset for first, second in pairwise(spans)
+        ):
+            raise ValueError("Projection input intervals require monotone nonoverlap")
+        return spans
+
+    @cached_property
+    def _replacement_lengths(self) -> tuple[int, ...]:
+        lengths = tuple(item.replacement_length for item in self.ordered_inputs)
+        if any(length < 0 for length in lengths):
+            raise ValueError("Projection replacement lengths must be nonnegative")
+        return lengths
+
+    @cached_property
+    def _disruption_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, (span, length) in enumerate(
+                zip(self._input_spans, self._replacement_lengths, strict=True)
+            )
+            if span.start_offset != span.end_offset or length
+        )
+
+    @cached_property
+    def _starts(self) -> tuple[int, ...]:
+        return tuple(
+            self._input_spans[index].start_offset for index in self._disruption_indices
+        )
+
+    @cached_property
+    def _ends(self) -> tuple[int, ...]:
+        return tuple(
+            self._input_spans[index].end_offset for index in self._disruption_indices
+        )
+
+    @cached_property
+    def _prefix_deltas(self) -> tuple[int, ...]:
+        deltas = [0]
+        for index in self._disruption_indices:
+            span = self._input_spans[index]
+            deltas.append(
+                deltas[-1]
+                + self._replacement_lengths[index]
+                - (span.end_offset - span.start_offset)
+            )
+        return tuple(deltas)
+
+    def project(self, spans: Iterable[SourceTextSpan]) -> tuple[SourceTextSpan, ...]:
+        """Project gap spans or proved interiors; reject unproved crossing spans."""
+        spans = tuple(spans)
+        projected: dict[int, SourceTextSpan] = {}
+        interiors: dict[int, list[tuple[int, SourceTextSpan]]] = {}
+        for position, span in enumerate(spans):
+            if not span.is_within(self._domain) or span.start_offset == span.end_offset:
+                raise ValueError(
+                    "Retained source span must be nonempty and fit its source"
+                )
+            preceding = bisect_right(self._ends, span.start_offset)
+            following = bisect_left(self._starts, span.end_offset)
+            if preceding == following:
+                delta = self._prefix_deltas[preceding]
+                projected[position] = SourceTextSpan(
+                    span.start_offset + delta, span.end_offset + delta
+                )
+            elif following == preceding + 1 and span.is_within(
+                self._input_spans[self._disruption_indices[preceding]]
+            ):
+                interiors.setdefault(preceding, []).append((position, span))
+            else:
+                raise ValueError(
+                    "Edited source span has no unchanged-text correspondence across window boundaries"
+                )
+        for event, occurrences in interiors.items():
+            index = self._disruption_indices[event]
+            relative_spans = self.ordered_inputs[index].project_retained_interiors(
+                tuple(span for _position, span in occurrences)
+            )
+            after_start = (
+                self._input_spans[index].start_offset + self._prefix_deltas[event]
+            )
+            output_domain = SourceTextSpan(0, self._replacement_lengths[index])
+            for (position, original), relative in zip(
+                occurrences, relative_spans, strict=True
+            ):
+                if (
+                    not relative.is_within(output_domain)
+                    or relative.end_offset - relative.start_offset
+                    != original.end_offset - original.start_offset
+                ):
+                    raise ValueError(
+                        "Retained interior must preserve its extent within replacement output"
+                    )
+                projected[position] = SourceTextSpan(
+                    after_start + relative.start_offset,
+                    after_start + relative.end_offset,
+                )
+        return tuple(projected[position] for position in range(len(spans)))
+
+
+@dataclass(frozen=True)
 class SourceTextGeometry(SourceLineSegmentAuthority):
     """Line and offset geometry for source-index anchored rewrites."""
 
@@ -1305,6 +1460,14 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         ast.JoinedStr,
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
+
+    def exact_span_index(
+        self, replacements: Iterable[SourceTextSpanReplacement]
+    ) -> SourceRetainedSpanIndex:
+        """Bind one canonical exact edit set for reusable retained-span projection."""
+        return SourceRetainedSpanIndex(
+            self, self.replacements_in_span(0, self.end_offset, replacements)
+        )
 
     @cached_property
     def logical_lines(self) -> tuple[str, ...]:
@@ -1326,48 +1489,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         spans: Iterable[SourceTextSpan],
         replacements: Iterable[SourceTextSpanReplacement],
     ) -> tuple[SourceTextSpan, ...]:
-        """Transport retained character spans through one exact edit batch.
+        """Transport retained text through exact edits, preserving endpoint policy.
 
-        Insertions at a span's start precede the retained text; insertions at its
-        end follow it. Interior insertions and replacements reject correspondence,
-        even when their new text matches. Empty spans carry no retained text.
-        This establishes text provenance only, not syntax or execution equivalence.
+        Insertions at a span's start precede it; insertions at its end follow it.
+        Edited interiors reject origin even when replacement text is identical.
+        Use exact_span_index to retain the index across repeated queries.
         """
-        domain = SourceTextSpan(0, self.end_offset)
-        ordered = tuple(
-            replacement
-            for replacement in self.replacements_in_span(
-                0, self.end_offset, replacements
-            )
-            if replacement.start_offset != replacement.end_offset
-            or replacement.replacement_source
-        )
-        starts = tuple(replacement.start_offset for replacement in ordered)
-        ends = tuple(replacement.end_offset for replacement in ordered)
-        deltas = [0]
-        for replacement in ordered:
-            deltas.append(
-                deltas[-1]
-                + len(replacement.replacement_source)
-                - (replacement.end_offset - replacement.start_offset)
-            )
-        projected = []
-        for span in spans:
-            if not span.is_within(domain) or span.start_offset == span.end_offset:
-                raise ValueError(
-                    "Retained source span must be nonempty and fit its source"
-                )
-            preceding = bisect_right(ends, span.start_offset)
-            following = bisect_left(starts, span.end_offset)
-            if preceding != following:
-                raise ValueError(
-                    "Edited source span has no unchanged-text correspondence"
-                )
-            delta = deltas[preceding]
-            projected.append(
-                SourceTextSpan(span.start_offset + delta, span.end_offset + delta)
-            )
-        return tuple(projected)
+        return self.exact_span_index(replacements).project(spans)
 
     def physical_edit_projections(
         self,
@@ -1820,7 +1948,9 @@ class SourceTargetEditor:
 
     @property
     def file_lines(self) -> list[str]:
-        return list(SourceTextGeometry(self.sources[self.target.file_path]).logical_lines)
+        return list(
+            SourceTextGeometry(self.sources[self.target.file_path]).logical_lines
+        )
 
     @property
     def target_lines(self) -> list[str]:
