@@ -504,6 +504,7 @@ from .codemod_source_edits import (
     ResolvedSourceRewrite as ResolvedSourceRewrite,
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceRewriteDelta as SourceRewriteDelta,
+    SourceTextMutation as SourceTextMutation,
 )
 from .codemod_source_edits import (
     CodemodSourceRevisionError as CodemodSourceRevisionError,
