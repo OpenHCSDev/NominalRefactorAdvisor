@@ -123,6 +123,16 @@ class FunctionParameterSource(FunctionArgumentSource):
         )
 
 
+class DictionaryEvaluationVisitor(ast.NodeVisitor):
+    """Visit each original key before its value, including unpack operands."""
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        for key, value in zip(node.keys, node.values):
+            if key is not None:
+                self.visit(key)
+            self.visit(value)
+
+
 class FunctionDefaultVisitor(ast.NodeVisitor):
     """Visit defaults when a function is created, without entering its lambda body."""
 

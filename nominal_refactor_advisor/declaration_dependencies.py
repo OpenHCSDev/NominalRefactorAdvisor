@@ -32,6 +32,7 @@ from .lexical_scopes import (
     TypeParameterScope,
 )
 from .lexical_bindings import (
+    DictionaryEvaluationVisitor,
     FunctionAnnotationVisitor,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -451,7 +452,11 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
-class _DeclarationDependencyCollector(FunctionAnnotationVisitor, LexicalScopeContext):
+class _DeclarationDependencyCollector(
+    FunctionAnnotationVisitor,
+    LexicalScopeContext,
+    DictionaryEvaluationVisitor,
+):
     """Resolve names against the lexical scopes carried by moved declarations."""
 
     def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
@@ -534,12 +539,6 @@ class _DeclarationDependencyCollector(FunctionAnnotationVisitor, LexicalScopeCon
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
         self.visit(node.target)
-
-    def visit_Dict(self, node: ast.Dict) -> None:
-        for key, value in zip(node.keys, node.values):
-            if key is not None:
-                self.visit(key)
-            self.visit(value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         if isinstance(node.target, ast.Name):

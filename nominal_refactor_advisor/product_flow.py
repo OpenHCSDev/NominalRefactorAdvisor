@@ -47,6 +47,7 @@ from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
+    DictionaryEvaluationVisitor,
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
@@ -2523,7 +2524,10 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
         )
 
 
-class _CompactFlowCollector(EagerFunctionAnnotationVisitor):
+class _CompactFlowCollector(
+    EagerFunctionAnnotationVisitor,
+    DictionaryEvaluationVisitor,
+):
     """Collect one source scope without descending into nested scope bodies."""
 
     def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
