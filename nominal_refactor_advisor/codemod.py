@@ -4467,7 +4467,7 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
                 ),
                 evaluation_declaration_type=self.evaluation_declaration_type,
             )
-        return self.gated_by_existing_authority_claim(context)
+        return self.gated_by_recipe_preflight(context)
 
 
 @dataclass(frozen=True)
@@ -7128,7 +7128,6 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
                 target=SourceRewriteTarget(target_id=projection_target.target_id),
                 rationale="",
             )
-            operation.source_edits_from_snapshot(context.execution_snapshot())
         except (CodemodOperationPreflightError, ValueError) as error:
             return self.rejected_evaluation(str(error))
         recipe = (

@@ -1884,6 +1884,15 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
 
     @json_report_property()
+    def proposal_preflight(self) -> CodemodPlanPreflightReport | None:
+        return self.evaluation.proposal_preflight
+
+    @json_report_property()
+    def proposal(self) -> RefactorRecipe | None:
+        """A retained blocked proposal; executable selection uses recipe instead."""
+        return self.evaluation.proposal
+
+    @json_report_property()
     def status(self) -> FindingRecipeSynthesisStatus:
         return self.evaluation.status
 
@@ -2124,6 +2133,8 @@ class FindingRecipeEvaluation(ABC):
     rejection_reason = ConstantProperty[str]("")
     recipe_id = ConstantProperty[str]("")
     recipe = ConstantProperty[RefactorRecipe | None](None)
+    proposal = ConstantProperty[RefactorRecipe | None](None)
+    proposal_preflight = ConstantProperty[CodemodPlanPreflightReport | None](None)
     candidate_recipes = ConstantProperty[tuple[RefactorRecipe, ...]](())
     proof_obstacles = ConstantProperty[tuple[FindingRecipeProofObstacle, ...]](())
     refactor_concept_type = ConstantProperty[type[RefactorConcept] | None](None)
@@ -2225,11 +2236,50 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class RejectedRecipeProposalEvaluation(DeclaredRecipeEvaluation):
+    """An inspectable proposal with failed proof, never an executable candidate."""
+
+    status = FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    proposed_recipe: RefactorRecipe
+    preflight: CodemodPlanPreflightReport
+
+    def __post_init__(self) -> None:
+        if self.preflight.is_clean:
+            raise ValueError("A rejected proposal requires failed preflight evidence")
+
+    @property
+    def proposal(self) -> RefactorRecipe:
+        return self.proposed_recipe
+
+    @property
+    def proposal_preflight(self) -> CodemodPlanPreflightReport:
+        return self.preflight
+
+    @property
+    def rejection_reason(self) -> str:
+        return next(
+            report.message
+            for report in self.preflight.reports
+            if report.status.is_failed
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     """Declaration-owned safety outcome with exactly one executable recipe."""
 
     status = FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     executable_recipe: RefactorRecipe
+
+    def rejected_by_preflight(
+        self, preflight: CodemodPlanPreflightReport
+    ) -> RejectedRecipeProposalEvaluation:
+        """Retain this proposal and its actual evidence without planning it."""
+        return RejectedRecipeProposalEvaluation(
+            evaluation_declaration_type=self.evaluation_declaration_type,
+            proposed_recipe=self.executable_recipe,
+            preflight=preflight,
+        )
 
     @property
     def required_recipe(self) -> RefactorRecipe:
@@ -2271,25 +2321,26 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
         finding: RefactorFinding,
     ) -> FindingRecipeEvaluation:
         del finding
-        return self.gated_by_existing_authority_claim(context)
+        return self.gated_by_recipe_preflight(context)
 
-    def gated_by_existing_authority_claim(
+    def gated_by_recipe_preflight(
         self,
         context: CodemodSelectorContext | None,
     ) -> FindingRecipeEvaluation:
-        authority_report = FindingRecipeAuthorityClaimGate.authority_report_for_recipe(
-            self.executable_recipe,
-            context,
-        )
-        if (
-            authority_report is None
-            or authority_report.status.is_passed
-        ):
+        if context is None:
+            authority_report = (
+                FindingRecipeAuthorityClaimGate.authority_report_for_recipe(
+                    self.executable_recipe,
+                    context,
+                )
+            )
+            reports = () if authority_report is None else (authority_report,)
+        else:
+            reports = self.executable_recipe.preflight_reports(context)
+        preflight = CodemodPlanPreflightReport(reports)
+        if preflight.is_clean:
             return self
-        return RejectedRecipeEvaluation(
-            reason=FindingRecipeAuthorityClaimGate.rejection_reason(authority_report),
-            evaluation_declaration_type=self.evaluation_declaration_type,
-        )
+        return self.rejected_by_preflight(preflight)
 
     def terminal_evaluation(
         self,
@@ -2300,9 +2351,8 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
                 context
             )
         except CodemodOperationPreflightError as error:
-            return RejectedRecipeEvaluation(
-                reason=error.report.message,
-                evaluation_declaration_type=self.evaluation_declaration_type,
+            return self.rejected_by_preflight(
+                CodemodPlanPreflightReport((error.report,))
             )
         if has_effective_rewrites:
             return self
