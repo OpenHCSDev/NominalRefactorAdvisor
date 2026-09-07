@@ -802,6 +802,66 @@ class SourceTextSpanReplacement(ReplacementSource):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class SourceTextMutation(NominalSourceEdit):
+    """Exact edits of one source revision, lowered together after semantic planning."""
+
+    revision: CodemodSourceRevision
+    replacements: tuple[SourceTextSpanReplacement, ...]
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        mutations_by_path: dict[str, list[SourceTextMutation]] = defaultdict(list)
+        for peer in peers:
+            mutation = cast(SourceTextMutation, peer)
+            mutations_by_path[mutation.revision.file_path].append(mutation)
+        edits = []
+        for mutations in mutations_by_path.values():
+            first = mutations[0]
+            if any(item.revision != first.revision for item in mutations):
+                raise CodemodSourceRevisionError(
+                    "Exact edits require one original source revision"
+                )
+            source = context.sources_by_file_path[first.revision.file_path]
+            if not first.revision.matches_source(source):
+                raise CodemodSourceRevisionError(
+                    "Exact edits no longer match their original source revision"
+                )
+            owners: dict[SourceTextSpanReplacement, list[SourceTextMutation]] = (
+                defaultdict(list)
+            )
+            for mutation in mutations:
+                for replacement in mutation.replacements:
+                    owners[replacement].append(mutation)
+            for edit, window in SourceTextGeometry(source).physical_edit_projections(
+                file_path=first.revision.file_path, replacements=owners
+            ):
+                contributors = tuple(
+                    owner for replacement in window for owner in owners[replacement]
+                )
+                edits.append(
+                    replace(
+                        edit,
+                        rationale=_joined_rationales(
+                            item.rationale for item in contributors
+                        ),
+                        contributors=self.merged_contributors(contributors),
+                        origins=self.merged_origins(contributors),
+                    )
+                )
+        return tuple(edits)
+
+    def resolved_edits(
+        self, context: CodemodSelectorContext
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return cast(
+            tuple[PhysicalSourceEdit, ...], self.coalesced_with_peers((self,), context)
+        )
+
+
 @dataclass(frozen=True)
 class SourceTextSpan:
     """Character-offset span over one source string."""
@@ -941,6 +1001,85 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         ast.Constant, ast.JoinedStr,
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
+
+    def physical_edit_projections(
+        self,
+        *,
+        file_path: str,
+        replacements: Iterable[SourceTextSpanReplacement],
+        rationale: str = "",
+    ) -> tuple[tuple[PhysicalSourceEdit, tuple[SourceTextSpanReplacement, ...]], ...]:
+        """Retain the exact inputs of each physical edit for provenance consumers."""
+        ordered = self.replacements_in_span(0, self.end_offset, replacements)
+        line_windows: list[tuple[int, int, list[SourceTextSpanReplacement]]] = []
+        insertions: list[
+            tuple[PhysicalSourceEdit, tuple[SourceTextSpanReplacement, ...]]
+        ] = []
+        for replacement in ordered:
+            insertion_line = self._line_start_insertion_line(replacement)
+            if insertion_line is not None:
+                insertions.append(
+                    (
+                        SourceInsertion(
+                            file_path=file_path,
+                            insertion_line=insertion_line,
+                            inserted_lines=tuple(
+                                replacement.replacement_source.splitlines(keepends=True)
+                            ),
+                            rationale=rationale,
+                        ),
+                        (replacement,),
+                    )
+                )
+                continue
+            start_line = self.line_number_for_offset(replacement.start_offset)
+            end_line = self.line_number_for_offset(
+                max(replacement.start_offset, replacement.end_offset - 1)
+            )
+            if line_windows and start_line <= line_windows[-1][1]:
+                previous_start, previous_end, previous_replacements = line_windows[-1]
+                line_windows[-1] = (
+                    previous_start,
+                    max(previous_end, end_line),
+                    [*previous_replacements, replacement],
+                )
+                continue
+            line_windows.append((start_line, end_line, [replacement]))
+        span_replacements = tuple(
+            (
+                SourceSpanEdit.from_replacement_lines(
+                    file_path=file_path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    replacement_lines=tuple(
+                        self.source_with_replacements_in_span(
+                            *self._line_span_offsets(start_line, end_line),
+                            window_replacements,
+                        ).splitlines(keepends=True)
+                    ),
+                    rationale=rationale,
+                ),
+                tuple(window_replacements),
+            )
+            for start_line, end_line, window_replacements in line_windows
+        )
+        return (*span_replacements, *insertions)
+
+    def nominal_edit(
+        self,
+        *,
+        file_path: str,
+        replacements: tuple[SourceTextSpanReplacement, ...],
+        rationale: str = "",
+    ) -> SourceTextMutation:
+        """Retain exact spans and their source revision until all peers are known."""
+        return SourceTextMutation(
+            revision=CodemodSourceRevision(
+                file_path, CodemodSourceRevision.hash_source(self.source)
+            ),
+            replacements=replacements,
+            rationale=rationale,
+        )
 
     def iter_tokens(self) -> Iterator[tokenize.TokenInfo]:
         """Read source tokens lazily when only a prefix is required."""
@@ -1215,54 +1354,12 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         rationale: str = "",
     ) -> tuple[PhysicalSourceEdit, ...]:
         """Project offset edits into the smallest independent line edits."""
-
-        ordered = self.replacements_in_span(0, self.end_offset, replacements)
-        line_windows: list[tuple[int, int, list[SourceTextSpanReplacement]]] = []
-        insertions: list[SourceInsertion] = []
-        for replacement in ordered:
-            insertion_line = self._line_start_insertion_line(replacement)
-            if insertion_line is not None:
-                insertions.append(
-                    SourceInsertion(
-                        file_path=file_path,
-                        insertion_line=insertion_line,
-                        inserted_lines=tuple(
-                            replacement.replacement_source.splitlines(keepends=True)
-                        ),
-                        rationale=rationale,
-                    )
-                )
-                continue
-            start_line = self.line_number_for_offset(replacement.start_offset)
-            end_line = self.line_number_for_offset(
-                max(replacement.start_offset, replacement.end_offset - 1)
+        return tuple(
+            edit
+            for edit, _window in self.physical_edit_projections(
+                file_path=file_path, replacements=replacements, rationale=rationale
             )
-            if line_windows and start_line <= line_windows[-1][1]:
-                previous_start, previous_end, previous_replacements = line_windows[-1]
-                line_windows[-1] = (
-                    previous_start,
-                    max(previous_end, end_line),
-                    [*previous_replacements, replacement],
-                )
-                continue
-            line_windows.append((start_line, end_line, [replacement]))
-
-        span_replacements = tuple(
-            SourceSpanEdit.from_replacement_lines(
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                replacement_lines=tuple(
-                    self.source_with_replacements_in_span(
-                        *self._line_span_offsets(start_line, end_line),
-                        window_replacements,
-                    ).splitlines(keepends=True)
-                ),
-                rationale=rationale,
-            )
-            for start_line, end_line, window_replacements in line_windows
         )
-        return (*span_replacements, *insertions)
 
     def _line_start_insertion_line(
         self,
