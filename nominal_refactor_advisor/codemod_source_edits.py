@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import io
 import sys
 import tokenize
@@ -37,6 +36,7 @@ from .codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
     EmptyDefaultStringPayloadValueCodec,
+    OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
@@ -55,6 +55,7 @@ from .source_geometry import (
     SourceLineSegmentAuthority,
     read_source_text,
 )
+from .source_identity import python_source_cache_signature
 from .source_index import (
     AstTargetDigest,
     SourceIndex,
@@ -1753,11 +1754,11 @@ class PlannedRewriteSelectionAuthority:
 
 
 @dataclass(frozen=True)
-class CodemodSourceRevision(DataclassJsonReport):
+class CodemodSourceRevision(CodemodPayloadRecord):
     """Full-source revision required by a simulation's read or write context."""
 
-    file_path: str
-    source_hash: str | None
+    file_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    source_hash: str | None = codemod_payload_field(OptionalStringPayloadValueCodec())
 
     @classmethod
     def capture(
@@ -1785,12 +1786,7 @@ class CodemodSourceRevision(DataclassJsonReport):
             source_hash=(cls.hash_source(source) if source is not None else None),
         )
 
-    @staticmethod
-    def hash_source(source: str) -> str:
-        return hashlib.blake2s(
-            source.encode("utf-8"),
-            digest_size=16,
-        ).hexdigest()
+    hash_source = staticmethod(python_source_cache_signature)
 
     def matches_source(self, source: str | None) -> bool:
         if source is None:

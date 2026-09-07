@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
+from .codemod_payload import (
+    CodemodPayloadRecord,
+    RequiredIntegerPayloadValueCodec,
+    codemod_payload_field,
+)
+
 
 @dataclass(frozen=True)
 class ClassHeaderSourceSpan:
@@ -130,13 +136,13 @@ def unenclosed_python_tokens(
 
 
 @dataclass(frozen=True)
-class SourceByteSpan:
+class SourceByteSpan(CodemodPayloadRecord):
     """Validated UTF-8 byte span over one parsed source buffer."""
 
-    start_line_index: int
-    end_line_index: int
-    start_byte: int
-    end_byte: int
+    start_line_index: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
+    end_line_index: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
+    start_byte: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
+    end_byte: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
 
     @property
     def end_line(self) -> int:
