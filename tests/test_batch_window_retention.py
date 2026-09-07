@@ -280,4 +280,3 @@ def test_keyed_and_deletion_grouping_project_each_occurrence_once(deletion):
     assert len(calls) == len(originals)
     assert all(actual is expected for actual, expected in zip(calls, originals))
     assert all(actual is expected for actual, expected in zip(groups[0], originals))
-

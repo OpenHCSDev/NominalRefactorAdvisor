@@ -67,4 +67,3 @@ def test_editing_original_line_does_not_consume_a_separate_append(
     assert actual.parse_valid
     expected = ("" if delete else "first = object\n") + "second = type\n"
     assert actual.rewritten_sources[path] == expected
-

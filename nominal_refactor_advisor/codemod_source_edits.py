@@ -1828,11 +1828,12 @@ class SourceTargetEditor:
 
     def replacement_source(
         self,
-        replacements: Iterable[PhysicalSourceEdit],
+        replacements: Iterable[SourceEditWindowABC],
     ) -> str:
         lines = self.target_lines
-        ordered_replacements = self._ordered_replacements(replacements)
-        for replacement in reversed(ordered_replacements):
+        ordered_windows = self.ordered_windows(replacements)
+        for window in reversed(ordered_windows):
+            replacement = window.physical_edit
             start_index = replacement.start_line - self.target.line
             end_index = replacement.end_line - self.target.line + 1
             lines[start_index:end_index] = list(replacement.replacement_lines)
@@ -1922,16 +1923,21 @@ class SourceTargetEditor:
             rationale=rationale,
         )
 
-    def _ordered_replacements(
+    def ordered_windows(
         self,
-        replacements: Iterable[PhysicalSourceEdit],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        ordered_replacements = sorted_tuple(
-            replacements,
-            key=lambda item: (item.start_line, item.end_line),
+        windows: Iterable[SourceEditWindowABC],
+    ) -> tuple[SourceEditWindowABC, ...]:
+        """Order and admit actual windows under this target's physical geometry."""
+        ordered_windows = sorted_tuple(
+            windows,
+            key=lambda window: (
+                window.physical_edit.start_line,
+                window.physical_edit.end_line,
+            ),
         )
         previous_end = self.target.line - 1
-        for replacement in ordered_replacements:
+        for window in ordered_windows:
+            replacement = window.physical_edit
             if replacement.file_path != self.target.file_path:
                 raise ValueError(
                     f"Replacement file {replacement.file_path!r} does not match "
@@ -1951,7 +1957,7 @@ class SourceTargetEditor:
                     f"at line {replacement.start_line}"
                 )
             previous_end = replacement.end_line
-        return ordered_replacements
+        return ordered_windows
 
     def indentation_for_line(self, line_number: int) -> str:
         line = self.file_lines[line_number - 1]
