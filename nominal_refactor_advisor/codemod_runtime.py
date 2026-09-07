@@ -91,6 +91,7 @@ from .codemod_source_edits import (
     PlannedSourceRewrite,
     ResolvedSourceRewrite,
     SimulatedSourceRewrite,
+    SourceEditWindowABC,
     SourceFileCreation,
     SourceInsertion,
     SourceRewriteContributor,
@@ -514,8 +515,33 @@ class NominalEditBatch:
     edits: tuple[NominalSourceEdit, ...]
 
     @cached_property
+    def windows(self) -> tuple[SourceEditWindowABC, ...]:
+        """Retain both actual coalescence phases under this batch's source authority."""
+        nominal_windows = tuple(
+            window
+            for group in NominalSourceEdit.declaration_groups(
+                self.edits, lambda edit: edit
+            )
+            for window in group[0].resolved_peer_windows(group, self.compiler)
+        )
+        return tuple(
+            window
+            for group in NominalSourceEdit.declaration_groups(
+                nominal_windows, lambda window: window.physical_edit
+            )
+            for window in group[0].physical_edit.coalesced_window_peers(
+                group, self.compiler
+            )
+        )
+
+    @cached_property
     def physical_edits(self) -> tuple[PhysicalSourceEdit, ...]:
-        return self.compiler._resolved_physical_edits(self.edits)
+        return PhysicalSourceEdit.require_compatible(
+            tuple(
+                self.compiler._materialized_contributors(window.physical_edit)
+                for window in self.windows
+            )
+        )
 
     @cached_property
     def planned_rewrites(self) -> tuple[PlannedSourceRewrite, ...]:
@@ -579,26 +605,6 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
         recipes: Iterable["RefactorRecipe"],
     ) -> tuple[PhysicalSourceEdit, ...]:
         return self.edit_batch_for_recipes(recipes).physical_edits
-
-    def _resolved_physical_edits(
-        self,
-        edits: tuple[NominalSourceEdit, ...],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        semantic_edits = NominalSourceEdit.coalesced_by_declaration(edits, self)
-        physical_edits = tuple(
-            physical_edit
-            for semantic_edit in semantic_edits
-            for physical_edit in semantic_edit.resolved_edits(self)
-        )
-        coalesced_physical = NominalSourceEdit.coalesced_by_declaration(
-            physical_edits,
-            self,
-        )
-        replacements = tuple(
-            self._materialized_contributors(cast(PhysicalSourceEdit, edit))
-            for edit in coalesced_physical
-        )
-        return PhysicalSourceEdit.require_compatible(replacements)
 
     def _materialized_contributors(
         self,

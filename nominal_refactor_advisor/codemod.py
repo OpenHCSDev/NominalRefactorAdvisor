@@ -497,6 +497,7 @@ from .codemod_semantics import (
     RewriteOperation as RewriteOperation,
 )
 from .codemod_source_edits import (
+    CoalescedSourceWindow as CoalescedSourceWindow,
     CodemodSourceRevision as CodemodSourceRevision,
     ExactSourceEditResolution as ExactSourceEditResolution,
     ExactSourceWindow as ExactSourceWindow,

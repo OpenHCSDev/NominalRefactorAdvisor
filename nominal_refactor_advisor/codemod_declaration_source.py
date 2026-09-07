@@ -30,6 +30,7 @@ from .ast_tools import (
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
+    SourceEditWindowABC,
     SourceLineSpan,
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
@@ -579,10 +580,10 @@ class ClassMemberInsertion(NominalSourceEdit):
         Callable[[Iterable[ClassMemberSource]], tuple[ClassMemberSource, ...]]
     ] = staticmethod(tuple)
 
-    def resolved_edits(
-        self, context: "CodemodSelectorContext"
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.source_mutation(context).resolved_edits(context)
+    def resolved_windows(
+        self, context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        return self.source_mutation(context).resolved_windows(context)
 
     def coalesced_with_peers(
         self,

@@ -517,7 +517,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             )
         )
 
-    def resolved_edits(
+    def resolved_windows(
         self,
         context: "CodemodSelectorContext",
     ) -> tuple[PhysicalSourceEdit, ...]:

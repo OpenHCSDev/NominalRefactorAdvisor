@@ -16,6 +16,7 @@ from abc import (
 )
 from collections import defaultdict
 from collections.abc import (
+    Callable,
     Hashable,
     Iterable,
     Iterator,
@@ -30,9 +31,10 @@ from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     ClassVar,
     Self,
+    TYPE_CHECKING,
+    TypeVar,
     cast,
 )
 
@@ -256,6 +258,9 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
             )
 
 
+_SourcePeerInput = TypeVar("_SourcePeerInput")
+
+
 @dataclass(frozen=True, kw_only=True)
 class NominalSourceEdit(ABC):
     """Declaration-owned semantic source edit emitted by recipe operations."""
@@ -263,6 +268,49 @@ class NominalSourceEdit(ABC):
     rationale: str = ""
     contributors: tuple[SourceRewriteContributor, ...] = ()
     origins: tuple[SourceEditOrigin, ...] = ()
+
+    @classmethod
+    def projected_peers(
+        cls,
+        inputs: Iterable[_SourcePeerInput],
+        declaration: Callable[[_SourcePeerInput], NominalSourceEdit],
+    ) -> Iterator[tuple[_SourcePeerInput, Self]]:
+        """Admit each actual input under this exact nominal declaration once."""
+        for item in inputs:
+            peer = declaration(item)
+            if type(peer) is not cls:
+                raise ValueError(
+                    "Source peer groups require the exact nominal declaration"
+                )
+            yield item, cast(Self, peer)
+
+    def resolved_peer_windows(
+        self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        """Preserve nominal peer coalescence before resolving each output window."""
+        return tuple(
+            window
+            for edit in self.coalesced_with_peers(peers, context)
+            for window in edit.resolved_windows(context)
+        )
+
+    @abstractmethod
+    def resolved_windows(
+        self, context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        """Resolve this declaration into source windows under the supplied revision."""
+
+    @classmethod
+    def declaration_groups(
+        cls,
+        inputs: Iterable[_SourcePeerInput],
+        declaration: Callable[[_SourcePeerInput], NominalSourceEdit],
+    ) -> tuple[tuple[_SourcePeerInput, ...], ...]:
+        """Group actual input occurrences by projected nominal owner in encounter order."""
+        groups: dict[type[NominalSourceEdit], list[_SourcePeerInput]] = {}
+        for item in inputs:
+            groups.setdefault(type(declaration(item)), []).append(item)
+        return tuple(tuple(group) for group in groups.values())
 
     def with_evidence_from(self, peers: Iterable[NominalSourceEdit]) -> Self:
         """Derive merged evidence from this source edit's actual input declarations."""
@@ -288,12 +336,12 @@ class NominalSourceEdit(ABC):
     ) -> tuple["NominalSourceEdit", ...]:
         """Coalesce edits owned by this exact nominal declaration."""
 
-    @abstractmethod
     def resolved_edits(
         self,
         context: "CodemodSelectorContext",
     ) -> tuple["PhysicalSourceEdit", ...]:
-        """Project this semantic edit into physical source geometry."""
+        """Derive physical output from this declaration's authoritative source windows."""
+        return tuple(window.physical_edit for window in self.resolved_windows(context))
 
     @classmethod
     def coalesced_by_declaration(
@@ -301,19 +349,10 @@ class NominalSourceEdit(ABC):
         edits: Iterable["NominalSourceEdit"],
         context: "CodemodSelectorContext",
     ) -> tuple["NominalSourceEdit", ...]:
-        edits_by_declaration: dict[
-            type[NominalSourceEdit],
-            list[NominalSourceEdit],
-        ] = {}
-        for edit in edits:
-            edits_by_declaration.setdefault(type(edit), []).append(edit)
         return tuple(
             coalesced
-            for declaration_edits in edits_by_declaration.values()
-            for coalesced in declaration_edits[0].coalesced_with_peers(
-                tuple(declaration_edits),
-                context,
-            )
+            for group in cls.declaration_groups(edits, lambda edit: edit)
+            for coalesced in group[0].coalesced_with_peers(group, context)
         )
 
     @staticmethod
@@ -365,6 +404,40 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
 
     file_path: str
 
+    def resolved_peer_windows(
+        self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        return self.coalesced_window_peers(
+            cast(tuple[PhysicalSourceEdit, ...], peers), context
+        )
+
+    @classmethod
+    def coalesced_window_peers(
+        cls, windows: tuple[SourceEditWindowABC, ...], context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        """Retain actual window groups through the existing physical merge law."""
+        del context
+        return tuple(
+            CoalescedSourceWindow(group)
+            for group in cls.projected_peer_groups(
+                windows, lambda window: window.physical_edit
+            )
+        )
+
+    @classmethod
+    @abstractmethod
+    def coalesced_group(cls, peers: tuple[Self, ...]) -> Self:
+        """Validate and derive one actual physical peer group's merged declaration."""
+
+    @classmethod
+    @abstractmethod
+    def projected_peer_groups(
+        cls,
+        inputs: Iterable[_SourcePeerInput],
+        declaration: Callable[[_SourcePeerInput], NominalSourceEdit],
+    ) -> tuple[tuple[_SourcePeerInput, ...], ...]:
+        """Group actual inputs under this physical declaration's coalescence law."""
+
     @abstractmethod
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         """Project this physical declaration's original character interval."""
@@ -380,7 +453,7 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
     def physical_edit(self) -> PhysicalSourceEdit:
         return self
 
-    def resolved_edits(
+    def resolved_windows(
         self,
         context: "CodemodSelectorContext",
     ) -> tuple["PhysicalSourceEdit", ...]:
@@ -413,6 +486,34 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
                         f"{second.start_line}-{second.end_line}"
                     )
         return edits
+
+
+@dataclass(frozen=True)
+class CoalescedSourceWindow(SourceEditWindowABC):
+    """One actual peer group, with derived output and intersected text evidence."""
+
+    windows: tuple[SourceEditWindowABC, ...]
+
+    def __post_init__(self) -> None:
+        if not self.windows:
+            raise ValueError("Coalesced source window requires actual input windows")
+        self.physical_edit
+
+    @cached_property
+    def physical_edit(self) -> PhysicalSourceEdit:
+        peers = tuple(window.physical_edit for window in self.windows)
+        return peers[0].coalesced_group(peers)
+
+    def _project_retained_interiors(
+        self, spans: tuple[SourceTextSpan, ...]
+    ) -> tuple[SourceTextSpan, ...]:
+        projected = self.windows[0].project_retained_interiors(spans)
+        for window in self.windows[1:]:
+            if window.project_retained_interiors(spans) != projected:
+                raise ValueError(
+                    "Coalesced source windows disagree on retained interior positions"
+                )
+        return projected
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -477,6 +578,18 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
 class KeyedSourceEdit(NominalSourceEdit, ABC):
     """Actual nominal peers grouped by their declaration-owned source identity."""
 
+    @classmethod
+    def projected_peer_groups(
+        cls,
+        inputs: Iterable[_SourcePeerInput],
+        declaration: Callable[[_SourcePeerInput], NominalSourceEdit],
+    ) -> tuple[tuple[_SourcePeerInput, ...], ...]:
+        """Retain actual inputs under this declaration's single keyed grouping law."""
+        groups: dict[Hashable, list[_SourcePeerInput]] = {}
+        for item, peer in cls.projected_peers(inputs, declaration):
+            groups.setdefault(peer.coalescence_key, []).append(item)
+        return tuple(tuple(group) for group in groups.values())
+
     @property
     @abstractmethod
     def coalescence_key(self) -> Hashable:
@@ -485,14 +598,7 @@ class KeyedSourceEdit(NominalSourceEdit, ABC):
     @classmethod
     def peer_groups(cls, peers: Iterable[Self]) -> tuple[tuple[Self, ...], ...]:
         """Keep actual peers owned by this exact declaration, in encounter order."""
-        groups: dict[Hashable, list[Self]] = {}
-        for peer in peers:
-            if type(peer) is not cls:
-                raise ValueError(
-                    "Source peer groups require the exact nominal declaration"
-                )
-            groups.setdefault(peer.coalescence_key, []).append(peer)
-        return tuple(tuple(group) for group in groups.values())
+        return cls.projected_peer_groups(peers, lambda peer: peer)
 
 
 class KeyedSourceEditCoalescence(KeyedSourceEdit, ABC):
@@ -563,6 +669,41 @@ class SourceSpanReplacement(KeyedSourceEditCoalescence, SourceSpanEdit):
 @dataclass(frozen=True, kw_only=True)
 class SourceSpanDeletion(SourceSpanEdit):
     """Delete one non-empty absolute line span."""
+
+    @classmethod
+    def coalesced_group(cls, peers: tuple[Self, ...]) -> Self:
+        groups = cls.projected_peer_groups(peers, lambda peer: peer)
+        if len(groups) != 1:
+            raise ValueError("Coalescence requires one nonempty source peer group")
+        merged = groups[0][0]
+        for peer in groups[0][1:]:
+            merged = replace(
+                merged, end_line=max(merged.end_line, peer.end_line)
+            ).with_evidence_from((merged, peer))
+        return merged
+
+    @classmethod
+    def projected_peer_groups(
+        cls,
+        inputs: Iterable[_SourcePeerInput],
+        declaration: Callable[[_SourcePeerInput], NominalSourceEdit],
+    ) -> tuple[tuple[_SourcePeerInput, ...], ...]:
+        """Retain actual deletion occurrences under the existing sorted overlap union."""
+        projected = sorted(
+            cls.projected_peers(inputs, declaration),
+            key=lambda pair: (pair[1].file_path, pair[1].start_line, pair[1].end_line),
+        )
+        groups: list[list[_SourcePeerInput]] = []
+        last_path = None
+        end_line = 0
+        for item, peer in projected:
+            if groups and peer.file_path == last_path and peer.start_line <= end_line:
+                groups[-1].append(item)
+                end_line = max(end_line, peer.end_line)
+            else:
+                groups.append([item])
+                last_path, end_line = peer.file_path, peer.end_line
+        return tuple(tuple(group) for group in groups)
 
     @property
     def replacement_lines(self) -> tuple[str, ...]:
@@ -677,37 +818,10 @@ class SourceSpanDeletion(SourceSpanEdit):
         peers: tuple[NominalSourceEdit, ...],
         context: "CodemodSelectorContext",
     ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        deletions = sorted_tuple(
-            (cast(SourceSpanDeletion, peer) for peer in peers),
-            key=lambda deletion: (
-                deletion.file_path,
-                deletion.start_line,
-                deletion.end_line,
-            ),
+        return tuple(
+            window.physical_edit
+            for window in self.resolved_peer_windows(peers, context)
         )
-        coalesced: list[SourceSpanDeletion] = []
-        for deletion in deletions:
-            if (
-                coalesced
-                and coalesced[-1].file_path == deletion.file_path
-                and deletion.start_line <= coalesced[-1].end_line
-            ):
-                previous = coalesced[-1]
-                coalesced[-1] = replace(
-                    previous,
-                    end_line=max(previous.end_line, deletion.end_line),
-                    rationale=_joined_rationales(
-                        (previous.rationale, deletion.rationale)
-                    ),
-                    contributors=NominalSourceEdit.merged_contributors(
-                        (previous, deletion)
-                    ),
-                    origins=NominalSourceEdit.merged_origins((previous, deletion)),
-                )
-                continue
-            coalesced.append(deletion)
-        return tuple(coalesced)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -825,10 +939,10 @@ class SourceFileCreation(NominalSourceEdit):
             )
         return tuple(creations[0] for creations in creations_by_path.values())
 
-    def resolved_edits(
+    def resolved_windows(
         self,
         context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
+    ) -> tuple[PhysicalSourceEdit, ...]:
         virtual_source = context.sources_by_file_path[self.file_path]
         if virtual_source != self.source:
             raise ValueError(
@@ -925,6 +1039,22 @@ class SourceTextMutation(KeyedSourceEdit):
     revision: CodemodSourceRevision
     replacements: tuple[SourceTextSpanReplacement, ...]
 
+    def resolved_windows(
+        self, context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        return self.resolved_peer_windows((self,), context)
+
+    def resolved_peer_windows(
+        self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
+    ) -> tuple[SourceEditWindowABC, ...]:
+        return tuple(
+            window
+            for resolution in self.peer_resolutions(
+                cast(tuple[Self, ...], peers), context
+            )
+            for window in resolution.windows
+        )
+
     @property
     def coalescence_key(self) -> Hashable:
         return self.revision.file_path
@@ -951,17 +1081,7 @@ class SourceTextMutation(KeyedSourceEdit):
     ) -> tuple[NominalSourceEdit, ...]:
         return tuple(
             window.physical_edit
-            for resolution in self.peer_resolutions(
-                cast(tuple[Self, ...], peers), context
-            )
-            for window in resolution.windows
-        )
-
-    def resolved_edits(
-        self, context: CodemodSelectorContext
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return cast(
-            tuple[PhysicalSourceEdit, ...], self.coalesced_with_peers((self,), context)
+            for window in self.resolved_peer_windows(peers, context)
         )
 
 
@@ -1186,6 +1306,11 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
 
+    @cached_property
+    def logical_lines(self) -> tuple[str, ...]:
+        """Original logical lines; an empty module still owns one empty line."""
+        return self.lines or ("",)
+
     def line_anchor_offset(self, line: int) -> int:
         """Project a physical line anchor, including empty source and end of file."""
         if not 1 <= line <= len(self.line_offsets) + 1:
@@ -1335,11 +1460,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def line_offsets(self) -> tuple[int, ...]:
         offsets = []
         offset = 0
-        for line in self.lines:
+        for line in self.logical_lines:
             offsets.append(offset)
             offset += len(line)
-        if not offsets:
-            offsets.append(0)
         return tuple(offsets)
 
     @cached_property
@@ -1697,7 +1820,7 @@ class SourceTargetEditor:
 
     @property
     def file_lines(self) -> list[str]:
-        return self.sources[self.target.file_path].splitlines(keepends=True)
+        return list(SourceTextGeometry(self.sources[self.target.file_path]).logical_lines)
 
     @property
     def target_lines(self) -> list[str]:
