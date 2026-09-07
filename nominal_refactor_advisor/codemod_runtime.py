@@ -502,8 +502,47 @@ class _RecipeReplacementGroup:
 
 
 @dataclass(frozen=True)
+class NominalEditBatch:
+    """Original edit records and the source authority which derived them.
+
+    Lowering may merge exact spans into whole-line replacements. Retaining the
+    original records preserves their finer provenance for separate proof work.
+    This compiler product does not replace document preflight or guards.
+    """
+
+    compiler: RefactorRecipeOperationCompiler
+    edits: tuple[NominalSourceEdit, ...]
+
+    @cached_property
+    def physical_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return self.compiler._resolved_physical_edits(self.edits)
+
+    @cached_property
+    def planned_rewrites(self) -> tuple[PlannedSourceRewrite, ...]:
+        return self.compiler._planned_rewrites_from_physical_edits(self.physical_edits)
+
+
+@dataclass(frozen=True)
 class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
     """Compile declarative recipe operations into simulator-ready rewrites."""
+
+    def edit_batch_for_recipes(
+        self, recipes: Iterable[RefactorRecipe]
+    ) -> NominalEditBatch:
+        """Derive original edit records once under this compiler's source context."""
+        return NominalEditBatch(
+            self,
+            tuple(
+                edit
+                for recipe in recipes
+                for index, operation in enumerate(recipe.operations)
+                for edit in operation.originated_edits(
+                    self,
+                    recipe_id=recipe.recipe_id,
+                    plan_item_index=index,
+                )
+            ),
+        )
 
     @classmethod
     def from_context(
@@ -526,11 +565,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
         self,
         recipes: Iterable["RefactorRecipe"],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        """Compile one document's recipes through one physical edit merge."""
-
-        return self._planned_rewrites_from_physical_edits(
-            self.physical_edits_for_recipes(recipes)
-        )
+        return self.edit_batch_for_recipes(recipes).planned_rewrites
 
     def _planned_rewrites_from_physical_edits(
         self,
@@ -543,39 +578,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
         self,
         recipes: Iterable["RefactorRecipe"],
     ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._resolved_physical_edits(
-            tuple(
-                edit
-                for recipe in recipes
-                for edit in self._originated_edits_for_recipe(recipe)
-            )
-        )
-
-    def _originated_edits_for_recipe(
-        self,
-        recipe: "RefactorRecipe",
-    ) -> tuple[NominalSourceEdit, ...]:
-        return tuple(
-            edit
-            for plan_item_index, operation in enumerate(recipe.operations)
-            for edit in self._originated_edits(
-                recipe.recipe_id,
-                plan_item_index,
-                operation,
-            )
-        )
-
-    def _originated_edits(
-        self,
-        recipe_id: str,
-        plan_item_index: int,
-        operation: RefactorRecipeOperation,
-    ) -> tuple[NominalSourceEdit, ...]:
-        return operation.originated_edits(
-            self,
-            recipe_id=recipe_id,
-            plan_item_index=plan_item_index,
-        )
+        return self.edit_batch_for_recipes(recipes).physical_edits
 
     def _resolved_physical_edits(
         self,
