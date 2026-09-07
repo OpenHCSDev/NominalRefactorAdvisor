@@ -836,14 +836,15 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
     exported_names: tuple[str, ...]
 
     @classmethod
-    def from_expression(
+    def from_declaration(
         cls,
-        value: ast.expr,
+        declaration: ModulePublicExportSourceAuthority,
         preceding_bound_names: frozenset[str],
     ) -> "CompactExplicitPublicExportContract | None":
-        literal_names = _literal_public_export_names(value)
-        if literal_names is not None:
-            return cls(literal_names)
+        references = declaration.literal_references
+        if references is not None:
+            return cls(sorted_tuple({reference.name for reference in references}))
+        value = declaration.value
         if {"tuple", "globals"}.intersection(preceding_bound_names) or not (
             isinstance(value, ast.Call)
             and isinstance(value.func, ast.Name)
@@ -2683,12 +2684,18 @@ class PublicExportNameReference:
 
     literal: ast.Constant
 
-    def renamed_source(self, literal_source: str, new_name: str) -> str:
+    @property
+    def name(self) -> str:
+        return cast(str, self.literal.value)
+
+    def __post_init__(self) -> None:
         if not isinstance(self.literal.value, str):
             raise ValueError("Public export reference must contain a string")
-        if literal_source.count(self.literal.value) != 1:
+
+    def renamed_source(self, literal_source: str, new_name: str) -> str:
+        if literal_source.count(self.name) != 1:
             raise ValueError("Public export reference cannot be reconstructed")
-        return literal_source.replace(self.literal.value, new_name, 1)
+        return literal_source.replace(self.name, new_name, 1)
 
 
 @dataclass(frozen=True)
@@ -2698,6 +2705,21 @@ class ModulePublicExportSourceAuthority:
     statement: ast.Assign | ast.AnnAssign
     target: ast.Name
     value: ast.expr
+
+    @cached_property
+    def literal_references(self) -> tuple[PublicExportNameReference, ...] | None:
+        """Validate the whole literal sequence before exposing any member sites."""
+        if not isinstance(self.value, ast.List | ast.Tuple):
+            return None
+        references = []
+        for element in self.value.elts:
+            if not isinstance(element, ast.Constant):
+                return None
+            try:
+                references.append(PublicExportNameReference(element))
+            except ValueError:
+                return None
+        return tuple(references)
 
     @classmethod
     def from_statement(
@@ -2740,26 +2762,10 @@ class ModulePublicExportSourceAuthority:
         return declaration if references == (declaration.target,) else None
 
     def name_references(self, name: str) -> tuple[PublicExportNameReference, ...]:
-        if not isinstance(self.value, ast.List | ast.Tuple | ast.Set):
+        references = self.literal_references
+        if references is None:
             return ()
-        return tuple(
-            PublicExportNameReference(element)
-            for element in self.value.elts
-            if isinstance(element, ast.Constant)
-            and isinstance(element.value, str)
-            and element.value == name
-        )
-
-
-def _literal_public_export_names(value: ast.expr) -> tuple[str, ...] | None:
-    if not isinstance(value, ast.List | ast.Tuple | ast.Set):
-        return None
-    if any(
-        not isinstance(element, ast.Constant) or not isinstance(element.value, str)
-        for element in value.elts
-    ):
-        return None
-    return sorted_tuple({element.value for element in value.elts})
+        return tuple(reference for reference in references if reference.name == name)
 
 
 def module_public_export_contract(
@@ -2777,8 +2783,8 @@ def module_public_export_contract(
         module.body[: module.body.index(declaration.statement)]
     )
     return (
-        CompactExplicitPublicExportContract.from_expression(
-            declaration.value,
+        CompactExplicitPublicExportContract.from_declaration(
+            declaration,
             preceding_bound_names,
         )
         or CompactUnresolvedPublicExportContract()
