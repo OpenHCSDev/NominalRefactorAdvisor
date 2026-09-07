@@ -936,6 +936,7 @@ class RefactorRecipe(SourceRewriteReferences):
         )
         return RefactorRecipeSimulation(
             recipe=document_simulation.document.recipes[0],
+            preflight_report=document_simulation.preflight_report,
             simulation=document_simulation.simulation,
             architecture_guard_report=document_simulation.architecture_guard_report,
         )
@@ -1138,6 +1139,7 @@ class CodemodPlanDocumentPreflight:
         )
         return CodemodPlanDocumentSimulation(
             document=self.document,
+            preflight_report=self.report,
             simulation=simulation,
             architecture_guard_report=architecture_guard_report,
             after_snapshot_projection=after_snapshot_projection,
@@ -1322,6 +1324,11 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         )
         return CodemodPlanSequenceSimulation(
             sequence=materialized_sequence,
+            preflight_report=CodemodPlanPreflightReport(tuple(
+                report
+                for stage in stage_reports
+                for report in stage.document_simulation.preflight_report.reports
+            )),
             stage_reports=tuple(stage_reports),
             final_snapshot=active_snapshot,
             simulation=CodemodSimulationReport.from_sequential_reports(
@@ -1491,13 +1498,15 @@ class SourceRewriteSimulationResult(DataclassJsonReport):
     simulation: CodemodSimulationReport
     architecture_guard_report: ArchitectureGuardReport
 
+    preflight_report: CodemodPlanPreflightReport
+
     @property
     def guard_subject(self) -> str:
         return "Codemod simulation"
 
     @json_report_property()
     def is_clean(self) -> bool:
-        return self.architecture_guard_report.is_clean
+        return self.preflight_report.is_clean and self.architecture_guard_report.is_clean
 
     def unified_diff(
         self,
@@ -1514,6 +1523,7 @@ class SourceRewriteSimulationResult(DataclassJsonReport):
         )
 
     def apply(self, *, require_clean: bool = True) -> tuple[str, ...]:
+        self.preflight_report.require_clean()
         if require_clean and not self.is_clean:
             raise ValueError(
                 f"{self.guard_subject} still violates "
