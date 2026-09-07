@@ -498,12 +498,16 @@ from .codemod_semantics import (
 )
 from .codemod_source_edits import (
     CodemodSourceRevision as CodemodSourceRevision,
+    ExactSourceEditResolution as ExactSourceEditResolution,
+    ExactSourceWindow as ExactSourceWindow,
+    KeyedSourceEdit as KeyedSourceEdit,
     KeyedSourceEditCoalescence as KeyedSourceEditCoalescence,
     PlannedRewriteConflictError as PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority as PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite as PlannedSourceRewrite,
     ResolvedSourceRewrite as ResolvedSourceRewrite,
     SimulatedSourceRewrite as SimulatedSourceRewrite,
+    SourceEditWindowABC as SourceEditWindowABC,
     SourceOffsetSpan as SourceOffsetSpan,
     SourceRewriteDelta as SourceRewriteDelta,
     SourceTextMutation as SourceTextMutation,
@@ -2099,7 +2103,7 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         replacement_source: str,
     ) -> SourceTextSpanReplacement:
         line_span = SourceNodeSpan(node).line_span
-        start_offset, end_offset = geometry._line_span_offsets(
+        start_offset, end_offset = geometry.line_span_offsets(
             line_span.start_line,
             line_span.end_line,
         )

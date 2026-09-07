@@ -14,24 +14,32 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 
 PATH = Path(__file__).with_name("peer_fixture.py").resolve().as_posix()
 
 
-@pytest.fixture(params=(SourceInsertion, SourceSpanReplacement))
+@pytest.fixture(params=(SourceInsertion, SourceSpanReplacement, ModuleImportMutation))
 def peers(request):
     if request.param is SourceInsertion:
         first = SourceInsertion(
             file_path=PATH, insertion_line=1, inserted_lines=("a = 1\n",)
         )
         other = replace(first, insertion_line=2)
-    else:
+    elif request.param is SourceSpanReplacement:
         first = SourceSpanReplacement(
             file_path=PATH, start_line=1, end_line=1, replacement_lines=("a = 1\n",)
         )
         other = replace(first, start_line=2, end_line=2)
+    else:
+        first = ModuleImportMutation.from_source(
+            file_path=PATH, import_source="import typing\n"
+        )
+        other = replace(first, file_path=Path(PATH).with_name("second.py").as_posix())
     duplicate = replace(first)
-    different_file = replace(first, file_path=Path(PATH).with_name("other.py").as_posix())
+    different_file = replace(
+        first, file_path=Path(PATH).with_name("other.py").as_posix()
+    )
     return first, other, duplicate, different_file
 
 
@@ -59,8 +67,13 @@ def test_actual_groups_derive_the_existing_public_coalescence_result(peers):
     originals = first, other, duplicate
     groups = type(first).peer_groups(originals)
     derived = tuple(type(first).coalesced_group(group) for group in groups)
-    context = CodemodSourceSnapshot.from_source_mapping({PATH: "a = 0\nb = 0\n"})
-    assert derived == NominalSourceEdit.coalesced_by_declaration(originals, context)
+    context = CodemodSourceSnapshot.from_source_mapping(
+        {peer.file_path: "a = 0\nb = 0\n" for peer in originals}
+    )
+    public = NominalSourceEdit.coalesced_by_declaration(originals, context)
+    assert tuple(
+        edit for group in derived for edit in group.resolved_edits(context)
+    ) == (tuple(edit for group in public for edit in group.resolved_edits(context)))
     assert derived[0].origins == first.origins + duplicate.origins
     assert "first" in derived[0].rationale
     assert "second" in derived[0].rationale

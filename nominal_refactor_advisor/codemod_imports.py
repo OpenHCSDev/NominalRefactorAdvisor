@@ -13,7 +13,7 @@ from dataclasses import (
 )
 from enum import StrEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from .codemod_import_scopes import (
     ImportStatement,
@@ -21,7 +21,7 @@ from .codemod_import_scopes import (
     TypeCheckingGuardProjection,
 )
 from .codemod_source_edits import (
-    NominalSourceEdit,
+    KeyedSourceEditCoalescence,
     PhysicalSourceEdit,
     SourceInsertion,
     SourceLineSpan,
@@ -29,7 +29,6 @@ from .codemod_source_edits import (
     SourceSpanReplacement,
     SourceTextGeometry,
     SourceTextSpan,
-    _joined_rationales,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
@@ -311,13 +310,17 @@ class ImportBoundNameRemoval:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ModuleImportMutation(NominalSourceEdit):
+class ModuleImportMutation(KeyedSourceEditCoalescence):
     """Typed additions and removals resolved once across module import scopes."""
 
     file_path: str
     additions: tuple[RequestedImportStatement, ...] = ()
     removals: tuple[ImportNameRemoval, ...] = ()
     bound_name_removals: tuple[ImportBoundNameRemoval, ...] = ()
+
+    @property
+    def coalescence_key(self) -> str:
+        return self.file_path
 
     @classmethod
     def from_source(
@@ -379,23 +382,8 @@ class ModuleImportMutation(NominalSourceEdit):
             rationale=rationale,
         )
 
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        mutations_by_path: dict[str, list[ModuleImportMutation]] = defaultdict(list)
-        for peer in peers:
-            mutation = cast(ModuleImportMutation, peer)
-            mutations_by_path[mutation.file_path].append(mutation)
-        return tuple(
-            self._coalesced_file_mutation(tuple(mutations))
-            for mutations in mutations_by_path.values()
-        )
-
     @classmethod
-    def _coalesced_file_mutation(
+    def _coalesced_group(
         cls,
         mutations: tuple["ModuleImportMutation", ...],
     ) -> "ModuleImportMutation":
@@ -452,9 +440,6 @@ class ModuleImportMutation(NominalSourceEdit):
             additions=additions,
             removals=removals,
             bound_name_removals=bound_name_removals,
-            rationale=_joined_rationales(mutation.rationale for mutation in mutations),
-            contributors=NominalSourceEdit.merged_contributors(mutations),
-            origins=NominalSourceEdit.merged_origins(mutations),
         )
 
     @staticmethod

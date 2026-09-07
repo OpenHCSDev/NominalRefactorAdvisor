@@ -20,6 +20,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion,
     SourceSpanReplacement,
     SourceTextGeometry,
+    SourceTextMutation,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
@@ -103,6 +104,23 @@ def test_two_phase_lowering_preserves_declaration_group_encounter_order():
     assert output == "import typing\nimport builtins\nimport collections\n" + SOURCE
 
 
+@pytest.mark.parametrize("reverse", (False, True))
+def test_empty_source_keeps_distinct_logical_insertion_anchors(reverse):
+    compiler = RefactorRecipeOperationCompiler.from_context(
+        CodemodSourceSnapshot.from_source_mapping({PATH: ""})
+    )
+    edits = tuple(
+        SourceInsertion(file_path=PATH, insertion_line=line, inserted_lines=(source,))
+        for line, source in ((1, "first = object\n"), (2, "second = type\n"))
+    )
+    batch = NominalEditBatch(compiler, edits[::-1] if reverse else edits)
+    assert len(batch.physical_edits) == 2
+    assert {edit.insertion_line for edit in batch.physical_edits} == {1, 2}
+    result = compiler.simulate_rewrites(batch.planned_rewrites)
+    assert result.parse_valid
+    assert result.rewritten_sources[PATH] == "first = object\nsecond = type\n"
+
+
 def test_disjoint_exact_and_line_edits_have_a_complete_fine_projection():
     replacement = SourceTextSpanReplacement(0, 4, replacement_source="renamed")
     prefix = "import typing\n"
@@ -139,6 +157,49 @@ def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
     opaque = SourceTextSpanReplacement(0, len(SOURCE), replacement_source=rewritten)
     with pytest.raises(ValueError, match="unchanged-text correspondence"):
         geometry.project_unchanged_spans((read,), (opaque,))
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+def test_equal_exact_outputs_can_have_different_retained_interiors(reverse):
+    class OtherExactDeclaration(SourceTextMutation):
+        pass
+
+    source = "left = object; right = type; tail = sorted\n"
+    geometry = SourceTextGeometry(source)
+    originals = tuple(
+        geometry.nominal_edit(
+            file_path=PATH,
+            replacements=(
+                SourceTextSpanReplacement(
+                    source.index(name),
+                    source.index(name) + len(name),
+                    replacement_source=name,
+                ),
+            ),
+        )
+        for name in ("object", "type")
+    )
+    first = originals[0]
+    second = OtherExactDeclaration(
+        revision=originals[1].revision, replacements=originals[1].replacements
+    )
+    compiler = RefactorRecipeOperationCompiler.from_context(
+        CodemodSourceSnapshot.from_source_mapping({PATH: source})
+    )
+    batch = NominalEditBatch(compiler, (second, first) if reverse else (first, second))
+    result = compiler.simulate_rewrites(batch.planned_rewrites)
+    assert result.parse_valid
+    assert result.rewritten_sources[PATH] == source
+    assert len(batch.edits) == 2 and len(batch.physical_edits) == 1
+    shared = SourceTextSpan(source.index("sorted"), source.index("sorted") + 6)
+    assert geometry.project_unchanged_spans((shared,), first.replacements) == (shared,)
+    assert geometry.project_unchanged_spans((shared,), second.replacements) == (shared,)
+    for writer, other in ((first, second), (second, first)):
+        replacement = writer.replacements[0]
+        read = SourceTextSpan(replacement.start_offset, replacement.end_offset)
+        assert geometry.project_unchanged_spans((read,), other.replacements) == (read,)
+        with pytest.raises(ValueError, match="unchanged-text correspondence"):
+            geometry.project_unchanged_spans((read,), writer.replacements)
 
 
 def test_virtual_creation_source_is_generated_despite_existing_at_compile_time():

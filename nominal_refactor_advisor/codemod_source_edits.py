@@ -264,6 +264,16 @@ class NominalSourceEdit(ABC):
     contributors: tuple[SourceRewriteContributor, ...] = ()
     origins: tuple[SourceEditOrigin, ...] = ()
 
+    def with_evidence_from(self, peers: Iterable[NominalSourceEdit]) -> Self:
+        """Derive merged evidence from this source edit's actual input declarations."""
+        peers = tuple(peers)
+        return replace(
+            self,
+            rationale=_joined_rationales(peer.rationale for peer in peers),
+            contributors=self.merged_contributors(peers),
+            origins=self.merged_origins(peers),
+        )
+
     def with_origin(self, origin: SourceEditOrigin) -> "NominalSourceEdit":
         return replace(
             self,
@@ -323,11 +333,52 @@ class PhysicalSourceEditConflictError(ValueError):
     """Physical source edits cannot coexist in one nominal rewrite."""
 
 
+class SourceEditWindowABC(ABC):
+    """Physical output and original-text interiors of one resolved source window."""
+
+    @property
+    @abstractmethod
+    def physical_edit(self) -> PhysicalSourceEdit:
+        """Derive the physical declaration consumed by the existing renderer."""
+
+    def project_retained_interiors(
+        self, spans: Iterable[SourceTextSpan]
+    ) -> tuple[SourceTextSpan, ...]:
+        """Map original absolute interiors to output-window-relative offsets.
+
+        This is source origin only, not syntax or execution equivalence.
+        Empty input has no retained-text obligation.
+        """
+        spans = tuple(spans)
+        return self._project_retained_interiors(spans) if spans else ()
+
+    @abstractmethod
+    def _project_retained_interiors(
+        self, spans: tuple[SourceTextSpan, ...]
+    ) -> tuple[SourceTextSpan, ...]:
+        """Prove and project a nonempty batch of original source interiors."""
+
+
 @dataclass(frozen=True, kw_only=True)
-class PhysicalSourceEdit(NominalSourceEdit, ABC):
+class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
     """Semantic edit whose absolute source-line geometry is resolved."""
 
     file_path: str
+
+    @abstractmethod
+    def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
+        """Project this physical declaration's original character interval."""
+
+    def _project_retained_interiors(
+        self, spans: tuple[SourceTextSpan, ...]
+    ) -> tuple[SourceTextSpan, ...]:
+        raise ValueError(
+            "Opaque source window has no unchanged interior correspondence"
+        )
+
+    @property
+    def physical_edit(self) -> PhysicalSourceEdit:
+        return self
 
     def resolved_edits(
         self,
@@ -370,6 +421,11 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
 
     start_line: int
     end_line: int
+
+    def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
+        return SourceTextSpan(
+            *geometry.line_span_offsets(self.start_line, self.end_line)
+        )
 
     def __post_init__(self) -> None:
         if self.start_line > self.end_line:
@@ -418,28 +474,13 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
         return self.start_line < insertion_line <= self.end_line
 
 
-class KeyedSourceEditCoalescence(NominalSourceEdit, ABC):
-    """Retain actual keyed peers and derive their declaration-owned merge."""
-
-    @classmethod
-    def _coalesced_owned_group(cls, peers: tuple[Self, ...]) -> Self:
-        """Construct one output from an already-validated actual peer group."""
-        return replace(
-            cls._coalesced_group(peers),
-            rationale=_joined_rationales(peer.rationale for peer in peers),
-            contributors=cls.merged_contributors(peers),
-            origins=cls.merged_origins(peers),
-        )
+class KeyedSourceEdit(NominalSourceEdit, ABC):
+    """Actual nominal peers grouped by their declaration-owned source identity."""
 
     @property
     @abstractmethod
     def coalescence_key(self) -> Hashable:
-        """Identity of the source location whose peers this declaration merges."""
-
-    @staticmethod
-    @abstractmethod
-    def _coalesced_group(peers: tuple[Self, ...]) -> Self:
-        """Derive the leaf's physical payload from one actual peer group."""
+        """Identity of the source location whose peers this declaration groups."""
 
     @classmethod
     def peer_groups(cls, peers: Iterable[Self]) -> tuple[tuple[Self, ...], ...]:
@@ -452,6 +493,20 @@ class KeyedSourceEditCoalescence(NominalSourceEdit, ABC):
                 )
             groups.setdefault(peer.coalescence_key, []).append(peer)
         return tuple(tuple(group) for group in groups.values())
+
+
+class KeyedSourceEditCoalescence(KeyedSourceEdit, ABC):
+    """Retain actual keyed peers and derive their declaration-owned merge."""
+
+    @classmethod
+    def _coalesced_owned_group(cls, peers: tuple[Self, ...]) -> Self:
+        """Construct one output from an already-validated actual peer group."""
+        return cls._coalesced_group(peers).with_evidence_from(peers)
+
+    @staticmethod
+    @abstractmethod
+    def _coalesced_group(peers: tuple[Self, ...]) -> Self:
+        """Derive the declaration payload from one actual peer group."""
 
     @classmethod
     def coalesced_group(cls, peers: tuple[Self, ...]) -> Self:
@@ -663,6 +718,10 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     inserted_lines: tuple[str, ...] = ()
     leading_boundary: SourceInsertionBoundary = SourceInsertionBoundary.PRESERVE
 
+    def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
+        offset = geometry.line_anchor_offset(self.insertion_line)
+        return SourceTextSpan(offset, offset)
+
     @property
     def coalescence_key(self) -> Hashable:
         return self.file_path, self.insertion_line
@@ -860,62 +919,162 @@ class SourceTextSpanReplacement(ReplacementSource, SourceOffsetSpan):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceTextMutation(NominalSourceEdit):
+class SourceTextMutation(KeyedSourceEdit):
     """Exact edits of one source revision, lowered together after semantic planning."""
 
     revision: CodemodSourceRevision
     replacements: tuple[SourceTextSpanReplacement, ...]
+
+    @property
+    def coalescence_key(self) -> Hashable:
+        return self.revision.file_path
+
+    @classmethod
+    def peer_resolutions(
+        cls, peers: Iterable[Self], context: CodemodSelectorContext
+    ) -> tuple[ExactSourceEditResolution, ...]:
+        """Bind actual nominal peer groups to the source revision they edit."""
+        return tuple(
+            ExactSourceEditResolution(
+                group,
+                SourceTextGeometry(
+                    context.sources_by_file_path[group[0].revision.file_path]
+                ),
+            )
+            for group in cls.peer_groups(peers)
+        )
 
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        mutations_by_path: dict[str, list[SourceTextMutation]] = defaultdict(list)
-        for peer in peers:
-            mutation = cast(SourceTextMutation, peer)
-            mutations_by_path[mutation.revision.file_path].append(mutation)
-        edits = []
-        for mutations in mutations_by_path.values():
-            first = mutations[0]
-            if any(item.revision != first.revision for item in mutations):
-                raise CodemodSourceRevisionError(
-                    "Exact edits require one original source revision"
-                )
-            source = context.sources_by_file_path[first.revision.file_path]
-            if not first.revision.matches_source(source):
-                raise CodemodSourceRevisionError(
-                    "Exact edits no longer match their original source revision"
-                )
-            owners: dict[SourceTextSpanReplacement, list[SourceTextMutation]] = (
-                defaultdict(list)
+        return tuple(
+            window.physical_edit
+            for resolution in self.peer_resolutions(
+                cast(tuple[Self, ...], peers), context
             )
-            for mutation in mutations:
-                for replacement in mutation.replacements:
-                    owners[replacement].append(mutation)
-            for edit, window in SourceTextGeometry(source).physical_edit_projections(
-                file_path=first.revision.file_path, replacements=owners
-            ):
-                contributors = tuple(
-                    owner for replacement in window for owner in owners[replacement]
-                )
-                edits.append(
-                    replace(
-                        edit,
-                        rationale=_joined_rationales(
-                            item.rationale for item in contributors
-                        ),
-                        contributors=self.merged_contributors(contributors),
-                        origins=self.merged_origins(contributors),
-                    )
-                )
-        return tuple(edits)
+            for window in resolution.windows
+        )
 
     def resolved_edits(
         self, context: CodemodSelectorContext
     ) -> tuple[PhysicalSourceEdit, ...]:
         return cast(
             tuple[PhysicalSourceEdit, ...], self.coalesced_with_peers((self,), context)
+        )
+
+
+@dataclass(frozen=True)
+class ExactSourceEditResolution:
+    """Actual same-revision mutation peers and their once-derived exact windows."""
+
+    mutations: tuple[SourceTextMutation, ...]
+    geometry: SourceTextGeometry
+
+    def __post_init__(self) -> None:
+        if not self.mutations:
+            raise ValueError("Exact source resolution requires nonempty mutation peers")
+        first = self.mutations[0]
+        if not isinstance(first, SourceTextMutation) or any(
+            type(peer) is not type(first) for peer in self.mutations
+        ):
+            raise ValueError(
+                "Exact source resolution requires one nominal mutation declaration"
+            )
+        if any(peer.revision != first.revision for peer in self.mutations):
+            raise CodemodSourceRevisionError(
+                "Exact edits require one original source revision"
+            )
+        if not first.revision.matches_source(self.geometry.source):
+            raise CodemodSourceRevisionError(
+                "Exact edits no longer match their original source revision"
+            )
+
+    @cached_property
+    def replacement_inputs(
+        self,
+    ) -> dict[
+        SourceTextSpanReplacement,
+        tuple[tuple[SourceTextMutation, SourceTextSpanReplacement], ...],
+    ]:
+        """Retain every actual occurrence, including equal-but-distinct replacements."""
+        inputs: dict[
+            SourceTextSpanReplacement,
+            list[tuple[SourceTextMutation, SourceTextSpanReplacement]],
+        ] = defaultdict(list)
+        for mutation in self.mutations:
+            for replacement in mutation.replacements:
+                inputs[replacement].append((mutation, replacement))
+        return {
+            replacement: tuple(occurrences)
+            for replacement, occurrences in inputs.items()
+        }
+
+    @cached_property
+    def projections(
+        self,
+    ) -> tuple[tuple[PhysicalSourceEdit, tuple[SourceTextSpanReplacement, ...]], ...]:
+        return self.geometry.physical_edit_projections(
+            file_path=self.mutations[0].revision.file_path,
+            replacements=self.replacement_inputs,
+        )
+
+    @cached_property
+    def windows(self) -> tuple[ExactSourceWindow, ...]:
+        return tuple(
+            ExactSourceWindow(self, index) for index in range(len(self.projections))
+        )
+
+
+@dataclass(frozen=True)
+class ExactSourceWindow(SourceEditWindowABC):
+    """A checked view of one actual projection, not separately authored output."""
+
+    resolution: ExactSourceEditResolution
+    projection_index: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.projection_index < len(self.resolution.projections):
+            raise ValueError(
+                "Exact source window requires an actual resolution projection"
+            )
+
+    @property
+    def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
+        return self.resolution.projections[self.projection_index][1]
+
+    @cached_property
+    def replacement_inputs(
+        self,
+    ) -> tuple[tuple[SourceTextMutation, SourceTextSpanReplacement], ...]:
+        return tuple(
+            occurrence
+            for replacement in self.replacements
+            for occurrence in self.resolution.replacement_inputs[replacement]
+        )
+
+    @cached_property
+    def physical_edit(self) -> PhysicalSourceEdit:
+        return self.resolution.projections[self.projection_index][0].with_evidence_from(
+            mutation for mutation, replacement in self.replacement_inputs
+        )
+
+    def _project_retained_interiors(
+        self, spans: tuple[SourceTextSpan, ...]
+    ) -> tuple[SourceTextSpan, ...]:
+        geometry = self.resolution.geometry
+        domain = self.physical_edit.original_span(geometry)
+        if any(not span.is_within(domain) for span in spans):
+            raise ValueError(
+                "Retained source interiors must belong to their physical window"
+            )
+        return tuple(
+            SourceTextSpan(
+                span.start_offset - domain.start_offset,
+                span.end_offset - domain.start_offset,
+            )
+            for span in geometry.project_unchanged_spans(spans, self.replacements)
         )
 
 
@@ -1027,6 +1186,16 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         *((ast.TemplateStr,) if sys.version_info >= (3, 14) else ()),
     )
 
+    def line_anchor_offset(self, line: int) -> int:
+        """Project a physical line anchor, including empty source and end of file."""
+        if not 1 <= line <= len(self.line_offsets) + 1:
+            raise ValueError("Line anchor is outside source geometry")
+        return (
+            self.end_offset
+            if line == len(self.line_offsets) + 1
+            else self.line_offsets[line - 1]
+        )
+
     def project_unchanged_spans(
         self,
         spans: Iterable[SourceTextSpan],
@@ -1126,7 +1295,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                     end_line=end_line,
                     replacement_lines=tuple(
                         self.source_with_replacements_in_span(
-                            *self._line_span_offsets(start_line, end_line),
+                            *self.line_span_offsets(start_line, end_line),
                             window_replacements,
                         ).splitlines(keepends=True)
                     ),
@@ -1319,7 +1488,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         raise ValueError(f"Cannot resolve parameter closing for {node.name!r}")
 
     def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
-        return self._line_span_offsets(self.node_start_line(span), span.end_line)
+        return self.line_span_offsets(self.node_start_line(span), span.end_line)
 
     def node_start_line(self, span: SourceNodeSpan) -> int:
         """Recover decorator markers that AST expression positions can omit."""
@@ -1510,12 +1679,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 )
         return ordered
 
-    def _line_span_offsets(self, start_line: int, end_line: int) -> tuple[int, int]:
-        line_offsets = self.line_offsets
-        end_offset = (
-            line_offsets[end_line] if end_line < len(line_offsets) else self.end_offset
+    def line_span_offsets(self, start_line: int, end_line: int) -> tuple[int, int]:
+        """Project a nonempty inclusive physical line span through its anchors."""
+        if start_line > end_line:
+            raise ValueError("Physical line span must be nonempty")
+        return self.line_anchor_offset(start_line), self.line_anchor_offset(
+            end_line + 1
         )
-        return line_offsets[start_line - 1], end_offset
 
 
 @dataclass(frozen=True)
