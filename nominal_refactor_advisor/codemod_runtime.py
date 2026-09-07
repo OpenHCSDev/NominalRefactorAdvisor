@@ -1089,9 +1089,22 @@ class CodemodPlanDocumentPreflight:
 
     document: CodemodPlanDocument
     base_snapshot: CodemodSourceSnapshot
-    rewrite_snapshot: CodemodSourceSnapshot
+    rewrite_snapshot: RefactorRecipeOperationCompiler
     report: CodemodPlanPreflightReport
-    rewrites: tuple[PlannedSourceRewrite, ...]
+
+    edit_batch: NominalEditBatch | None
+
+    @property
+    def rewrites(self) -> tuple[PlannedSourceRewrite, ...]:
+        return self.required_edit_batch.planned_rewrites
+
+    @property
+    def required_edit_batch(self) -> NominalEditBatch:
+        """Require the successful compilation, never an empty failure fallback."""
+        self.report.require_clean()
+        if self.edit_batch is None:
+            raise ValueError("Clean document preflight requires a compiled edit batch")
+        return self.edit_batch
 
     @classmethod
     def from_snapshot(
@@ -1099,15 +1112,18 @@ class CodemodPlanDocumentPreflight:
         document: CodemodPlanDocument,
         snapshot: CodemodSourceSnapshot,
     ) -> "CodemodPlanDocumentPreflight":
-        rewrite_snapshot = document.rewrite_snapshot(snapshot)
+        rewrite_snapshot = RefactorRecipeOperationCompiler.from_context(
+            document.rewrite_snapshot(snapshot)
+        )
         report = document.preflight_rewrite_snapshot(rewrite_snapshot)
-        rewrites: tuple[PlannedSourceRewrite, ...] = ()
+        edit_batch = None
         if report.is_clean:
             try:
                 document = document.with_declared_architecture_guards(rewrite_snapshot)
-                rewrites = RefactorRecipeOperationCompiler.from_context(
-                    rewrite_snapshot
-                ).planned_rewrites_for_recipes(document.recipes)
+                candidate = rewrite_snapshot.edit_batch_for_recipes(document.recipes)
+                # Lower now: compilation failures still belong to preflight.
+                candidate.planned_rewrites
+                edit_batch = candidate
             except CodemodOperationPreflightError as error:
                 report = CodemodPlanPreflightReport((*report.reports, error.report))
         return cls(
@@ -1115,7 +1131,7 @@ class CodemodPlanDocumentPreflight:
             base_snapshot=snapshot,
             rewrite_snapshot=rewrite_snapshot,
             report=report,
-            rewrites=rewrites,
+            edit_batch=edit_batch,
         )
 
     def simulate(
@@ -1123,9 +1139,9 @@ class CodemodPlanDocumentPreflight:
         *,
         backend: CodemodBackend | None = None,
     ) -> "CodemodPlanDocumentSimulation":
-        self.report.require_clean()
-        simulation = self.rewrite_snapshot.simulate_rewrites(
-            self.rewrites,
+        edit_batch = self.required_edit_batch
+        simulation = edit_batch.compiler.simulate_rewrites(
+            edit_batch.planned_rewrites,
             backend=backend,
         ).with_base_snapshot(self.base_snapshot)
         after_snapshot_projection = CodemodAfterSnapshotProjection(
@@ -1142,6 +1158,7 @@ class CodemodPlanDocumentPreflight:
         )
         return CodemodPlanDocumentSimulation(
             document=self.document,
+            edit_batch=edit_batch,
             preflight_report=self.report,
             simulation=simulation,
             architecture_guard_report=architecture_guard_report,
@@ -1558,6 +1575,8 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     after_snapshot_projection: CodemodAfterSnapshotProjection = json_report_field(
         included=False
     )
+
+    edit_batch: NominalEditBatch = json_report_field(included=False)
 
     def __post_init__(self) -> None:
         if self.architecture_guard_report.rules != (
