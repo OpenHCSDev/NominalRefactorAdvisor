@@ -27,7 +27,7 @@ from .codemod_source_edits import (
     SourceLineSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
-    SourceTargetEditor,
+    SourceTextGeometry,
     SourceTextSpan,
     _joined_rationales,
 )
@@ -255,6 +255,7 @@ class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
     @property
     def indentation(self) -> str:
         return _line_indentation(self.source, self.guard.body[0].lineno)
+
 
 def _line_indentation(source: str, line_number: int) -> str:
     line = source.splitlines(keepends=True)[line_number - 1]
@@ -773,7 +774,7 @@ class ModuleImportMutation(NominalSourceEdit):
                     file_path=self.file_path,
                     start_line=statement.lineno,
                     end_line=statement.end_lineno or statement.lineno,
-                    replacement_lines=SourceTargetEditor.source_lines(
+                    replacement_lines=SourceTextGeometry(source).generated_lines(
                         replacement_source
                     ),
                     rationale=self.rationale
@@ -882,7 +883,7 @@ class ModuleImportMutation(NominalSourceEdit):
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
-            inserted_lines=SourceTargetEditor.source_lines(inserted_source),
+            inserted_lines=SourceTextGeometry(source).generated_lines(inserted_source),
             rationale=self.rationale or f"Ensure imports exist in {self.file_path!r}.",
             contributors=self.contributors,
             origins=self.origins,
@@ -932,7 +933,7 @@ class ModuleImportMutation(NominalSourceEdit):
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
-            inserted_lines=SourceTargetEditor.source_lines(
+            inserted_lines=SourceTextGeometry(source).generated_lines(
                 _indent_source(inserted_source, insertion_point.indentation)
             ),
             rationale=self.rationale
@@ -997,7 +998,7 @@ class ModuleImportMutation(NominalSourceEdit):
             SourceInsertion(
                 file_path=self.file_path,
                 insertion_line=insertion_line,
-                inserted_lines=SourceTargetEditor.source_lines(
+                inserted_lines=SourceTextGeometry(source).generated_lines(
                     inserted_source.rstrip("\n") + spacing.trailing_separator
                 ),
                 rationale=self.rationale
@@ -1008,51 +1009,29 @@ class ModuleImportMutation(NominalSourceEdit):
         )
 
 
-def _future_import_source_group(root_module_name: str, level: int) -> bool:
-    return level == 0 and root_module_name == "__future__"
-
-
-def _standard_library_import_source_group(
-    root_module_name: str,
-    level: int,
-) -> bool:
-    return (
-        level == 0
-        and root_module_name != "__future__"
-        and root_module_name in sys.stdlib_module_names
-    )
-
-
-def _third_party_import_source_group(root_module_name: str, level: int) -> bool:
-    return (
-        level == 0
-        and root_module_name != "__future__"
-        and root_module_name not in sys.stdlib_module_names
-    )
-
-
-def _relative_import_source_group(root_module_name: str, level: int) -> bool:
-    del root_module_name
-    return level > 0
-
-
 class ImportSourceGroup(StrEnum):
-    """Canonical Python import group derived from a module reference."""
+    """Canonical Python import group derived from an import declaration."""
 
-    FUTURE = ("future", 0, _future_import_source_group)
+    FUTURE = ("future", 0, lambda reference: False)
     STANDARD_LIBRARY = (
         "standard_library",
         1,
-        _standard_library_import_source_group,
+        lambda reference: not reference.is_relative
+        and reference.root_module_name in sys.stdlib_module_names,
     )
-    THIRD_PARTY = ("third_party", 2, _third_party_import_source_group)
-    RELATIVE = ("relative", 3, _relative_import_source_group)
+    THIRD_PARTY = (
+        "third_party",
+        2,
+        lambda reference: not reference.is_relative
+        and reference.root_module_name not in sys.stdlib_module_names,
+    )
+    RELATIVE = ("relative", 3, lambda reference: reference.is_relative)
 
     def __new__(
         cls,
         value: str,
         canonical_rank: int,
-        reference_matcher: Callable[[str, int], bool],
+        reference_matcher: Callable[[ImportFromModuleName], bool],
     ) -> "ImportSourceGroup":
         member = str.__new__(cls, value)
         member._value_ = value
@@ -1062,29 +1041,32 @@ class ImportSourceGroup(StrEnum):
 
     @property
     def canonical_rank(self) -> int:
-        """Return the Python import-block order owned by this group."""
+        """Return deterministic import-block source order, not dispatch priority."""
 
         return self._canonical_rank
 
     @classmethod
-    def from_module_reference(
-        cls,
-        module_name: str,
-        *,
-        level: int = 0,
-    ) -> "ImportSourceGroup":
-        """Classify one import reference from its native module declaration."""
-
-        root_module_name = module_name.partition(".")[0]
-        matches = tuple(
-            source_group
-            for source_group in cls
-            if source_group._reference_matcher(root_module_name, level)
+    def from_declaration(
+        cls, declaration: ImportDeclarationABC
+    ) -> tuple["ImportSourceGroup", ...]:
+        if declaration.is_future_import:
+            return (cls.FUTURE,)
+        return tuple(
+            dict.fromkeys(
+                cls.from_module_reference(reference)
+                for reference in declaration.module_references
+            )
         )
+
+    @classmethod
+    def from_module_reference(
+        cls, reference: ImportFromModuleName
+    ) -> "ImportSourceGroup":
+        """Require one declaration-owned match, independent of source-order rank."""
+        matches = tuple(group for group in cls if group._reference_matcher(reference))
         if len(matches) != 1:
             raise ValueError(
-                "Import reference does not have one canonical source group: "
-                f"{'.' * level}{module_name}"
+                f"Import reference has no unique canonical source group: {reference.source!r}"
             )
         return matches[0]
 
@@ -1131,8 +1113,7 @@ class RequestedImportStatement:
         if isinstance(statement, ast.ImportFrom):
             return (cls(statement, scope=scope),)
         return tuple(
-            cls(ast.Import(names=[alias]), scope=scope)
-            for alias in statement.names
+            cls(ast.Import(names=[alias]), scope=scope) for alias in statement.names
         )
 
     @property
@@ -1189,7 +1170,7 @@ class RequestedImportStatement:
     def is_future_import(self) -> bool:
         """Return whether this statement belongs to Python's future-import group."""
 
-        return self.source_group is ImportSourceGroup.FUTURE
+        return self.declaration.is_future_import
 
     @property
     def is_relative_import(self) -> bool:
@@ -1199,21 +1180,8 @@ class RequestedImportStatement:
 
     @property
     def source_groups(self) -> tuple[ImportSourceGroup, ...]:
-        """Return source groups represented by this import statement."""
-
-        if isinstance(self.statement, ast.ImportFrom):
-            return (
-                ImportSourceGroup.from_module_reference(
-                    self.statement.module or "",
-                    level=self.statement.level,
-                ),
-            )
-        return tuple(
-            dict.fromkeys(
-                ImportSourceGroup.from_module_reference(alias.name)
-                for alias in self.statement.names
-            )
-        )
+        """Return groups derived from this statement's actual declaration."""
+        return ImportSourceGroup.from_declaration(self.declaration)
 
     @property
     def source_group(self) -> ImportSourceGroup:

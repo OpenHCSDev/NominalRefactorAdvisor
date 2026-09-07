@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import __future__
 from abc import (
     ABC,
     abstractmethod,
@@ -185,6 +186,14 @@ class ImportFromModuleName:
 
     source: str
 
+    @property
+    def is_relative(self) -> bool:
+        return self.source.startswith(".")
+
+    @property
+    def root_module_name(self) -> str:
+        return self.source.lstrip(".").partition(".")[0]
+
     def resolve(self, module_identity: PythonModulePathIdentity) -> str | None:
         module = self.source.lstrip(".")
         return module_identity.resolve_import_from_module(
@@ -225,6 +234,18 @@ class ImportDeclarationABC(ABC):
     """One AST-free import request; binding views derive from its aliases."""
 
     aliases: tuple[ImportAliasRequirement, ...]
+
+    @property
+    @abstractmethod
+    def module_references(self) -> tuple[ImportFromModuleName, ...]:
+        """Project unresolved module references from this declaration's syntax."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def is_future_import(self) -> bool:
+        """Distinguish a language directive from an ordinary module import."""
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -299,6 +320,11 @@ class ImportDeclarationABC(ABC):
 
 class ModuleImportDeclaration(ImportDeclarationABC):
     source_prefix = "import"
+    is_future_import = False
+
+    @property
+    def module_references(self) -> tuple[ImportFromModuleName, ...]:
+        return tuple(ImportFromModuleName(alias.name) for alias in self.aliases)
 
     def resolve_origin(
         self,
@@ -333,6 +359,14 @@ class ModuleImportDeclaration(ImportDeclarationABC):
 @dataclass(frozen=True)
 class FromImportDeclaration(ImportDeclarationABC):
     module_name: ImportFromModuleName
+
+    @property
+    def module_references(self) -> tuple[ImportFromModuleName, ...]:
+        return (self.module_name,)
+
+    @property
+    def is_future_import(self) -> bool:
+        return self.module_name.source == __future__.__name__
 
     @property
     def source_prefix(self) -> str:

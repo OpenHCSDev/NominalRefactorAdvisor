@@ -37,9 +37,7 @@ class ClassHeaderSourceSpan:
         first_statement_line = min(
             self.statement_start_line(statement) for statement in self.node.body
         )
-        return "".join(
-            self.source_lines[self.start_line - 1 : first_statement_line]
-        )
+        return "".join(self.source_lines[self.start_line - 1 : first_statement_line])
 
     @cached_property
     def outer_tokens(self) -> tuple[tokenize.TokenInfo, ...]:
@@ -250,6 +248,25 @@ class SourceLineSegmentAuthority:
     @cached_property
     def lines(self) -> tuple[str, ...]:
         return tuple(self.source.splitlines(keepends=True))
+
+    @cached_property
+    def line_ending(self) -> str:
+        """Derive the destination convention from its first terminated line."""
+        for line in self.lines:
+            ending = line[len(line.rstrip("\r\n")) :]
+            if ending:
+                return ending
+        return "\n"
+
+    def generated_lines(self, source: str) -> tuple[str, ...]:
+        """Give generated statement lines this destination's physical endings.
+
+        This projects newly rendered syntax, not retained/authored source spans.
+        """
+        return tuple(
+            line.rstrip("\r\n") + self.line_ending
+            for line in source.splitlines(keepends=True)
+        )
 
     def segment_for_node(self, node: ast.expr | ast.stmt) -> str | None:
         span = SourceByteSpan.from_node(node)
