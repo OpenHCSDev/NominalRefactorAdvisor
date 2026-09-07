@@ -16,6 +16,7 @@ from abc import (
 )
 from collections import defaultdict
 from collections.abc import (
+    Hashable,
     Iterable,
     Iterator,
     Mapping,
@@ -417,11 +418,68 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
         return self.start_line < insertion_line <= self.end_line
 
 
+class KeyedSourceEditCoalescence(NominalSourceEdit, ABC):
+    """Retain actual keyed peers and derive their declaration-owned merge."""
+
+    @classmethod
+    def _coalesced_owned_group(cls, peers: tuple[Self, ...]) -> Self:
+        """Construct one output from an already-validated actual peer group."""
+        return replace(
+            cls._coalesced_group(peers),
+            rationale=_joined_rationales(peer.rationale for peer in peers),
+            contributors=cls.merged_contributors(peers),
+            origins=cls.merged_origins(peers),
+        )
+
+    @property
+    @abstractmethod
+    def coalescence_key(self) -> Hashable:
+        """Identity of the source location whose peers this declaration merges."""
+
+    @staticmethod
+    @abstractmethod
+    def _coalesced_group(peers: tuple[Self, ...]) -> Self:
+        """Derive the leaf's physical payload from one actual peer group."""
+
+    @classmethod
+    def peer_groups(cls, peers: Iterable[Self]) -> tuple[tuple[Self, ...], ...]:
+        """Keep actual peers owned by this exact declaration, in encounter order."""
+        groups: dict[Hashable, list[Self]] = {}
+        for peer in peers:
+            if type(peer) is not cls:
+                raise ValueError(
+                    "Source peer groups require the exact nominal declaration"
+                )
+            groups.setdefault(peer.coalescence_key, []).append(peer)
+        return tuple(tuple(group) for group in groups.values())
+
+    @classmethod
+    def coalesced_group(cls, peers: tuple[Self, ...]) -> Self:
+        """Merge payload and evidence from one group of this declaration's peers."""
+        groups = cls.peer_groups(peers)
+        if len(groups) != 1:
+            raise ValueError("Coalescence requires one nonempty source peer group")
+        return cls._coalesced_owned_group(groups[0])
+
+    def coalesced_with_peers(
+        self, peers: tuple[NominalSourceEdit, ...], context: "CodemodSelectorContext"
+    ) -> tuple[NominalSourceEdit, ...]:
+        del context
+        return tuple(
+            self._coalesced_owned_group(group)
+            for group in self.peer_groups(cast(tuple[Self, ...], peers))
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
-class SourceSpanReplacement(SourceSpanEdit):
+class SourceSpanReplacement(KeyedSourceEditCoalescence, SourceSpanEdit):
     """Replace one non-empty absolute line span with explicit source lines."""
 
     replacement_lines: tuple[str, ...]
+
+    @property
+    def coalescence_key(self) -> Hashable:
+        return self.file_path, self.start_line, self.end_line
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -431,30 +489,8 @@ class SourceSpanReplacement(SourceSpanEdit):
                 "use SourceSpanDeletion to remove source"
             )
 
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        replacements_by_span: dict[
-            tuple[str, int, int],
-            list[SourceSpanReplacement],
-        ] = defaultdict(list)
-        for peer in peers:
-            replacement = cast(SourceSpanReplacement, peer)
-            replacements_by_span[
-                replacement.file_path,
-                replacement.start_line,
-                replacement.end_line,
-            ].append(replacement)
-        return tuple(
-            self._coalesced_same_span(tuple(replacements))
-            for replacements in replacements_by_span.values()
-        )
-
     @staticmethod
-    def _coalesced_same_span(
+    def _coalesced_group(
         replacements: tuple["SourceSpanReplacement", ...],
     ) -> "SourceSpanReplacement":
         first = replacements[0]
@@ -466,14 +502,7 @@ class SourceSpanReplacement(SourceSpanEdit):
                 "Conflicting source span replacements target "
                 f"{first.file_path}:{first.start_line}-{first.end_line}"
             )
-        return replace(
-            first,
-            rationale=_joined_rationales(
-                replacement.rationale for replacement in replacements
-            ),
-            contributors=NominalSourceEdit.merged_contributors(replacements),
-            origins=NominalSourceEdit.merged_origins(replacements),
-        )
+        return first
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -627,12 +656,16 @@ class SourceSpanDeletion(SourceSpanEdit):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceInsertion(PhysicalSourceEdit):
+class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     """Insert source at one absolute line anchor."""
 
     insertion_line: int
     inserted_lines: tuple[str, ...] = ()
     leading_boundary: SourceInsertionBoundary = SourceInsertionBoundary.PRESERVE
+
+    @property
+    def coalescence_key(self) -> Hashable:
+        return self.file_path, self.insertion_line
 
     @property
     def start_line(self) -> int:
@@ -646,27 +679,6 @@ class SourceInsertion(PhysicalSourceEdit):
     def replacement_lines(self) -> tuple[str, ...]:
         return self.inserted_lines
 
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple[NominalSourceEdit, ...]:
-        del context
-        insertions_by_anchor: dict[
-            tuple[str, int],
-            list[SourceInsertion],
-        ] = defaultdict(list)
-        for peer in peers:
-            insertion = cast(SourceInsertion, peer)
-            insertions_by_anchor[
-                insertion.file_path,
-                insertion.insertion_line,
-            ].append(insertion)
-        return tuple(
-            self._coalesced_same_anchor(tuple(insertions))
-            for insertions in insertions_by_anchor.values()
-        )
-
     def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
         return other.conflicts_with_insertion(self.insertion_line)
 
@@ -678,7 +690,7 @@ class SourceInsertion(PhysicalSourceEdit):
         return False
 
     @staticmethod
-    def _coalesced_same_anchor(
+    def _coalesced_group(
         insertions: tuple["SourceInsertion", ...],
     ) -> "SourceInsertion":
         first = insertions[0]
@@ -692,18 +704,9 @@ class SourceInsertion(PhysicalSourceEdit):
         coalesced_lines = unique_insertions[0].inserted_lines
         for insertion in unique_insertions[1:]:
             coalesced_lines = insertion.leading_boundary.coalesce_lines(
-                coalesced_lines,
-                insertion.inserted_lines,
+                coalesced_lines, insertion.inserted_lines
             )
-        return replace(
-            first,
-            inserted_lines=coalesced_lines,
-            rationale=_joined_rationales(
-                insertion.rationale for insertion in insertions
-            ),
-            contributors=NominalSourceEdit.merged_contributors(insertions),
-            origins=NominalSourceEdit.merged_origins(insertions),
-        )
+        return replace(first, inserted_lines=coalesced_lines)
 
 
 @dataclass(frozen=True, kw_only=True)

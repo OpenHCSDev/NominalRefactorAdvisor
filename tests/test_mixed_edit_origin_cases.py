@@ -24,7 +24,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 
-PATH = str(Path(__file__).with_name("origins_fixture.py").resolve())
+PATH = Path(__file__).with_name("origins_fixture.py").resolve().as_posix()
 SOURCE = "left = object; right = type\n"
 
 
@@ -86,6 +86,23 @@ def test_identical_mixed_insertions_are_deduplicated_by_existing_owner():
     assert len(batch.physical_edits) == 1
 
 
+def test_two_phase_lowering_preserves_declaration_group_encounter_order():
+    first = SourceInsertion(
+        file_path=PATH, insertion_line=1, inserted_lines=("import typing\n",)
+    )
+    middle = exact(
+        SourceTextSpanReplacement(0, 0, replacement_source="import collections\n")
+    )
+    last = SourceInsertion(
+        file_path=PATH, insertion_line=1, inserted_lines=("import builtins\n",)
+    )
+    batch, output = render(first, middle, last)
+    assert batch.edits == (first, middle, last)
+    assert len(batch.physical_edits) == 1
+    # Physical peers merge in the first declaration pass, before exact lowering.
+    assert output == "import typing\nimport builtins\nimport collections\n" + SOURCE
+
+
 def test_disjoint_exact_and_line_edits_have_a_complete_fine_projection():
     replacement = SourceTextSpanReplacement(0, 4, replacement_source="renamed")
     prefix = "import typing\n"
@@ -126,7 +143,7 @@ def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
 
 def test_virtual_creation_source_is_generated_despite_existing_at_compile_time():
     snapshot = CodemodSourceSnapshot.from_source_mapping({PATH: SOURCE})
-    new_path = str(Path(PATH).with_name("created_fixture.py"))
+    new_path = Path(PATH).with_name("created_fixture.py").as_posix()
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe(

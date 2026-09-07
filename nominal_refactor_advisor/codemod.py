@@ -498,6 +498,7 @@ from .codemod_semantics import (
 )
 from .codemod_source_edits import (
     CodemodSourceRevision as CodemodSourceRevision,
+    KeyedSourceEditCoalescence as KeyedSourceEditCoalescence,
     PlannedRewriteConflictError as PlannedRewriteConflictError,
     PlannedRewriteSelectionAuthority as PlannedRewriteSelectionAuthority,
     PlannedSourceRewrite as PlannedSourceRewrite,

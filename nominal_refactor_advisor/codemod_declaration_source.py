@@ -34,6 +34,7 @@ from .codemod_source_edits import (
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
+    SourceTextMutation,
     SourceTextSpan,
     SourceTextSpanReplacement,
     _joined_rationales,
@@ -578,6 +579,11 @@ class ClassMemberInsertion(NominalSourceEdit):
         Callable[[Iterable[ClassMemberSource]], tuple[ClassMemberSource, ...]]
     ] = staticmethod(tuple)
 
+    def resolved_edits(
+        self, context: "CodemodSelectorContext"
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self.source_mutation(context).resolved_edits(context)
+
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
@@ -618,10 +624,10 @@ class ClassMemberInsertion(NominalSourceEdit):
             origins=NominalSourceEdit.merged_origins(insertions),
         )
 
-    def resolved_edits(
+    def source_mutation(
         self,
         context: "CodemodSelectorContext",
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> SourceTextMutation:
         target = context.source_index.target_by_id.get(self.target_id)
         node = context.ast_target_nodes_by_id.get(self.target_id)
         if target is None or not isinstance(node, ast.ClassDef):
@@ -639,9 +645,8 @@ class ClassMemberInsertion(NominalSourceEdit):
             )
         source = context.sources_by_file_path[target.file_path]
         insertion_point = ClassBodySourceAuthority(node=node, source=source)
-        return tuple(
-            replace(edit, contributors=self.contributors, origins=self.origins)
-            for edit in insertion_point.geometry.physical_edits(
+        return replace(
+            insertion_point.geometry.nominal_edit(
                 file_path=target.file_path,
                 replacements=(
                     insertion_point.member_insertion_replacement(
@@ -649,7 +654,9 @@ class ClassMemberInsertion(NominalSourceEdit):
                     ),
                 ),
                 rationale=self.rationale,
-            )
+            ),
+            contributors=self.contributors,
+            origins=self.origins,
         )
 
 
