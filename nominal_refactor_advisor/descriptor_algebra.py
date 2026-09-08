@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from operator import attrgetter
-from typing import Callable, Generic, TypeVar, cast, overload
+from typing import (
+    Callable,
+    Generic,
+    TypeVar,
+    overload,
+)
 
 ValueT = TypeVar("ValueT")
 MemberValueT = TypeVar("MemberValueT")
@@ -34,7 +39,7 @@ class AliasProperty(Generic[ValueT]):
         del owner
         if instance is None:
             return self
-        project = cast(Callable[[object], ValueT], attrgetter(self.source_name))
+        project: Callable[[object], ValueT] = attrgetter(self.source_name)
         return project(instance)
 
 
@@ -105,8 +110,8 @@ class CollectionAttributeProjection(Generic[MemberValueT]):
         if instance is None:
             return self
         collection = attrgetter(self.collection_name)
-        member_attribute = cast(
-            Callable[[object], MemberValueT], attrgetter(self.member_attribute_name)
+        member_attribute: Callable[[object], MemberValueT] = attrgetter(
+            self.member_attribute_name
         )
         return tuple(
             member_attribute(member) for member in collection(instance)
