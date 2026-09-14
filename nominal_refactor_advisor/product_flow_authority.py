@@ -16,7 +16,11 @@ from typing import (
     cast,
 )
 
-from .ast_tools import CollectedFamily, ParsedModule
+from .ast_tools import (
+    CollectedFamily,
+    ParsedModule,
+    ParsedModuleSourceProjection,
+)
 from .call_binding import (
     CallValueT,
     CompactCallBinding,
@@ -1749,6 +1753,44 @@ class CompactProductFlowRepository(ProductFlowRepository):
 @dataclass(frozen=True)
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""
+
+    def projected_with_source_projection(
+        self, projection: ParsedModuleSourceProjection
+    ) -> Self:
+        """Retain module-local proofs only for exact unchanged source owners."""
+        self.require_module_owners(projection.modules)
+        projected = type(self).from_modules(projection.projected_modules)
+        for original, current in zip(
+            self.modules, projection.projected_existing_modules, strict=True
+        ):
+            if current is not original:
+                continue
+            module_id = id(original)
+            source = self._source_projections.get(module_id)
+            execution = self._native_executions.get(module_id)
+            if source is not None:
+                if source.module is not original:
+                    raise ValueError(
+                        "Retained source projection belongs to a different parsed owner"
+                    )
+                projected._source_projections[module_id] = source
+            if execution is not None:
+                if source is None or execution.source is not source:
+                    raise ValueError(
+                        "Retained native execution belongs to a different source projection"
+                    )
+                projected._native_executions[module_id] = execution
+        return projected
+
+    def require_module_owners(self, modules: tuple[ParsedModule, ...]) -> None:
+        """Authenticate the exact parsed owners represented by this repository."""
+        if len(modules) != len(self.modules) or any(
+            supplied is not owned
+            for supplied, owned in zip(modules, self.modules, strict=True)
+        ):
+            raise ValueError(
+                "Product-flow repository belongs to different parsed module owners"
+            )
 
     def product_projection_for_module(
         self, module_name: str

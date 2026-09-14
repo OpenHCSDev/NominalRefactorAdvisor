@@ -171,11 +171,21 @@ def _parsed_modules_from_source_mapping(
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
+    _retained_product_flow_repository: SourceProductFlowRepository | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
     module_binding_proof = AliasProperty[RepositoryModuleBindingProof]("product_flow_repository")
 
     @cached_property
     def product_flow_repository(self) -> SourceProductFlowRepository:
-        return SourceProductFlowRepository.from_modules(self.parsed_modules)
+        repository = self._retained_product_flow_repository
+        if repository is None:
+            return SourceProductFlowRepository.from_modules(self.parsed_modules)
+        repository.require_module_owners(self.parsed_modules)
+        return repository
 
     @cached_property
     def exact_dataclass_field_authority_component_builder(
@@ -306,6 +316,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         modules: tuple[ParsedModule, ...],
         class_family_index: ClassFamilyIndex,
         source_index_artifacts: SourceIndexBuildArtifacts,
+        retained_product_flow_repository: SourceProductFlowRepository | None = None,
     ) -> "CodemodSourceSnapshot":
         """Build from source and semantic indexes proved for that exact source."""
 
@@ -322,6 +333,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 source_index=source_index_artifacts.source_index,
                 module_nodes_by_file_path=module_node_cache,
             ),
+            _retained_product_flow_repository=retained_product_flow_repository,
         )
         snapshot._parsed_modules_by_file_path.update(
             (module.file_path, module) for module in modules
@@ -346,6 +358,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self._source_index_build_artifacts.projected_with_module_overlay(
                 projection.projected_modules,
                 projection.changed_modules,
+            ),
+            retained_product_flow_repository=(
+                self.product_flow_repository.projected_with_source_projection(
+                    projection
+                )
             ),
         )
 

@@ -1,5 +1,7 @@
 """Source snapshots retain native proofs only for their own parsed source state."""
 
+import pytest
+
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 
@@ -73,3 +75,93 @@ def test_distinct_source_files_have_distinct_native_execution_owners():
         first.module.body[0].value
         not in second_environment.source.reference_reads_by_node
     )
+
+
+def test_virtual_edit_retains_only_unaffected_module_proofs_and_rebuilds_global_queries():
+    provider_path = "/repo/provider.py"
+    consumer_path = "/repo/consumer.py"
+    provider_source = "def render(value):\n    return value\n"
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {
+            provider_path: provider_source,
+            consumer_path: (
+                "from provider import render\n" "def run():\n" "    return render(1)\n"
+            ),
+        }
+    )
+    repository = snapshot.product_flow_repository
+    consumer = snapshot.parsed_module_for_source_path(consumer_path)
+    provider = snapshot.parsed_module_for_source_path(provider_path)
+    consumer_source = repository.source_projection(consumer)
+    consumer_execution = repository.native_reference_environment(consumer)
+    original_call = repository.function_call_resolutions[0]
+    assert original_call.target_resolution.declaration is not None
+
+    changed = snapshot.with_virtual_sources(
+        {
+            provider_path: (
+                provider_source + "def render(value):\n" + "    return None\n"
+            )
+        }
+    )
+    changed_repository = changed.product_flow_repository
+    changed_consumer = changed.parsed_module_for_source_path(consumer_path)
+    changed_provider = changed.parsed_module_for_source_path(provider_path)
+
+    assert changed_repository is not repository
+    assert changed_consumer is consumer
+    assert changed_provider is not provider
+    assert changed_repository.source_projection(consumer) is consumer_source
+    assert (
+        changed_repository.native_reference_environment(consumer) is consumer_execution
+    )
+    assert id(changed_provider) not in changed_repository._source_projections
+    assert id(changed_provider) not in changed_repository._native_executions
+    assert "function_call_resolutions" not in vars(changed_repository)
+
+    changed_call = changed_repository.function_call_resolutions[0]
+    assert changed_call.target_resolution.declaration is None
+    assert repository.function_call_resolutions[0] is original_call
+
+
+def test_virtual_source_creation_is_visible_without_recollecting_existing_source():
+    provider_path = "/repo/provider.py"
+    provider_source = "def render(value):\n    return value\n"
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {provider_path: provider_source}
+    )
+    repository = snapshot.product_flow_repository
+    provider = snapshot.parsed_module_for_source_path(provider_path)
+    provider_projection = repository.source_projection(provider)
+
+    changed = snapshot.with_virtual_sources(
+        {
+            "/repo/consumer.py": (
+                "from provider import render\n"
+                "def run():\n"
+                "    return render(1)\n"
+            )
+        }
+    )
+    changed_repository = changed.product_flow_repository
+
+    assert changed_repository.source_projection(provider) is provider_projection
+    assert len(changed_repository.function_call_resolutions) == 1
+    assert (
+        changed_repository.function_call_resolutions[0]
+        .target_resolution.declaration
+        is not None
+    )
+
+
+def test_repository_projection_rejects_a_foreign_source_owner():
+    path = "/repo/subject.py"
+    first = CodemodSourceSnapshot.from_source_mapping({path: "chosen = property\n"})
+    foreign = CodemodSourceSnapshot.from_source_mapping(
+        {path: "chosen = property\n"}
+    )
+
+    with pytest.raises(ValueError, match="different parsed module owners"):
+        first.product_flow_repository.projected_with_source_projection(
+            foreign.source_projection({path: "chosen = object\n"})
+        )
