@@ -14,6 +14,7 @@ from functools import cached_property
 from types import (
     CellType,
     FunctionType,
+    MappingProxyType,
 )
 from typing import ClassVar, Generic, TypeVar, cast
 
@@ -24,6 +25,7 @@ from .call_binding import CompactFunctionSignature
 from .captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedFlowPrefix,
+    CapturedEntryContents,
     CapturedReferenceEffectsABC,
     CapturedReferenceKernel,
     CapturedReferenceResolution,
@@ -32,6 +34,7 @@ from .captured_reference import (
     ChildExecutionPrefix,
     ContextualMutation,
     EmptyDictionaryCreation,
+    FunctionInvocationPrefix,
     InitialNamespaceContents,
     InitialNativeFrame,
     InitialNativeIsland,
@@ -52,7 +55,11 @@ from .captured_reference import (
 from .class_namespace import SourceExecutionEffectEvidence
 from .class_mro import DeclarationMroType
 from .descriptor_algebra import AliasProperty
-from .lexical_bindings import ImportedNameOrigin, ImportOriginResolverABC
+from .lexical_bindings import (
+    FunctionParameterSource,
+    ImportedNameOrigin,
+    ImportOriginResolverABC,
+)
 from .native_class_mro import NativeClassMroDeclaration
 from .native_compilation import (
     CPythonClassConstructionField,
@@ -133,15 +140,18 @@ from .product_flow import (
     CompactLexicalBindingTargetABC,
     CompactMutation,
     CompactMutationResolverABC,
+    CompactResultCompletionResolverABC,
     CompactNativeCapture,
     CompactPositionedReference,
     CompactSubscription,
     CompactTupleValue,
     CompactValueUse,
+    CompactValueDestinationKind,
     CompilerOperandValue,
     CompilerStoredValue,
     FlowFrameResolverABC,
     ForwardedResultValue,
+    InitialCompactParameterBinding,
     SourceFlowEvaluation,
     SourceFlowEvent,
     SourceFlowOperation,
@@ -628,12 +638,18 @@ class SourceFunctionCall(SignatureCallAuthorityABC):
         return value
 
     @property
-    def signature(self) -> CompactFunctionSignature:
+    def caller_prefix(self) -> AdmittedExecutionPrefixABC:
         function = self.callee
         prefix = function.require_available_at(
             self.environment.kernel, self.context, self.call.position
         )
         function.execution.entry.require_external_noninterference(prefix)
+        return prefix
+
+    @property
+    def signature(self) -> CompactFunctionSignature:
+        _ = self.caller_prefix
+        function = self.callee
         return function.declaration.signature
 
     @property
@@ -641,13 +657,20 @@ class SourceFunctionCall(SignatureCallAuthorityABC):
         """Rejoin actual binding and callee code before admitting a native body walk."""
         _ = self.bound_arguments
         function = self.callee
+        function.native_execution.mode.require_immediate_activation()
         return function.execution.module.native_compilation.return_from(
             function.native_execution
         ).require_from_entry()
 
+    @cached_property
+    def activation(self) -> SourceFunctionExecution:
+        return SourceFunctionExecution(SourceFunctionEntry(self))
+
     def require_closed(self) -> None:
-        _ = self.entry_continuation
-        raise ValueError("Source function body execution remains unproved")
+        self.activation.require_closed()
+
+    def result(self) -> CapturedReferenceResolution:
+        return self.activation.result()
 
 
 @dataclass(frozen=True, eq=False)
@@ -1009,6 +1032,11 @@ class SourceNativeStorageABC(
 
 class SourceNativePrefixStorageABC(SourceNativeStorageABC):
     """Native reads use the namespaces and position of their admitted source cut."""
+
+    def _fast_local_store_resolution(
+        self, binding: NativeBindingTransfer
+    ) -> tuple[str, CapturedReferenceResolution]:
+        return self._local_store_resolution(binding)
 
     def _local_native_value_resolution(
         self, value: NativeLocalValue
@@ -1890,6 +1918,55 @@ class SourceDiscardReturn(SourceStackEffectReturnABC):
         return discard.instruction_offset
 
 
+@dataclass(frozen=True, eq=False)
+class SourceFunctionReturn(SourceEventReturnABC, SourceNativeExpressionABC):
+    """One returned source value joined to its function activation's native exit."""
+
+    execution: SourceFunctionExecution
+    returned: CompactEvaluatedResult
+    event = AliasProperty[CompactEvaluatedResult]("returned")
+
+    @property
+    def source_read(self) -> CompactFlowValue:
+        self.operation
+        if self.returned.value_use is None:
+            raise ValueError("Bare function return value remains unproved")
+        return CompactFlowValue(self.native_frame_context, self.returned.value_use)
+
+    @property
+    def receipt(self) -> NativeReturn:
+        receipt = self.execution.entry.call.entry_continuation
+        receipt.frame.resolve(self)
+        return receipt
+
+    @property
+    def native_bindings(self) -> tuple[NativeBindingTransfer, ...]:
+        return self.receipt.bindings
+
+    def _require_native_production(self, value: NativeProducedValue) -> None:
+        self.receipt.require_value(value)
+        _ = self.native_lookup_prefix
+
+    def _fast_local_store_resolution(
+        self, binding: NativeBindingTransfer
+    ) -> tuple[str, CapturedReferenceResolution]:
+        return self.execution.resolve_fast_local_store(binding)
+
+    def native_completion_offset(self, prefix: AdmittedExecutionPrefixABC) -> int:
+        self.require_event_available_in(prefix, self.returned)
+        self.require_join(self.receipt.value)
+        return self.receipt.instruction_offset
+
+    def return_continuation(self, prefix: AdmittedExecutionPrefixABC) -> NativeReturn:
+        self.require_complete_source_cut(prefix)
+        self.native_completion_offset(prefix)
+        return self.receipt
+
+    def result(self, prefix: AdmittedExecutionPrefixABC) -> CapturedReferenceResolution:
+        self.return_continuation(prefix)
+        return self.require_join(self.receipt.value)
+
+
 class SourceAssignmentValueABC(SourceNativeExpressionABC):
     """An assignment's RHS belongs to its original evaluated source read."""
 
@@ -1959,6 +2036,10 @@ class SourceAssignmentStore(SourceBindingReturnABC, SourceAssignmentValueABC):
     def _require_native_production(self, value: NativeProducedValue) -> None:
         self.production.require_value(value)
         _ = self.native_lookup_prefix
+
+    @property
+    def native_bindings(self) -> tuple[NativeBindingTransfer, ...]:
+        return self.execution.fast_local_bindings
 
     def require_native_installation(
         self, prefix: AdmittedExecutionPrefixABC
@@ -2218,6 +2299,32 @@ class SourceExecutionKernel(
             self, binding.target.bound_name, binding
         )
 
+    def _initial_parameter_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: InitialCompactParameterBinding,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> CapturedReferenceResolution:
+        del pending_bindings
+        prefix = self._admitted_prefix(context, use_position)
+        if isinstance(prefix, OpenCapturedReference):
+            return prefix
+        endpoint = prefix.endpoint
+        if (
+            endpoint.context is not context
+            or reference.attribute_path
+            or binding.parameter.name != reference.root_name
+        ):
+            return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
+        value = prefix.entry_contents(self, endpoint.frame.locals).member(
+            reference.root_name
+        )
+        return value or OpenCapturedReference(
+            CapturedReferenceViolation.UNPROVED_BINDING
+        )
+
     def _selected_class_resolution(
         self, symbol: str, binding: CompactMutation
     ) -> CapturedReferenceResolution:
@@ -2236,6 +2343,7 @@ class SourceCompletionResolver(
     CompactBindingValueResolverABC[SourceInstalledReturnABC],
     CompactDefinitionResolverABC[SourceInstalledReturnABC],
     ImportOriginResolverABC[CompactMutation, SourceInstalledReturnABC],
+    CompactResultCompletionResolverABC[SourceCompletedReturnABC],
 ):
     """Select completion through original binding and disposition declarations."""
 
@@ -2252,18 +2360,10 @@ class SourceCompletionResolver(
             for binding in context.flow.mutations
             if isinstance(binding, CompactEvaluatedAssignment)
         }
-        source = self.execution.source
         for result in context.flow.evaluated_results:
             if id(result) in consumed_results:
                 continue
-            operation = source.event_operation(result)
-            dispositions = result.destination.use.expression_operations(
-                result, source.operations_by_node[operation.node]
-            )
-            # Actual assignments own their RHS regardless of destination shape.
-            # An independently applied result owns its own completion boundary.
-            if dispositions[0].event is result:
-                candidates.append(SourceDiscardReturn(self.execution, result))
+            candidates.append(result.destination.use.resolve_completion(self, result))
         selected = None
         for candidate in candidates:
             operation = candidate.operation
@@ -2283,6 +2383,25 @@ class SourceCompletionResolver(
             ):
                 raise ValueError("Source completion boundaries have no unique order")
         return selected
+
+    def _returned_result_completion(
+        self, result: CompactEvaluatedResult
+    ) -> SourceCompletedReturnABC:
+        self.execution.source.event_operation(result)
+        if not isinstance(self.execution, SourceFunctionExecution):
+            raise ValueError("Returned completion requires a function activation")
+        return SourceFunctionReturn(self.execution, result)
+
+    def _discarded_result_completion(
+        self, result: CompactEvaluatedResult
+    ) -> SourceCompletedReturnABC:
+        operation = self.execution.source.event_operation(result)
+        dispositions = result.destination.use.expression_operations(
+            result, self.execution.source.operations_by_node[operation.node]
+        )
+        if dispositions[0].event is not result:
+            raise ValueError("Discard completion requires its original disposition")
+        return SourceDiscardReturn(self.execution, result)
 
     def _deleted_binding_resolution(
         self,
@@ -2999,6 +3118,11 @@ class SourceExecutionABC(
 
     native_import: ClassVar[NativeDeclaration] = NativeDeclaration(builtins.__import__)
 
+    @property
+    def fast_local_bindings(self) -> tuple[NativeBindingTransfer, ...]:
+        """Module and class activations do not own CPython fast-local storage."""
+        return ()
+
     def _entry_flow_frame(
         self, context: CompactFlowContext, position: CompactFlowPosition | None
     ) -> AdmittedExecutionPrefixABC:
@@ -3475,6 +3599,234 @@ class SourceExecutionABC(
                 self.require_call(node.value)
             else:
                 self.capture_value(node.value).require_closed()
+
+    def require_return(self, node: ast.Return) -> None:
+        operation = self.source.node_operation(node, CompactEvaluatedResult)
+        result = cast(CompactEvaluatedResult, operation.event)
+        if result.destination.use is not CompactValueDestinationKind.RETURNED:
+            raise ValueError("Return requires its original value destination")
+        if result.value_use is None:
+            return
+        self.kernel._read_use(
+            result.value_use,
+            self.context_for_owner(operation.owner),
+            frozenset(),
+        ).require_closed()
+
+
+@dataclass(frozen=True, eq=False)
+class SourceFunctionEntry(
+    NamespaceCreationEvidenceABC,
+    RecordedNamespace,
+    SourceExecutionEntryABC,
+):
+    """Fresh local storage for one canonical original source invocation."""
+
+    call: SourceFunctionCall
+
+    source = AliasProperty[SourceProductFlowProjection]("call.environment.source")
+    initial = AliasProperty[InitialNativeIsland]("call.environment.kernel.initial")
+    context = AliasProperty[CompactFlowContext]("call.callee.context")
+
+    @property
+    def creator_frame(self) -> InitialNativeFrame:
+        prefix = self.call.callee.native_frame_prefix
+        prefix.require_admitted(self.initial)
+        return prefix.endpoint.frame
+
+    @property
+    def globals(self) -> NamespaceEvidenceABC | OpenCapturedReference:
+        return self.creator_frame.globals
+
+    @property
+    def builtins(self) -> NamespaceEvidenceABC | OpenCapturedReference:
+        return self.creator_frame.builtins
+
+    @cached_property
+    def initial_entries(
+        self,
+    ) -> Mapping[NativeScalar, CapturedReferenceResolution]:
+        """Derive exact entry values from the call binding and source declaration."""
+        parameters = FunctionParameterSource.from_arguments(self.call.callee.node.args)
+        declaration = self.call.callee.declaration
+        if len(parameters) != len(declaration.signature.parameters) or any(
+            source.argument.arg != parameter.name or source.kind is not parameter.kind
+            for source, parameter in zip(
+                parameters, declaration.signature.parameters, strict=True
+            )
+        ):
+            raise ValueError("Function entry parameters differ from their declaration")
+        binding = self.call.bound_arguments
+        entries: dict[NativeScalar, CapturedReferenceResolution] = {}
+        for source in parameters:
+            argument = binding.argument_for(source.argument.arg)
+            if source.kind.variadic:
+                raise ValueError("Variadic function activation remains unproved")
+            if argument is None:
+                if source.default is None:
+                    raise ValueError("Function entry has no bound parameter value")
+                value = self.call.callee.execution.capture_value(source.default)
+            else:
+                if len(argument.values) != 1:
+                    raise ValueError(
+                        "Function parameter requires one original argument"
+                    )
+                value = self.call.environment.kernel._read_use(
+                    argument.values[0], self.call.context, frozenset()
+                )
+            value.require_closed()
+            entries[source.argument.arg] = value
+        return MappingProxyType(entries)
+
+    @cached_property
+    def frame(self) -> InitialNativeFrame:
+        _ = self.initial_entries
+        return InitialNativeFrame(self, self.globals, self.builtins)
+
+    def prefix(
+        self, position: CompactFlowPosition | None, kernel: CapturedReferenceKernel
+    ) -> AdmittedExecutionPrefixABC:
+        self.require_admitted(kernel.initial)
+        return FunctionInvocationPrefix(
+            self.call.caller_prefix,
+            self.call.call,
+            self.call.callee.declaration,
+            CapturedFlowPrefix(self.context, self.frame, position, kernel=kernel),
+        )
+
+    def require_admitted(self, initial: InitialNativeIsland) -> None:
+        if initial is not self.initial:
+            raise ValueError("Source function belongs to a foreign native admission")
+        if (
+            self.call.environment.call_authority(self.call.context, self.call.call)
+            is not self.call
+        ):
+            raise ValueError("Function entry requires its canonical invocation")
+
+    def require_external_noninterference(
+        self, prefix: AdmittedExecutionPrefixABC
+    ) -> None:
+        self.call.callee.execution.entry.require_external_noninterference(prefix)
+
+    def require_native_behavior(self, authority: SourceActivationAuthorityABC) -> None:
+        self.call.callee.execution.entry.require_native_behavior(authority)
+
+    def require_operation_completion(
+        self, authority: SourceActivationAuthorityABC
+    ) -> None:
+        self.call.callee.execution.entry.require_operation_completion(authority)
+
+    def require_native_creator(self, execution: ExactNativeFunctionExecution) -> None:
+        self.require_admitted(self.initial)
+        if execution is not self.call.callee.native_execution:
+            raise ValueError("Native creator belongs to a different function body")
+
+    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+        return self.initial_entries.get(key)
+
+
+@dataclass(eq=False)
+class ActivationLocalEffectResolver(
+    CompactMutationResolverABC[ContextualMutation, None]
+):
+    """Admit only effects retained by one activation's local frame."""
+
+    entry: SourceExecutionEntryABC
+
+    def require_retained(self, prefix: AdmittedExecutionPrefixABC) -> None:
+        for occurrence in prefix.mutation_occurrences():
+            if (
+                occurrence.source.context is self.entry.context
+                and occurrence.source.frame.locals is self.entry
+            ):
+                occurrence.source.require_definite(occurrence.mutation)
+                occurrence.mutation.resolve(self, occurrence)
+
+    def _binding_mutation_resolution(
+        self,
+        context: ContextualMutation,
+        mutation: CompactMutation,
+        name: str,
+    ) -> None:
+        if (
+            context.source.frame.binding_namespace(context.source.context, name)
+            is not self.entry
+        ):
+            raise ValueError("External function effect transport remains unproved")
+
+    def _receiver_mutation_resolution(
+        self,
+        context: ContextualMutation,
+        mutation: CompactMutation,
+        receiver_use: CompactValueUse,
+    ) -> None:
+        raise ValueError("Receiver effect transport remains unproved")
+
+
+@dataclass(eq=False)
+class SourceFunctionExecution(SourceExecutionABC):
+    """One immediate source-function activation selected by its original call."""
+
+    entry: SourceFunctionEntry
+
+    @cached_property
+    def initial_contents(self) -> CapturedEntryContents:
+        return CapturedEntryContents(self.kernel, self.entry)
+
+    @property
+    def fast_local_bindings(self) -> tuple[NativeBindingTransfer, ...]:
+        return self.entry.call.entry_continuation.bindings
+
+    @cached_property
+    def completed_return(self) -> SourceFunctionReturn:
+        completion = SourceCompletionResolver(self).completed_body(self.entry.context)
+        if not isinstance(completion, SourceFunctionReturn):
+            raise ValueError("Function body has no unique proved return")
+        return completion
+
+    @cached_property
+    def completion_prefix(self) -> AdmittedExecutionPrefixABC:
+        return self.require_terminal_evaluation(
+            self.completed_return.completion_evaluation
+        )
+
+    @cached_property
+    def completed_result(self) -> CapturedReferenceResolution:
+        return self.completed_return.result(self.completion_prefix)
+
+    def require_closed(self) -> None:
+        _ = self.entry.frame
+        _ = self.entry.call.entry_continuation
+        _ = self.completed_result
+        ActivationLocalEffectResolver(self.entry).require_retained(
+            self.completion_prefix
+        )
+
+    def resolve_fast_local_store(
+        self, binding: NativeBindingTransfer
+    ) -> tuple[str, CapturedReferenceResolution]:
+        resolver = SourceCompletionResolver(self)
+        matches = []
+        for mutation in self.entry.context.flow.mutations:
+            completion = resolver.resolve(mutation)
+            if (
+                isinstance(completion, SourceAssignmentStore)
+                and completion.production.binding is binding
+            ):
+                matches.append(completion)
+        if len(matches) != 1:
+            raise ValueError(
+                "Native fast-local store has no unique source assignment owner"
+            )
+        return matches[0]._fast_local_store_resolution(binding)
+
+    def result(self) -> CapturedReferenceResolution:
+        self.require_closed()
+        return self.completed_result
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry, SourceFunctionEntry):
+            raise TypeError("Function execution requires an actual function entry")
 
 
 @dataclass(eq=False)

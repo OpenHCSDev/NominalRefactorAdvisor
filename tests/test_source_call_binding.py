@@ -1,4 +1,4 @@
-"""Original source calls share binding rules without inventing body execution."""
+"""Original source calls share binding rules with their exact body activation."""
 
 import ast
 import inspect
@@ -81,10 +81,14 @@ def test_source_signature_binding_matches_native_python(parameters, invocation):
             assert any(
                 value is original for original in authority.call.arguments.values
             )
-    with pytest.raises(ValueError, match="body execution remains unproved"):
+    if any(parameter.kind.variadic for parameter in authority.signature.parameters):
+        with pytest.raises(ValueError, match="Variadic function activation"):
+            authority.require_closed()
+        with pytest.raises(ValueError, match="Variadic function activation"):
+            authority.result()
+    else:
         authority.require_closed()
-    with pytest.raises(ValueError, match="body execution remains unproved"):
-        authority.result()
+        assert authority.result().require_native_scalar() is None
 
 
 @pytest.mark.parametrize(

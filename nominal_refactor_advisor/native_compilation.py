@@ -95,6 +95,11 @@ class NativeFunctionExecutionMode(IntEnum):
     def from_flags(cls, flags: int) -> Self:
         return cls(flags & sum(member.value for member in cls))
 
+    def require_immediate_activation(self) -> None:
+        """Admit only modes whose call immediately enters and completes the body."""
+        if self is not type(self).ORDINARY:
+            raise ValueError("Suspended function activation remains unproved")
+
 
 class NativeExecutionUnavailable(StrEnum):
     COMPILATION_REJECTED = "compilation_rejected"
@@ -1032,7 +1037,9 @@ class NativeLocalValue(NativeReadValue):
             or len(names) != dis.stack_effect(instruction.opcode, instruction.arg)
             or stack.code is None
         ):
-            raise ValueError("Native local read group requires its original decoded slots")
+            raise ValueError(
+                "Native local read group requires its original decoded slots"
+            )
         for name in names:
             index = stack.code.co_varnames.index(name)
             value = cls(instruction.offset, (), operation, name, index)

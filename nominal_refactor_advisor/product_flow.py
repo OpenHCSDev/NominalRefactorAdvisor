@@ -578,6 +578,22 @@ class CompactMutationKind(StrEnum):
         self.binding_operation.validate_import_origin(origin)
 
 
+class CompactResultCompletionResolverABC(ABC, Generic[TargetResolutionT]):
+    """Interpret an evaluated result through its declaration-owned destination."""
+
+    @abstractmethod
+    def _returned_result_completion(
+        self, result: CompactEvaluatedResult
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _discarded_result_completion(
+        self, result: CompactEvaluatedResult
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
 class CompactValueDestinationKind(StrEnum):
     """Immediate value destinations own storage, scheduling and effect obligations."""
 
@@ -623,9 +639,42 @@ class CompactValueDestinationKind(StrEnum):
         environment.capture_value(node.value).require_closed()
         environment.require_binding_write(node)
 
+    def _open_completion(
+        self,
+        resolver: CompactResultCompletionResolverABC[TargetResolutionT],
+        result: CompactEvaluatedResult,
+    ) -> TargetResolutionT:
+        raise ValueError("Value destination has no completed-body interpretation")
+
+    def _returned_completion(
+        self,
+        resolver: CompactResultCompletionResolverABC[TargetResolutionT],
+        result: CompactEvaluatedResult,
+    ) -> TargetResolutionT:
+        return resolver._returned_result_completion(result)
+
+    def _discarded_completion(
+        self,
+        resolver: CompactResultCompletionResolverABC[TargetResolutionT],
+        result: CompactEvaluatedResult,
+    ) -> TargetResolutionT:
+        return resolver._discarded_result_completion(result)
+
     BOUND = "bound", True, _binding_operations, _bound_expression
-    RETURNED = "returned", False
-    DISCARDED = "discarded", False, _discard_operations, _discard_expression
+    RETURNED = (
+        "returned",
+        False,
+        _open_expression_operations,
+        _open_expression,
+        _returned_completion,
+    )
+    DISCARDED = (
+        "discarded",
+        False,
+        _discard_operations,
+        _discard_expression,
+        _discarded_completion,
+    )
     EMBEDDED = "embedded", False
 
     def __new__(
@@ -643,12 +692,21 @@ class CompactValueDestinationKind(StrEnum):
         expression_requirement: Callable[
             [CompactValueDestinationKind, NativeReferenceEnvironment, ast.Expr], None
         ] = _open_expression,
+        completion_resolution: Callable[
+            [
+                CompactValueDestinationKind,
+                CompactResultCompletionResolverABC[TargetResolutionT],
+                CompactEvaluatedResult,
+            ],
+            TargetResolutionT,
+        ] = _open_completion,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member._requires_binding = requires_binding
         member._expression_operations = expression_operations
         member._expression_requirement = expression_requirement
+        member._completion_resolution = completion_resolution
         return member
 
     def expression_operations(
@@ -667,6 +725,13 @@ class CompactValueDestinationKind(StrEnum):
         self, environment: NativeReferenceEnvironment, node: ast.Expr
     ) -> None:
         self._expression_requirement(self, environment, node)
+
+    def resolve_completion(
+        self,
+        resolver: CompactResultCompletionResolverABC[TargetResolutionT],
+        result: CompactEvaluatedResult,
+    ) -> TargetResolutionT:
+        return self._completion_resolution(self, resolver, result)
 
     def require_discarded_value(
         self, value_use: CompactValueUse | None
@@ -1639,6 +1704,22 @@ class CompactBindingValueResolverABC(ABC, Generic[TargetResolutionT]):
             pending_bindings,
         )
 
+    def _initial_parameter_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: InitialCompactParameterBinding,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        """Leave entry values open unless an activation supplies this parameter."""
+        return self._possible_binding_resolution(
+            context,
+            reference,
+            binding.target_lookup_violation,
+            pending_bindings,
+        )
+
 
 class CompactBindingResolverABC(CompactBindingValueResolverABC[TargetResolutionT]):
     """Shared interpretation of a source selected in its actual flow."""
@@ -1821,6 +1902,18 @@ class InitialCompactParameterBinding(UnresolvedCompactBindingSource):
     parameter: CompactFunctionParameter
 
     target_lookup_violation = CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
+
+    def resolve_binding(
+        self,
+        resolver: CompactBindingResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        use_position: CompactFlowPosition | None,
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        return resolver._initial_parameter_binding_resolution(
+            context, reference, self, use_position, pending_bindings
+        )
 
     def value_origin(
         self,

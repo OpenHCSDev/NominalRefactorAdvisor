@@ -264,6 +264,16 @@ class AssignmentSourceEffect(ClassNamespaceEffect):
         environment.require_assignment(self.node)
 
 
+class ReturnSourceEffect(ClassNamespaceEffect):
+    """Evaluate a returned expression at its actual function-body cut."""
+
+    node: ast.Return
+    application_event_types = (CompactEvaluatedResult,)
+
+    def require_closed(self, environment: NativeReferenceEnvironment) -> None:
+        environment.require_return(self.node)
+
+
 class AnnotationStorageEffect(ItemWriteEffect):
     """An annotation's implicit item write, distinct from evaluating its value."""
 
@@ -615,6 +625,9 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
             self.visit_Assign(node)
         if node.simple and self.scope.scopes[-1].records_variable_annotations:
             self._record_effect(AnnotationStorageEffect, node)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        self._record_effect(ReturnSourceEffect, node)
 
     def visit_If(self, node: ast.If | ast.IfExp) -> None:
         self._record_effect(LiteralSourceEffect, node.test)

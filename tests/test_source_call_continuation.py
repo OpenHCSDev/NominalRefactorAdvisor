@@ -38,9 +38,18 @@ def test_source_call_consumes_its_original_complete_native_walk(body):
     )
     assert receipt.frame.is_body_of(callee.native_execution)
     assert receipt.require_from_entry() is receipt
-    # Native control continuity alone does not prove source effects or cleanup.
-    with pytest.raises(ValueError, match="body execution remains unproved"):
-        authority.require_closed()
+    authority.require_closed()
+    assert authority.result().require_native_scalar() is None
+    assert authority.activation.kernel is not environment.kernel
+    assert authority.activation.entry.frame.locals is authority.activation.entry
+    assert (
+        authority.activation.entry.globals
+        is callee.native_frame_prefix.endpoint.frame.globals
+    )
+    assert (
+        authority.activation.entry.builtins
+        is callee.native_frame_prefix.endpoint.frame.builtins
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,3 +99,60 @@ def test_entry_walk_rejoins_the_original_function_declaration(warm):
     declaration.__dict__["execution"] = original
     assert authority.entry_continuation.frame.is_body_of(original)
     assert isinstance(environment.module.module.body[0], ast.FunctionDef)
+
+
+def test_distinct_calls_to_one_declaration_own_distinct_activations():
+    source = (
+        "def chosen(value):\n    return value\nfirst = chosen(1)\nsecond = chosen(2)\n"
+    )
+    original = execution(source).entry
+    environment = SourceModuleExecution(
+        NoninterferingSourceModuleEntryPremise(
+            source=original.source,
+            native_island=original.initial,
+            bindings=dict(original.initial_entries),
+            builtins=original.builtins,
+        )
+    )
+    authorities = []
+    for statement in environment.module.module.body[-2:]:
+        context, call = environment.source_call(statement.value)
+        authorities.append(environment.call_authority(context, call))
+    first, second = authorities
+    assert first.callee.declaration is second.callee.declaration
+    assert first.activation is not second.activation
+    assert first.activation.kernel is not second.activation.kernel
+    assert (
+        first.activation.entry.frame.locals is not second.activation.entry.frame.locals
+    )
+    assert first.result().require_native_scalar() == 1
+    assert second.result().require_native_scalar() == 2
+
+
+def test_nested_source_calls_preserve_the_original_argument_result():
+    source = (
+        "def identity(value):\n    return value\n"
+        "def wrapper(value):\n    return identity(value)\n"
+        "result = wrapper(5)\n"
+    )
+    original = execution(source).entry
+    environment = SourceModuleExecution(
+        NoninterferingSourceModuleEntryPremise(
+            source=original.source,
+            native_island=original.initial,
+            bindings=dict(original.initial_entries),
+            builtins=original.builtins,
+        )
+    )
+    context, call = environment.source_call(environment.module.module.body[-1].value)
+    authority = environment.call_authority(context, call)
+    assert authority.result().require_native_scalar() == 5
+
+
+@pytest.mark.parametrize(
+    "body", ("return", "global marker\nmarker = value\nreturn value")
+)
+def test_source_call_keeps_unproved_return_and_external_effects_open(body):
+    _, authority = invocation(body, arguments="1")
+    with pytest.raises(ValueError, match="unproved"):
+        authority.require_closed()

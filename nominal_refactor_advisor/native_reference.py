@@ -143,6 +143,10 @@ class NativeReferenceEnvironment(ABC):
         """Environments without source setter proof leave this operation open."""
         raise ValueError("Native item write remains unproved")
 
+    def require_return(self, node: ast.Return) -> None:
+        """Environments without function activation leave returned values open."""
+        raise ValueError("Source return remains unproved")
+
     @abstractmethod
     def require_class_creation(self, node: ast.ClassDef) -> None:
         """Require class construction and installation, not merely value capture."""

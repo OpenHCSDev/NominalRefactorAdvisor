@@ -69,6 +69,7 @@ from .product_flow import (
     CompactFlowPosition,
     CompactFlowValue,
     CompactFunctionCall,
+    CompactFunctionDeclaration,
     CompactFunctionTargetResolutionViolation,
     CompactImportTarget,
     CompactItemTarget,
@@ -1081,7 +1082,9 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
         return cast(AdmittedExecutionPrefixABC, prefix)
 
 
-class CompletedSourceOperation(OpaqueCapturedObjectOperations, SourceOperationAuthority):
+class CompletedSourceOperation(
+    OpaqueCapturedObjectOperations, SourceOperationAuthority
+):
     """A completed invocation retains a result without knowing its object protocols.
 
     The original operation owns this evidence. Completion supplies neither an
@@ -1382,6 +1385,43 @@ class ChildExecutionPrefix(AdmittedExecutionPrefixABC):
         if parent.position is None or child.after is not None:
             raise ValueError(
                 "Child entry requires a parent cut and a fresh child interval"
+            )
+
+    def _expand_intervals(
+        self,
+        pending: list[AdmittedExecutionPrefixABC],
+        intervals: list[SingleFlowPrefix],
+    ) -> None:
+        pending.extend((self.child, self.parent))
+
+
+@dataclass(frozen=True, eq=False)
+class FunctionInvocationPrefix(AdmittedExecutionPrefixABC):
+    """One original call followed by its distinct function-body activation.
+
+    The call site and function declaration own the relation.  The parent cut
+    ends at the invocation and the child begins at a fresh activation; source
+    nesting or equal frame contents cannot manufacture this edge.
+    """
+
+    parent: AdmittedExecutionPrefixABC
+    invocation: CompactFunctionCall
+    declaration: CompactFunctionDeclaration
+    child: AdmittedExecutionPrefixABC
+
+    def __post_init__(self) -> None:
+        parent = self.parent.endpoint
+        child = self.child.intervals[0]
+        if (
+            not any(self.invocation is call for call in parent.context.flow.calls)
+            or parent.position != self.invocation.position
+        ):
+            raise ValueError(
+                "Function entry requires its original parent invocation cut"
+            )
+        if child.context.flow.owner is not self.declaration or child.after is not None:
+            raise ValueError(
+                "Function entry requires the callee declaration's fresh body interval"
             )
 
     def _expand_intervals(

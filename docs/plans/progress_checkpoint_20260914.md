@@ -38,11 +38,25 @@ invoke the hostile hash callback. New negative controls retain rejection of
 unknown type, identity, destruction, metadata and cache-identity claims.
 
 Focused shared-result coverage: 172 passed on Python 3.11 (3.56s) and Python 3.14
-(4.06s), eight workers with 60-second bounds. Broad tests have not all been
-classified by root cause. Many observed failures are conservative rejection or
-incomplete proof capabilities; this is not evidence that every failure is benign.
-The exact outstanding test identifiers are in
+(4.06s), eight workers with 60-second bounds. The 209 failures have now been
+reproduced across their 23 affected files and classified at the shared-boundary
+level in
+[native_proof_failure_clusters_20260914.md](native_proof_failure_clusters_20260914.md).
+The classification is an implementation map, not evidence that a failure is
+benign. The exact outstanding test identifiers remain in
 [checkpoint_failures_20260914.txt](checkpoint_failures_20260914.txt).
+
+The next source-function activation increment now joins one original invocation
+to fresh activation-local storage, exact explicit/default parameter values, its
+native entry-to-return receipt, local assignments, and its returned source
+value. Distinct and nested calls retain distinct kernels and locals. Suspended
+functions, variadic activation containers, bare returns, and effects outside the
+activation-local namespace remain explicitly open. Surrounding source/native
+proof coverage passes 544 tests with 5 skips on Python 3.11; the 60 highest-risk
+activation and assignment cases pass on Python 3.14. Rerunning the affected
+files still produces exactly 209 failures, 1328 passes, and 1 skip. This confirms
+that activation is a prerequisite, while the next shared blocker remains the
+declaration-derived admission of supported native operations.
 
 Reproduce the broad tests from an environment with the dev dependencies installed:
 
