@@ -28,11 +28,14 @@ suites pass under the prescribed eight-worker splits:
 Final cross-platform hardening makes context-free module identity derive from
 the source path's lexical anchor rather than the process working directory.
 This preserves root-relative Windows source identities without coupling them to
-the checkout path. Exact-source test fixtures now write exact bytes and consume
-the same slash-normalized path projection as the source index. After this
-change, the complete local Python 3.11 suite passes 7,136 tests with 72 skips;
-the affected Python 3.11 and 3.14 surfaces each pass 55 tests with one
-platform-specific skip.
+the checkout path. The project module-path authority now recognizes that same
+lexical anchor before selecting its declared, analysis, or containing import
+root, so Windows root-relative overlays follow the same module boundary as
+POSIX rooted overlays. Exact-source test fixtures now write exact bytes and
+consume the same slash-normalized path projection as the source index. After
+this change, the complete local Python 3.11 suite passes 7,136 tests with 73
+skips; the affected Python 3.11 and 3.14 surfaces each pass 35 tests with two
+platform-specific skips.
 
 The integrated proof retains exact native definition-application evidence for
 the supported dataclass transformation, activation-specific returned parameter
@@ -70,7 +73,9 @@ semantic report projection has SHA-256
 `4191f7d7c49191222549f74d03ad17dd924d0c3f4d08cc9acc17e92a487d8743`
 for all three reports. The one-line edit was made only in a fresh disposable
 source copy and was restored. A separate empty-cache scan of NRA's production
-package completed all 79 detectors with zero findings in 13.780 seconds.
+package after the final cross-platform hardening completed all 79 detectors
+with zero omissions and zero findings in 16.265 scan seconds (17.79 seconds
+command wall time).
 
 The older validation sections below remain as historical checkpoint evidence
 rather than current status.

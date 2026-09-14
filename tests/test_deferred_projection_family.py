@@ -27,7 +27,7 @@ def manifest_for(tmp_path, texts, *, persist=True, module_names=None):
     modules = []
     for index, text in enumerate(texts):
         path = tmp_path / f"source{index}.py"
-        path.write_text(text)
+        path.write_bytes(text.encode("utf-8"))
         name = f"source{index}" if module_names is None else module_names[index]
         source = CompactProjectionCacheSource(
             path=path,
@@ -162,11 +162,11 @@ def test_repair_rejects_a_changed_source_and_can_retry_the_original(tmp_path):
     sequence = manifest.deferred_projections_for_family(
         Family, derive_content_identity=False
     )
-    source.path.write_text("def replacement(): pass\n")
+    source.path.write_bytes(b"def replacement(): pass\n")
     with pytest.raises(ValueError, match="Source changed"):
         tuple(sequence)
     assert sequence.materialized_item_count == 0
-    source.path.write_text(text)
+    source.path.write_bytes(text.encode("utf-8"))
     assert tuple(sequence)[0].function_declarations[0].identity.qualname == "original"
 
 

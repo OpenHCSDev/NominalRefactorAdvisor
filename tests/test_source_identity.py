@@ -86,6 +86,17 @@ def test_context_free_module_identity_uses_the_lexical_windows_anchor() -> None:
     assert not identity.is_package_init
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows root-relative path semantics")
+def test_module_path_authority_treats_a_lexical_anchor_as_rooted() -> None:
+    path = Path("/repo/subject.py")
+
+    identity = PythonModulePathAuthority(()).identity_for_path(path)
+
+    assert identity.path == path
+    assert identity.import_name == "subject"
+    assert not identity.is_package_init
+
+
 def test_canonical_source_mapping_rejects_duplicate_path_identities() -> None:
     source = "class Alpha:\n    pass\n"
 
