@@ -24,6 +24,7 @@ from ..ast_tools import (
 )
 from ..class_index import (
     CompactClassFamilyIndex,
+    CompactClassMappingKeyAuthority,
     CompactClosedAxisBranchFunction,
     CompactIndexedClass,
     CompactNamedProjectionSurface,
@@ -2101,6 +2102,10 @@ def _compact_keyed_registry_axis_facts(
 ) -> tuple[KeyedRegistryAxisFact, ...]:
     if class_index is None:
         class_index = build_compact_class_family_index(projections)
+    mapping_key_authority = CompactClassMappingKeyAuthority(
+        projections,
+        class_index,
+    )
     registry_classes = tuple(
         indexed_class
         for indexed_class in class_index.classes_by_symbol.values()
@@ -2160,7 +2165,7 @@ def _compact_keyed_registry_axis_facts(
         try:
             key_entries = tuple(
                 (
-                    member.require_mapping_key(),
+                    member.resolve_mapping_key(mapping_key_authority, descendant),
                     member.expression,
                     (_compact_registry_class_display_name(descendant, class_index),),
                 )

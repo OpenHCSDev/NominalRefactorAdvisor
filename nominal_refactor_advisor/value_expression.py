@@ -54,6 +54,18 @@ ResolutionContextT = TypeVar("ResolutionContextT")
 TargetResolutionT = TypeVar("TargetResolutionT")
 
 
+class MappingKeyResolverABC(ABC, Generic[ResolutionContextT]):
+    """Resolve nonliteral mapping keys through their nominal declaration owner."""
+
+    @abstractmethod
+    def _lexical_mapping_key(
+        self,
+        reference: LexicalValueReference,
+        context: ResolutionContextT,
+    ) -> Hashable:
+        raise NotImplementedError
+
+
 class ValueExpressionResolverABC(ABC, Generic[ResolutionContextT, TargetResolutionT]):
     """Resolve lexical and opaque expressions without depending on source flow."""
 
@@ -110,6 +122,16 @@ class CompactValueExpression(ValueExpressionShapeABC):
         """Require native literal equality; lexical spelling supplies no such proof."""
         raise ValueError("Source mapping key equality remains unproved")
 
+    def resolve_mapping_key(
+        self,
+        resolver: MappingKeyResolverABC[ResolutionContextT],
+        context: ResolutionContextT,
+    ) -> Hashable:
+        """Resolve literals locally and delegate declaration-owned key semantics."""
+
+        del resolver, context
+        return self.require_mapping_key()
+
     @property
     def constant_string(self) -> str | None:
         return None
@@ -138,6 +160,13 @@ class LexicalValueReference(CompactValueExpression):
 
     root_name: str
     attribute_path: tuple[str, ...] = ()
+
+    def resolve_mapping_key(
+        self,
+        resolver: MappingKeyResolverABC[ResolutionContextT],
+        context: ResolutionContextT,
+    ) -> Hashable:
+        return resolver._lexical_mapping_key(self, context)
 
     def resolve_value(
         self,

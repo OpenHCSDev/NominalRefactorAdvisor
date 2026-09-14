@@ -59,10 +59,17 @@ from .collection_algebra import (
 )
 from .class_mro import ClassMroAuthority
 from .source_entry import ImportedSourceModuleEntryPremise
-from .value_expression import CompactValueExpression
+from .value_expression import (
+    CompactValueExpression,
+    LexicalValueReference,
+    MappingKeyResolverABC,
+)
 from .declaration_dependencies import ClassScopeDependency
 from .descriptor_algebra import AliasProperty
-from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from .enum_semantics import (
+    PYTHON_ENUM_BASE_AUTHORITY,
+    PythonEnumDeclarationAuthority,
+)
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .lexical_bindings import (
     ImportBoundNameProjection,
@@ -255,6 +262,17 @@ class CompactClassMemberDeclaration(NamedTuple):
         if self.value is None:
             raise ValueError("Class member has no assigned key value")
         return self.value.require_mapping_key()
+
+    def resolve_mapping_key(
+        self,
+        resolver: MappingKeyResolverABC["CompactIndexedClass"],
+        owner: "CompactIndexedClass",
+    ) -> Hashable:
+        """Project this value through its literal or declaration-owned semantics."""
+
+        if self.value is None:
+            raise ValueError("Class member has no assigned key value")
+        return self.value.resolve_mapping_key(resolver, owner)
 
     @property
     def annotation_reference_parts(self) -> tuple[str, ...] | None:
@@ -626,6 +644,7 @@ class CompactIndexedClass(CompactClassHeader):
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
+    enum_declaration: PythonEnumDeclarationAuthority | None = None
 
     @property
     def has_class_creation_hook(self) -> bool:
@@ -3526,6 +3545,7 @@ class _CompactClassBindingFacets:
     base_references: tuple[CompactNominalReference, ...]
     class_decorators_are_promotion_safe: bool
     dataclass_declaration: CompactDataclassDeclaration | None
+    enum_declaration: PythonEnumDeclarationAuthority | None
 
     @property
     def product_base_bindings_are_exact(self) -> bool:
@@ -3541,10 +3561,26 @@ class _CompactClassBindingFacets:
 def _compact_class_binding_facets(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
+    module_name: str,
     qualname: str,
     *,
     include_body_facets: bool,
 ) -> _CompactClassBindingFacets:
+    try:
+        enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
+            node,
+            identity=f"{module_name}.{qualname}",
+            qualified_reference=lambda reference, shadowed_names: (
+                _class_scope_qualified_import_name(
+                    module_binding_snapshot,
+                    {},
+                    reference,
+                    shadowed_names,
+                )
+            ),
+        )
+    except ValueError:
+        enum_declaration = None
     return _CompactClassBindingFacets(
         base_references=_compact_base_references(node, module_binding_snapshot),
         class_decorators_are_promotion_safe=all(
@@ -3564,6 +3600,7 @@ def _compact_class_binding_facets(
             if include_body_facets
             else None
         ),
+        enum_declaration=enum_declaration if include_body_facets else None,
     )
 
 
@@ -3657,6 +3694,7 @@ def _compact_indexed_classes(
             ),
             is_abstract=_is_abstract_class(node),
             dataclass_declaration=binding_facets.dataclass_declaration,
+            enum_declaration=binding_facets.enum_declaration,
             declares_autoregister_meta=_declares_autoregister_meta(node),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
@@ -3686,6 +3724,7 @@ def _compact_indexed_classes(
             _compact_class_binding_facets(
                 node,
                 module_binding_snapshot,
+                parsed_module.module_name,
                 qualname,
                 include_body_facets=include_body_facets,
             ),
@@ -3743,6 +3782,7 @@ def _repository_refined_class_projection(
         binding_facets = _compact_class_binding_facets(
             node,
             binding_snapshot,
+            parsed_module.module_name,
             indexed_class.qualname,
             include_body_facets=True,
         )
@@ -3759,6 +3799,7 @@ def _repository_refined_class_projection(
                     binding_facets.class_decorators_are_promotion_safe
                 ),
                 dataclass_declaration=binding_facets.dataclass_declaration,
+                enum_declaration=binding_facets.enum_declaration,
             )
         )
     return replace(projection, classes=tuple(refined_classes))
@@ -6204,6 +6245,39 @@ class CompactClassReferenceResolver:
             allow_unique_unqualified,
             self.unique_symbols_by_suffix,
         )
+
+
+@dataclass(frozen=True)
+class CompactClassMappingKeyAuthority(MappingKeyResolverABC[CompactIndexedClass]):
+    """Resolve class-member keys through the referenced declaration authority."""
+
+    projections: Sequence[CompactModuleClassProjection]
+    class_index: CompactClassFamilyIndex
+
+    @cached_property
+    def class_reference_resolver(self) -> CompactClassReferenceResolver:
+        return CompactClassReferenceResolver.from_index(
+            self.projections,
+            self.class_index,
+        )
+
+    def _lexical_mapping_key(
+        self,
+        reference: LexicalValueReference,
+        context: CompactIndexedClass,
+    ) -> Hashable:
+        if len(reference.attribute_path) != 1:
+            raise ValueError("Mapping key reference requires one declaration member")
+        symbol = self.class_reference_resolver.symbol_for(
+            module_name=context.module_name,
+            reference_parts=(reference.root_name,),
+            allow_unique_unqualified=False,
+        )
+        declaration = None if symbol is None else self.class_index.class_for(symbol)
+        enum_declaration = None if declaration is None else declaration.enum_declaration
+        if enum_declaration is None:
+            raise ValueError("Mapping key declaration semantics remain unproved")
+        return enum_declaration.require_mapping_key(reference.attribute_path[0])
 
 
 @dataclass(frozen=True)
