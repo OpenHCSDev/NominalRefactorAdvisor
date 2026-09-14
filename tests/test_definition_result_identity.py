@@ -26,15 +26,19 @@ def _repository(source: str) -> SourceProductFlowRepository:
     return SourceProductFlowRepository.from_modules((module,))
 
 
-def _require_final_write_failure(repository: SourceProductFlowRepository) -> None:
-    # The standard import premise does not certify the applied decorator result.
+def _require_final_write_effect(
+    repository: SourceProductFlowRepository, affects_product: bool
+) -> None:
+    # The standard dataclass transformation is proved independently of the later
+    # write whose receiver identity this helper exercises.
     environment = repository.native_reference_environment(repository.modules[0])
     environment.require_import(repository.modules[0].module.body[0])
-    with pytest.raises(ValueError, match="Class decorator result remains unproved"):
-        environment.require_class_creation(repository.modules[0].module.body[1])
+    environment.require_class_creation(repository.modules[0].module.body[1])
     symbol = "definition_identity.Product"
     assert symbol in repository.declared_product_authorities_by_symbol
-    assert symbol not in repository.product_authorities_by_symbol
+    assert (symbol not in repository.product_authorities_by_symbol) is affects_product
+    if not affects_product:
+        return
     context = repository.module_flow_contexts["definition_identity"]
     final_write = context.flow.mutations[-1]
     failures = repository.product_runtime_failures_by_authority_symbol[symbol]
@@ -137,7 +141,7 @@ def test_mutation_safety_follows_bound_object_not_source_definition(
     assert ("changed" in vars(namespace["Product"])) is binds_product
 
     repository = _repository(source)
-    _require_final_write_failure(repository)
+    _require_final_write_effect(repository, binds_product)
 
 
 @pytest.mark.parametrize(
@@ -166,7 +170,7 @@ def test_transformed_object_retained_in_member_alias_opens_actual_final_write(
     exec(source, namespace)
     assert namespace["Holder"].saved is namespace["Product"]
     assert namespace["Product"].changed == 1
-    _require_final_write_failure(_repository(source))
+    _require_final_write_effect(_repository(source), True)
 
 
 def test_frame_builtin_class_builder_can_replace_plain_class_result() -> None:
@@ -184,7 +188,7 @@ def test_frame_builtin_class_builder_can_replace_plain_class_result() -> None:
     exec(compile(source, "<trusted-class-builder-fixture>", "exec"), namespace)
     assert namespace["Other"] is namespace["Product"]
     assert namespace["Product"].changed == 1
-    _require_final_write_failure(_repository(source))
+    _require_final_write_effect(_repository(source), True)
 
 
 def test_module_global_class_builder_name_does_not_replace_native_class_creation() -> (
@@ -203,7 +207,7 @@ def test_module_global_class_builder_name_does_not_replace_native_class_creation
     assert namespace["Other"] is not namespace["Product"]
     assert "changed" not in vars(namespace["Product"])
     repository = _repository(source)
-    _require_final_write_failure(repository)
+    _require_final_write_effect(repository, False)
 
 
 @pytest.mark.parametrize(

@@ -55,15 +55,16 @@ def test_actual_open_callee_keeps_original_capture_evidence(source, violation):
     assert invocation.value.violation is violation
 
 
-def test_closed_source_function_still_has_no_proved_invocation():
+def test_closed_source_function_invocation_still_requires_a_proved_return():
     _, environment = environment_for("def factory():\n    pass\nresult=factory()\n")
     (operation,) = tuple(environment.source.call_operations_by_span.values())
     environment.capture(operation.node.func).require_closed()
     authority = environment.call_authority(
         environment.context_for_owner(operation.owner), operation.event
     )
-    # Selecting the original invocation supplies no function-state or body proof.
-    with pytest.raises(ValueError, match="External source interference") as rejected:
+    with pytest.raises(
+        ValueError, match="Function body has no unique proved return"
+    ) as rejected:
         authority.require_closed()
     assert type(rejected.value) is ValueError
     assert rejected.value.__cause__ is None

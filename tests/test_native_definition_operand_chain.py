@@ -169,7 +169,7 @@ def test_operand_chain_survives_snapshot_without_recompilation(monkeypatch):
         restored_store.applications_after(raw)
 
 
-def test_compiler_class_chain_is_not_source_decorator_behavior():
+def test_source_decorator_proof_preserves_the_distinct_compiler_chain():
     environment = execution(
         "from dataclasses import dataclass\n@dataclass\nclass Target: pass\n"
     )
@@ -181,5 +181,4 @@ def test_compiler_class_chain_is_not_source_decorator_behavior():
     )
     raw = compilation.class_capture_for(span).definition_construction_in(store)
     assert len(store.applications_after(raw)) == 1
-    with pytest.raises(ValueError, match="Class decorator result remains unproved"):
-        environment.class_entry(node).result()
+    environment.class_entry(node).result().require_closed()

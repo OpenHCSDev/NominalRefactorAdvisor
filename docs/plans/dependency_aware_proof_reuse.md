@@ -35,18 +35,18 @@ declaration-targeted import, member-insertion, and exact target-patch operations
 
 ## Validation
 
-The focused source-transition, source-call, source-read, flow-identity,
-registry-correspondence, and dependency suites report **94 passed** with eight
-workers in 2.63 seconds on Python 3.11. They cover unchanged projection and
-execution identity, changed-owner exclusion, a changed provider invalidating an
-unchanged consumer's call resolution, a newly created consumer becoming visible,
-foreign-owner rejection, and non-transfer of global call-resolution caches.
+After integration with native admission, the focused source-transition,
+codemod-runtime, product-flow, and ownership surface reports **266 passed and 8
+skipped** with eight workers in 17.87 seconds on Python 3.11. It covers unchanged
+projection and execution identity, changed-owner exclusion, a changed provider
+invalidating an unchanged consumer's call resolution, a newly created consumer
+becoming visible, multistage retention, foreign-owner rejection, and
+non-transfer of global call-resolution caches.
 
-A broader codemod, source, product-flow, and registry run reports **2,148 passed,
-69 failed, and 11 skipped** in 55.68 seconds. The exact 69 failed nodes match an
-immutable `ee1ae0c` run, which reports the same **2,148 passed, 69 failed, and 11
-skipped** in 55.78 seconds. These are the checkpoint's existing native-admission
-failures, not regressions from source-proof reuse.
+The complete Python 3.11 suite passes in the prescribed eight-worker split:
+**795 passed** in `test_refactor_advisor.py`, followed by **6,337 passed and 70
+skipped** across the remaining tests. No known test failure is retained by the
+combined branch.
 
 ## Persistence boundary
 
@@ -62,5 +62,5 @@ signatures; changed family contents invalidate the affected detector result.
 Evidence-local partial findings are explicitly nonterminal and cannot certify a
 complete scan. Neither cache surface is treated as native execution evidence.
 
-The remaining work for this checkpoint is integration with the native-admission
-batch, broad validation, and fresh cold, warm, and novel-edit scan measurement.
+The remaining work for this checkpoint is fresh cold, warm, and novel-edit scan
+measurement followed by complete diff and publication-gate review.

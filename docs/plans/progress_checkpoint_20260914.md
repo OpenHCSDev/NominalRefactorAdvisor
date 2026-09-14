@@ -6,6 +6,39 @@ that the full goal is complete. The checkpoint branch preserves the complete
 source/test foundation together; it must not be merged as a passing release.
 Base commit: `5f96c76358fe7c3be53af8d325bc513d693168e4`.
 
+## Integration update
+
+The native-admission and dependency-aware source-proof reuse branches are now
+combined on `checkpoint/native-proof-integration-20260914`. The historical 209
+failures classified below are resolved on that integration branch. The complete
+Python 3.11 suite passes under the prescribed eight-worker split:
+
+| Suite | Passed | Failed | Skipped | Seconds |
+| --- | ---: | ---: | ---: | ---: |
+| `test_refactor_advisor.py` | 795 | 0 | 0 | 62.32 |
+| Remaining tests | 6,337 | 0 | 70 | 150.43 |
+| **Total** | **7,132** | **0** | **70** | |
+
+The integrated proof retains exact native definition-application evidence for
+the supported dataclass transformation, activation-specific returned parameter
+identity, conclusive partial non-injectivity evidence, and exact unchanged
+module-local proof owners across virtual source edits. Global dependency queries
+are recomputed from the complete projected module set.
+
+One attempted speedup cached validation-bearing class-body receipts and allowed
+a warm query to hide later source mutation. The existing negative controls
+caught that regression; those receipts again revalidate their original source
+on every access. Compiler-owned annotation writes instead use their exact
+compact target and declared key to avoid replaying unrelated completed class
+bodies. Rebound `__annotations__` values retain the ordinary unresolved item
+write path.
+
+The remaining completion work is fresh cold, unchanged-warm, and novel-edit
+measurement of the full OpenHCS plus external-production-library scan, exact
+finding comparison, final full-diff review, and the applicable publication
+gates. The older validation sections below remain as historical checkpoint
+evidence rather than current status.
+
 ## Included work
 
 - Parallel semantic preparation and scan-scoped caching/lifetime improvements.

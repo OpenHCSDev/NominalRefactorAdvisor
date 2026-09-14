@@ -2819,14 +2819,14 @@ class SourceClassBodyEntryABC(
         """Require the selected native construction over its actual completed body."""
         raise NotImplementedError
 
-    @cached_property
+    @property
     def completed(self) -> None:
         """Validate the original source boundary before reusing construction proof."""
         _ = self.frame
         _ = self.final_evaluation
         _ = self.construction_admission
 
-    @cached_property
+    @property
     def native_tail(self) -> PreparedNamespaceContinuationABC:
         _ = self.final_evaluation
         completion = SourceCompletionResolver(self.execution).completed_body(
@@ -3108,7 +3108,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
             raise ValueError("Complete native namespace inventory has no member value")
         return value
 
-    @cached_property
+    @property
     def names(self) -> frozenset[NativeScalar]:
         _ = self.completed
         source = NamespaceMemberInventory(
@@ -3123,7 +3123,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
                 "Native tail value precedes the completed source store or body boundary"
             )
 
-    @cached_property
+    @property
     def completed(self) -> None:
         receipt = self.receipt
         for value in receipt.values:
@@ -3153,7 +3153,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
     def follows_source(self, instruction_offset: int) -> bool:
         raise NotImplementedError
 
-    @cached_property
+    @property
     def bindings(self) -> tuple[NativeBindingTransfer, ...]:
         return tuple(
             binding
@@ -3178,7 +3178,7 @@ class PreparedNamespaceTail(PreparedNamespaceContinuationABC):
             self.native_lookup_prefix
         )
 
-    @cached_property
+    @property
     def receipt(self) -> NativeReturn:
         entry = self.entry
         completion = self.completion
@@ -3220,7 +3220,7 @@ class EntryOnlyNamespaceContinuation(PreparedNamespaceContinuationABC):
     def follows_source(self, instruction_offset: int) -> bool:
         return instruction_offset >= self.entry.capture.prologue.require_body_start()
 
-    @cached_property
+    @property
     def receipt(self) -> NativeReturn:
         entry = self.entry
         _ = entry.final_evaluation

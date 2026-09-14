@@ -879,9 +879,11 @@ class ProductFlowRepository(
         context: CompactFlowContext,
         mutation: CompactMutation[CompactVariableAnnotationTarget],
     ) -> CompactCallTargetResolution:
-        """Annotation storage belongs to the compiler namespace, not a class object."""
-        del context, mutation
-        return self._non_definition_resolution()
+        """Exclude only a proved compiler-owned annotation namespace write."""
+
+        if context.flow.entry_annotation_namespace_is_active(mutation):
+            return self._non_definition_resolution()
+        return super()._annotation_mutation_resolution(context, mutation)
 
     def _binding_mutation_resolution(
         self,

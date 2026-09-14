@@ -32,7 +32,7 @@ def _repository(source: str) -> SourceProductFlowRepository:
 
 
 def _require_final_write_failure(repository: SourceProductFlowRepository) -> None:
-    _require_unproved_product_creation(repository)
+    _require_product_creation(repository)
     symbol = "function_object_identity.Product"
     assert symbol not in repository.product_authorities_by_symbol
     context = repository.module_flow_contexts["function_object_identity"]
@@ -42,12 +42,11 @@ def _require_final_write_failure(repository: SourceProductFlowRepository) -> Non
     )
 
 
-def _require_unproved_product_creation(repository):
+def _require_product_creation(repository):
     module = repository.modules[0]
     environment = repository.native_reference_environment(module)
     environment.require_import(module.module.body[0])
-    with pytest.raises(ValueError, match="Class decorator result remains unproved"):
-        environment.require_class_creation(module.module.body[1])
+    environment.require_class_creation(module.module.body[1])
 
 
 def _require_capture_cause(environment, node, message):
@@ -119,13 +118,14 @@ def test_source_declaration_remains_retained_after_object_projection() -> None:
 
 
 @pytest.mark.parametrize(
-    "body, symbol",
+    "body, symbol, product_authorized",
     [
-        ("def callback(): pass\ncallback.changed = 1\n", "callback"),
+        ("def callback(): pass\ncallback.changed = 1\n", "callback", True),
         (
             "def callback(): pass\nsaved = callback\n"
             "callback = object()\nsaved.changed = 1\n",
             "callback",
+            True,
         ),
         (
             "def outer():\n"
@@ -133,6 +133,7 @@ def test_source_declaration_remains_retained_after_object_projection() -> None:
             "    callback.changed = 1\n"
             "outer()\n",
             "outer.callback",
+            False,
         ),
         (
             "class Owner:\n"
@@ -141,22 +142,22 @@ def test_source_declaration_remains_retained_after_object_projection() -> None:
             "        callback.changed = 1\n"
             "Owner().outer()\n",
             "Owner.outer.callback",
+            False,
         ),
     ],
 )
 def test_raw_free_and_local_functions_remain_distinct_controls(
-    body: str, symbol: str
+    body: str, symbol: str, product_authorized: bool
 ) -> None:
     source = PRODUCT + body
     namespace = {}
     exec(source, namespace)
     assert "changed" not in vars(namespace["Product"])
     repository = _repository(source)
-    _require_unproved_product_creation(repository)
+    _require_product_creation(repository)
     assert (
-        "function_object_identity.Product"
-        not in repository.product_authorities_by_symbol
-    )
+        "function_object_identity.Product" in repository.product_authorities_by_symbol
+    ) is product_authorized
     declaration = repository.function_declarations_by_symbol[
         f"function_object_identity.{symbol}"
     ]
