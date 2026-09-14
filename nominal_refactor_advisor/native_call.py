@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 import builtins
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
-from types import FunctionType
+from types import CodeType, FunctionType
 from typing import (
     TYPE_CHECKING,
     cast,
@@ -233,19 +234,137 @@ class NativeObjectConstruction(
                 raise ValueError("Native object hook differs from the default protocol")
 
 
+@dataclass(frozen=True)
+class NativeReturnedClosureFactorySource:
+    """Current-source proof of one inert branch returning a fresh closure.
+
+    This proof admits only an exact synchronous Python function whose selected
+    ``parameter is None`` path creates and returns one undecorated closure. All
+    other parameters must be captured by that returned closure, so frame cleanup
+    cannot destroy an argument. The closure body remains entirely unexecuted.
+    """
+
+    function: FunctionType
+    definition: ast.FunctionDef
+
+    @property
+    def body(self) -> tuple[ast.stmt, ...]:
+        statements = tuple(self.definition.body)
+        if (
+            statements
+            and isinstance(statements[0], ast.Expr)
+            and isinstance(statements[0].value, ast.Constant)
+            and type(statements[0].value.value) is str
+        ):
+            statements = statements[1:]
+        return statements
+
+    @property
+    def closure_definition(self) -> ast.FunctionDef:
+        if len(self.body) != 3 or not isinstance(self.body[0], ast.FunctionDef):
+            raise ValueError(
+                "Native factory has no unique returned closure declaration"
+            )
+        closure = self.body[0]
+        if (
+            closure.decorator_list
+            or closure.args.defaults
+            or any(default is not None for default in closure.args.kw_defaults)
+            or closure.returns is not None
+            or any(
+                argument.annotation is not None
+                for argument in (
+                    *closure.args.posonlyargs,
+                    *closure.args.args,
+                    *closure.args.kwonlyargs,
+                )
+            )
+            or closure.args.vararg is not None
+            or closure.args.kwarg is not None
+            or (sys.version_info >= (3, 12) and closure.type_params)
+        ):
+            raise ValueError("Returned closure creation has executable header inputs")
+        return closure
+
+    @property
+    def selected_parameter_name(self) -> str:
+        branch = self.body[1]
+        closure = self.closure_definition
+        if (
+            not isinstance(branch, ast.If)
+            or branch.orelse
+            or len(branch.body) != 1
+            or not isinstance(branch.body[0], ast.Return)
+            or not isinstance(branch.body[0].value, ast.Name)
+            or branch.body[0].value.id != closure.name
+            or not isinstance(branch.test, ast.Compare)
+            or not isinstance(branch.test.left, ast.Name)
+            or len(branch.test.ops) != 1
+            or not isinstance(branch.test.ops[0], ast.Is)
+            or len(branch.test.comparators) != 1
+            or not isinstance(branch.test.comparators[0], ast.Constant)
+            or branch.test.comparators[0].value is not None
+        ):
+            raise ValueError("Native factory has no inert None-selected return branch")
+        return branch.test.left.id
+
+    @property
+    def closure_code(self) -> CodeType:
+        closure = self.closure_definition
+        candidates = tuple(
+            constant
+            for constant in self.function.__code__.co_consts
+            if isinstance(constant, CodeType)
+            and constant.co_name == closure.name
+            and constant.co_firstlineno == closure.lineno
+        )
+        if len(candidates) != 1:
+            raise ValueError("Returned closure has no unique native code declaration")
+        return candidates[0]
+
+    def require_returned_closure(self, parameter_name: str) -> None:
+        """Prove closure creation/retention for the selected declaration parameter."""
+        if parameter_name != self.selected_parameter_name:
+            raise ValueError("Native factory selector differs from its declaration")
+        closure = self.closure_definition
+        fallback = self.body[2]
+        if (
+            not isinstance(fallback, ast.Return)
+            or not isinstance(fallback.value, ast.Call)
+            or fallback.value.keywords
+            or len(fallback.value.args) != 1
+            or not isinstance(fallback.value.func, ast.Name)
+            or fallback.value.func.id != closure.name
+            or not isinstance(fallback.value.args[0], ast.Name)
+            or fallback.value.args[0].id != parameter_name
+        ):
+            raise ValueError(
+                "Native factory fallback differs from its closure protocol"
+            )
+        parameters = FunctionParameterSource.from_arguments(self.definition.args)
+        parameter_names = frozenset(parameter.argument.arg for parameter in parameters)
+        retained_parameter_names = parameter_names - {parameter_name}
+        code = self.function.__code__
+        if (
+            frozenset(code.co_cellvars) != retained_parameter_names
+            or frozenset(self.closure_code.co_freevars) != retained_parameter_names
+            or frozenset(code.co_varnames) != parameter_names | {closure.name}
+        ):
+            raise ValueError("Returned closure does not retain the factory parameters")
+
+
 class NativeDataclassFactoryCall(NativeTypeCapture, NativeCallAuthority):
     """Create a dataclass decorator, without claiming its later application.
 
-    The explicit native-behavior premise covers the Python implementation and
-    its defaults. Binding uses the actual declaration, never a placeholder call
-    into Python code or an independently maintained keyword schema.
+    Binding and the returned-closure proof use the current exact declaration,
+    never a placeholder call into Python code or an independently maintained
+    keyword schema. The later decorator application remains separate.
     """
 
     native_declarations = (DataclassRuntimeDeclaration.DATACLASS.native_declaration,)
     native_type = FunctionType
 
     def require_closed(self) -> None:
-        self.environment.kernel.effects.require_native_behavior(self)
         binding = self.bound_arguments
         declaration = self.python_definition
         if not isinstance(declaration, ast.FunctionDef):
@@ -269,8 +388,9 @@ class NativeDataclassFactoryCall(NativeTypeCapture, NativeCallAuthority):
             self.environment.kernel._read_use(
                 argument.values[0], self.context, frozenset()
             ).require_constant_contents(None)
-
-
+        NativeReturnedClosureFactorySource(
+            self.declaration.declaration, declaration
+        ).require_returned_closure(parameter.argument.arg)
 
 
 class NativeDescriptorArgumentABC(ABC):

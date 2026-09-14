@@ -64,6 +64,19 @@ failures, 1328 passes, and 1 skip. This confirms that activation is a
 prerequisite, while the next shared blocker remains the declaration-derived
 admission of supported native operations.
 
+The first declaration-derived native-operation increment proves the current
+source shape and native closure layout of a returned-closure factory without
+inventing an operation condition or executing the target function. The exact
+``parameter is None`` branch must return one fresh undecorated closure, every
+non-selector parameter must be retained by that closure, and the fallback must
+apply the same closure to the selector. This admits the standard dataclass
+decorator factory while leaving its later decorator application independent.
+Negative controls reject preceding effects, released parameters, and executable
+closure headers. The original 209-node failure inventory now yields 56 passes
+and 153 failures in 60.39 seconds. The focused source/native surface passes 86
+tests on Python 3.11 in 6.93 seconds and 85 tests on Python 3.14 in 7.84 seconds,
+using eight workers and 60-second bounds.
+
 Reproduce the broad tests from an environment with the dev dependencies installed:
 
 ```sh

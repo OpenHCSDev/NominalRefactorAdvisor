@@ -1,9 +1,7 @@
 """Dataclass factory creation is distinct from applying its returned decorator."""
 
-import ast
 import builtins
 import dataclasses
-from dataclasses import replace
 import subprocess
 import sys
 from types import FunctionType
@@ -11,16 +9,15 @@ from types import FunctionType
 import pytest
 
 from nominal_refactor_advisor.captured_reference import InitialNativeIsland
-from nominal_refactor_advisor.native_call import NativeDataclassFactoryCall
+from nominal_refactor_advisor.native_call import (
+    NativeDataclassFactoryCall,
+    NativeReturnedClosureFactorySource,
+)
+from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 from nominal_refactor_advisor.lexical_bindings import FunctionParameterSource
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
-from nominal_refactor_advisor.source_entry import (
-    DeclaredNativeOperationBehavior,
-    DeclaredOperationCompletion,
-    ImportedSourceModuleEntryPremise,
-)
+from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
-from nominal_refactor_advisor.product_flow import CompactFunctionCall
 from nominal_refactor_advisor.carrier_expansion import DeclaredCarrierExpansionBuilder
 from nominal_refactor_advisor.parameter_conveyor import (
     ClosedParameterConveyorComponentBuilder,
@@ -32,7 +29,7 @@ from test_product_flow_authority import _module
 from test_source_function_result import execution
 
 
-def factory_environment(arguments, condition=DeclaredNativeOperationBehavior):
+def factory_environment(arguments):
     source = f"from dataclasses import dataclass\nheld = dataclass({arguments})\n"
     original = execution(source)
     island = InitialNativeIsland((builtins, dataclasses))
@@ -42,20 +39,18 @@ def factory_environment(arguments, condition=DeclaredNativeOperationBehavior):
     node = original.module.module.body[-1].value
     context, call = original.source_call(node)
     operation = original.source_operation(context, call)
-    conditions = ()
-    if condition is not None:
-        options = (
-            {"protocol": NativeDataclassFactoryCall}
-            if condition is DeclaredNativeOperationBehavior
-            else {}
-        )
-        conditions = (condition(operation, **options),)
-    entry = replace(
-        entry,
-        bindings=dict(entry.initial_entries),
-        declared_operation_conditions=conditions,
-    )
     return SourceModuleExecution(entry), operation
+
+
+def returned_closure_proof(source):
+    compilation = NativePythonCompilation(source, "native_closure_factory.py")
+    namespace = {}
+    exec(compilation.compile(), namespace)
+    function = namespace["factory"]
+    return NativeReturnedClosureFactorySource(
+        function,
+        compilation.function_definition(function),
+    )
 
 
 @pytest.mark.parametrize(
@@ -105,13 +100,11 @@ def test_factory_uses_original_call_and_declared_signature_without_invoking_pyth
     assert not environment._pending
 
 
-@pytest.mark.parametrize("condition", (None, DeclaredOperationCompletion))
-def test_import_identity_and_completion_do_not_imply_native_behavior(condition):
-    environment, operation = factory_environment("frozen=True", condition)
-    with pytest.raises(ValueError):
-        environment.call_authority(
-            environment.context_for_owner(operation.owner), operation.event
-        ).require_closed()
+def test_current_native_source_proves_factory_behavior_without_a_runtime_condition():
+    environment, operation = factory_environment("frozen=True")
+    environment.call_authority(
+        environment.context_for_owner(operation.owner), operation.event
+    ).require_closed()
     assert not environment._pending
 
 
@@ -193,7 +186,7 @@ def test_every_runtime_keyword_is_derived_from_the_native_declaration():
     )
 
 
-def test_behavior_condition_does_not_transfer_to_a_fresh_activation():
+def test_native_source_proof_applies_to_a_fresh_original_activation():
     environment, operation = factory_environment("frozen=True")
     fresh_entry = ImportedSourceModuleEntryPremise.from_standard_source_loader(
         environment.source,
@@ -201,11 +194,41 @@ def test_behavior_condition_does_not_transfer_to_a_fresh_activation():
         environment.entry.initial.namespace_for_storage(vars(builtins)),
     )
     fresh = SourceModuleExecution(fresh_entry)
-    with pytest.raises(ValueError):
-        fresh.call_authority(
-            fresh.context_for_owner(operation.owner), operation.event
-        ).require_closed()
+    fresh.call_authority(
+        fresh.context_for_owner(operation.owner), operation.event
+    ).require_closed()
     assert not fresh._pending
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def factory(selector=None, *, held=None):\n"
+        "    observed.append('effect')\n"
+        "    def wrap(value):\n"
+        "        return held\n"
+        "    if selector is None:\n"
+        "        return wrap\n"
+        "    return wrap(selector)\n",
+        "def factory(selector=None, *, held=None):\n"
+        "    def wrap(value):\n"
+        "        return value\n"
+        "    if selector is None:\n"
+        "        return wrap\n"
+        "    return wrap(selector)\n",
+        "def factory(selector=None, *, held=None):\n"
+        "    def wrap(value=held):\n"
+        "        return value\n"
+        "    if selector is None:\n"
+        "        return wrap\n"
+        "    return wrap(selector)\n",
+    ),
+    ids=("preceding-effect", "released-parameter", "executable-closure-header"),
+)
+def test_returned_closure_proof_rejects_open_factory_effects(source):
+    proof = returned_closure_proof(source)
+    with pytest.raises(ValueError):
+        proof.require_returned_closure("selector")
 
 
 @pytest.mark.parametrize(
@@ -218,30 +241,8 @@ def test_behavior_condition_does_not_transfer_to_a_fresh_activation():
 def test_factory_decorated_product_retains_original_body_observations(
     builder_type, source_factory
 ):
-    class FactoryEntryRepository(DataclassEntryRepository):
-        @staticmethod
-        def source_entry(source):
-            entry = DataclassEntryRepository.source_entry(source)
-            declaration = next(
-                node
-                for node in source.module.module.body
-                if isinstance(node, ast.ClassDef)
-            )
-            operation = source.node_operation(
-                declaration.decorator_list[0], CompactFunctionCall
-            )
-            return replace(
-                entry,
-                bindings=dict(entry.initial_entries),
-                declared_operation_conditions=(
-                    DeclaredNativeOperationBehavior(
-                        operation, protocol=NativeDataclassFactoryCall
-                    ),
-                ),
-            )
-
     module = _module("example", source_factory())
-    repository = FactoryEntryRepository.from_modules((module,))
+    repository = DataclassEntryRepository.from_modules((module,))
     assert len(repository.product_authorities_by_symbol) == 1
     assert len(builder_type(repository).proven_components()) == 1
     assert not repository.product_runtime_failures_by_authority_symbol
