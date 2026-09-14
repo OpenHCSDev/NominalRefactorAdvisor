@@ -92,59 +92,59 @@ PLAN = CodemodPlanSequence.from_operations(
 ''',
                 ),
                 SourceTextReplacement(
-                    old_source='''    @cached_property
+                    old_source="""    @cached_property
     def product_flow_repository(self) -> SourceProductFlowRepository:
         return SourceProductFlowRepository.from_modules(self.parsed_modules)
-''',
-                    new_source='''    @cached_property
+""",
+                    new_source="""    @cached_property
     def product_flow_repository(self) -> SourceProductFlowRepository:
         repository = self._retained_product_flow_repository
         if repository is None:
             return SourceProductFlowRepository.from_modules(self.parsed_modules)
         repository.require_module_owners(self.parsed_modules)
         return repository
-''',
+""",
                 ),
                 SourceTextReplacement(
-                    old_source='''    def _from_modules_with_indexes(
+                    old_source="""    def _from_modules_with_indexes(
         cls,
         modules: tuple[ParsedModule, ...],
         class_family_index: ClassFamilyIndex,
         source_index_artifacts: SourceIndexBuildArtifacts,
     ) -> "CodemodSourceSnapshot":
-''',
-                    new_source='''    def _from_modules_with_indexes(
+""",
+                    new_source="""    def _from_modules_with_indexes(
         cls,
         modules: tuple[ParsedModule, ...],
         class_family_index: ClassFamilyIndex,
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
     ) -> "CodemodSourceSnapshot":
-''',
+""",
                 ),
                 SourceTextReplacement(
-                    old_source='''            module_import_graph_cache=SourceModuleImportGraph(
+                    old_source="""            module_import_graph_cache=SourceModuleImportGraph(
                 source_index=source_index_artifacts.source_index,
                 module_nodes_by_file_path=module_node_cache,
             ),
         )
-''',
-                    new_source='''            module_import_graph_cache=SourceModuleImportGraph(
+""",
+                    new_source="""            module_import_graph_cache=SourceModuleImportGraph(
                 source_index=source_index_artifacts.source_index,
                 module_nodes_by_file_path=module_node_cache,
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
         )
-''',
+""",
                 ),
                 SourceTextReplacement(
-                    old_source='''            self._source_index_build_artifacts.projected_with_module_overlay(
+                    old_source="""            self._source_index_build_artifacts.projected_with_module_overlay(
                 projection.projected_modules,
                 projection.changed_modules,
             ),
         )
-''',
-                    new_source='''            self._source_index_build_artifacts.projected_with_module_overlay(
+""",
+                    new_source="""            self._source_index_build_artifacts.projected_with_module_overlay(
                 projection.projected_modules,
                 projection.changed_modules,
             ),
@@ -154,7 +154,7 @@ PLAN = CodemodPlanSequence.from_operations(
                 )
             ),
         )
-''',
+""",
                 ),
             ),
         ),
