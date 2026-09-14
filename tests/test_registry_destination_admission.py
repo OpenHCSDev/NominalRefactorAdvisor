@@ -12,6 +12,9 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.source_index import build_source_index
+from native_use_test_support import (
+    simulate_with_rendered_registry_creator_support,
+)
 from test_registry_key_equivalence import _parsed
 
 
@@ -41,11 +44,22 @@ def _instance_source(key, *, compact):
     )
 
 
-@pytest.mark.parametrize("key", ("None", "False", "0", "''", "()", "...", "-1"))
+@pytest.mark.parametrize(
+    "key,direct_item_store_proved",
+    (
+        ("None", False),
+        ("False", True),
+        ("0", True),
+        ("''", True),
+        ("()", False),
+        ("...", False),
+        ("-1", True),
+    ),
+)
 @pytest.mark.parametrize("form", ("writes", "dictionary", "instances"))
 @pytest.mark.parametrize("compact", (False, True), ids=("block", "inline"))
 def test_conversion_preserves_target_keys_or_rejects_missing_registration(
-    key, form, compact
+    key, direct_item_store_proved, form, compact
 ):
     source = (
         _instance_source(key, compact=compact)
@@ -72,11 +86,19 @@ def test_conversion_preserves_target_keys_or_rejects_missing_registration(
         with pytest.raises(ValueError, match="registration"):
             operation.source_edits_from_snapshot(snapshot)
         return
+    if isinstance(operation, DeriveAutoregisterInstanceViewOperation):
+        with pytest.raises(ValueError):
+            operation.source_edits_from_snapshot(snapshot)
+        return
+    if form == "writes" and not direct_item_store_proved:
+        with pytest.raises(ValueError):
+            operation.source_edits_from_snapshot(snapshot)
+        return
 
-    result = (
-        RefactorRecipe("registration-key-preservation")
-        .with_operation(operation)
-        .simulate(snapshot)
+    result = simulate_with_rendered_registry_creator_support(
+        operation,
+        snapshot,
+        recipe_id="registration-key-preservation",
     )
     assert result.is_clean
     after = ModuleType("registry_destination_after")
@@ -103,7 +125,7 @@ def test_conversion_preserves_target_keys_or_rejects_missing_registration(
     assert actual == expected
 
 
-def test_generated_instance_method_does_not_shadow_original_body_reads():
+def test_instance_view_with_unproved_import_and_body_call_is_rejected():
     source = (
         _instance_source("'alpha'", compact=False)
         .replace(
@@ -127,19 +149,10 @@ def test_generated_instance_method_does_not_shadow_original_body_reads():
     snapshot = CodemodSourceSnapshot.from_indexed_sources(
         build_source_index([parsed], ()), {parsed.file_path: source}
     )
-    result = (
-        RefactorRecipe("preserve-body-reads")
-        .with_operation(
-            DeriveAutoregisterInstanceViewOperation(
-                target=SourceRewriteTarget(
-                    file_path=parsed.file_path, qualname="Handler"
-                )
-            )
-        )
-        .simulate(snapshot)
+    operation = DeriveAutoregisterInstanceViewOperation(
+        target=SourceRewriteTarget(file_path=parsed.file_path, qualname="Handler")
     )
-    assert result.is_clean
-    after = ModuleType("instance_view_body_after")
-    exec(result.simulation.rewritten_sources[parsed.file_path], after.__dict__)
-    assert after.Handler.marker == before.Handler.marker
-    assert tuple(after.REGISTRY) == ("alpha", "beta")
+    with pytest.raises(ValueError):
+        operation.source_edits_from_snapshot(snapshot)
+    assert before.Handler.marker == "global marker"
+    assert tuple(before.REGISTRY) == ("alpha", "beta")

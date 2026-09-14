@@ -162,13 +162,6 @@ class NativeReferenceEnvironment(ABC):
         """Require storage and prior-value release at the original lexical mutation."""
         raise NotImplementedError
 
-    @abstractmethod
-    def require_assignment(
-        self, node: ast.Assign | ast.AnnAssign | ast.NamedExpr
-    ) -> None:
-        """Require expression evaluation; storage is a separate positioned mutation."""
-        raise NotImplementedError
-
     def capture(self, node: ast.expr) -> CapturedReferenceResolution:
         return self.kernel.read_source(self.source, node)
 

@@ -29,13 +29,12 @@ def test_default_entry_retains_actual_import_identity(statement, expression):
     assert not environment.entry.operation_conditions
 
 
-def test_default_import_does_not_supply_factory_behavior():
+def test_default_import_derives_factory_behavior_from_current_native_source():
     environment = execution("from dataclasses import dataclass\nheld = dataclass()\n")
     node = environment.module.module.body[-1].value
     context, call = environment.source_call(node)
     authority = environment.call_authority(context, call)
-    with pytest.raises(ValueError, match="explicit entry condition"):
-        authority.require_closed()
+    authority.require_closed()
     assert not environment.entry.operation_conditions
 
 

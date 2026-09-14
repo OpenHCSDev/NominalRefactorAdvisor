@@ -30,6 +30,7 @@ from nominal_refactor_advisor.codemod import (
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.codemod_source_cache import CodemodSourceContext
+from nominal_refactor_advisor.codemod_runtime import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.detectors import (
     DetectorCacheGranularity,
     DetectorConfig,
@@ -828,7 +829,8 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
         "    step_id = 'save'\n"
         "\n"
         "ALPHA_STEPS = {'load': LoadAlphaStep, 'save': SaveAlphaStep}\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_root / "beta.py").write_text(
         "class BetaStep:\n"
@@ -841,7 +843,8 @@ def test_semantic_mirror_focused_collection_filters_before_rendering(
         "    step_id = 'save'\n"
         "\n"
         "BETA_STEPS = {'load': LoadBetaStep, 'save': SaveBetaStep}\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     graph = build_semantic_descent_graph(modules, use_cache=False)
@@ -943,9 +946,9 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     authority = graph.authorities[0]
     projection = graph.projections[0]
     certificate = graph.missing_descent_certificates[0]
-    authority_evidence = (
-        semantic_descent_module.FindingBackedSemanticDescent(finding).authority_evidence
-    )
+    authority_evidence = semantic_descent_module.FindingBackedSemanticDescent(
+        finding
+    ).authority_evidence
 
     assert authority.name == "Step"
     assert finding.authority_evidence == finding.evidence[1]
@@ -1066,9 +1069,9 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
     graph = build_finding_backed_semantic_descent_graph((finding,))
     authority = graph.authorities[0]
     certificate = graph.missing_descent_certificates[0]
-    authority_evidence = (
-        semantic_descent_module.FindingBackedSemanticDescent(finding).authority_evidence
-    )
+    authority_evidence = semantic_descent_module.FindingBackedSemanticDescent(
+        finding
+    ).authority_evidence
 
     assert authority.name == "AxisRoleAuthority"
     assert isinstance(
@@ -1376,7 +1379,7 @@ def test_semantic_descent_ignores_suppression_vocabularies(
     )
 
 
-def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
+def test_semantic_mirror_registry_finding_retains_unproved_autoregister_recipe(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -1400,19 +1403,29 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    operation = json_report_object(plan.document)["recipes"][0]["operations"][0]
     record = plan.records[0]
+    recipe = record.recipe
+    assert recipe is not None
+    operation = json_report_object(recipe.operations[0])
 
-    assert plan.expected_removed_finding_count == 1
+    assert plan.expected_removed_finding_count == 0
     assert record.detector_id == "semantic_mirror_without_descent"
-    assert record.status.value == "executable_candidate"
+    assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    assert record.reason == (
+        "recipe set cannot be simulated: unproved_execution_effects"
+    )
     assert (
         record.evaluation_declaration_name == "RegistrationSemanticMirrorRecipeStrategy"
     )
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "rationale",
+        "supported_execution",
+    }
+    assert operation["supported_execution"] == {"requirements": (), "rationale": ""}
     assert operation["target_id"]
-    recipe = plan.document.recipes[0]
     assert recipe.authority_claims == ()
     declared_claims = recipe.declared_authority_claims(snapshot)
     assert len(declared_claims) == 1
@@ -1422,8 +1435,10 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     )
     assert declared_claims[0].authority_id
     assert record.action_keys
+    assert plan.document.recipes == ()
+    assert plan.application_blocked
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
+    assert simulation.simulation.applied_rewrite_count == 0
 
 
 def test_codemod_source_context_hydrates_selected_finding_files_only(
@@ -1434,7 +1449,9 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
     )
     alpha_path = tmp_path / "alpha.py"
     beta_path = tmp_path / "beta.py"
-    alpha_path.write_text("import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8", newline="")
+    alpha_path.write_text(
+        "import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8", newline=""
+    )
     beta_path.write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
     modules = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
     alpha_finding = RefactorFinding(
@@ -1521,7 +1538,8 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     operations = tuple(
-        json_report_object(operation) for operation in plan.document.recipes[0].operations
+        json_report_object(operation)
+        for operation in plan.document.recipes[0].operations
     )
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
@@ -1553,7 +1571,8 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "class RegisteredStrategy:\n"
         "    __registry_key__ = 'kind'\n"
         "    __skip_if_no_key__ = True\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     strategy_path = package_path / "strategy.py"
     strategy_path.write_text(
@@ -1566,7 +1585,8 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "\n"
         "    def run(self):\n"
         "        return None\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     initial_modules = parse_python_modules(tmp_path)
     finding = next(
@@ -1589,7 +1609,8 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         "class RegisteredStrategy:\n"
         "    __registry_key__ = 'strategy_kind'\n"
         "    __skip_if_no_key__ = False\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     current_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path, use_parse_cache=False)
@@ -1599,9 +1620,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         CodemodOperationPreflightError,
         match="no AutoRegister configuration repeated from an ancestor",
     ):
-        CodemodPlanDocument.from_json_value(document_payload).simulate(
-            current_snapshot
-        )
+        CodemodPlanDocument.from_json_value(document_payload).simulate(current_snapshot)
 
 
 def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
@@ -1680,7 +1699,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     simulation = plan.simulate(snapshot)
     rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
     operations = tuple(
-        json_report_object(operation) for operation in plan.document.recipes[0].operations
+        json_report_object(operation)
+        for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
         snapshot.with_virtual_sources(
@@ -1763,7 +1783,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
             "    priority = 20\n",
             "    priority = 10\n",
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     reprioritized_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -1789,7 +1810,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
 
     module_path.write_text(
         source.replace("    priority = 20\n", "    priority = 10\n"),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     duplicate_priority_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -2077,7 +2099,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
     )
 
 
-def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
+def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2123,17 +2145,27 @@ def test_semantic_mirror_registry_recipe_resolves_absolute_finding_paths(
         selector_context=snapshot,
     )
     simulation = plan.simulate(snapshot)
-    operation = json_report_object(plan.document.recipes[0].operations[0])
+    record = plan.records[0]
+    recipe = record.recipe
+    assert recipe is not None
+    operation = json_report_object(recipe.operations[0])
 
-    assert plan.records[0].status.value == "executable_candidate"
-    assert plan.expected_removed_finding_count == 1
+    assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    assert plan.expected_removed_finding_count == 0
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "rationale",
+        "supported_execution",
+    }
     assert operation["target_id"]
+    assert plan.document.recipes == ()
     assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 0
 
 
-def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
+def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -2178,12 +2210,17 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    recipe = plan.document.recipes[0]
+    record = plan.records[0]
+    recipe = record.proposal
+    assert recipe is not None
     operation = json_report_object(recipe.operations[0])
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].refactor_concept == "auto_register_class_registry"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert record.reason == (
+        "Native object identity remains open: unproved_execution_effects"
+    )
+    assert record.proposal_preflight is not None
+    assert record.refactor_concept == "auto_register_class_registry"
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "Step"
@@ -2195,22 +2232,9 @@ def test_semantic_mirror_autoregister_instance_view_synthesizes_recipe(
     assert set(operation) == {"operation", "target_id", "rationale"}
     assert operation["target_id"] == claim.authority_id
     assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
-    assert "__registry__ = {}" in rewritten
-    assert "registry_key = StepId.LOAD" in rewritten
-    assert "registry_key = StepId.SAVE" in rewritten
-    assert "def instances_by_registry_key" in rewritten
-    assert "key_attribute = cls.__registry_key__" in rewritten
-    assert "registered_type.__dict__[key_attribute]: registered_type()" in rewritten
-    assert "for key, registered_type in cls.__registry__.items()" not in rewritten
-    assert "STEP_TABLE = Step.instances_by_registry_key()" in rewritten
+    assert plan.document.recipes == ()
     assert simulation.is_clean is True
-    namespace: dict[str, object] = {}
-    exec(compile(rewritten, "pkg/mod.py", "exec"), namespace)
-    step_id = namespace["StepId"]
-    step_table = namespace["STEP_TABLE"]
-    assert set(step_table) == {step_id.LOAD, step_id.SAVE}
-    assert type(step_table[step_id.LOAD]) is namespace["LoadStep"]
-    assert type(step_table[step_id.SAVE]) is namespace["SaveStep"]
+    assert simulation.simulation.applied_rewrite_count == 0
 
 
 def test_semantic_descent_resolves_bound_constructor_values_to_class_family(
@@ -2980,7 +3004,8 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
         "class PhaseRecord:\n"
         "    run_id: str\n"
         "    seconds: float\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_path / "report.py").write_text(
         "from typing import TYPE_CHECKING\n"
@@ -2991,7 +3016,8 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
         "def field_names():\n"
         "    phase_record_fields = ('run_id', 'seconds')\n"
         "    return phase_record_fields\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -3213,7 +3239,8 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         "    kind: str\n"
         "    description: str\n"
         "    confidence: str\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "report.py").write_text(
         "from __future__ import annotations\n"
@@ -3232,7 +3259,8 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         "            'confidence': self.action.confidence,\n"
         "            'emitted': self.emitted,\n"
         "        }\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3275,7 +3303,8 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
             "from dataclasses import dataclass\n",
             "from dataclasses import dataclass\nfrom .model import RefactorAction\n",
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     imported_modules = parse_python_modules(tmp_path)
     imported_finding = next(
@@ -3311,7 +3340,8 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
             "from .model import RefactorAction\n",
             "from .model import RefactorAction\nRefactorAction = object\n",
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     shadowed_modules = parse_python_modules(tmp_path)
     shadowed_finding = next(
@@ -3350,7 +3380,8 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         "    kind: str\n"
         "    description: str\n"
         "    confidence: str\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "report.py").write_text(
         "from __future__ import annotations\n"
@@ -3373,7 +3404,8 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         "            'confidence': self.action.confidence,\n"
         "            'emitted': self.emitted,\n"
         "        }\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3745,7 +3777,8 @@ def test_constructor_projection_requires_same_nominal_constructor(
             "class Replacement:\n"
             "    start_line: int\n"
             "    end_line: int\n",
-            encoding="utf-8", newline="",
+            encoding="utf-8",
+            newline="",
         )
     model_path = package_path / "model.py"
     model_path.write_text(
@@ -3760,7 +3793,8 @@ def test_constructor_projection_requires_same_nominal_constructor(
         "            start_line=self.start_line,\n"
         "            end_line=self.end_line,\n"
         "        )\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     report_path = package_path / "report.py"
     report_path.write_text(
@@ -3771,7 +3805,8 @@ def test_constructor_projection_requires_same_nominal_constructor(
         "        start_line=start_line,\n"
         "        end_line=end_line,\n"
         "    )\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
@@ -3859,14 +3894,16 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n"
         "    LOW = 'low'\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -3992,9 +4029,11 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
 
     edits = replayed.source_edits(changed_snapshot)
     rendered_edits = "\n".join(
-        "".join(edit.inserted_lines)
-        if hasattr(edit, "inserted_lines")
-        else "".join(edit.replacement_lines)
+        (
+            "".join(edit.inserted_lines)
+            if hasattr(edit, "inserted_lines")
+            else "".join(edit.replacement_lines)
+        )
         for edit in edits
     )
 
@@ -4070,13 +4109,15 @@ def test_enum_subset_operation_rejects_shadowed_frozenset(
         "class ConfidenceLevel(StrEnum):\n"
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     projection_path.write_text(
         "from .taxonomy import ConfidenceLevel\n"
         + (shadow_source if shadow_module == "projection" else "")
         + "\nACTIONABLE = frozenset(('high', 'medium'))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
@@ -4118,7 +4159,8 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         "    MEDIUM = 'medium'\n"
         "    actionable = None\n\n"
         "ACTIONABLE = frozenset(('high', 'medium'))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     collision_snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path)
@@ -4181,14 +4223,16 @@ def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
         "    @classmethod\n"
         "    def actionable_confidence_levels(cls):\n"
         "        return frozenset((cls.HIGH.value,))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -4230,14 +4274,16 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
         "\n"
         "class ObservationMode(LabeledMode):\n"
         "    SLOW = 'slow'\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "detector.py").write_text(
         "from .taxonomy import CapabilityMode, ObservationMode\n"
         "\n"
         "ModeEnum = type[CapabilityMode] | type[ObservationMode]\n"
         "MODE_ENUMS: tuple[ModeEnum, ...] = (CapabilityMode, ObservationMode)\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -4328,13 +4374,15 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         "\n"
         "class ObservationMode(LabeledMode):\n"
         "    SLOW = 'slow'\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "detector.py").write_text(
         "from .taxonomy import CapabilityMode, ObservationMode\n"
         "\n"
         "OWNER_NAMES = frozenset({'ObservationMode', 'CapabilityMode'})\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
@@ -4486,9 +4534,7 @@ def test_class_family_collection_operation_executes_source_derived_view(
 
     direct_edits = operation.source_edits(snapshot)
     simulation = (
-        RefactorRecipe("derive-members")
-        .with_operation(operation)
-        .simulate(snapshot)
+        RefactorRecipe("derive-members").with_operation(operation).simulate(snapshot)
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     namespace: dict[str, object] = {}
@@ -4513,21 +4559,26 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
 ) -> None:
     package_dir = tmp_path / "pkg"
     package_dir.mkdir()
-    (package_dir / "root.py").write_text("class Root:\n    pass\n", encoding="utf-8", newline="")
+    (package_dir / "root.py").write_text(
+        "class Root:\n    pass\n", encoding="utf-8", newline=""
+    )
     (package_dir / "alpha.py").write_text(
         "from .root import Root\n\nclass Alpha(Root):\n    pass\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "beta.py").write_text(
         "from .root import Root\n\nclass Beta(Root):\n    pass\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     projection_path = package_dir / "projection.py"
     projection_path.write_text(
         "from .alpha import Alpha\n"
         "from .beta import Beta\n\n"
         f"MEMBERS = {collection_source}\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
@@ -4585,11 +4636,13 @@ def test_class_family_collection_operation_rejects_authority_name_collision(
         "    pass\n\n"
         "class Beta(Root):\n"
         "    pass\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     projection_path.write_text(
         "from .taxonomy import Alpha, Beta\n\nRoot = object\nMEMBERS = (Alpha, Beta)\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
@@ -4646,7 +4699,8 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
         "    pass\n"
         "\n"
         "ALL_MEMBERS = (Intermediate, Alpha, Beta)\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     finding = next(
@@ -5124,14 +5178,16 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         "    HIGH = 'high'\n"
         "    MEDIUM = 'medium'\n"
         "    LOW = 'low'\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     (package_dir / "codemod.py").write_text(
         "import pkg.taxonomy\n"
         "\n"
         "_ACTIONABLE_CONFIDENCE_LEVELS: frozenset[pkg.taxonomy.ConfidenceLevel] = "
         "frozenset(('high', 'medium'))\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     monkeypatch.chdir(tmp_path)
     snapshot = CodemodSourceSnapshot.from_source_mapping(
@@ -5580,9 +5636,7 @@ def test_semantic_mirror_owned_dataclass_payload_synthesizes_derivation_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     operation = plan.document.recipes[0].operations[0]
-    rewritten_source = simulation.simulation.rewritten_sources[
-        module_path.as_posix()
-    ]
+    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert plan.records[0].status.value == "executable_candidate"
     assert isinstance(operation, DeriveDataclassPayloadProjectionOperation)
@@ -6213,7 +6267,8 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
         "    step_id = 'save'\n"
         "\n"
         "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     second_graph = build_semantic_descent_graph(
@@ -6317,4 +6372,6 @@ def test_semantic_descent_graph_rebase_moves_positive_proof_paths(
         (str(target_module), "Report"): "pkg.mod.Report"
     }
     assert graph.class_index.symbols_by_file_and_qualname is original_locations
-    assert all(Path(path).is_relative_to(source_root) for path, _name in original_locations)
+    assert all(
+        Path(path).is_relative_to(source_root) for path, _name in original_locations
+    )

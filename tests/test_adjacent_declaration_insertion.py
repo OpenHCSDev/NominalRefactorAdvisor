@@ -214,7 +214,7 @@ def test_inserting_before_dataclass_cannot_move_its_generated_constructor(
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 @pytest.mark.parametrize("decorator", ("classmethod", "traced"))
-def test_collector_declaration_preserves_decorated_findings_anchor(
+def test_collector_declaration_requires_complete_class_execution_before_anchor_edit(
     tmp_path: Path, newline: str, native_collector_module: ParsedModule, decorator: str
 ) -> None:
     path = tmp_path / "probe.py"
@@ -234,7 +234,7 @@ def test_collector_declaration_preserves_decorated_findings_anchor(
         "print(Owner()._candidate_items([], None), Owner()._collect_findings(), events)\n"
     ).replace("\n", newline)
     path.write_text(source, encoding="utf-8", newline="")
-    before = subprocess.check_output([sys.executable, str(path)], text=True)
+    subprocess.check_output([sys.executable, str(path)], text=True)
     plan = CodemodPlanSequence.from_operations(
         (
             DeriveCandidateCollectorOperation(
@@ -247,14 +247,6 @@ def test_collector_declaration_preserves_decorated_findings_anchor(
     snapshot = CodemodSourceSnapshot.from_modules(
         (*parse_python_modules(tmp_path), native_collector_module)
     )
-    if decorator == "traced":
-        # Arbitrary decorators can alter the containing namespace. Placement alone
-        # does not prove the inherited-method relation required by this operation.
-        with pytest.raises(ValueError, match="Class namespace execution"):
-            plan.simulate(snapshot)
-        assert path.read_bytes() == source.encode("utf-8")
-        return
-    simulation = plan.simulate(snapshot)
-    assert simulation.is_clean
-    simulation.apply()
-    assert subprocess.check_output([sys.executable, str(path)], text=True) == before
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        plan.simulate(snapshot)
+    assert path.read_bytes() == source.encode("utf-8")

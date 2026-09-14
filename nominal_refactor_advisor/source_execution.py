@@ -48,6 +48,7 @@ from .captured_reference import (
     NamespaceCreationEvidenceABC,
     NamespaceEvidenceABC,
     NamespaceMemberInventory,
+    CapturedNativeObject,
     NativeTypeCapture,
     OpaqueCapturedObjectOperations,
     OpenCapturedReference,
@@ -120,6 +121,7 @@ from .native_reference import NativeReferenceEnvironment
 from .native_call import (
     CallAuthority,
     DefaultObjectConstruction,
+    NativeDefinitionApplicationAuthorityABC,
     NativeDescriptorArgumentABC,
     NativeDescriptorResult,
     SignatureCallAuthorityABC,
@@ -798,6 +800,7 @@ class SourceDefinitionDecoratorApplicationABC(
     index: int
 
     execution = AliasProperty["SourceExecutionABC"]("creation.execution")
+    environment = AliasProperty[NativeReferenceEnvironment]("creation.execution")
     operation = AliasProperty[SourceFlowOperation]("creation.operation")
     native_frame_context = AliasProperty[CompactFlowContext]("creation.parent_context")
     native_frame_prefix = AliasProperty[AdmittedExecutionPrefixABC](
@@ -864,6 +867,12 @@ class SourceDefinitionDecoratorApplicationABC(
 
     def function_activation(self) -> SourceFunctionActivationABC:
         return self.callee.definition_application_activation(self)
+
+    def native_definition_application_authority(
+        self, callee: CapturedNativeObject
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        del callee
+        raise ValueError("Native definition application semantics remain unproved")
 
     def require_native_installation(
         self, prefix: AdmittedExecutionPrefixABC
@@ -2810,14 +2819,14 @@ class SourceClassBodyEntryABC(
         """Require the selected native construction over its actual completed body."""
         raise NotImplementedError
 
-    @property
+    @cached_property
     def completed(self) -> None:
         """Validate the original source boundary before reusing construction proof."""
         _ = self.frame
         _ = self.final_evaluation
         _ = self.construction_admission
 
-    @property
+    @cached_property
     def native_tail(self) -> PreparedNamespaceContinuationABC:
         _ = self.final_evaluation
         completion = SourceCompletionResolver(self.execution).completed_body(
@@ -3099,7 +3108,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
             raise ValueError("Complete native namespace inventory has no member value")
         return value
 
-    @property
+    @cached_property
     def names(self) -> frozenset[NativeScalar]:
         _ = self.completed
         source = NamespaceMemberInventory(
@@ -3114,7 +3123,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
                 "Native tail value precedes the completed source store or body boundary"
             )
 
-    @property
+    @cached_property
     def completed(self) -> None:
         receipt = self.receipt
         for value in receipt.values:
@@ -3144,7 +3153,7 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
     def follows_source(self, instruction_offset: int) -> bool:
         raise NotImplementedError
 
-    @property
+    @cached_property
     def bindings(self) -> tuple[NativeBindingTransfer, ...]:
         return tuple(
             binding
@@ -3169,7 +3178,7 @@ class PreparedNamespaceTail(PreparedNamespaceContinuationABC):
             self.native_lookup_prefix
         )
 
-    @property
+    @cached_property
     def receipt(self) -> NativeReturn:
         entry = self.entry
         completion = self.completion
@@ -3211,7 +3220,7 @@ class EntryOnlyNamespaceContinuation(PreparedNamespaceContinuationABC):
     def follows_source(self, instruction_offset: int) -> bool:
         return instruction_offset >= self.entry.capture.prologue.require_body_start()
 
-    @property
+    @cached_property
     def receipt(self) -> NativeReturn:
         entry = self.entry
         _ = entry.final_evaluation
@@ -3305,6 +3314,7 @@ class SourceClassEntry(SourceClassBodyEntryABC):
 
 @dataclass(frozen=True, eq=False)
 class SourceClassDecoratorApplication(
+    SourceDefinitionCapture,
     OpaqueCapturedObjectOperations,
     SourceDefinitionDecoratorApplicationABC,
 ):
@@ -3335,12 +3345,36 @@ class SourceClassDecoratorApplication(
                 )
             preceding = application
 
+    @cached_property
+    def application_authority(self) -> NativeDefinitionApplicationAuthorityABC:
+        return self.callee.definition_application_authority(self)
+
     def require_closed(self) -> None:
         try:
-            _ = self.native_value
+            result = self.application_authority.result()
         except ValueError as error:
             raise ValueError("Class decorator result remains unproved") from error
-        raise ValueError("Class decorator result remains unproved")
+        if result is not self.argument:
+            raise ValueError("Class decorator returned a different definition object")
+
+    def native_definition_application_authority(
+        self, callee: CapturedNativeObject
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        return NativeDefinitionApplicationAuthorityABC.for_application(self, callee)
+
+    def require_plain_class_base(
+        self,
+        resolver: CapturedReferenceKernel,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+    ) -> type:
+        """Delegate only through the selected transformation's base-preservation law."""
+        self.require_closed()
+        return self.application_authority.require_plain_class_base(
+            resolver,
+            context,
+            position,
+        )
 
 
 class NativeSourceClassEntryABC(SourceClassBodyEntryABC, NativeDeclarationFamily):
@@ -3897,19 +3931,6 @@ class SourceExecutionABC(
         for operation in operations:
             self.require_import_operation(operation)
 
-    def require_assignment(
-        self, node: ast.Assign | ast.AnnAssign | ast.NamedExpr
-    ) -> None:
-        if node.value is None:
-            return
-        try:
-            LiteralExpressionEffects(node.value).require_closed()
-        except (ValueError, TypeError, SyntaxError):
-            if isinstance(node.value, ast.Call):
-                self.require_call(node.value)
-            else:
-                self.capture_value(node.value).require_closed()
-
     def require_return(self, node: ast.Return) -> None:
         operation = self.source.node_operation(node, CompactEvaluatedResult)
         result = cast(CompactEvaluatedResult, operation.event)
@@ -4098,18 +4119,8 @@ class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolver
     ) -> bool:
         """Resolve one direct predicate from this activation's entry bindings."""
         flow = self.entry.context.flow
-        if not any(use is predicate_use for use in flow.callable_reference_uses):
-            return False
-        reference = predicate_use.lexical_reference
-        if reference is None or reference.attribute_path:
-            return False
-        binding = flow.stored_binding_resolution_for(
-            reference.root_name, predicate_use.position
-        )
-        if (
-            not isinstance(binding, InitialCompactParameterBinding)
-            or binding.parameter.name not in self.entry.initial_entries
-        ):
+        binding = flow.initial_parameter_binding_for_predicate(predicate_use)
+        if binding is None or binding.parameter.name not in self.entry.initial_entries:
             return False
         value = self.entry.initial_entries[binding.parameter.name]
         try:
@@ -4123,42 +4134,13 @@ class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolver
     ) -> CapturedReferenceResolution:
         """Prove every possible successful return retains one entry parameter."""
         self.entry.require_admitted(self.initial)
-        self.entry.call.callee.native_execution.mode.require_immediate_activation()
+        self.entry.activation.callee.native_execution.mode.require_immediate_activation()
         flow = self.entry.context.flow
-        declaration = flow.owner.declaration
-        if declaration is None:
-            raise ValueError("Function activation has no source declaration")
-        parameters = tuple(
-            parameter
-            for parameter in declaration.signature.parameters
-            if parameter.name == parameter_name
-        )
-        if len(parameters) != 1 or parameter_name not in self.entry.initial_entries:
+        if parameter_name not in self.entry.initial_entries:
             raise ValueError("Returned parameter is absent from this activation")
-        parameter = parameters[0]
-        possible_returns = tuple(
-            result
-            for result in flow.evaluated_results
-            if result.destination.use is CompactValueDestinationKind.RETURNED
-            and not result.position.is_proved_excluded(self)
-        )
-        if not possible_returns:
-            raise ValueError("Function has no possible explicit return")
-        for result in possible_returns:
-            value_use = result.value_use
-            if (
-                value_use is None
-                or value_use.lexical_reference != LexicalValueReference(parameter_name)
-            ):
-                raise ValueError("Function can return a different object")
-            binding = flow.stored_binding_resolution_for_activation(
-                parameter_name, value_use.position, self
-            )
-            if (
-                not isinstance(binding, InitialCompactParameterBinding)
-                or binding.parameter is not parameter
-            ):
-                raise ValueError("Returned parameter can be replaced")
+        binding = flow.require_returned_parameter_binding(parameter_name, self)
+        if binding.parameter.name != parameter_name:
+            raise ValueError("Returned parameter differs from this activation")
         return self.entry.initial_entries[parameter_name]
 
     def require_closed(self) -> None:

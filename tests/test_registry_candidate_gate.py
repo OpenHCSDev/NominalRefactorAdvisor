@@ -44,6 +44,7 @@ from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRep
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
 from nominal_refactor_advisor.models import FindingSpec, PatternId, SourceLocation
+from native_use_test_support import with_rendered_registry_creator_support
 
 SOURCE = """padding = None
 REGISTRY = {}
@@ -165,6 +166,18 @@ def test_captured_generated_creator_identity_is_not_behavior_invariance(tmp_path
     assert report.detail == requirement.inspect()
     assert report.status.is_failed
     require_preview_only(path, SOURCE, simulation)
+
+
+def test_declared_candidate_behavior_allows_the_exact_rendered_conversion(tmp_path):
+    path, operation, preview = conversion(tmp_path)
+    supported = with_rendered_registry_creator_support(operation, preview)
+    snapshot = CodemodSourceSnapshot.from_source_mapping({str(path): SOURCE})
+    simulation = RefactorRecipe("registry", operations=(supported,)).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert native_outcome(simulation.simulation.rewritten_sources[str(path)]) == {
+        "keys": ["alpha", "beta"]
+    }
 
 
 def test_candidate_gate_observes_later_edit_in_complete_document(tmp_path):

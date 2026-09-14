@@ -75,6 +75,7 @@ from .product_flow import (
     CompactItemTarget,
     CompactMutation,
     CompactMutationResolverABC,
+    CompactVariableAnnotationTarget,
     CompactPositionedReference,
     CompactValueResolverABC,
     CompactValueUse,
@@ -88,7 +89,7 @@ from .product_flow import (
 from .value_expression import LexicalValueReference, TargetResolutionT
 
 if TYPE_CHECKING:
-    from .native_call import CallAuthority
+    from .native_call import CallAuthority, NativeDefinitionApplicationAuthorityABC
     from .native_reference import NativeReferenceEnvironment
     from .source_entry import SourceModuleEntryPremise
     from .source_execution import (
@@ -132,6 +133,13 @@ class CapturedReferenceResolution(NativeScalarValueABC):
         """Select callable source activation from the actual application operand."""
         self.require_closed()
         raise ValueError("Definition application callable remains unproved")
+
+    def definition_application_authority(
+        self, application: SourceDefinitionApplicationAuthorityABC
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        """Select declaration-owned semantics for one actual application."""
+        self.require_closed()
+        raise ValueError("Definition application semantics remain unproved")
 
     def require_native_installation(
         self, prefix: AdmittedExecutionPrefixABC
@@ -561,6 +569,12 @@ class CapturedNativeObject(NativeTypeCapture):
         self.require_closed()
         return environment.native_call_authority(context, call)
 
+    def definition_application_authority(
+        self, application: SourceDefinitionApplicationAuthorityABC
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        self.require_closed()
+        return application.native_definition_application_authority(self)
+
     @property
     def native_type(self) -> type:
         return type(self.value)
@@ -723,6 +737,12 @@ class NamespaceEvidenceABC(ABC):
     def captured_dictionary(self) -> CapturedReferenceResolution:
         """A namespace is not automatically an observed dictionary value."""
         return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)
+
+    @property
+    def annotation_namespace(self) -> CapturedReferenceResolution:
+        """Return this activation's compiler-created annotation dictionary."""
+
+        return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
 
     def require_slot_release(
         self,
@@ -1457,6 +1477,11 @@ class SourceDefinitionApplicationAuthorityABC(ABC):
 
     @property
     @abstractmethod
+    def environment(self) -> NativeReferenceEnvironment:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def definition_application(self) -> CompactMutation[CompactDefinitionTarget]:
         raise NotImplementedError
 
@@ -1465,9 +1490,22 @@ class SourceDefinitionApplicationAuthorityABC(ABC):
     def decorator_use(self) -> CompactValueUse:
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def argument(self) -> CapturedReferenceResolution:
+        """Return the preceding definition result supplied as the implicit argument."""
+        raise NotImplementedError
+
     @abstractmethod
     def require_original_application(self) -> None:
         """Join source position and compiler operand topology for this application."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def native_definition_application_authority(
+        self, callee: CapturedNativeObject
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        """Select semantics for an exact captured native declaration."""
         raise NotImplementedError
 
 
@@ -2466,3 +2504,32 @@ class CapturedReferenceKernel(
             mutation.target.index_use, occurrence.source.context, query.pending
         )
         return receiver.item_write_effect(owner, query, occurrence, key)
+
+    def _annotation_mutation_resolution(
+        self,
+        context: tuple[CapturedSlotQuery, ContextualMutation],
+        mutation: CompactMutation[CompactVariableAnnotationTarget],
+    ) -> CapturedReferenceResolution | None:
+        """Resolve an entry-owned annotation store without replaying its operands."""
+
+        query, occurrence = context
+        flow = occurrence.source.context.flow
+        if not flow.entry_annotation_namespace_is_active(mutation):
+            return self._item_mutation_resolution(context, mutation)
+        local_namespace = occurrence.source.frame.locals
+        if isinstance(local_namespace, OpenCapturedReference):
+            return local_namespace
+        annotation_namespace = local_namespace.annotation_namespace
+        if isinstance(annotation_namespace, OpenCapturedReference):
+            return self._item_mutation_resolution(context, mutation)
+        if not isinstance(annotation_namespace, NamespaceEvidenceABC):
+            return OpenCapturedReference(
+                CapturedReferenceViolation.UNKNOWN_RECEIVER,
+                mutation,
+            )
+        return (
+            query.matching_item_write(self, occurrence)
+            if query.namespace is annotation_namespace
+            and query.key == mutation.target.annotation_name
+            else None
+        )

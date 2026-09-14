@@ -81,6 +81,40 @@ def test_definition_application_activates_its_exact_source_callee_and_argument()
         class_entry.result()
 
 
+def test_definition_application_proves_its_returned_argument_identity():
+    environment = controlled_execution(
+        "def keep(value, replace=False):\n"
+        "    if replace:\n"
+        "        value = object()\n"
+        "    return value\n"
+        "@keep\n"
+        "class Target: pass\n"
+    )
+    raw, application = environment.class_entry(
+        environment.module.module.body[-1]
+    ).creation_results
+    returned = application.function_activation().activation.require_returned_parameter_identity(
+        "value"
+    )
+    assert returned is raw
+
+
+def test_definition_application_rejects_a_replaced_argument_result():
+    environment = controlled_execution(
+        "def replace(value):\n"
+        "    return object()\n"
+        "@replace\n"
+        "class Target: pass\n"
+    )
+    _, application = environment.class_entry(
+        environment.module.module.body[-1]
+    ).creation_results
+    with pytest.raises(ValueError, match="different object"):
+        application.function_activation().activation.require_returned_parameter_identity(
+            "value"
+        )
+
+
 def test_copied_application_and_foreign_callee_cannot_create_an_activation():
     environment = controlled_execution(
         "def keep(value): return value\n"
@@ -111,7 +145,7 @@ def test_nested_application_does_not_assume_the_inner_result_identity():
         _ = outer.function_activation().initial_entries
 
 
-def test_native_dataclass_application_remains_fail_closed():
+def test_native_dataclass_application_proves_its_in_place_result():
     environment = controlled_execution(
         "from dataclasses import dataclass\n@dataclass\nclass Target: pass\n"
     )
@@ -122,6 +156,74 @@ def test_native_dataclass_application_remains_fail_closed():
     )
     with pytest.raises(ValueError, match="callable remains unproved"):
         application.function_activation()
+    assert entry.result() is application
+    assert application.proves_same_object(entry.created_result)
+
+
+@pytest.mark.parametrize(
+    "decorator",
+    ("@dataclass(slots=True)", "@dataclass(frozen=int)"),
+)
+def test_native_dataclass_application_rejects_unproved_option_semantics(decorator):
+    environment = controlled_execution(
+        f"from dataclasses import dataclass\n{decorator}\nclass Target: pass\n"
+    )
+    entry = environment.class_entry(environment.module.module.body[-1])
+    with pytest.raises(ValueError, match="Class decorator result remains unproved"):
+        entry.result()
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "return value",
+        "value.__annotations__.clear()\n    return value",
+    ),
+    ids=("returns-input", "mutates-annotations"),
+)
+def test_unknown_source_class_decorator_remains_fail_closed(body):
+    environment = controlled_execution(
+        "def transform(value):\n"
+        f"    {body}\n"
+        "@transform\n"
+        "class Target:\n"
+        "    field: int\n"
+    )
+    entry = environment.class_entry(environment.module.module.body[-1])
+    with pytest.raises(ValueError):
+        entry.result()
+
+
+def test_native_dataclass_processor_rebinding_before_application_is_rejected():
+    environment = controlled_execution(
+        "import dataclasses\n"
+        "from dataclasses import dataclass\n"
+        "def replacement(*arguments): return object\n"
+        "dataclasses._process_class = replacement\n"
+        "@dataclass\n"
+        "class Target: pass\n"
+    )
+    entry = environment.class_entry(environment.module.module.body[-1])
+    with pytest.raises(ValueError):
+        entry.result()
+
+
+def test_restoring_a_processor_after_initial_capture_does_not_retroactively_prove_it(
+    monkeypatch,
+):
+    import dataclasses
+
+    original = dataclasses._process_class
+
+    def replacement(*arguments):
+        raise AssertionError("The analyzer must not execute a native replacement")
+
+    monkeypatch.setattr(dataclasses, "_process_class", replacement)
+    environment = controlled_execution(
+        "from dataclasses import dataclass\n@dataclass\nclass Target: pass\n"
+    )
+    monkeypatch.setattr(dataclasses, "_process_class", original)
+    entry = environment.class_entry(environment.module.module.body[-1])
     with pytest.raises(ValueError, match="Class decorator result remains unproved"):
         entry.result()
 

@@ -19,6 +19,9 @@ from unittest.mock import Mock
 import pytest
 
 from registry_test_sources import _type_keyed_behavior_projection_source
+from native_use_test_support import (
+    simulate_with_rendered_registry_creator_support,
+)
 
 import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
@@ -1208,9 +1211,7 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
         document.simulate(snapshot)
 
     assert error.value.report.operation == "create_file"
-    assert error.value.report.detail.existing_source_paths == (
-        module_path.as_posix(),
-    )
+    assert error.value.report.detail.existing_source_paths == (module_path.as_posix(),)
     assert isinstance(
         error.value.report.detail,
         SourceCreationConflictPreflightDetail,
@@ -2174,9 +2175,10 @@ def test_finding_recipe_planning_horizon_join_derives_from_mro() -> None:
     assert horizon.join((horizon.NONE, horizon.CURRENT_SNAPSHOT)) is (
         horizon.CURRENT_SNAPSHOT
     )
-    assert horizon.join(
-        (horizon.NONE, horizon.CURRENT_SNAPSHOT, horizon.UNPROVED)
-    ) is horizon.UNPROVED
+    assert (
+        horizon.join((horizon.NONE, horizon.CURRENT_SNAPSHOT, horizon.UNPROVED))
+        is horizon.UNPROVED
+    )
     assert isinstance(horizon.NONE, type(horizon.CURRENT_SNAPSHOT))
     assert isinstance(horizon.CURRENT_SNAPSHOT, type(horizon.UNPROVED))
     assert not hasattr(horizon, "_proof_rank")
@@ -2185,9 +2187,7 @@ def test_finding_recipe_planning_horizon_join_derives_from_mro() -> None:
         wire_value = "incomparable"
 
     with pytest.raises(TypeError, match="one nominal MRO chain"):
-        horizon.join(
-            (horizon.CURRENT_SNAPSHOT, IncomparablePlanningHorizon())
-        )
+        horizon.join((horizon.CURRENT_SNAPSHOT, IncomparablePlanningHorizon()))
 
 
 def test_finding_recipe_batch_rejects_order_dependent_composition(
@@ -2981,7 +2981,8 @@ def test_patch_target_operation_allows_empty_json_replacement(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -3038,7 +3039,8 @@ def test_patch_target_operation_can_target_module_source(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     source_by_path = {module_path.as_posix(): module_path.read_text()}
 
@@ -3083,8 +3085,8 @@ def test_patch_target_operation_chains_dependent_exact_transformations(
     payload = json_report_object(operation)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    simulation = RefactorRecipe("patch-render").with_operation(operation).simulate(
-        snapshot
+    simulation = (
+        RefactorRecipe("patch-render").with_operation(operation).simulate(snapshot)
     )
 
     assert simulation.simulation.applied_rewrite_count == 1
@@ -3369,20 +3371,22 @@ def test_function_signature_replacement_preserves_async_nominal_identity(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Worker:\n"
-        "    async def run(self, value):\n"
-        "        return value\n",
+        "class Worker:\n" "    async def run(self, value):\n" "        return value\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    simulation = RefactorRecipe("async-signature").with_operation(
-        ReplaceFunctionSignatureOperation(
-            target=SourceRewriteTarget(
-                file_path=module_path.as_posix(),
-                qualname="Worker.run",
-            ),
-            signature_suffix="(self, value: int) -> int:",
+    simulation = (
+        RefactorRecipe("async-signature")
+        .with_operation(
+            ReplaceFunctionSignatureOperation(
+                target=SourceRewriteTarget(
+                    file_path=module_path.as_posix(),
+                    qualname="Worker.run",
+                ),
+                signature_suffix="(self, value: int) -> int:",
+            )
         )
-    ).simulate(snapshot)
+        .simulate(snapshot)
+    )
 
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     assert "async def run(self, value: int) -> int:" in rewritten
@@ -4548,6 +4552,7 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
     rewritten = simulation.simulation.rewritten_sources[
         (tmp_path / "pkg/mod.py").as_posix()
     ]
+
     def mro_names(source_text: str) -> tuple[tuple[str, ...], ...]:
         namespace: dict[str, object] = {}
         exec(compile(source_text, "<closed-family-mi>", "exec"), namespace)
@@ -5399,14 +5404,18 @@ def test_target_deletion_owns_its_source_separator(
     _write_module(tmp_path, "pkg/mod.py", source)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    simulation = RefactorRecipe("delete-target-separator").with_operation(
-        DeleteTargetOperation(
-            target=SourceRewriteTarget(
-                qualname=target_qualname,
-                file_path=module_path.as_posix(),
+    simulation = (
+        RefactorRecipe("delete-target-separator")
+        .with_operation(
+            DeleteTargetOperation(
+                target=SourceRewriteTarget(
+                    qualname=target_qualname,
+                    file_path=module_path.as_posix(),
+                )
             )
         )
-    ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+        .simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    )
 
     assert simulation.simulation.rewritten_sources[module_path.as_posix()] == (
         expected_source
@@ -5505,7 +5514,7 @@ def test_derive_candidate_collector_operation(
         "    return ()\n"
         "\n\n"
         "class AlphaDetector(CandidateFindingDetector[Candidate]):\n"
-        "    \"\"\"Collect alpha candidates.\"\"\"\n"
+        '    """Collect alpha candidates."""\n'
         "    detector_id = 'alpha'\n\n"
         "    def _candidate_items(self, module: ParsedModule, config: DetectorConfig):\n"
         "        return _candidates(module, config)\n\n"
@@ -5516,42 +5525,24 @@ def test_derive_candidate_collector_operation(
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
-    simulation = (
-        RefactorRecipe("contextualize-alpha")
-        .with_operation(
-            DeriveCandidateCollectorOperation(
-                target=SourceRewriteTarget(
-                    qualname="AlphaDetector._candidate_items",
-                    file_path=module_path.as_posix(),
-                ),
-            )
+    operation = DeriveCandidateCollectorOperation(
+        target=SourceRewriteTarget(
+            qualname="AlphaDetector._candidate_items",
+            file_path=module_path.as_posix(),
         )
-        .simulate(
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="unproved_execution_effects",
+    ):
+        RefactorRecipe("contextualize-alpha").with_operation(operation).simulate(
             _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
-    )
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
-    assert "ConfiguredModuleCollectorCandidateDetector" in rewritten
-    assert "from nominal_refactor_advisor.detectors._base import (" in rewritten
-    assert sum(
-        alias.name == "ConfiguredModuleCollectorCandidateDetector"
-        for statement in ast.parse(rewritten).body
-        if isinstance(statement, ast.ImportFrom)
-        for alias in statement.names
-    ) == 1
-    assert "from ._base" not in rewritten
     assert (
-        "class AlphaDetector(ConfiguredModuleCollectorCandidateDetector[Candidate]):"
-    ) in rewritten
-    assert "candidate_collector = staticmethod(_candidates)" in rewritten
-    assert "def _candidate_items(" not in rewritten
-    rewritten_class = next(
-        node for node in ast.parse(rewritten).body
-        if isinstance(node, ast.ClassDef) and node.name == "AlphaDetector"
+        module_path.read_text(encoding="utf-8")
+        == source_by_path[module_path.as_posix()]
     )
-    assert ast.get_docstring(rewritten_class) == "Collect alpha candidates."
 
 
 def test_derive_candidate_collector_operation_round_trips_without_mirrors() -> None:
@@ -5746,16 +5737,16 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     beta_source = snapshot.sources_by_file_path[beta_path.as_posix()]
-    source_overlay = {
-        beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")
-    }
+    source_overlay = {beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")}
     rebuilt = CodemodSourceSnapshot.from_modules(
         snapshot.modules_with_source_overlay(source_overlay)
     )
     monkeypatch.setattr(
         codemod_runtime_module,
         "build_class_family_index",
-        lambda _modules: pytest.fail("projected snapshots must overlay the class index"),
+        lambda _modules: pytest.fail(
+            "projected snapshots must overlay the class index"
+        ),
     )
     monkeypatch.setattr(
         codemod_runtime_module,
@@ -5776,10 +5767,15 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
         projected.module_nodes_by_file_path[alpha_path.as_posix()]
         is snapshot.module_nodes_by_file_path[alpha_path.as_posix()]
     )
-    assert projected.required_class_family_index.classes_by_symbol[
-        "pkg.beta.Beta"
-    ].resolved_base_symbols == ()
-    assert snapshot.with_virtual_sources({beta_path.as_posix(): beta_source}) is snapshot
+    assert (
+        projected.required_class_family_index.classes_by_symbol[
+            "pkg.beta.Beta"
+        ].resolved_base_symbols
+        == ()
+    )
+    assert (
+        snapshot.with_virtual_sources({beta_path.as_posix(): beta_source}) is snapshot
+    )
     projected_from_partial_cache = replace(
         snapshot,
         ast_target_node_cache={},
@@ -5801,15 +5797,15 @@ def test_virtual_source_overlay_derives_changes_from_canonical_path_identity(
 
     assert snapshot.with_virtual_sources({source_alias: original_source}) is snapshot
 
-    projected = snapshot.with_virtual_sources(
-        {source_alias: "class Beta:\n    pass\n"}
-    )
+    projected = snapshot.with_virtual_sources({source_alias: "class Beta:\n    pass\n"})
 
     assert projected.sources_by_file_path[module_path.as_posix()] == (
         "class Beta:\n    pass\n"
     )
     assert "pkg.mod.Beta" in projected.required_class_family_index.classes_by_symbol
-    assert "pkg.mod.Alpha" not in projected.required_class_family_index.classes_by_symbol
+    assert (
+        "pkg.mod.Alpha" not in projected.required_class_family_index.classes_by_symbol
+    )
     with pytest.raises(
         ValueError,
         match="Multiple source overlay paths resolve to the same file",
@@ -5856,9 +5852,7 @@ def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
         "pkg.beta.Consumer"
     ].resolved_base_symbols == ("pkg.alpha.Shared",)
 
-    source_overlay = {
-        competing_alpha_path.as_posix(): "class Shared:\n    pass\n"
-    }
+    source_overlay = {competing_alpha_path.as_posix(): "class Shared:\n    pass\n"}
     rebuilt = CodemodSourceSnapshot.from_modules(
         snapshot.modules_with_source_overlay(source_overlay)
     )
@@ -5867,9 +5861,12 @@ def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
     assert projected.source_index == rebuilt.source_index
     assert alpha_path.as_posix() in projected.sources_by_file_path
     assert beta_path.as_posix() in projected.sources_by_file_path
-    assert projected.required_class_family_index.classes_by_symbol[
-        "pkg.beta.Consumer"
-    ].resolved_base_symbols == ()
+    assert (
+        projected.required_class_family_index.classes_by_symbol[
+            "pkg.beta.Consumer"
+        ].resolved_base_symbols
+        == ()
+    )
 
 
 def test_source_text_geometry_rejects_same_span_replacement_conflict() -> None:
@@ -5952,60 +5949,30 @@ def test_source_text_geometry_rejects_replacements_outside_target_span(
 
 def test_operation_compiler_coalesces_identical_line_replacements(
     tmp_path: Path,
-    native_collector_module: ParsedModule,
 ) -> None:
     _write_module(tmp_path, "pkg/__init__.py", "")
-    module_path = tmp_path / "pkg/detectors.py"
+    module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
-        "pkg/detectors.py",
-        "from nominal_refactor_advisor.detectors._base import (\n"
-        "    CrossModuleCandidateDetector,\n"
-        "    DetectorConfig,\n"
-        "    ParsedModule,\n"
-        ")\n"
-        "\n\n"
-        "class Candidate:\n"
-        "    pass\n"
-        "\n\n"
-        "def _alpha_candidates(modules):\n"
-        "    return ()\n"
-        "\n\n"
-        "def _beta_candidates(modules):\n"
-        "    return ()\n"
-        "\n\n"
-        "class AlphaDetector(CrossModuleCandidateDetector[Candidate]):\n"
-        "    detector_id = 'alpha'\n\n"
-        "    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig):\n"
-        "        del config\n"
-        "        return _alpha_candidates(modules)\n"
-        "\n\n"
-        "class BetaDetector(CrossModuleCandidateDetector[Candidate]):\n"
-        "    detector_id = 'beta'\n\n"
-        "    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig):\n"
-        "        del config\n"
-        "        return _beta_candidates(modules)\n",
+        "pkg/mod.py",
+        "class Parser:\n    pass\n",
     )
-    modules = (*parse_python_modules(tmp_path), native_collector_module)
+    modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
     simulation = (
-        RefactorRecipe("contextualize-two-detectors")
+        RefactorRecipe("ensure-shared-import-twice")
         .with_operation(
-            DeriveCandidateCollectorOperation(
-                target=SourceRewriteTarget(
-                    qualname="AlphaDetector._candidate_items",
-                    file_path=module_path.as_posix(),
-                ),
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                import_source="from .shared import Shared\n",
             )
         )
         .with_operation(
-            DeriveCandidateCollectorOperation(
-                target=SourceRewriteTarget(
-                    qualname="BetaDetector._candidate_items",
-                    file_path=module_path.as_posix(),
-                ),
+            EnsureImportOperation(
+                target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                import_source="from .shared import Shared\n",
             )
         )
         .simulate(
@@ -6015,11 +5982,8 @@ def test_operation_compiler_coalesces_identical_line_replacements(
     )
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert rewritten.count("CrossModuleCollectorCandidateDetector") == 3
-    assert rewritten.count("    CrossModuleCollectorCandidateDetector,\n") == 1
-    assert "candidate_collector = staticmethod(_alpha_candidates)" in rewritten
-    assert "candidate_collector = staticmethod(_beta_candidates)" in rewritten
-    assert "def _candidate_items(" not in rewritten
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert rewritten.count("from .shared import Shared\n") == 1
 
 
 def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
@@ -6116,35 +6080,26 @@ def test_derive_candidate_collector_collapses_existing_candidate_method(
     source_index = build_source_index(modules, ())
     source_by_path = {module.file_path: module.source for module in modules}
 
-    simulation = (
-        RefactorRecipe("contextualize-existing-alpha")
-        .with_operation(
-            DeriveCandidateCollectorOperation(
-                target=SourceRewriteTarget(
-                    qualname="AlphaDetector._candidate_items",
-                    file_path=module_path.as_posix(),
-                ),
-            )
+    operation = DeriveCandidateCollectorOperation(
+        target=SourceRewriteTarget(
+            qualname="AlphaDetector._candidate_items",
+            file_path=module_path.as_posix(),
         )
-        .simulate(
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="unproved_execution_effects",
+    ):
+        RefactorRecipe("contextualize-existing-alpha").with_operation(
+            operation
+        ).simulate(
             _indexed_snapshot(source_index, source_by_path),
             backend=CodemodBackend.AST_SPAN,
         )
-    )
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-
     assert (
-        "class AlphaDetector(CrossModuleCollectorCandidateDetector[Candidate]):"
-        in rewritten
+        module_path.read_text(encoding="utf-8")
+        == source_by_path[module_path.as_posix()]
     )
-    assert "candidate_collector = staticmethod(_candidates)" in rewritten
-    assert "def _candidate_items(" not in rewritten
-    assert sum(
-        alias.name == "CrossModuleCollectorCandidateDetector"
-        for statement in ast.parse(rewritten).body
-        if isinstance(statement, ast.ImportFrom)
-        for alias in statement.names
-    ) == 1
 
 
 def test_refactor_recipe_replaces_module_assignment(
@@ -6292,13 +6247,13 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
         if target.qualname == "AlphaHandler"
     )
 
-    recipe = RefactorRecipe(recipe_id="manual-registry-to-autoregister").with_operation(
-        ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(target_id=alpha_target.target_id),
-        )
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(target_id=alpha_target.target_id),
     )
-    simulation = recipe.simulate(
+    simulation = simulate_with_rendered_registry_creator_support(
+        operation,
         _indexed_snapshot(source_index, source_by_path),
+        recipe_id="manual-registry-to-autoregister",
         backend=CodemodBackend.AST_SPAN,
     )
     diff = simulation.unified_diff(source_by_path)
@@ -6356,13 +6311,15 @@ def test_manual_registry_operation_target_selects_one_source_component(
         for target in source_index.ast_targets
         if target.qualname == "AlphaHandler"
     )
-    recipe = RefactorRecipe("convert-handlers-only").with_operation(
-        ConvertManualRegistryToAutoregisterOperation(
-            target=SourceRewriteTarget(target_id=alpha_target.target_id)
-        )
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(target_id=alpha_target.target_id)
     )
 
-    simulation = recipe.simulate(_indexed_snapshot(source_index, source_by_path))
+    simulation = simulate_with_rendered_registry_creator_support(
+        operation,
+        _indexed_snapshot(source_index, source_by_path),
+        recipe_id="convert-handlers-only",
+    )
     simulation.apply()
     rewritten = module_path.read_text()
 
@@ -6554,10 +6511,6 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
     )
     recipe = RefactorRecipe("derive-instance-view").with_operation(operation)
 
-    simulation = recipe.simulate(
-        _indexed_snapshot(source_index, {module_path.as_posix(): source})
-    )
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     payload = json_report_object(operation)
 
     assert set(payload) == {"operation", "target_id", "rationale"}
@@ -6578,13 +6531,14 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
                 "method_name": "instances_by_registry_key",
             }
         )
-    assert "__registry__ = {}" in rewritten
-    assert "STEP_TABLE = Step.instances_by_registry_key()" in rewritten
-    namespace: dict[str, object] = {}
-    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
-    assert namespace["Step"].__doc__ == "One executable step."
-    assert namespace["STEP_TABLE"][namespace["StepId"].LOAD].build() == "load"
-    assert namespace["STEP_TABLE"][namespace["StepId"].SAVE].build() == "save"
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="unproved_execution_effects",
+    ):
+        recipe.simulate(
+            _indexed_snapshot(source_index, {module_path.as_posix(): source})
+        )
+    assert module_path.read_text() == source
 
 
 @pytest.mark.parametrize(
@@ -6605,7 +6559,7 @@ def test_autoregister_instance_view_operation_derives_everything_from_target(
         ),
         (
             "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.LOAD: SaveStep()}\n",
-            "registry keys must be unique",
+            "Registry keys must be unique",
         ),
         (
             "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.SAVE: SaveStep()}\n"
@@ -6734,7 +6688,10 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     )
     assert "+    return _dispatch_case_type().apply(kind, value)" in diff
     operation_payload = json_report_object(recipe.operations[0])
-    assert RefactorRecipeOperation.from_json_value(operation_payload) == recipe.operations[0]
+    assert (
+        RefactorRecipeOperation.from_json_value(operation_payload)
+        == recipe.operations[0]
+    )
     assert operation_payload["target_id"] == render_target.target_id
     assert "dispatch_axis_expression" not in operation_payload
     assert "literal_cases" not in operation_payload
@@ -7241,17 +7198,13 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class Kept:\n"
-        "    pass\n\n\n"
-        "class Moved(Kept):\n"
-        "    value = 3\n",
+        "class Kept:\n" "    pass\n\n\n" "class Moved(Kept):\n" "    value = 3\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     _write_module(
         tmp_path,
         "pkg/consumer.py",
-        "from .source import Moved\n\n"
-        "value = Moved.value\n",
+        "from .source import Moved\n\n" "value = Moved.value\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToModuleOperation(
@@ -7262,31 +7215,35 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     payload = json_report_object(operation)
 
     decoded = RefactorRecipeOperation.from_json_value(payload)
-    simulation = RefactorRecipe("relocate-moved").with_operation(operation).simulate(
-        snapshot
+    simulation = (
+        RefactorRecipe("relocate-moved").with_operation(operation).simulate(snapshot)
     )
 
     assert payload["operation"] == "relocate_symbols_to_module"
     assert type(decoded) is RelocateSymbolsToModuleOperation
     assert simulation.is_clean
-    assert "Moved" not in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
-    assert "class Kept:" in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
-    assert "class Moved(Kept):" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
-    assert "from .source import Kept" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
-    assert "from .destination import Moved" in simulation.simulation.rewritten_sources[
-        consumer_path.as_posix()
-    ]
-    assert "from .source import Moved" not in simulation.simulation.rewritten_sources[
-        consumer_path.as_posix()
-    ]
+    assert (
+        "Moved" not in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
+    assert (
+        "class Kept:" in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
+    assert (
+        "class Moved(Kept):"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
+    assert (
+        "from .source import Kept"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
+    assert (
+        "from .destination import Moved"
+        in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
+    )
+    assert (
+        "from .source import Moved"
+        not in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [
@@ -7315,16 +7272,12 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class Kept:\n"
-        "    pass\n\n\n"
-        "class Moved(Kept):\n"
-        "    value = 3\n",
+        "class Kept:\n" "    pass\n\n\n" "class Moved(Kept):\n" "    value = 3\n",
     )
     _write_module(
         tmp_path,
         "pkg/consumer.py",
-        "from .source import Moved\n\n"
-        "value = Moved.value\n",
+        "from .source import Moved\n\n" "value = Moved.value\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToNewModuleOperation(
@@ -7335,25 +7288,29 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
     payload = json_report_object(operation)
 
     decoded = RefactorRecipeOperation.from_json_value(payload)
-    simulation = RefactorRecipe("relocate-moved-new-module").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("relocate-moved-new-module")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert payload["operation"] == "relocate_symbols_to_new_module"
     assert type(decoded) is RelocateSymbolsToNewModuleOperation
     assert simulation.is_clean
-    assert "class Kept:" in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
-    assert "Moved" not in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
-    assert simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ] == "from .source import Kept\n\n\nclass Moved(Kept):\n    value = 3\n"
-    assert "from .relocated import Moved" in simulation.simulation.rewritten_sources[
-        consumer_path.as_posix()
-    ]
+    assert (
+        "class Kept:" in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
+    assert (
+        "Moved" not in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
+    assert (
+        simulation.simulation.rewritten_sources[destination_path.as_posix()]
+        == "from .source import Kept\n\n\nclass Moved(Kept):\n    value = 3\n"
+    )
+    assert (
+        "from .relocated import Moved"
+        in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [
@@ -7376,16 +7333,11 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
     ("source", "message"),
     (
         (
-            "class Moved:\n"
-            "    pass\n\n\n"
-            "def build():\n"
-            "    return Moved()\n",
+            "class Moved:\n" "    pass\n\n\n" "def build():\n" "    return Moved()\n",
             "Relocated symbols remain referenced by their source module",
         ),
         (
-            "__all__ = ('Moved',)\n\n\n"
-            "class Moved:\n"
-            "    pass\n",
+            "__all__ = ('Moved',)\n\n\n" "class Moved:\n" "    pass\n",
             "Source export contract does not prove binding relocation",
         ),
         (
@@ -7429,16 +7381,12 @@ def test_symbol_relocation_rejects_source_dependency_collision(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class Kept:\n"
-        "    pass\n\n\n"
-        "class Moved(Kept):\n"
-        "    pass\n",
+        "class Kept:\n" "    pass\n\n\n" "class Moved(Kept):\n" "    pass\n",
     )
     _write_module(
         tmp_path,
         "pkg/destination.py",
-        "class Kept:\n"
-        "    pass\n",
+        "class Kept:\n" "    pass\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToModuleOperation(
@@ -7479,9 +7427,11 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
 
     report = operation.dependency_report(snapshot)
     preflight = operation.preflight_reports(snapshot)
-    simulation = RefactorRecipe("preserve-explicit-reexport").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("preserve-explicit-reexport")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert isinstance(preflight[0].detail, ModuleMoveDependencyReport)
     assert preflight[0].detail.moved_symbol_names == report.moved_symbol_names
@@ -7535,19 +7485,25 @@ def test_symbol_move_derives_import_authority_independent_of_reexport_spelling(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("reuse-import-authority").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("reuse-import-authority")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT
-    ) == ()
+    assert (
+        report.obstacle_details(ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT)
+        == ()
+    )
     assert report.destination_import_dependencies == ()
     assert "asname" not in json_report_object(report.import_dependencies[0])
     assert simulation.is_clean
-    assert simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ].count("from .shared import Shared") == 1
+    assert (
+        simulation.simulation.rewritten_sources[destination_path.as_posix()].count(
+            "from .shared import Shared"
+        )
+        == 1
+    )
 
 
 def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
@@ -7607,12 +7563,8 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
         "from dataclasses import dataclass\n",
     )
     assert report.source_import_removal_names == ("ClassVar", "dataclass")
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
-    ) == ()
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
-    ) == ()
+    assert report.obstacle_details(ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY) == ()
+    assert report.obstacle_details(ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY) == ()
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
     assert set(simulation.apply()) == {
@@ -7665,15 +7617,11 @@ def test_symbol_move_derives_explicit_import_from_proven_star_export(
     _write_module(
         tmp_path,
         "pkg/base.py",
-        "from dataclasses import dataclass\n\n"
-        "__all__ = tuple(\n"
-        "    name for name in globals() if not name.startswith('__')\n"
-        ")\n",
+        "from dataclasses import dataclass\n\n" "__all__ = ('dataclass',)\n",
     )
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from dataclasses import dataclass\n"
         "from .base import *\n\n\n"
         "@dataclass\n"
         "class Payload:\n"
@@ -7689,15 +7637,18 @@ def test_symbol_move_derives_explicit_import_from_proven_star_export(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-star-import-dependency").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-star-import-dependency")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert report.imported_dependency_names == ("dataclass",)
-    assert report.source_import_removal_names == ("dataclass",)
-    assert "from dataclasses import dataclass" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
+    assert report.source_import_removal_names == ()
+    assert (
+        "from dataclasses import dataclass"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [
@@ -7730,9 +7681,7 @@ def test_symbol_move_does_not_invent_a_binding_from_an_export_policy(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from .base import *\n\n\n"
-        "def build():\n"
-        "    return missing()\n",
+        "from .base import *\n\n\n" "def build():\n" "    return missing()\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -7745,12 +7694,10 @@ def test_symbol_move_does_not_invent_a_binding_from_an_export_policy(
 
     report = operation.dependency_report(snapshot)
 
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
-    ) == ("missing",)
+    assert report.obstacle_details(ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY) == ()
     assert report.obstacle_details(
         ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY
-    ) == ()
+    ) == ("missing",)
 
 
 def test_symbol_move_rejects_unproved_star_export_dependency(tmp_path: Path) -> None:
@@ -7814,9 +7761,11 @@ def test_symbol_move_preserves_only_public_and_still_referenced_source_bindings(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("move-private-closure").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-private-closure")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
 
     assert simulation.is_clean
@@ -7850,10 +7799,7 @@ def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
     _write_module(
         tmp_path,
         "pkg/dependencies.py",
-        "class Base:\n"
-        "    pass\n\n\n"
-        "class External:\n"
-        "    pass\n",
+        "class Base:\n" "    pass\n\n\n" "class External:\n" "    pass\n",
     )
     _write_module(
         tmp_path,
@@ -7874,9 +7820,11 @@ def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-shadowed-dependencies").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-shadowed-dependencies")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert report.imported_dependency_names == ("Base", "External")
     assert "from .dependencies import (\n    Base,\n    External,\n)" in (
@@ -7925,9 +7873,11 @@ def test_symbol_move_preserves_class_dependency_loaded_before_local_binding(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-sequential-class-dependency").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-sequential-class-dependency")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert report.imported_dependency_names == ("VALUE",)
     simulation.apply()
@@ -7978,24 +7928,24 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-type-only-dependency").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-type-only-dependency")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
 
     assert tuple(
-        (dependency.name, dependency.scope)
-        for dependency in report.import_dependencies
+        (dependency.name, dependency.scope) for dependency in report.import_dependencies
     ) == (
         ("External", ModuleImportScope.TYPE_CHECKING),
         ("dataclass", ModuleImportScope.RUNTIME),
     )
     assert all(
-        dependency.destination_import_required
-        and dependency.source_removal_required
+        dependency.destination_import_required and dependency.source_removal_required
         for dependency in report.import_dependencies
     )
     assert "if TYPE_CHECKING:" not in rewritten_source
@@ -8003,9 +7953,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
         "from dataclasses import dataclass\n"
         "from typing import TYPE_CHECKING\n\n"
         "if TYPE_CHECKING:"
-    ) in (
-        rewritten_destination
-    )
+    ) in (rewritten_destination)
     assert "    from .dependencies import External" in rewritten_destination
     assert rewritten_destination.index("if TYPE_CHECKING:") < (
         rewritten_destination.index("class Helper:")
@@ -8062,9 +8010,11 @@ def test_symbol_move_preserves_runtime_import_for_forward_annotation(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-forward-annotation").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-forward-annotation")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     dependency = next(
         dependency
         for dependency in report.import_dependencies
@@ -8124,9 +8074,11 @@ def test_symbol_move_preserves_runtime_import_consumed_by_dataclass(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("move-runtime-consumed-annotation").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-runtime-consumed-annotation")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
@@ -8180,9 +8132,11 @@ def test_symbol_move_preserves_function_local_annotation_imports(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-local-annotation").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-local-annotation")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
@@ -8202,20 +8156,22 @@ def test_symbol_move_renders_relative_dependency_from_destination_identity(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from .dependencies import VALUE\n\n\n"
-        "class Helper:\n"
-        "    value = VALUE\n",
+        "from .dependencies import VALUE\n\n\n" "class Helper:\n" "    value = VALUE\n",
     )
     _write_module(tmp_path, "pkg/nested/destination.py", "")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    simulation = RefactorRecipe("move-relative-dependency").with_operation(
-        MoveSymbolsToModuleOperation(
-            target=SourceRewriteTarget(file_path=source_path.as_posix()),
-            symbol_qualnames=("Helper",),
-            destination_path=destination_path.as_posix(),
+    simulation = (
+        RefactorRecipe("move-relative-dependency")
+        .with_operation(
+            MoveSymbolsToModuleOperation(
+                target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                symbol_qualnames=("Helper",),
+                destination_path=destination_path.as_posix(),
+            )
         )
-    ).simulate(snapshot)
+        .simulate(snapshot)
+    )
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
@@ -8263,9 +8219,11 @@ def test_symbol_move_rewrites_type_checking_consumer_import(tmp_path: Path) -> N
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("rewrite-type-only-consumer").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("rewrite-type-only-consumer")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_consumer = simulation.simulation.rewritten_sources[
         consumer_path.as_posix()
     ]
@@ -8314,13 +8272,17 @@ def test_symbol_move_extends_aliased_type_checking_guard(tmp_path: Path) -> None
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    simulation = RefactorRecipe("extend-aliased-type-guard").with_operation(
-        MoveSymbolsToModuleOperation(
-            target=SourceRewriteTarget(file_path=source_path.as_posix()),
-            symbol_qualnames=("Helper",),
-            destination_path=destination_path.as_posix(),
+    simulation = (
+        RefactorRecipe("extend-aliased-type-guard")
+        .with_operation(
+            MoveSymbolsToModuleOperation(
+                target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                symbol_qualnames=("Helper",),
+                destination_path=destination_path.as_posix(),
+            )
         )
-    ).simulate(snapshot)
+        .simulate(snapshot)
+    )
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
@@ -8367,9 +8329,9 @@ def test_symbol_move_rejects_guarded_import_for_eager_annotation(
     report = operation.dependency_report(snapshot)
 
     assert report.is_clean is False
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
-    ) == ("External",)
+    assert report.obstacle_details(ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY) == (
+        "External",
+    )
     with pytest.raises(CodemodOperationPreflightError, match="External"):
         RefactorRecipe("reject-eager-guarded-import").with_operation(
             operation
@@ -8439,11 +8401,11 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
             "from __future__ import annotations\n"
         ),
     )
-    restored_operation = RefactorRecipeOperation.from_json_value(json_report_object(operation))
+    restored_operation = RefactorRecipeOperation.from_json_value(
+        json_report_object(operation)
+    )
     document = CodemodPlanDocument(
-        recipes=(
-            RefactorRecipe("extract-helper-module").with_operation(operation),
-        )
+        recipes=(RefactorRecipe("extract-helper-module").with_operation(operation),)
     )
 
     simulation = document.simulate(snapshot)
@@ -8463,9 +8425,12 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
         "class Helper(LocalBase):\n"
         "    value: int\n"
     )
-    assert simulation.simulation.base_revision_by_file_path[
-        destination_path.as_posix()
-    ].source_hash is None
+    assert (
+        simulation.simulation.base_revision_by_file_path[
+            destination_path.as_posix()
+        ].source_hash
+        is None
+    )
     assert set(simulation.apply()) == {
         source_path.as_posix(),
         destination_path.as_posix(),
@@ -8495,8 +8460,7 @@ def test_module_extraction_composes_import_and_assignment_at_one_anchor(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from .support import TOKEN\n\n"
-        "VALUE = TOKEN\n",
+        "from .support import TOKEN\n\n" "VALUE = TOKEN\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolsToNewModuleOperation(
@@ -8505,13 +8469,14 @@ def test_module_extraction_composes_import_and_assignment_at_one_anchor(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("extract-assignment").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("extract-assignment")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert simulation.simulation.rewritten_sources[destination_path.as_posix()] == (
-        "from .support import TOKEN\n\n"
-        "VALUE = TOKEN\n"
+        "from .support import TOKEN\n\n" "VALUE = TOKEN\n"
     )
 
 
@@ -8549,34 +8514,36 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         destination_path=destination_path.as_posix(),
     )
 
-    restored_operation = RefactorRecipeOperation.from_json_value(json_report_object(operation))
+    restored_operation = RefactorRecipeOperation.from_json_value(
+        json_report_object(operation)
+    )
     moved_symbol_qualnames = operation.move_symbol_qualnames(
         snapshot,
         source_path.as_posix(),
     )
     selection = operation.move_selection(snapshot, source_path.as_posix())
-    simulation = RefactorRecipe("derive-symbol-closure").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("derive-symbol-closure")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert restored_operation == operation
     assert json_report_object(operation)["root_symbol_qualnames"] == ("Root",)
     assert "destination_source" not in json_report_object(operation)
     assert moved_symbol_qualnames == ("Base", "Helper", "Root")
     assert selection.requested_symbol_qualnames == ("Root",)
-    assert "class Unrelated" in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
+    assert (
+        "class Unrelated"
+        in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
     rewritten_destination = simulation.simulation.rewritten_sources[
         destination_path.as_posix()
     ]
     assert rewritten_destination.startswith("from __future__ import annotations\n")
     assert "class Root" in rewritten_destination
-    assert simulation.simulation.rewritten_sources[
-        consumer_path.as_posix()
-    ].startswith(
-        "from .extracted import Root\n"
-        "from .source import Unrelated\n"
+    assert simulation.simulation.rewritten_sources[consumer_path.as_posix()].startswith(
+        "from .extracted import Root\n" "from .source import Unrelated\n"
     )
     simulation.apply()
     imported = subprocess.run(
@@ -8612,9 +8579,11 @@ def test_new_module_extraction_removes_terminal_declaration_spacing(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("extract-terminal-declaration").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("extract-terminal-declaration")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert simulation.is_clean
     assert simulation.simulation.rewritten_sources[source_path.as_posix()] == (
@@ -8644,7 +8613,10 @@ def test_new_module_extraction_rejects_explicit_annotation_policy_change(
         destination_source="",
     )
 
-    assert RefactorRecipeOperation.from_json_value(json_report_object(operation)) == operation
+    assert (
+        RefactorRecipeOperation.from_json_value(json_report_object(operation))
+        == operation
+    )
     assert json_report_object(operation)["destination_source"] == ""
     with pytest.raises(CodemodOperationPreflightError, match="annotation evaluation"):
         RefactorRecipe("reject-explicit-annotation-mode-change").with_operation(
@@ -8668,9 +8640,7 @@ def test_module_move_rejects_annotation_evaluation_mode_changes(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        (future_source if source_future else "")
-        + "class Helper:\n"
-        "    value: int\n",
+        (future_source if source_future else "") + "class Helper:\n" "    value: int\n",
     )
     _write_module(
         tmp_path,
@@ -8734,15 +8704,18 @@ def test_module_move_allows_annotation_policy_difference_without_annotations(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("move-unannotated-symbol").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-unannotated-symbol")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert report.moved_annotation_count == 0
     assert report.annotation_evaluation_is_preserved is True
-    assert "class Helper" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
+    assert (
+        "class Helper"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
 
 
 def test_existing_module_closure_move_derives_transitive_local_dependencies(
@@ -8772,9 +8745,11 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
 
     dependency_report = operation.dependency_report(snapshot)
     dependency_payload = json_report_object(dependency_report)
-    simulation = RefactorRecipe("move-symbol-closure").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-symbol-closure")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert operation.move_symbol_qualnames(
         snapshot,
@@ -8786,9 +8761,10 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
     assert dependency_payload["moved_symbol_count"] == 2
     assert dependency_payload["derived_symbol_count"] == 1
     assert dependency_payload["maximum_moved_symbol_count"] == 32
-    assert "class Base" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
+    assert (
+        "class Base"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [sys.executable, "-c", "from pkg.source import build; build()"],
@@ -8809,10 +8785,7 @@ def test_module_closure_move_rejects_derived_selection_beyond_declared_budget(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class Base:\n"
-        "    pass\n\n\n"
-        "class Helper(Base):\n"
-        "    pass\n",
+        "class Base:\n" "    pass\n\n\n" "class Helper(Base):\n" "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -8853,21 +8826,22 @@ def test_symbol_move_removes_orphaned_end_of_file_separator(tmp_path: Path) -> N
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "def retained():\n"
-        "    return 1\n\n\n"
-        "class Helper:\n"
-        "    pass\n",
+        "def retained():\n" "    return 1\n\n\n" "class Helper:\n" "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    simulation = RefactorRecipe("move-final-symbol").with_operation(
-        MoveSymbolsToModuleOperation(
-            target=SourceRewriteTarget(file_path=source_path.as_posix()),
-            symbol_qualnames=("Helper",),
-            destination_path=destination_path.as_posix(),
+    simulation = (
+        RefactorRecipe("move-final-symbol")
+        .with_operation(
+            MoveSymbolsToModuleOperation(
+                target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                symbol_qualnames=("Helper",),
+                destination_path=destination_path.as_posix(),
+            )
         )
-    ).simulate(snapshot)
+        .simulate(snapshot)
+    )
     rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
 
     assert rewritten_source.endswith("    return 1\n")
@@ -8882,15 +8856,12 @@ def test_existing_module_move_follows_destination_declaration_dependencies(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "from .destination import Base\n\n\n"
-        "class Derived(Base):\n"
-        "    pass\n",
+        "from .destination import Base\n\n\n" "class Derived(Base):\n" "    pass\n",
     )
     _write_module(
         tmp_path,
         "pkg/destination.py",
-        "class Base:\n"
-        "    pass\n",
+        "class Base:\n" "    pass\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
@@ -8989,9 +8960,9 @@ def test_symbol_move_rejects_same_named_destination_for_source_local_dependency(
 
     report = operation.dependency_report(snapshot)
 
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
-    ) == ("Base",)
+    assert report.obstacle_details(ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY) == (
+        "Base",
+    )
     with pytest.raises(CodemodOperationPreflightError, match="source-local"):
         RefactorRecipe("reject-source-local-name-collision").with_operation(
             operation
@@ -9020,17 +8991,20 @@ def test_new_module_closure_extraction_derives_assignment_dependencies(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("move-assignment-dependencies").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-assignment-dependencies")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert operation.move_symbol_qualnames(
         snapshot,
         source_path.as_posix(),
     ) == ("BASE", "VALUE", "read_value")
-    assert "VALUE: int = BASE + 1" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
+    assert (
+        "VALUE: int = BASE + 1"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [
@@ -9060,13 +9034,16 @@ def test_explicit_module_move_accepts_an_assignment_root(tmp_path: Path) -> None
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("move-assignment-root").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-assignment-root")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
-    assert "VALUE = 3" in simulation.simulation.rewritten_sources[
-        destination_path.as_posix()
-    ]
+    assert (
+        "VALUE = 3"
+        in simulation.simulation.rewritten_sources[destination_path.as_posix()]
+    )
     simulation.apply()
     imported = subprocess.run(
         [sys.executable, "-c", "from pkg.source import VALUE; assert VALUE == 3"],
@@ -9087,9 +9064,7 @@ def test_module_move_closure_follows_a_source_binding_that_shadows_a_builtin(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "list = tuple\n\n\n"
-        "def build():\n"
-        "    return list((1, 2))\n",
+        "list = tuple\n\n\n" "def build():\n" "    return list((1, 2))\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
@@ -9099,9 +9074,11 @@ def test_module_move_closure_follows_a_source_binding_that_shadows_a_builtin(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("move-shadowed-builtin").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("move-shadowed-builtin")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert operation.move_symbol_qualnames(
         snapshot,
@@ -9130,8 +9107,7 @@ def test_module_move_rejects_a_destination_binding_that_shadows_a_builtin(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "def build():\n"
-        "    return list((1, 2))\n",
+        "def build():\n" "    return list((1, 2))\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "list = tuple\n")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -9164,8 +9140,7 @@ def test_module_move_rejects_implicit_module_context_dependencies(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "def module_name():\n"
-        "    return __name__\n",
+        "def module_name():\n" "    return __name__\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -9216,9 +9191,7 @@ def test_new_module_closure_extraction_rejects_ambiguous_assignment_dependency(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "OTHER = VALUE = 1\n\n\n"
-        "def read_value():\n"
-        "    return VALUE\n",
+        "OTHER = VALUE = 1\n\n\n" "def read_value():\n" "    return VALUE\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
@@ -9298,14 +9271,17 @@ def test_symbol_move_retains_import_with_remaining_string_reference(
     )
 
     report = operation.dependency_report(snapshot)
-    simulation = RefactorRecipe("retain-exported-import").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("retain-exported-import")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
 
     assert report.source_import_removal_names == ()
-    assert "from functools import lru_cache" in simulation.simulation.rewritten_sources[
-        source_path.as_posix()
-    ]
+    assert (
+        "from functools import lru_cache"
+        in simulation.simulation.rewritten_sources[source_path.as_posix()]
+    )
 
 
 def test_symbol_move_rewrites_repository_consumer_imports(
@@ -9318,10 +9294,7 @@ def test_symbol_move_rewrites_repository_consumer_imports(
     _write_module(
         tmp_path,
         "pkg/source.py",
-        "class Helper:\n"
-        "    pass\n\n\n"
-        "class Unmoved:\n"
-        "    pass\n",
+        "class Helper:\n" "    pass\n\n\n" "class Unmoved:\n" "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
     _write_module(
@@ -9338,9 +9311,11 @@ def test_symbol_move_rewrites_repository_consumer_imports(
         destination_path=destination_path.as_posix(),
     )
 
-    simulation = RefactorRecipe("rewrite-consumer-import").with_operation(
-        operation
-    ).simulate(snapshot)
+    simulation = (
+        RefactorRecipe("rewrite-consumer-import")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     rewritten_consumer = simulation.simulation.rewritten_sources[
         consumer_path.as_posix()
     ]
@@ -9401,12 +9376,10 @@ def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
         CodemodSourceSnapshot.from_indexed_sources(source_index, source_by_path)
     )
     assert report.is_clean is False
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY
-    ) == ("LocalBase",)
-    assert report.obstacle_details(
-        ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY
-    ) == ()
+    assert report.obstacle_details(ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY) == (
+        "LocalBase",
+    )
+    assert report.obstacle_details(ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY) == ()
     build_source_index(parse_python_modules(tmp_path), ())
 
 
@@ -10042,9 +10015,10 @@ def test_architecture_guard_forbids_enum_and_runtime_type_dispatch(
     )
 
     assert report.violation_count == 3
-    assert {
-        violation.location.symbol for violation in report.violations
-    } == {"status.phase", "declaration"}
+    assert {violation.location.symbol for violation in report.violations} == {
+        "status.phase",
+        "declaration",
+    }
     assert all(
         violation.constraint_type is ForbiddenDispatchArchitectureGuardConstraint
         for violation in report.violations
@@ -10087,9 +10061,7 @@ def test_architecture_guard_scope_resolution_fails_closed(
                     constraints=(
                         ForbiddenDispatchArchitectureGuardConstraint(("value",)),
                     ),
-                    scopes=(
-                        ArchitectureGuardTargetScope(guard_path, target_qualname),
-                    ),
+                    scopes=(ArchitectureGuardTargetScope(guard_path, target_qualname),),
                 ),
             ),
         )
@@ -10232,9 +10204,7 @@ def test_cancelable_composition_rejects_incomplete_product_identity(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "class Planner:\n"
-        "    def adapt(self, payload):\n"
-        f"{body}",
+        "class Planner:\n" "    def adapt(self, payload):\n" f"{body}",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -11100,7 +11070,8 @@ def test_lean_export_cli_reports_schema_failure_without_traceback(
                     }
                 ],
             }
-        ), newline=""
+        ),
+        newline="",
     )
     monkeypatch.setattr(
         sys,
@@ -11977,7 +11948,8 @@ def test_calibration_manifest_certifies_detector_expectations(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     report = run_calibration_manifest(manifest_path)
@@ -12010,7 +11982,8 @@ def test_calibration_manifest_names_missing_and_forbidden_detectors(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     report = run_calibration_manifest(manifest_path)
@@ -12234,7 +12207,9 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
     assert first_lookup.status is AnalysisCacheStatus.HIT
     assert first_lookup.findings == (finding,)
 
-    module_path.write_text("\nclass Cached:\n    pass\n\nclass Changed:\n    pass\n", newline="")
+    module_path.write_text(
+        "\nclass Cached:\n    pass\n\nclass Changed:\n    pass\n", newline=""
+    )
     changed_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
 
     assert changed_identity != first_identity
@@ -12474,7 +12449,9 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     assert local_calls == {"a.py": 1, "b.py": 1}
     assert global_calls == 1
 
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
+    (root / "b.py").write_text(
+        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline=""
+    )
     changed_modules = parse_python_module_roots((root,))
     changed_result = analyze_modules_with_cache(
         (root,),
@@ -12716,7 +12693,9 @@ def test_analyze_paths_partial_cache_parses_changed_file_only(
         DetectorConfig(),
         cache_dir=cache_dir,
     )
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
+    (root / "b.py").write_text(
+        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline=""
+    )
     second_findings = analyze_paths(
         (root,),
         DetectorConfig(),
@@ -12811,7 +12790,9 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         DetectorConfig(),
         cache_dir=cache_dir,
     )
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
+    (root / "b.py").write_text(
+        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline=""
+    )
 
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
@@ -12915,7 +12896,9 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     )
 
     first_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
-    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline="")
+    (root / "b.py").write_text(
+        "\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n", newline=""
+    )
     fast_result = FastCachedPathAnalysisAuthority(
         CachedPathAnalysisRequest(
             roots=(root,),
@@ -13084,12 +13067,20 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     assert small_work_plan.uses_process_pool is False
 
 
-@pytest.mark.parametrize("requested,jobs,expected", (
-    (16, 0, 1), (16, 1, 1), (16, 2, 2), (16, 100, 16), (1, 100, 1),
-))
+@pytest.mark.parametrize(
+    "requested,jobs,expected",
+    (
+        (16, 0, 1),
+        (16, 1, 1),
+        (16, 2, 2),
+        (16, 100, 16),
+        (1, 100, 1),
+    ),
+)
 def test_explicit_worker_budget_is_bounded_by_available_jobs(requested, jobs, expected):
     plan = DetectorAnalysisWorkerPlan(
-        requested_worker_count=requested, work_item_count=jobs,
+        requested_worker_count=requested,
+        work_item_count=jobs,
     )
     assert plan.effective_worker_count == expected
     assert plan.uses_process_pool is (expected > 1)
@@ -13612,14 +13603,19 @@ def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
     assert "ModeAssemblyPolicy" in finding.summary
 
 
-def test_single_case_registry_does_not_create_a_maturity_obligation(tmp_path: Path) -> None:
+def test_single_case_registry_does_not_create_a_maturity_obligation(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n',
     )
     findings = analyze_path(tmp_path)
-    assert all(finding.detector_id != "premature_registry_infrastructure" for finding in findings)
+    assert all(
+        finding.detector_id != "premature_registry_infrastructure"
+        for finding in findings
+    )
 
 
 def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
@@ -13663,7 +13659,7 @@ def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
 
     assert "ModeRunner" in finding.summary
     assert "Mode.ALPHA" in finding.summary
-    assert "BetaModeRunner" in finding.summary
+    assert "missing keyed types ()" in finding.summary
     assert "not injective" in finding.summary
 
 
@@ -14402,7 +14398,7 @@ def test_detects_candidate_collector_boilerplate(
         "from nominal_refactor_advisor.detectors._base import CandidateFindingDetector\n"
         "def _local_candidates(module): return ()\n"
         "def _configured_candidates(module, config): return ()\n"
-        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n',
+        "\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector[LocalCandidate]):\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n",
     )
     findings = [
         item
@@ -14431,23 +14427,29 @@ def test_detects_candidate_collector_boilerplate(
 
     assert len(plan.records) == 2
     assert all(
-        record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
         for record in plan.records
     ), tuple((record.status, record.reason) for record in plan.records)
     assert all(
-        isinstance(recipe.operations[0], DeriveCandidateCollectorOperation)
-        for recipe in plan.document.recipes
+        record.proposal is not None
+        and isinstance(record.proposal.operations[0], DeriveCandidateCollectorOperation)
+        for record in plan.records
     )
     assert all(
-        tuple(json_report_object(recipe.operations[0]))
+        tuple(json_report_object(record.proposal.operations[0]))
         == ("operation", "target_id", "rationale")
-        for recipe in plan.document.recipes
+        for record in plan.records
+        if record.proposal is not None
     )
+    assert plan.document.recipes == ()
     local_operation = next(
-        recipe.operations[0]
-        for recipe in plan.document.recipes
+        record.proposal.operations[0]
+        for record in plan.records
+        if record.proposal is not None
         if snapshot.source_index.target_by_id[
-            recipe.operations[0].target.required_target_id(snapshot.source_index)
+            record.proposal.operations[0].target.required_target_id(
+                snapshot.source_index
+            )
         ].qualname
         == "LocalDetector._candidate_items"
     )
@@ -14465,13 +14467,14 @@ def test_detects_candidate_collector_boilerplate(
         match="0 current CandidateCollectorBoilerplateCandidate witnesses",
     ):
         local_operation.source_edits(drifted_snapshot)
-    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    assert simulation.is_clean is True
-    simulation.document_simulation.apply()
-    assert not any(
-        finding.detector_id == "candidate_collector_boilerplate"
+    assert {
+        finding.evidence[0].symbol
         for finding in analyze_path(tmp_path)
-    )
+        if finding.detector_id == "candidate_collector_boilerplate"
+    } == {
+        "LocalDetector._candidate_items",
+        "ConfiguredDetector._candidate_items",
+    }
 
 
 def test_candidate_collector_boilerplate_ignores_implementation_base(
@@ -14490,8 +14493,7 @@ def test_candidate_collector_boilerplate_ignores_implementation_base(
     module = parse_python_modules(tmp_path)[0]
 
     assert (
-        base_detectors.CandidateCollectorBoilerplateCandidate.from_module(module)
-        == ()
+        base_detectors.CandidateCollectorBoilerplateCandidate.from_module(module) == ()
     )
 
 
@@ -14541,9 +14543,9 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
-    assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
-        DeclareDetectorClassOperation,
-    )
+    assert tuple(
+        type(operation) for operation in plan.document.recipes[0].operations
+    ) == (DeclareDetectorClassOperation,)
     drifted_snapshot = snapshot.with_virtual_sources(
         {
             source_path: snapshot.sources_by_file_path[source_path].replace(
@@ -14581,7 +14583,7 @@ def test_declarative_detector_class_requires_representable_class_shell(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n    unrelated_cache = {}\n',
+        "\nclass LocalCandidate:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    finding_spec = LOCAL_FINDING_SPEC\n    finding_renderer = LOCAL_FINDING_RENDERER\n    candidate_collector = local_candidates\n    unrelated_cache = {}\n",
     )
 
     assert not any(
@@ -14610,11 +14612,20 @@ def test_declarative_detector_class_preserves_custom_detector_identity(
     (
         ("", "finding_spec: FindingSpec", "", "annotations"),
         (", metaclass=CustomMeta", "finding_spec", "", "header"),
-        ("", "finding_spec", "    # Keep the explanation with its declaration.\n", "comments"),
+        (
+            "",
+            "finding_spec",
+            "    # Keep the explanation with its declaration.\n",
+            "comments",
+        ),
     ),
 )
 def test_declarative_detector_collapse_keeps_unrepresented_source(
-    tmp_path: Path, header: str, spec: str, comment: str, reason: str,
+    tmp_path: Path,
+    header: str,
+    spec: str,
+    comment: str,
+    reason: str,
 ) -> None:
     _write_module(
         tmp_path,
@@ -14626,13 +14637,20 @@ def test_declarative_detector_collapse_keeps_unrepresented_source(
         "    finding_renderer = LOCAL_FINDING_RENDERER\n",
     )
     findings = tuple(
-        item for item in analyze_path(tmp_path)
+        item
+        for item in analyze_path(tmp_path)
         if item.detector_id == "declarative_detector_class"
     )
     assert len(findings) == 1
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
-    plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
-    assert plan.records[0].status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
+    plan = snapshot.plan_from_findings(
+        findings, detector_ids=("declarative_detector_class",)
+    )
+    assert (
+        plan.records[0].status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    )
     assert reason in plan.records[0].reason
 
 
@@ -14732,9 +14750,9 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
-    assert tuple(type(operation) for operation in plan.document.recipes[0].operations) == (
-        DeclareCandidateFindingRendererOperation,
-    )
+    assert tuple(
+        type(operation) for operation in plan.document.recipes[0].operations
+    ) == (DeclareCandidateFindingRendererOperation,)
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[source_path]
     assert simulation.is_clean is True
@@ -14791,7 +14809,9 @@ def test_direct_build_finding_renderer_accepts_complete_builder_payload(
     )
 
 
-def test_direct_build_finding_renderer_preserves_source_comments(tmp_path: Path) -> None:
+def test_direct_build_finding_renderer_preserves_source_comments(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -15497,9 +15517,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
-    operation_payload = json_report_object(
-        plan.document.recipes[0].operations[0]
-    )
+    operation_payload = json_report_object(plan.document.recipes[0].operations[0])
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
@@ -15529,9 +15547,9 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
         "field_names",
         "method_name",
     }.intersection(operation_payload)
-    assert type(RefactorRecipeOperation.from_json_value(operation_payload)).__name__ == (
-        "DeriveRepeatedBuilderAuthorityOperation"
-    )
+    assert type(
+        RefactorRecipeOperation.from_json_value(operation_payload)
+    ).__name__ == ("DeriveRepeatedBuilderAuthorityOperation")
     preflight = plan.document.preflight_snapshot(snapshot)
     assert preflight.preflight_failed is False
     resolution = preflight.reports[0].detail.resolutions[0]
@@ -15609,17 +15627,14 @@ def test_repeated_builder_rewrites_family_beyond_finding_evidence_limit(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
-    additional_participants = "\n".join(
-        f"""
+    additional_participants = "\n".join(f"""
 def build_{index}(source: PlanSource):
     return RuntimePlan(
         pose_id=source.pose_id,
         score=source.score,
         theorem_handles=tuple(source.theorem_handles),
     )
-"""
-        for index in range(7)
-    )
+""" for index in range(7))
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -16328,9 +16343,10 @@ def test_module_cli_emits_declaration_derived_detector_capabilities() -> None:
         },
         "detector_count": len(payload["capabilities"]),
     }
-    assert recipe_evaluation["member_evidence"][0]["implementation"][
-        "qualname"
-    ] == "LiteralDispatchFindingRecipeSynthesizer"
+    assert (
+        recipe_evaluation["member_evidence"][0]["implementation"]["qualname"]
+        == "LiteralDispatchFindingRecipeSynthesizer"
+    )
 
 
 @pytest.mark.parametrize(
@@ -16657,9 +16673,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         alpha_constraint,
         ForbiddenAttributeArchitectureGuardConstraint,
     )
-    assert alpha_constraint.names == (
-        "legacy_alpha_value",
-    )
+    assert alpha_constraint.names == ("legacy_alpha_value",)
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].guard_suite.rules[0].rule_id == "alpha-recipe-boundary"
     recipe_constraint = document.recipes[0].guard_suite.rules[0].constraints[0]
@@ -16667,9 +16681,7 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
         recipe_constraint,
         ForbiddenAttributeArchitectureGuardConstraint,
     )
-    assert recipe_constraint.names == (
-        "legacy_recipe_value",
-    )
+    assert recipe_constraint.names == ("legacy_recipe_value",)
     assert "target_shape" not in json_report_object(document.recipes[0])
     assert document.recipes[0].authority_claims[0].claimed_symbol == (
         "AlphaRunAuthority"
@@ -16752,7 +16764,8 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 ],
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     second_plan_path.write_text(
         json.dumps(
@@ -16783,7 +16796,8 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
                 ],
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     composed_plan_path = tmp_path / "composed-plan.json"
 
@@ -16864,7 +16878,8 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     second_sequence_path.write_text(
         json.dumps(
@@ -16910,7 +16925,8 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     compose_result = subprocess.run(
@@ -17714,50 +17730,27 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     assert len(findings) == 1
     assert continuation_report.finding_count == 1
     assert continuation_report.source_index is simulation.final_snapshot.source_index
-    assert continuation_report.plan.expected_removed_finding_count == 1
-    assert continuation_report.has_continuation_stage is True
-    assert continuation_report.continuation_stage_count == 1
-    assert len(continuation_report.continuation_sequence.documents) == 1
-    assert len(continuation_report.extended_sequence.documents) == 2
-    assert (
-        continuation_report.extended_sequence.documents[-1]
-        == continuation_report.plan.document
+    assert continuation_report.plan.expected_removed_finding_count == 0
+    assert continuation_report.has_continuation_stage is False
+    assert continuation_report.continuation_stage_count == 0
+    assert continuation_report.continuation_sequence.documents == ()
+    assert continuation_report.extended_sequence == sequence
+    assert continuation_report.plan.document.recipes == ()
+    record = continuation_report.plan.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    assert record.recipe is not None
+    assert json_report_object(record.recipe.operations[0])["operation"] == (
+        "convert_manual_registry_to_autoregister"
     )
-    assert json_report_object(
-        continuation_report.plan.document.recipes[0].operations[0]
-    )["operation"] == "convert_manual_registry_to_autoregister"
     continuation_payload = json_report_object(continuation_report)
     assert "source_index" not in continuation_payload
-    assert continuation_payload["has_continuation_stage"] is True
-    assert (
-        continuation_payload["continuation_sequence"]["stages"][0]["recipes"][0][
-            "operations"
-        ][0]["operation"]
-        == "convert_manual_registry_to_autoregister"
-    )
-    assert (
-        continuation_payload["extended_sequence"]["stages"][-1]["recipes"][0][
-            "operations"
-        ][0]["operation"]
-        == "convert_manual_registry_to_autoregister"
-    )
+    assert continuation_payload["has_continuation_stage"] is False
+    assert continuation_payload["continuation_sequence"]["stages"] == ()
+    assert len(continuation_payload["extended_sequence"]["stages"]) == 1
     extended = continuation_report.extended_sequence.simulate(snapshot)
     assert extended.is_clean
-    assert extended.stage_count == 2
+    assert extended.stage_count == 1
     assert generated_path.exists() is False
-    extended.apply()
-    native_result = subprocess.check_output(
-        [
-            sys.executable,
-            "-c",
-            "import json, runpy, sys; "
-            "run = runpy.run_path(sys.argv[1])['run_handler']; "
-            "print(json.dumps([run('alpha', 10), run('beta', 10)]))",
-            str(generated_path),
-        ],
-        text=True,
-    )
-    assert json.loads(native_result) == [11, 9]
 
 
 def test_module_cli_simulates_staged_codemod_plan(
@@ -17812,7 +17805,8 @@ def test_module_cli_simulates_staged_codemod_plan(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -18383,18 +18377,19 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["applied"] is False
     assert payload["is_clean"] is True
     assert payload["simulation"]["parse_validation"]["parse_valid"] is True
-    assert payload["expected_removed_finding_count"] == 1
-    assert payload["synthesis_report"]["candidate_count"] == 1
+    assert payload["expected_removed_finding_count"] == 0
+    assert payload["synthesis_report"]["candidate_count"] == 0
+    assert payload["synthesis_report"]["unsupported_count"] == 1
     assert payload["application_blocked"] is True
     assert payload["synthesis_report"]["application_blocked"] is True
     assert "reachable refactor trajectories" in payload["application_block_reason"]
-    assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
+    assert payload["document"]["recipes"] == []
+    record = payload["synthesis_report"]["records"][0]
+    assert record["status"] == "unproved_recipe_plan"
+    assert record["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
-    assert (
-        "+class RegisteredHandler(metaclass=AutoRegisterMeta):"
-        in (payload["unified_diff"])
-    )
+    assert payload["unified_diff"] == ""
     assert module_path.read_text() == original_source
 
 
@@ -18428,20 +18423,18 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["applied"] is False
     assert payload["preflight_failed"] is False
     assert payload["is_clean"] is True
-    assert payload["report_count"] == 1
-    assert payload["expected_removed_finding_count"] == 1
-    assert payload["synthesis_report"]["candidate_count"] == 1
-    assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
+    assert payload["report_count"] == 0
+    assert payload["expected_removed_finding_count"] == 0
+    assert payload["synthesis_report"]["candidate_count"] == 0
+    assert payload["synthesis_report"]["unsupported_count"] == 1
+    assert payload["document"]["recipes"] == []
+    record = payload["synthesis_report"]["records"][0]
+    assert record["status"] == "unproved_recipe_plan"
+    assert record["recipe"]["operations"][0]["operation"] == (
         "convert_manual_registry_to_autoregister"
     )
     assert payload["preflight_report"]["is_clean"] is True
-    authority_report = payload["preflight_report"]["reports"][0]
-    assert authority_report["operation"] == "authority_claims"
-    assert authority_report["status"] == "passed"
-    resolution = authority_report["details"]["resolutions"][0]
-    assert resolution["claim"]["claimed_symbol"] == "RegisteredHandler"
-    assert resolution["claim"]["authority_kind"] == "autoregister_family"
-    assert resolution["status"] == "declared"
+    assert payload["preflight_report"]["reports"] == []
     assert module_path.read_text() == original_source
 
 
@@ -18528,7 +18521,8 @@ def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
                 "qualnames": ["Alpha.run"],
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -18617,7 +18611,8 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
                 "qualnames": ["Alpha.run"],
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -18694,9 +18689,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                         "constraints": [
                             {
                                 "constraint": "forbidden_calls",
-                                "names": [
-                                    "_ModuleSettingsBindingStrategy.for_module"
-                                ],
+                                "names": ["_ModuleSettingsBindingStrategy.for_module"],
                             },
                             {
                                 "constraint": "forbidden_dispatch",
@@ -18791,7 +18784,8 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                 ],
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     document = load_codemod_plan_document(plan_path)
@@ -18813,9 +18807,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert operation_payloads[4]["operation"] == "patch_target"
     assert operation_payloads[5]["operation"] == "delete_target"
     assert operation_payloads[6]["operation"] == "delete_selected_targets"
-    assert operation_payloads[6]["selector"]["selector"] == (
-        "source_index_target"
-    )
+    assert operation_payloads[6]["selector"]["selector"] == ("source_index_target")
     assert operation_payloads[7]["operation"] == "extract_authority"
     assert (
         operation_payloads[7]["call_replacements"][0]["new_source"]
@@ -18883,7 +18875,8 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     document = load_codemod_plan_document(plan_path)
     modules = parse_python_modules(tmp_path)
@@ -18955,8 +18948,7 @@ def test_erase_dead_compatibility_operation_rejects_remaining_callers(
 
 def test_target_deletion_leaves_own_distinct_registered_operations() -> None:
     assert (
-        RefactorRecipeOperation.__registry__["delete_target"]
-        is DeleteTargetOperation
+        RefactorRecipeOperation.__registry__["delete_target"] is DeleteTargetOperation
     )
     assert (
         RefactorRecipeOperation.__registry__["erase_dead_compatibility"]
@@ -19057,7 +19049,8 @@ def test_delete_selected_targets_rejects_selection_count_overflow(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     document = load_codemod_plan_document(plan_path)
     modules = parse_python_modules(tmp_path)
@@ -19095,7 +19088,8 @@ def test_selected_targets_rejects_invalid_selection_count_contract(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     with pytest.raises(ValueError, match="selection_count min cannot exceed max"):
@@ -19279,7 +19273,8 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
     )
     module_path.write_text(
         "class Alpha:\n    pass\n\nclass Changed:\n    pass\n",
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     cache_context = SemanticDescentGraphCacheContext(
         storage_root=semantic_cache_dir,
@@ -19346,7 +19341,8 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -19495,26 +19491,33 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
 def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod import AutoRegisterClassRegistryConcept
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
+    detector_id = "new_obligation_goal_test_detector"
+    module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        (
-            "REGISTRY = {}\n\n\n"
-            "class AlphaHandler:\n"
-            "    pass\n\n\n"
-            "class BetaHandler:\n"
-            "    pass\n\n\n"
-            "REGISTRY['alpha'] = AlphaHandler\n"
-            "REGISTRY['beta'] = BetaHandler\n"
-        ),
+        "value = 1\n",
     )
 
-    original_source = (tmp_path / "pkg/mod.py").read_text()
+    original_source = module_path.read_text()
+    initial = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Initial authority obligation",
+        "The initial fact has one fully proved source transition.",
+        "single nominal owner",
+        "one exact source replacement reaches the candidate terminal",
+    ).build(
+        detector_id,
+        "The test transition has not yet moved the value.",
+        (SourceLocation(module_path.as_posix(), 1, "value"),),
+    )
     introduced = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
         "New authority obligation",
@@ -19524,8 +19527,38 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     ).build(
         "semantic_mirror_without_descent",
         "The test projection introduces an unresolved authority relation.",
-        (SourceLocation((tmp_path / "pkg/mod.py").as_posix(), 1, "REGISTRY"),),
+        (SourceLocation(module_path.as_posix(), 1, "value"),),
     )
+
+    class NewObligationSynthesizer(FindingRecipeSynthesizer, SemanticCarrierConcept):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "value"),),
+            )
+
+        def evaluate_recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ):
+            del finding, context
+            return self.executable_evaluation(
+                RefactorRecipe("introduce-terminal-obligation").with_operation(
+                    PatchTargetOperation(
+                        target=SourceRewriteTarget(file_path=module_path.as_posix()),
+                        replacements=(
+                            SourceTextReplacement(
+                                old_source="value = 1",
+                                new_source="value = 2",
+                            ),
+                        ),
+                    )
+                )
+            )
 
     class NewObligationRunner(CodemodRefactorGoalRunner):
         """Exercise the gate independently of incidental detector heuristics."""
@@ -19539,14 +19572,26 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
                 return replace(exact, findings=[*exact.findings, introduced])
             return exact
 
-    report = NewObligationRunner(
-        roots=(tmp_path,),
-        config=DetectorConfig(),
-        parse_workers=1,
-        dry_run=True,
-        migration_type=AutoRegisterClassRegistryConcept,
-        guard_suite=ArchitectureGuardSuite(),
-    ).run()
+    previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
+    _FINDING_RECIPE_TEST_REGISTRY[detector_id] = NewObligationSynthesizer
+    try:
+        report = NewObligationRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            migration_type=SemanticCarrierConcept,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodWorkflowScan(
+                modules=parse_python_modules(tmp_path),
+                findings=[initial],
+            ),
+        ).run()
+    finally:
+        if previous_synthesizer is None:
+            _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
+        else:
+            _FINDING_RECIPE_TEST_REGISTRY[detector_id] = previous_synthesizer
 
     assert report.stop_reason is CodemodWorkflowStopReason.NO_PROVED_TRAJECTORY
     assert report.trajectory_proof.status is (
@@ -19821,13 +19866,11 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     )
     stage_payload = json_report_object(report)["stages"][0]
     assert "synthesis_report" not in stage_payload
-    assert (
-        stage_payload["finding_delta"]["before_finding_ids"]
-        == (stage_payload["progress"]["before_target_finding_ids"])
+    assert stage_payload["finding_delta"]["before_finding_ids"] == (
+        stage_payload["progress"]["before_target_finding_ids"]
     )
-    assert (
-        stage_payload["finding_delta"]["after_finding_ids"]
-        == (stage_payload["progress"]["after_target_finding_ids"])
+    assert stage_payload["finding_delta"]["after_finding_ids"] == (
+        stage_payload["progress"]["after_target_finding_ids"]
     )
     assert len(stage_payload["class_plan_report"]["classes"]) == 1
     assert (
@@ -20518,7 +20561,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     assert module_path.read_text(encoding="utf-8") == original_source
 
 
-def test_class_family_migration_proves_complete_serial_trajectory(
+def test_class_family_migration_rejects_unproved_external_class_creation(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
@@ -20541,24 +20584,20 @@ def test_class_family_migration_proves_complete_serial_trajectory(
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    assert report.stop_reason.completed is True
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert report.stage_count == 2
-    first_stage = report.stages[0]
-    first_source = first_stage.simulation.simulation.rewritten_sources[
-        module_path.as_posix()
-    ]
-    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in first_source
-    assert "ALL_HANDLERS = (AlphaHandler, BetaHandler)" in first_source
-    assert report.replay_sequence.documents == tuple(
-        stage.simulation.document for stage in report.stages
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stage_count == 0
+    assert report.replay_sequence.documents == ()
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
+    obstacle = report.trajectory_proof.obstacles[0]
+    assert obstacle.kind is CodemodRefactorTrajectoryObstacleKind.RECIPE_FRONTIER
+    assert obstacle.recipe_obstacles[0].kind is (
+        FindingRecipeTrajectoryObstacleKind.CANDIDATE_SIMULATION
     )
-    assert report.trajectory_proof.status.proved is True
     assert module_path.read_text(encoding="utf-8") == _staged_class_family_source()
-    assert all("stage_index" not in json_report_object(stage) for stage in report.stages)
 
 
-def test_class_family_migration_commits_only_after_complete_trajectory_proof(
+def test_class_family_migration_never_commits_an_unproved_first_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -20604,16 +20643,14 @@ def test_class_family_migration_commits_only_after_complete_trajectory_proof(
     ).run()
 
     final_source = module_path.read_text(encoding="utf-8")
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert report.stage_count == 2
-    assert all(stage.applied for stage in report.stages)
-    assert len(applied_reports) == 1
-    assert final_source != original_source
-    assert report.trajectory_proof.status.proved is True
-    assert report.stages[-1].simulation.document.guard_suite == terminal_guard_suite
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stage_count == 0
+    assert applied_reports == []
+    assert final_source == original_source
+    assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
 
 
-def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
+def test_class_family_migration_reports_native_proof_before_depth_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -20647,8 +20684,10 @@ def test_class_family_migration_keeps_disk_unchanged_until_goal_is_proved(
     assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
     assert report.stage_count == 0
     assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
-    assert report.trajectory_proof.obstacles[0].kind is (
-        CodemodRefactorTrajectoryObstacleKind.DEPTH_BUDGET
+    obstacle = report.trajectory_proof.obstacles[0]
+    assert obstacle.kind is CodemodRefactorTrajectoryObstacleKind.RECIPE_FRONTIER
+    assert obstacle.recipe_obstacles[0].kind is (
+        FindingRecipeTrajectoryObstacleKind.CANDIDATE_SIMULATION
     )
     assert module_path.read_text(encoding="utf-8") == original_source
 
@@ -20686,14 +20725,13 @@ def test_class_family_name_projection_reads_registered_family_authority() -> Non
     )
 
 
-def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
+def test_class_family_goal_does_not_project_an_unproved_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import nominal_refactor_advisor.codemod_workflow as workflow_module
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
-    from nominal_refactor_advisor.detectors import IssueDetector
 
     _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
     exact_scan_count = 0
@@ -20736,19 +20774,11 @@ def test_class_family_goal_restricts_inner_scans_and_keeps_exact_terminal_gate(
         guard_suite=ArchitectureGuardSuite(),
     ).run()
 
-    semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
-    assert report.stop_reason.completed is True
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert exact_scan_count == 2
-    assert len(detector_rosters) == report.stage_count == 2
-    assert all(
-        semantic_mirror_ids <= frozenset(detector_roster)
-        for detector_roster in detector_rosters
-    )
-    assert all(
-        len(detector_roster) < len(IssueDetector.registered_detector_types())
-        for detector_roster in detector_rosters
-    )
+    assert report.stop_reason.completed is False
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert exact_scan_count == 1
+    assert detector_rosters == []
+    assert report.stage_count == 0
 
 
 def test_codemod_refactor_goal_runner_scopes_context_root_progress(
@@ -20854,12 +20884,8 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     assert report.stop_reason.completed is True
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
     assert report.final_target_finding_ids == ()
-    assert report.stages[0].progress.before_ids == (
-        report_finding.stable_id,
-    )
-    assert context_finding.stable_id not in (
-        report.stages[0].progress.before_ids
-    )
+    assert report.stages[0].progress.before_ids == (report_finding.stable_id,)
+    assert context_finding.stable_id not in (report.stages[0].progress.before_ids)
     assert report.stages[0].progress.after_ids == ()
 
 
@@ -20975,11 +21001,14 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
-    assert FindingRecipeSynthesizer.findings_for_concept(
-        findings,
-        SemanticCarrierConcept,
-        snapshot,
-    ) == findings
+    assert (
+        FindingRecipeSynthesizer.findings_for_concept(
+            findings,
+            SemanticCarrierConcept,
+            snapshot,
+        )
+        == findings
+    )
     assert RefactorConcept.leaf_concept_for_declaration(
         SemanticCarrierConcept
     ).concept_key() == ("semantic_carrier")
@@ -21013,7 +21042,8 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -21038,7 +21068,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
     assert "accepts guard-only --codemod-plan input" in result.stderr
 
 
-def test_module_cli_exports_only_proved_goal_replay_plan(
+def test_module_cli_does_not_export_unproved_goal_replay_plan(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -21067,20 +21097,16 @@ def test_module_cli_exports_only_proved_goal_replay_plan(
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "completed" not in payload
     assert "achieved" not in payload
-    assert payload["stop_reason"] == "achieved"
-    assert payload["trajectory_proof"]["status"] == "proved"
-    assert payload["stage_count"] == 1
-    assert payload["total_rewrite_count"] == 1
-    assert payload["stages"][0]["applied"] is False
-    assert plan_path.exists()
-    assert payload["replay_sequence"]["stages"][0]["recipes"][0]["recipe_id"] == (
-        payload["stages"][0]["class_plan_report"]["finding_recipe_plan"][
-            "document"
-        ]["recipes"][0]["recipe_id"]
-    )
+    assert payload["stop_reason"] == "unproved_trajectory"
+    assert payload["trajectory_proof"]["status"] == "incomplete"
+    assert payload["stage_count"] == 0
+    assert payload["total_rewrite_count"] == 0
+    assert payload["stages"] == []
+    assert payload["replay_sequence"]["stages"] == []
+    assert not plan_path.exists()
 
     incomplete_plan_path = tmp_path / "incomplete-goal-replay-plan.json"
     incomplete_result = subprocess.run(
@@ -21132,7 +21158,8 @@ def test_module_cli_simulates_projected_findings_for_created_files(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -21234,12 +21261,18 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
 
     assert payload["moved_class_count"] == 1
     assert payload["eliminated_class_count"] == 1
-    assert statuses_by_declaration[
-        SemanticMirrorWithoutDescentDetector.required_relation_identity()
-    ] == "moved"
-    assert statuses_by_declaration[
-        runtime_detectors.ManualClassRegistrationDetector.required_relation_identity()
-    ] == "eliminated"
+    assert (
+        statuses_by_declaration[
+            SemanticMirrorWithoutDescentDetector.required_relation_identity()
+        ]
+        == "moved"
+    )
+    assert (
+        statuses_by_declaration[
+            runtime_detectors.ManualClassRegistrationDetector.required_relation_identity()
+        ]
+        == "eliminated"
+    )
 
 
 def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes(
@@ -21494,21 +21527,19 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     execution_class = payload["execution_plan"]["classes"][0]
     finding_plan = payload["finding_recipe_plan"]
     synthesis_record = finding_plan["synthesis_report"]["records"][0]
-    recipe = class_payload["document"]["recipes"][0]
-    operation = recipe["operations"][0]
     class_record = json_report_object(report.classes[0].synthesis_records[0])
 
     assert isinstance(report, FindingRecipeClassPlanReport)
     assert isinstance(report.classes[0], FindingRecipeClassPlan)
     assert len(payload["classes"]) == 1
-    assert finding_plan["expected_removed_finding_count"] == 1
+    assert finding_plan["expected_removed_finding_count"] == 0
     assert finding_plan["application_blocked"] is True
     assert "reachable refactor trajectories" in finding_plan["application_block_reason"]
     assert class_payload["class_id"] == execution_class["class_id"]
     assert execution_class["evidence_site_count"] >= 1
     assert execution_class["evidence"]
     assert len(report.classes[0].synthesis_records) == 1
-    assert synthesis_record["status"] == "executable_candidate"
+    assert synthesis_record["status"] == "unproved_recipe_plan"
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
     assert "scaffold" not in synthesis_record
     assert "codemod_patch" not in synthesis_record
@@ -21523,9 +21554,10 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     assert synthesis_record["evaluation_declaration"] == (
         "ManualClassRegistrationDetector"
     )
-    assert recipe["recipe_id"] == synthesis_record["recipe"]["recipe_id"]
-    assert "target_shape" not in recipe
-    assert operation["operation"] == "convert_manual_registry_to_autoregister"
+    assert class_payload["document"]["recipes"] == ()
+    assert synthesis_record["recipe"]["operations"][0]["operation"] == (
+        "convert_manual_registry_to_autoregister"
+    )
 
 
 def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
@@ -21608,10 +21640,13 @@ def test_module_cli_synthesizes_class_plan_with_typed_recipes(
     assert "synthesis_records" not in class_payload
     assert "replacement_scaffold" not in class_payload
     assert "site_plans" not in class_payload
+    synthesis_record = payload["finding_recipe_plan"]["synthesis_report"]["records"][0]
+    assert synthesis_record["status"] == "unproved_recipe_plan"
     assert (
-        class_payload["document"]["recipes"][0]["operations"][0]["operation"]
+        synthesis_record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
     )
+    assert class_payload["document"]["recipes"] == []
 
 
 def test_module_cli_class_plan_simulates_projected_finding_class_delta(
@@ -21662,20 +21697,20 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     assert payload["simulation_result"]["simulation"]["parse_validation"]["parse_valid"]
     assert "finding_class_delta" in projected
     assert projected["finding_delta"]["fulfilled_expected_removals"]
-    assert projected["finding_delta"]["expected_removed_finding_count"] == 1
-    assert projected["finding_delta"]["confirmed_expected_removed_finding_count"] == 1
+    assert projected["finding_delta"]["expected_removed_finding_count"] == 0
+    assert projected["finding_delta"]["confirmed_expected_removed_finding_count"] == 0
     assert projected["finding_delta"]["surviving_expected_removed_finding_count"] == 0
-    assert projected["finding_class_delta"]["eliminated_class_count"] >= 1
+    assert projected["finding_class_delta"]["eliminated_class_count"] == 0
     assert len(class_projection["classes"]) == 1
     assert class_delta["fulfilled_expected_removals"] is True
-    assert class_delta["status_counts"]["eliminated"] >= 1
-    assert class_delta["changes"][0]["status"] == "eliminated"
+    assert class_delta["status_counts"]["unchanged"] == 1
+    assert class_delta["changes"][0]["status"] == "unchanged"
     assert "projected_result_status" not in class_delta
     assert class_delta["class_id"] == class_plan["class_id"]
     assert "synthesis_records" not in class_plan
     assert synthesis_record["refactor_concept"] == "auto_register_class_registry"
     assert site_delta["finding_id"] == synthesis_record["finding_id"]
-    assert site_delta["status_counts"]["eliminated"] >= 1
+    assert site_delta["status_counts"]["unchanged"] == 1
     assert site_delta["fulfilled_expected_removal"] is True
     assert (
         synthesis_record["recipe"]["operations"][0]["operation"]
@@ -21732,7 +21767,7 @@ def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
 
 
 @pytest.mark.parametrize("include_source_index", (False, True))
-def test_module_cli_simulates_projected_findings_with_executable_continuation(
+def test_module_cli_retains_unproved_projected_continuation_recipe(
     tmp_path: Path,
     include_source_index: bool,
 ) -> None:
@@ -21758,7 +21793,8 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -21798,31 +21834,29 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
         finding["detector_id"] == "manual_class_registration"
         for finding in projected_findings["after_findings"]
     )
-    assert projected_continuation["has_continuation_stage"] is True
-    assert projected_continuation["continuation_stage_count"] == 1
+    assert projected_continuation["has_continuation_stage"] is False
+    assert projected_continuation["continuation_stage_count"] == 0
     assert len(projected_continuation["sequence"]["stages"]) == 1
-    assert len(projected_continuation["continuation_sequence"]["stages"]) == 1
-    assert len(projected_continuation["extended_sequence"]["stages"]) == 2
+    assert projected_continuation["continuation_sequence"]["stages"] == []
+    assert len(projected_continuation["extended_sequence"]["stages"]) == 1
     assert (
         projected_continuation["finding_recipe_plan"]["expected_removed_finding_count"]
-        == 1
+        == 0
     )
+    record = projected_continuation["finding_recipe_plan"]["synthesis_report"][
+        "records"
+    ][0]
+    assert record["status"] == "unproved_recipe_plan"
     assert (
-        projected_continuation["extended_sequence"]["stages"][-1]["recipes"][0][
-            "operations"
-        ][0]["operation"]
+        record["recipe"]["operations"][0]["operation"]
         == "convert_manual_registry_to_autoregister"
     )
     continuation_payload = json.loads(
         continuation_plan_path.read_text(encoding="utf-8")
     )
     continuation_sequence = load_codemod_plan_sequence(continuation_plan_path)
-    assert continuation_sequence.has_recipes
-    assert len(continuation_payload["stages"]) == 1
-    assert (
-        continuation_payload["stages"][0]["recipes"][0]["operations"][0]["operation"]
-        == "convert_manual_registry_to_autoregister"
-    )
+    assert continuation_sequence.has_recipes is False
+    assert continuation_payload["stages"] == []
 
 
 def test_codemod_workflow_reports_derive_json_from_declarations() -> None:
@@ -21835,8 +21869,7 @@ def test_codemod_workflow_reports_derive_json_from_declarations() -> None:
 
     assert workflow_report_types
     assert all(
-        "to_dict" not in report_type.__dict__
-        for report_type in workflow_report_types
+        "to_dict" not in report_type.__dict__ for report_type in workflow_report_types
     )
 
 
@@ -22014,7 +22047,8 @@ def test_module_cli_recipe_only_codemod_apply_without_structural_overlap(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -22091,7 +22125,8 @@ def test_module_cli_recipe_only_extract_authority_apply(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -22154,7 +22189,8 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
                 ]
             }
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
 
     result = subprocess.run(
@@ -22236,13 +22272,22 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
         backend=CodemodBackend.AST_SPAN,
     )
 
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    recipe = plan.document.recipes[0]
+    assert plan.expected_removed_finding_count == 0
+    assert plan.document.recipes == ()
+    assert len(plan.records) == 1
+    record = plan.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    assert record.recipe is not None
+    recipe = record.recipe
     operation_declaration = recipe.operations[0]
     operation = json_report_object(operation_declaration)
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "rationale",
+        "supported_execution",
+    }
     assert operation["target_id"] in {
         target.target_id
         for target in source_index.ast_targets
@@ -22250,9 +22295,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     }
     assert RefactorRecipeOperation.from_json_value(operation) == operation_declaration
     assert recipe.authority_claims == ()
-    declared_claims = operation_declaration.declared_authority_claims(
-        selector_context
-    )
+    declared_claims = operation_declaration.declared_authority_claims(selector_context)
     assert len(declared_claims) == 1
     assert declared_claims[0].claimed_symbol == "RegisteredHandler"
     assert declared_claims[0].authority_kind is (
@@ -22279,19 +22322,25 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
             }
         )
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 1
-    assert json_report_object(simulation)["expected_removed_finding_count"] == 1
-    assert json_report_object(simulation)["simulation"]["parse_validation"]["parse_valid"] is True
-    assert json_report_object(simulation)["simulation"]["parse_validation"][
-        "validated_file_paths"
-    ] == (module_path.as_posix(),)
+    assert simulation.simulation.applied_rewrite_count == 0
+    assert json_report_object(simulation)["expected_removed_finding_count"] == 0
+    assert (
+        json_report_object(simulation)["simulation"]["parse_validation"]["parse_valid"]
+        is True
+    )
+    assert (
+        json_report_object(simulation)["simulation"]["parse_validation"][
+            "validated_file_paths"
+        ]
+        == ()
+    )
     simulation.document_simulation.apply()
     remaining = tuple(
         finding
         for finding in analyze_modules(parse_python_modules(tmp_path))
         if finding.detector_id == "manual_class_registration"
     )
-    assert remaining == ()
+    assert len(remaining) == 1
 
 
 def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
@@ -22340,12 +22389,21 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
         backend=CodemodBackend.AST_SPAN,
     )
 
-    assert plan.expected_removed_finding_count == 1
-    assert len(plan.document.recipes) == 1
-    recipe = plan.document.recipes[0]
+    assert plan.expected_removed_finding_count == 0
+    assert plan.document.recipes == ()
+    assert len(plan.records) == 1
+    record = plan.records[0]
+    assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+    assert record.recipe is not None
+    recipe = record.recipe
     operation = json_report_object(recipe.operations[0])
     assert operation["operation"] == "convert_manual_registry_to_autoregister"
-    assert set(operation) == {"operation", "target_id", "rationale"}
+    assert set(operation) == {
+        "operation",
+        "target_id",
+        "rationale",
+        "supported_execution",
+    }
     assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     assert recipe.authority_claims == ()
     declared_claims = recipe.declared_authority_claims(selector_context)
@@ -22357,24 +22415,18 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     assert declared_claims[0].authority_id
     assert simulation.is_clean is True
     assert simulation.simulation.parse_valid is True
+    assert simulation.simulation.applied_rewrite_count == 0
     simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "class RegisteredStep" not in rewritten
-    assert "class Step(metaclass=AutoRegisterMeta):" in rewritten
-    assert "STEP_TABLE = Step.__registry__" in rewritten
-    namespace: dict[str, object] = {}
-    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
-    table = cast(dict[str, type[object]], namespace["STEP_TABLE"])
-    assert table == {
-        "load": namespace["LoadStep"],
-        "save": namespace["SaveStep"],
-    }
+    assert "class Step(metaclass=AutoRegisterMeta):" not in rewritten
+    assert "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}" in rewritten
     remaining = tuple(
         finding
         for finding in analyze_modules(parse_python_modules(tmp_path))
         if finding.detector_id == "semantic_mirror_without_descent"
     )
-    assert remaining == ()
+    assert len(remaining) == 1
 
 
 def test_detects_manual_concrete_subclass_roster_with_abstract_filter(
@@ -22917,8 +22969,7 @@ def _parallel_mirrored_leaf_family_source(
 ) -> str:
     root_header_suffix = ", metaclass=AutoRegisterMeta" if autoregister else ""
     registry_contract = (
-        "    __registry_key__ = 'role_key'\n"
-        "    __skip_if_no_key__ = True\n"
+        "    __registry_key__ = 'role_key'\n" "    __skip_if_no_key__ = True\n"
         if autoregister
         else ""
     )
@@ -22959,9 +23010,7 @@ def _parallel_mirrored_leaf_family_source(
     return (
         f"{prefix}from abc import ABC, abstractmethod\n\n\n"
         f"{registry_import}"
-        f"{roots}\n\n\n"
-        + "\n\n\n".join(leaves)
-        + "\n"
+        f"{roots}\n\n\n" + "\n\n\n".join(leaves) + "\n"
     )
 
 
@@ -23038,9 +23087,12 @@ def test_parallel_leaf_products_reject_overlapping_nonclique_pairs(
     assert graph.edge_count == 2
     assert tuple(len(component) for component in graph.connected_components) == (3,)
     assert graph.clique_components == ()
-    assert builder.proven_components(
-        min_shared_roles=builder.minimum_product_role_count,
-    ) == ()
+    assert (
+        builder.proven_components(
+            min_shared_roles=builder.minimum_product_role_count,
+        )
+        == ()
+    )
     assert not any(
         finding.detector_id == "parallel_mirrored_leaf_family"
         for finding in analyze_path(tmp_path)
@@ -23077,9 +23129,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         findings,
         detector_ids=("parallel_mirrored_leaf_family",),
     )
-    assert plan.records[0].status is (
-        FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-    )
+    assert plan.records[0].status is (FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE)
     expected_class_count = len(domains) * (len(_PARALLEL_LEAF_ROLES) + 1)
     assert len(plan.records[0].action_keys) == expected_class_count
     recipe = plan.document.recipes[0]
@@ -23106,8 +23156,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     assert authority_report is not None
     assert authority_report.status is CodemodPreflightStatus.PASSED
     assert {
-        resolution.status.value
-        for resolution in authority_report.detail.resolutions
+        resolution.status.value for resolution in authority_report.detail.resolutions
     } == {"declared"}
 
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -23122,8 +23171,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         assert f"class {role}Emitter:" in rewritten
         for domain in domains:
             assert (
-                f"class {domain}{role}Emitter({role}Emitter, "
-                f"{domain}FieldEmitter):"
+                f"class {domain}{role}Emitter({role}Emitter, " f"{domain}FieldEmitter):"
             ) in rewritten
 
     original_namespace: dict[str, object] = {}
@@ -23188,7 +23236,8 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
             "    def emit(self, artifact):\n"
             "        return artifact.receipt_gamma",
         ),
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path),
@@ -24257,7 +24306,8 @@ def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
         "    handler_id = 'beta'\n\n"
         "    def run(self):\n"
         "        return 'beta-changed'\n\n\n"
-        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n", newline=""
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n",
+        newline="",
     )
     third_result = subprocess.run(
         command,
@@ -24628,27 +24678,21 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
         "semantic_mirror_without_descent",
         "small authority branch",
         (SourceLocation("module.py", 10, "SmallAuthority.guard"),),
-        projection_evidence=SourceLocation(
-            "module.py", 10, "SmallAuthority.guard"
-        ),
+        projection_evidence=SourceLocation("module.py", 10, "SmallAuthority.guard"),
         title="A small authority branch",
     )
     large_one = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group one",
         (SourceLocation("module.py", 20, "LargeBoundary.alpha"),),
-        projection_evidence=SourceLocation(
-            "module.py", 20, "LargeBoundary.alpha"
-        ),
+        projection_evidence=SourceLocation("module.py", 20, "LargeBoundary.alpha"),
         title="Z large boundary group",
     )
     large_two = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group two",
         (SourceLocation("module.py", 30, "LargeBoundary.beta"),),
-        projection_evidence=SourceLocation(
-            "module.py", 30, "LargeBoundary.beta"
-        ),
+        projection_evidence=SourceLocation("module.py", 30, "LargeBoundary.beta"),
         title="Z large boundary group",
     )
 
@@ -24680,9 +24724,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "narrow branch one",
         (SourceLocation("module.py", 10, "NarrowAuthority.alpha"),),
-        projection_evidence=SourceLocation(
-            "module.py", 10, "NarrowAuthority.alpha"
-        ),
+        projection_evidence=SourceLocation("module.py", 10, "NarrowAuthority.alpha"),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -24695,9 +24737,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "narrow branch two",
         (SourceLocation("module.py", 20, "NarrowAuthority.beta"),),
-        projection_evidence=SourceLocation(
-            "module.py", 20, "NarrowAuthority.beta"
-        ),
+        projection_evidence=SourceLocation("module.py", 20, "NarrowAuthority.beta"),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -24710,9 +24750,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
         "repeated_builder_calls",
         "broad semantic certificate",
         (SourceLocation("module.py", 30, "BroadAuthority.mapping"),),
-        projection_evidence=SourceLocation(
-            "module.py", 30, "BroadAuthority.mapping"
-        ),
+        projection_evidence=SourceLocation("module.py", 30, "BroadAuthority.mapping"),
         title="Z broad semantic certificate",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -24831,9 +24869,7 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
         "semantic_mirror_without_descent",
         "ComponentAxisAuthority has no resolved descent path.",
         (SourceLocation("module.py", 1, "ComponentAxisAuthority"),),
-        projection_evidence=SourceLocation(
-            "module.py", 1, "ComponentAxisAuthority"
-        ),
+        projection_evidence=SourceLocation("module.py", 1, "ComponentAxisAuthority"),
     )
     boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding(finding)
     discovery_findings = (
@@ -24844,8 +24880,7 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     report = SemanticRefactorGateReport.from_findings((finding,))
 
     payload_findings = [
-        json_report_object(finding_report)
-        for finding_report in report.finding_reports
+        json_report_object(finding_report) for finding_report in report.finding_reports
     ]
     report_payload = json_report_object(report)
     discovery_payloads = cast(
@@ -25778,11 +25813,7 @@ def test_method_family_candidate_identity_includes_the_resolved_base(
 
     assert len(semantic_findings) == 2
     assert {
-        tuple(
-            sorted(
-                {Path(location.file_path).name for location in finding.evidence}
-            )
-        )
+        tuple(sorted({Path(location.file_path).name for location in finding.evidence}))
         for finding in semantic_findings
     } == {("alpha.py",), ("beta.py",)}
 
@@ -26105,7 +26136,8 @@ def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
     lean_path.parent.mkdir(parents=True)
     lean_path.write_text(
         '\ndef requestProfileId := "selection_replay_repair_audit_request"\ndef reuseProfileId := "selection_replay_repair_audit_reuse"\ndef finalProfileId := "selection_replay_repair_final_bound"\n',
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -26155,7 +26187,8 @@ def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifac
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(
         '{"default_profiles": [{"profile_id": "selection_replay_repair_audit_request"}, {"profile_id": "selection_replay_repair_audit_reuse"}, {"profile_id": "selection_replay_repair_final_bound"}]}',
-        encoding="utf-8", newline="",
+        encoding="utf-8",
+        newline="",
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -26747,8 +26780,10 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     )
     authored = replace(proposal, operations=(operation,))
     authored = RefactorRecipe.from_json_value(json_report_object(authored))
-    simulation = CodemodPlanDocument(recipes=(authored,)).as_sequence().simulate(
-        snapshot, backend=CodemodBackend.AST_SPAN
+    simulation = (
+        CodemodPlanDocument(recipes=(authored,))
+        .as_sequence()
+        .simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     )
     assert simulation.is_clean is True
     rewritten = simulation.final_snapshot.sources_by_file_path[module_path.as_posix()]

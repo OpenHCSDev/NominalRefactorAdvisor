@@ -18,6 +18,9 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
 from nominal_refactor_advisor.source_index import build_source_index
+from native_use_test_support import (
+    simulate_with_rendered_registry_creator_support,
+)
 
 _DISTINCT_ENUM = """class Mode(Enum):
     ALPHA = auto()
@@ -179,18 +182,10 @@ def test_manual_conversion_does_not_assume_member_spellings_are_unique(
             operation.source_edits_from_snapshot(snapshot)
         return
 
-    result = (
-        RefactorRecipe("distinct-registry-keys")
-        .with_operation(operation)
-        .simulate(snapshot)
-    )
-    assert result.is_clean
-    converted = _native_keys(
-        result.simulation.rewritten_sources[module.file_path], aliases, key_count
-    )
-    assert len(converted.REGISTRY) == 2
-    assert converted.REGISTRY[converted.Mode.ALPHA] is converted.AlphaHandler
-    assert converted.REGISTRY[converted.Mode.BETA] is converted.BetaHandler
+    # Static enum-key equivalence does not admit the imported enum/auto execution
+    # that precedes the registered class objects in this source activation.
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        operation.source_edits_from_snapshot(snapshot)
 
 
 @pytest.mark.parametrize(

@@ -2162,31 +2162,42 @@ def _compact_keyed_registry_axis_facts(
                 is not None
             }
         )
-        try:
-            key_entries = tuple(
-                (
-                    member.resolve_mapping_key(mapping_key_authority, descendant),
-                    member.expression,
-                    (_compact_registry_class_display_name(descendant, class_index),),
+        key_entries = []
+        unresolved_type_names = set()
+        for descendant in concrete_descendants:
+            descendant_name = _compact_registry_class_display_name(
+                descendant,
+                class_index,
+            )
+            try:
+                member = class_index.direct_or_absent_value_declaration(
+                    descendant.symbol, registry_key_attr_name
                 )
+                if member is None:
+                    continue
+                key_entries.append(
+                    (
+                        member.resolve_mapping_key(
+                            mapping_key_authority,
+                            descendant,
+                        ),
+                        member.expression,
+                        (descendant_name,),
+                    )
+                )
+            except (KeyError, ValueError):
+                unresolved_type_names.add(descendant_name)
+        injectivity_proof = InjectiveTypeRegistryProof.from_partially_resolved_key_entries(
+            key_axis_name=key_type_name,
+            key_entries=key_entries,
+            registered_type_names=tuple(
+                _compact_registry_class_display_name(descendant, class_index)
                 for descendant in concrete_descendants
-                for member in (
-                    descendant.direct_value_writes_by_name[registry_key_attr_name],
-                )
-            )
-        except (KeyError, ValueError):
-            injectivity_proof = None
-        else:
-            injectivity_proof = InjectiveTypeRegistryProof.from_key_entries(
-                key_axis_name=key_type_name,
-                key_entries=key_entries,
-                registered_type_names=tuple(
-                    _compact_registry_class_display_name(descendant, class_index)
-                    for descendant in concrete_descendants
-                ),
-                reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
-                consumer_symbols=consumer_symbols,
-            )
+            ),
+            unresolved_type_names=unresolved_type_names,
+            reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
+            consumer_symbols=consumer_symbols,
+        )
         facts.append(
             KeyedRegistryAxisFact(
                 file_path=indexed_class.file_path,

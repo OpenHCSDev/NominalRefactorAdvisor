@@ -2170,6 +2170,28 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             )
         )
 
+    def direct_or_absent_value_declaration(
+        self,
+        class_symbol: str,
+        member_name: str,
+    ) -> CompactClassMemberDeclaration | None:
+        """Require a direct value or proved absence throughout the native MRO."""
+
+        owner = self.classes_by_symbol[class_symbol]
+        direct = owner.direct_value_writes_by_name.get(member_name)
+        if direct is not None:
+            return direct
+        resolution = self.mro_authority.resolve(class_symbol)
+        if resolution.mro_type is None:
+            raise ValueError("Class value lookup requires a closed MRO")
+        inherited = any(
+            member_name in ancestor.direct_value_writes_by_name
+            for ancestor in resolution.mro_type.declarations[1:]
+        )
+        if inherited:
+            raise ValueError("Class value is inherited rather than directly declared")
+        return None
+
     @cached_property
     def product_authority_resolutions_by_symbol(
         self,

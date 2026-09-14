@@ -69,9 +69,11 @@ from .product_flow import (
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
     CompactValueUse,
+    CompactVariableAnnotationTarget,
     CurrentClassMemberMethodReference,
     SourceProductFlowProjection,
 )
+from .scan_cache import ScanCache
 from .value_expression import LexicalValueReference
 
 
@@ -868,6 +870,15 @@ class ProductFlowRepository(
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
         )
 
+    def _annotation_mutation_resolution(
+        self,
+        context: CompactFlowContext,
+        mutation: CompactMutation[CompactVariableAnnotationTarget],
+    ) -> CompactCallTargetResolution:
+        """Annotation storage belongs to the compiler namespace, not a class object."""
+        del context, mutation
+        return self._non_definition_resolution()
+
     def _binding_mutation_resolution(
         self,
         context: CompactFlowContext,
@@ -1031,6 +1042,7 @@ class ProductFlowRepository(
         )
 
     @cached_property
+    @ScanCache.scope()
     def product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:
         """Exhaust all evidence for survivors; stop once every candidate is rejected."""
         remaining = dict(self.declared_product_authorities_by_symbol)
@@ -1045,6 +1057,7 @@ class ProductFlowRepository(
         return remaining
 
     @cached_property
+    @ScanCache.scope()
     def product_runtime_failures_by_authority_symbol(
         self,
     ) -> CompactProductRuntimeFailureIndex:

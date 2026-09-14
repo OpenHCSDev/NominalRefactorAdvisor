@@ -70,12 +70,12 @@ def test_batched_collectors_inspect_each_native_base_once(
         return getsource(declaration)
 
     monkeypatch.setattr(native_declarations.inspect, "getsource", counted_source)
-    simulation = recipe.simulate(snapshot)
-    assert simulation.is_clean
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        recipe.simulate(snapshot)
     # Warm projections may already exist; no base may be inspected twice.
     assert len(native_calls) <= 2
     assert len(set(native_calls)) == len(native_calls)
-    simulation.apply()
+    assert path.read_text() == source
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
@@ -116,7 +116,7 @@ def test_competing_collector_base_does_not_change_forwarded_arguments(
             ),
         )
     )
-    with pytest.raises(ValueError, match="competing.*member"):
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
         plan.simulate(snapshot)
     assert path.read_bytes() == source.encode()
 
@@ -235,7 +235,7 @@ def test_registered_collector_base_preserves_native_execution(
             ),
         )
     )
-    simulation = plan.simulate(snapshot)
-    assert simulation.is_clean
-    simulation.apply()
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        plan.simulate(snapshot)
+    assert path.read_text() == source
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before

@@ -1396,6 +1396,14 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
             context, mutation, mutation.target.receiver_use
         )
 
+    def _annotation_mutation_resolution(
+        self,
+        context: ResolutionContextT,
+        mutation: CompactMutation[CompactVariableAnnotationTarget],
+    ) -> TargetResolutionT:
+        """Default to the exact item-write obligation for annotation storage."""
+        return self._item_mutation_resolution(context, mutation)
+
     @abstractmethod
     def _receiver_mutation_resolution(
         self,
@@ -1574,6 +1582,24 @@ class CompactItemTarget(CompactReceiverTarget):
     ) -> TargetResolutionT:
         return resolver._item_mutation_resolution(
             context, cast(CompactMutation[CompactItemTarget], mutation)
+        )
+
+
+@dataclass(frozen=True)
+class CompactVariableAnnotationTarget(CompactItemTarget):
+    """A compiler-created ``__annotations__`` namespace write."""
+
+    annotation_name: str
+
+    def resolve_mutation(
+        self,
+        resolver: CompactMutationResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        mutation: CompactMutation,
+    ) -> TargetResolutionT:
+        return resolver._annotation_mutation_resolution(
+            context,
+            cast(CompactMutation[CompactVariableAnnotationTarget], mutation),
         )
 
 
@@ -2913,6 +2939,78 @@ class CompactFunctionFlow(StoredDataclassState, DataclassGraphValue):
 
     subscriptions: tuple[CompactSubscription, ...]
 
+    def entry_annotation_namespace_is_active(
+        self,
+        mutation: CompactMutation[CompactVariableAnnotationTarget],
+    ) -> bool:
+        """Prove the compiler-created annotation dictionary was not rebound."""
+
+        if self.graph_nodes_by_identity.get(id(mutation)) is not mutation:
+            return False
+        return not any(
+            candidate.target.bound_name == "__annotations__"
+            and candidate.position.may_precede(mutation.position)
+            for candidate in self.mutations
+            if candidate is not mutation
+        )
+
+    def initial_parameter_binding_for_predicate(
+        self,
+        predicate_use: CompactCallableReferenceUse,
+    ) -> InitialCompactParameterBinding | None:
+        """Return the declaration-owned parameter read by one direct predicate."""
+        if not any(use is predicate_use for use in self.callable_reference_uses):
+            return None
+        reference = predicate_use.lexical_reference
+        if reference is None or reference.attribute_path:
+            return None
+        binding = self.stored_binding_resolution_for(
+            reference.root_name, predicate_use.position
+        )
+        return binding if isinstance(binding, InitialCompactParameterBinding) else None
+
+    def require_returned_parameter_binding(
+        self,
+        parameter_name: str,
+        resolver: CompactBranchPredicateResolverABC,
+    ) -> InitialCompactParameterBinding:
+        """Prove every possible explicit return retains one entry parameter."""
+        declaration = self.owner.declaration
+        if declaration is None:
+            raise ValueError("Function flow has no source declaration")
+        parameters = tuple(
+            parameter
+            for parameter in declaration.signature.parameters
+            if parameter.name == parameter_name
+        )
+        if len(parameters) != 1:
+            raise ValueError("Returned parameter is absent from this function")
+        parameter = parameters[0]
+        possible_returns = tuple(
+            result
+            for result in self.evaluated_results
+            if result.destination.use is CompactValueDestinationKind.RETURNED
+            and not result.position.is_proved_excluded(resolver)
+        )
+        if not possible_returns:
+            raise ValueError("Function has no possible explicit return")
+        for result in possible_returns:
+            value_use = result.value_use
+            if (
+                value_use is None
+                or value_use.lexical_reference != LexicalValueReference(parameter_name)
+            ):
+                raise ValueError("Function can return a different object")
+            binding = self.stored_binding_resolution_for_activation(
+                parameter_name, value_use.position, resolver
+            )
+            if (
+                not isinstance(binding, InitialCompactParameterBinding)
+                or binding.parameter is not parameter
+            ):
+                raise ValueError("Returned parameter can be replaced")
+        return InitialCompactParameterBinding(parameter)
+
     def local_binding_hides_outer_lookup(self, root_name: str) -> bool:
         """A declared function local cannot fall through to globals when unbound."""
         return (
@@ -4134,9 +4232,15 @@ class _CompactFlowCollector(
     def _store_variable_annotation(
         self, node: ast.AnnAssign, result: CompactEvaluatedResult
     ) -> None:
+        if not isinstance(node.target, ast.Name):
+            raise ValueError("Simple variable annotation requires a name target")
         receiver = self._capture_compiler_operand(node, NativeItemStoreOperand.RECEIVER)
         key = self._capture_compiler_operand(node, NativeItemStoreOperand.KEY)
-        self._record_mutation(CompactItemTarget(receiver, key), node, result=result)
+        self._record_mutation(
+            CompactVariableAnnotationTarget(receiver, key, node.target.id),
+            node,
+            result=result,
+        )
 
     def visit_eager_variable_annotation(self, node: ast.AnnAssign) -> None:
         if node.simple:
@@ -4163,7 +4267,11 @@ class _CompactFlowCollector(
         target = self.mutation_targets.visit(node.target)
         self.callable_reference_uses.append(self._callable_reference_use(node.target))
         self.visit(node.value)
-        self._record_mutation(target, node, CompactMutationKind.AUGMENTED_ASSIGNMENT)
+        self._record_mutation(
+            target,
+            node.target,
+            CompactMutationKind.AUGMENTED_ASSIGNMENT,
+        )
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> ForwardedResultValue:
         result = self._capture_result(
@@ -4467,14 +4575,50 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
     collector_type: type[FlowCollectorT]
 
     @cached_property
-    def collectors(self) -> tuple[tuple[FlowCollectorT, list[ast.stmt]], ...]:
+    def declarations(self) -> _DeclarationCollector:
         parsed_module = self.parsed_module
         declarations = _DeclarationCollector(parsed_module)
         declarations.visit(parsed_module.module)
-        definition_owners = declarations.owners_by_node
-        annotation_mode = ModuleAnnotationEvaluationMode.from_module(
-            parsed_module.module
+        return declarations
+
+    @cached_property
+    def annotation_mode(self) -> ModuleAnnotationEvaluationMode:
+        return ModuleAnnotationEvaluationMode.from_module(self.parsed_module.module)
+
+    def _function_collector(
+        self, context: _FunctionContext
+    ) -> tuple[FlowCollectorT, list[ast.stmt]]:
+        return (
+            self.collector_type(
+                owner=context.declaration,
+                definition_owners=self.declarations.owners_by_node,
+                module_identity=self.parsed_module.module_path_identity,
+                lexical_scope_qualnames=context.lexical_scope_qualnames,
+                current_class_qualname=context.current_class_qualname,
+                current_class_receiver_name=context.declaration.nominal_receiver_name,
+                annotation_mode=self.annotation_mode,
+            ),
+            context.node.body,
         )
+
+    def function_flow(self, source_span: SourceByteSpan) -> CompactFunctionFlow:
+        """Collect one exact declared function through the shared flow collector."""
+        matches = tuple(
+            context
+            for context in self.declarations.function_contexts
+            if context.declaration.source_span == source_span
+        )
+        if len(matches) != 1:
+            raise ValueError("Source span has no unique function declaration")
+        collector, body = self._function_collector(matches[0])
+        return collector.collect(body)
+
+    @cached_property
+    def collectors(self) -> tuple[tuple[FlowCollectorT, list[ast.stmt]], ...]:
+        parsed_module = self.parsed_module
+        declarations = self.declarations
+        definition_owners = declarations.owners_by_node
+        annotation_mode = self.annotation_mode
         collectors = [
             (
                 self.collector_type(
@@ -4505,18 +4649,7 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
             for context in declarations.class_contexts
         )
         collectors.extend(
-            (
-                self.collector_type(
-                    owner=context.declaration,
-                    definition_owners=definition_owners,
-                    module_identity=parsed_module.module_path_identity,
-                    lexical_scope_qualnames=context.lexical_scope_qualnames,
-                    current_class_qualname=context.current_class_qualname,
-                    current_class_receiver_name=context.declaration.nominal_receiver_name,
-                    annotation_mode=annotation_mode,
-                ),
-                context.node.body,
-            )
+            self._function_collector(context)
             for context in declarations.function_contexts
         )
         return tuple(collectors)
@@ -4535,6 +4668,16 @@ def compact_product_flow_projection(
 ) -> CompactProductFlowModuleProjection:
     """Project one parsed module into AST-free closed-flow evidence."""
     return _ProductFlowCollection(parsed_module, _CompactFlowCollector).projection
+
+
+def compact_function_flow_projection(
+    parsed_module: ParsedModule,
+    source_span: SourceByteSpan,
+) -> CompactFunctionFlow:
+    """Project one exact function without collecting unrelated module bodies."""
+    return _ProductFlowCollection(parsed_module, _CompactFlowCollector).function_flow(
+        source_span
+    )
 
 
 def source_product_flow_projection(

@@ -259,7 +259,7 @@ def test_original_metaclass_identity_with_an_explicit_native_module_association(
     # Proved imported identity does not close actual native class construction.
     with pytest.raises(
         ValueError,
-        match="^Native class construction over prepared inputs remains unproved$",
+        match="^Native operation needs an explicit entry condition$",
     ):
         environment.require_class_creation(original_class)
     runtime = authored_runtime(source)

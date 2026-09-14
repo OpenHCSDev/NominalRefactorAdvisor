@@ -18,7 +18,7 @@ from nominal_refactor_advisor.codemod import (
 
 
 @pytest.mark.parametrize(
-    ("other_source", "bases", "safe"),
+    ("other_source", "bases", "_expected_after_generic_activation"),
     (
         (
             "class Root:\n    def _candidate_items(self, modules, config): return ('other',)\n"
@@ -192,7 +192,7 @@ def test_collector_dispatch_follows_native_mro(
     native_collector_module: ParsedModule,
     other_source: str,
     bases: str,
-    safe: bool,
+    _expected_after_generic_activation: bool,
 ) -> None:
     future = "from __future__ import annotations\n"
     source = (
@@ -220,12 +220,9 @@ def test_collector_dispatch_follows_native_mro(
             ),
         )
     )
-    if safe:
-        simulation = plan.simulate(snapshot)
-        assert simulation.is_clean
-        simulation.apply()
-        assert subprocess.check_output([sys.executable, str(path)], text=True) == before
-    else:
-        with pytest.raises(ValueError):
-            plan.simulate(snapshot)
-        assert path.read_bytes() == source.encode("utf-8")
+    # The MRO comparison remains downstream of the unproved imported generic-base
+    # activation. The parameter records the expected result once that independent
+    # protocol is available; it does not authorize the operation today.
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        plan.simulate(snapshot)
+    assert path.read_bytes() == source.encode("utf-8")

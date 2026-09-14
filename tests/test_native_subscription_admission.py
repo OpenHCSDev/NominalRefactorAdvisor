@@ -103,9 +103,6 @@ class ReferenceFixtureEnvironment(NativeReferenceEnvironment):
     def require_import_operation(self, operation):
         raise ValueError("Fixture does not admit import execution")
 
-    def require_assignment(self, node):
-        raise ValueError("Fixture does not admit assignment protocols")
-
 
 def _reference(value=list, expression="chosen"):
     source = f"result = {expression}\n"

@@ -155,14 +155,14 @@ def test_native_default_inspection_requires_exact_function():
         NativeParameterDefault.from_function(len)
 
 
-def test_binding_does_not_invent_factory_execution_without_its_behavior_premise():
-    environment, operation = factory_environment("frozen=True", condition=None)
+def test_binding_joins_current_factory_source_without_a_supplied_behavior_premise():
+    environment, operation = factory_environment("frozen=True")
     authority = environment.call_authority(
         environment.context_for_owner(operation.owner), operation.event
     )
     assert authority.bound_arguments.is_exact
-    with pytest.raises(ValueError, match="explicit entry condition"):
-        authority.require_closed()
+    authority.require_closed()
+    assert not environment.entry.operation_conditions
 
 
 @pytest.mark.parametrize("names", (("unknown",), ("items",), ("options",)))
