@@ -9,27 +9,19 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, ClassVar, Self, TypeAlias
 
-from .ast_tools import ParsedModule
 from .carrier_collapse import (
+    CarrierCollapseAuthorityProof,
+    CarrierCollapseBuilder,
     CarrierCollapseCallEdge,
     CarrierCollapseFieldBinding,
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
-from .class_index import (
-    CompactModuleClassProjection,
-    CompactModuleClassProjectionFamily,
-    CompactProductAuthority,
-)
-from .product_flow import (
-    CompactFlowPosition,
-    CompactProductFlowModuleProjection,
-    compact_product_flow_projection,
-)
+from .class_index import CompactProductAuthority
+from .product_flow import CompactFlowPosition
 from .product_flow_authority import (
     CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
-    CompactProductFlowRepository,
     CompactResolvedFunctionCall,
 )
 from .value_expression import LexicalValueReference
@@ -241,7 +233,7 @@ class DeclaredCarrierExpansionAuthorityViolation(StrEnum):
 
 
 @dataclass(frozen=True)
-class DeclaredCarrierExpansionAuthorityProof:
+class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
     """Fail-closed authority proof for one maximal carrier expansion graph."""
 
     carrier_authority: CompactProductAuthority | None
@@ -264,7 +256,9 @@ class DeclaredCarrierExpansionAuthorityProof:
 
     @property
     def is_proven(self) -> bool:
-        return not self.violations
+        return not any(
+            violation.is_violated_by(self) for violation in DeclaredCarrierExpansionAuthorityViolation
+        )
 
     @property
     def rejection_reason(self) -> str:
@@ -303,32 +297,13 @@ class DeclaredCarrierExpansionAssessment(ClosedCarrierCollapseComponent):
 
 
 @dataclass(frozen=True)
-class DeclaredCarrierExpansionBuilder:
+class DeclaredCarrierExpansionBuilder(
+    CarrierCollapseBuilder[DeclaredCarrierExpansionAssessment],
+):
     """Derive carrier expansions from resolved calls and bound-result types."""
 
-    repository: CompactProductFlowRepository
 
     minimum_field_count: ClassVar[int] = 2
-
-    @classmethod
-    def from_projections(
-        cls,
-        product_projections: tuple[CompactProductFlowModuleProjection, ...],
-        class_projections: tuple[CompactModuleClassProjection, ...],
-    ) -> Self:
-        return cls(
-            CompactProductFlowRepository(
-                product_projections=product_projections,
-                class_projections=class_projections,
-            )
-        )
-
-    @classmethod
-    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
-        return cls.from_projections(
-            tuple(compact_product_flow_projection(module) for module in modules),
-            CompactModuleClassProjectionFamily.collect_modules(modules),
-        )
 
     @cached_property
     def expansions(self) -> tuple[DeclaredCarrierExpansion, ...]:
@@ -427,13 +402,6 @@ class DeclaredCarrierExpansionBuilder:
                 ),
             )
             for component in self.components
-        )
-
-    def proven_components(self) -> tuple[DeclaredCarrierExpansionAssessment, ...]:
-        return tuple(
-            assessment
-            for assessment in self.assessed_components()
-            if assessment.proof.is_proven
         )
 
     def _authority_proof(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -78,6 +79,18 @@ def _write_source(root: Path, relative_path: str, source: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8", newline="")
     return path
+
+
+def test_rejected_conveyor_boolean_preserves_on_demand_diagnostics() -> None:
+    builder = _builder(_module("pkg.lazy", _base_source()))
+    original = builder.assessed_components()[0].proof
+    proof = replace(original, authority_symbols=())
+    assert not proof.is_proven
+    assert "violations" not in proof.__dict__
+    assert "escaping_callable_symbols" not in proof.callable_component.__dict__
+    assert ClosedParameterConveyorAuthorityViolation.NO_UNIQUE_NOMINAL_AUTHORITY in proof.violations
+    assert "escaping_callable_symbols" in proof.callable_component.__dict__
+    assert proof.is_proven == (not proof.violations)
 
 
 @pytest.mark.parametrize(

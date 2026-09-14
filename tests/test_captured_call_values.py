@@ -14,6 +14,7 @@ from nominal_refactor_advisor.product_flow import (
     CompactAttributeTarget,
     CompactItemTarget,
     CompactValueOriginViolation,
+    ForwardedResultValue,
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.value_expression import OpaqueValueExpression
@@ -100,7 +101,9 @@ def test_returned_named_expression_keeps_the_inner_call_on_the_assigned_value():
     assigned, returned = flow.evaluated_results
     (call,) = flow.calls
     assert assigned.value_use.value.invocation is call
-    assert type(returned.value_use.value) is OpaqueValueExpression
+    assert type(returned.value_use.value) is ForwardedResultValue
+    assert returned.value_use.value.result is assigned
+    assert returned.value_use.lexical_reference is None
 
 
 def _assert_no_executable_payload(value):
@@ -122,6 +125,16 @@ def test_pickle_preserves_nested_call_identity_without_ast_or_code_payloads():
     (argument,) = parent.arguments.values
     assert argument.value.invocation is child
     assert restored.evaluated_results[0].value_use.value.invocation is parent
+
+
+def test_pickle_preserves_forwarded_result_and_inner_call_identity():
+    flow = _flow("def sample():\n    return (result := make())\n")
+    restored = pickle.loads(pickle.dumps(flow))
+    assert restored == flow
+    _assert_no_executable_payload(restored)
+    assigned, returned = restored.evaluated_results
+    assert returned.value_use.value.result is assigned
+    assert assigned.value_use.value.invocation is restored.calls[0]
 
 
 def test_collection_does_not_execute_call_values():

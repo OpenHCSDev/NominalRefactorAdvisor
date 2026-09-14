@@ -96,12 +96,12 @@ def test_documented_extraction_can_split_its_new_module_in_the_next_stage(
 def test_extracted_public_declarations_retain_one_runtime_identity(owner) -> None:
     declarations = tuple(
         value
-        for value in vars(owner).values()
+        for value in vars(product_flow).values()
         if isinstance(value, type) and value.__module__ == owner.__name__
     )
     assert declarations
     for declaration in declarations:
-        assert vars(product_flow)[declaration.__name__] is declaration
+        assert vars(owner)[declaration.__name__] is declaration
 
 
 def test_value_expression_and_binding_owners_do_not_import_product_flow() -> None:

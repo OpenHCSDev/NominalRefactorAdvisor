@@ -8,11 +8,12 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
 from typing import (
+    ClassVar,
     Generic,
     Self,
     TypeVar,
@@ -136,10 +137,17 @@ class DictionaryEvaluationVisitor(ast.NodeVisitor):
 class FunctionDefaultVisitor(ast.NodeVisitor):
     """Visit defaults when a function is created, without entering its lambda body."""
 
+    @staticmethod
+    def default_roots(arguments: ast.arguments) -> tuple[ast.expr, ...]:
+        return tuple(
+            default
+            for default in (*arguments.defaults, *arguments.kw_defaults)
+            if default is not None
+        )
+
     def visit_argument_defaults(self, arguments: ast.arguments) -> None:
-        for default in (*arguments.defaults, *arguments.kw_defaults):
-            if default is not None:
-                self.visit(default)
+        for default in self.default_roots(arguments):
+            self.visit(default)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self.visit_argument_defaults(node.args)
@@ -195,6 +203,18 @@ class ImportFromModuleName:
     """Canonical source spelling for an ImportFrom module."""
 
     source: str
+    package_binding: ClassVar[str] = "__package__"
+
+    def resolve_from_package(self, package: Callable[[], str]) -> str:
+        """Native resolution consumes a runtime package only for relative requests."""
+        if not self.is_relative:
+            return self.module_name
+        current = package()
+        parts = current.rsplit(".", self.level - 1)
+        if not current or len(parts) < self.level:
+            raise ValueError("Relative import exceeds its actual package boundary")
+        root = parts[0]
+        return f"{root}.{self.module_name}" if self.module_name else root
 
     @property
     def is_relative(self) -> bool:
@@ -204,11 +224,18 @@ class ImportFromModuleName:
     def root_module_name(self) -> str:
         return self.source.lstrip(".").partition(".")[0]
 
+    @property
+    def module_name(self) -> str:
+        return self.source.lstrip(".")
+
+    @property
+    def level(self) -> int:
+        return len(self.source) - len(self.module_name)
+
     def resolve(self, module_identity: PythonModulePathIdentity) -> str | None:
-        module = self.source.lstrip(".")
         return module_identity.resolve_import_from_module(
-            imported_module=module or None,
-            level=len(self.source) - len(module),
+            imported_module=self.module_name or None,
+            level=self.level,
         )
 
     @classmethod

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import (
+    Counter,
+    defaultdict,
+)
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -55,6 +58,48 @@ class InjectiveTypeRegistryProof:
         )
 
     @classmethod
+    def from_key_entries(
+        cls,
+        *,
+        key_axis_name: str,
+        key_entries: Iterable[tuple[Hashable, str, tuple[str, ...]]],
+        registered_type_names: Iterable[str],
+        reverse_lookup_names: Iterable[str] = (),
+        consumer_symbols: Iterable[str] = (),
+    ) -> "InjectiveTypeRegistryProof":
+        """Group proven native keys; source labels are diagnostic, never equality."""
+        groups: dict[Hashable, list[tuple[str, tuple[str, ...]]]] = {}
+        for key, label, type_names in key_entries:
+            groups.setdefault(key, []).append((label, type_names))
+        registered = frozenset(registered_type_names)
+        key_names: set[str] = set()
+        duplicate_keys: set[str] = set()
+        key_counts_by_type: Counter[str] = Counter()
+        for entries in groups.values():
+            labels = {label for label, _ in entries}
+            group_types = {name for _, names in entries for name in names}
+            key_names.update(labels)
+            if len(group_types) > 1:
+                duplicate_keys.update(labels)
+            key_counts_by_type.update(group_types)
+        return cls(
+            key_axis_name=key_axis_name,
+            registered_type_names=sorted_tuple(registered),
+            key_names=sorted_tuple(key_names),
+            duplicate_key_names=sorted_tuple(duplicate_keys),
+            duplicate_type_names=sorted_tuple(
+                {
+                    name
+                    for name, key_count in key_counts_by_type.items()
+                    if key_count > 1
+                }
+            ),
+            missing_type_names=sorted_tuple(registered - key_counts_by_type.keys()),
+            reverse_lookup_names=sorted_tuple(set(reverse_lookup_names)),
+            consumer_symbols=sorted_tuple(set(consumer_symbols)),
+        )
+
+    @classmethod
     def from_type_map(
         cls,
         *,
@@ -64,42 +109,13 @@ class InjectiveTypeRegistryProof:
         reverse_lookup_names: Iterable[str] = (),
         consumer_symbols: Iterable[str] = (),
     ) -> "InjectiveTypeRegistryProof":
-        """Build an injectivity proof for a type-keyed registry surface."""
-
-        registered_type_set = frozenset(registered_type_names)
-        duplicate_key_names = sorted_tuple(
-            {
-                key_name
-                for key_name, type_names in type_names_by_key.items()
-                if len(frozenset(type_names)) > 1
-            }
-        )
-        keyed_type_names = frozenset(
-            type_name
-            for type_names in type_names_by_key.values()
-            for type_name in type_names
-        )
-        duplicate_type_names = sorted_tuple(
-            {
-                type_name
-                for type_name in keyed_type_names
-                if sum(
-                    1
-                    for type_names in type_names_by_key.values()
-                    if type_name in type_names
-                )
-                > 1
-            }
-        )
-        return cls(
+        """Use actual string-domain keys, not rendered source expressions."""
+        return cls.from_key_entries(
             key_axis_name=key_axis_name,
-            registered_type_names=sorted_tuple(registered_type_set),
-            key_names=sorted_tuple(frozenset(type_names_by_key)),
-            duplicate_key_names=duplicate_key_names,
-            duplicate_type_names=duplicate_type_names,
-            missing_type_names=sorted_tuple(registered_type_set - keyed_type_names),
-            reverse_lookup_names=sorted_tuple(frozenset(reverse_lookup_names)),
-            consumer_symbols=sorted_tuple(frozenset(consumer_symbols)),
+            key_entries=((key, key, names) for key, names in type_names_by_key.items()),
+            registered_type_names=registered_type_names,
+            reverse_lookup_names=reverse_lookup_names,
+            consumer_symbols=consumer_symbols,
         )
 
 

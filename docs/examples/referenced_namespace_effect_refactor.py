@@ -1,4 +1,8 @@
-"""Factor reference-bearing namespace effects without replacing method bodies."""
+"""Historical field-factoring replay, not a plan for the current NRA checkout.
+
+The standalone input specimen lives in test_referenced_namespace_effect_replay.
+Current native admission uses captured-source identity without these carriers.
+"""
 
 from dataclasses import replace
 import json
@@ -7,8 +11,6 @@ from textwrap import dedent
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     DeleteClassAssignmentsOperation,
-    DeleteTargetOperation,
-    EnsureImportOperation,
     InsertBeforeTargetOperation,
     ReplaceClassBaseOperation,
     SourceRewriteTarget,
@@ -24,10 +26,6 @@ subscription = replace(module, qualname="SubscriptionClassNamespaceEffect")
 
 PLAN = CodemodPlanSequence.from_operations(
     (
-        EnsureImportOperation(
-            target=module,
-            import_source="from .descriptor_algebra import AliasProperty",
-        ),
         InsertBeforeTargetOperation(
             target=native,
             source=dedent("""\
@@ -36,7 +34,6 @@ PLAN = CodemodPlanSequence.from_operations(
                     node: ast.expr
                     reference: ScopedNativeReference
 
-                    recording_node = AliasProperty[ast.AST]("reference.node")
                 """),
         ),
         ReplaceClassBaseOperation(
@@ -57,15 +54,6 @@ PLAN = CodemodPlanSequence.from_operations(
         DeleteClassAssignmentsOperation(
             target=subscription,
             assignment_names=("reference",),
-        ),
-        *(
-            DeleteTargetOperation(
-                target=replace(module, qualname=f"{owner}.recording_node")
-            )
-            for owner in (
-                "SubscriptionClassNamespaceEffect",
-                "DescriptorCallClassNamespaceEffect",
-            )
         ),
     )
 )

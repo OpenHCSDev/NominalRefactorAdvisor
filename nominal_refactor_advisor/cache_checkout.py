@@ -3,7 +3,60 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from .scan_cache import ScanCache
+
+
+@dataclass(frozen=True)
+class CheckoutRoot:
+    """Current filesystem facts needed by lexical checkout admission.
+
+    Capture is deliberately uncached: changing a root between file and directory
+    must invalidate an otherwise identical path query within the same scan.
+    """
+
+    path: Path
+    is_file: bool
+
+    @classmethod
+    def capture(cls, root: Path | str) -> CheckoutRoot:
+        path = lexical_absolute_path(root)
+        return cls(path, path.is_file())
+
+    def relative_path(self, candidate: Path) -> Path | None:
+        if self.is_file:
+            return Path(".") if candidate == self.path else None
+        try:
+            return candidate.relative_to(self.path)
+        except ValueError:
+            return None
+
+
+@ScanCache.cached
+def _admitted_checkout_path(candidate: Path, roots: tuple[CheckoutRoot, ...]) -> str:
+    """Pure admission under the complete, currently observed ordered root set."""
+    matches = tuple(
+        (index, relative)
+        for index, root in enumerate(roots)
+        if (relative := root.relative_path(candidate)) is not None
+    )
+    if len(matches) != 1:
+        reason = (
+            "outside every admitted root" if not matches else "matches multiple roots"
+        )
+        raise CacheCheckoutPathError(f"{candidate} {reason}")
+    root_index, relative_path = matches[0]
+    relative_text = relative_path.as_posix()
+    _validate_relative_text(relative_text)
+    return f"{root_index}:{relative_text}"
+
+
+@ScanCache.cached
+def _absolute_path_value(absolute_text: str) -> Path:
+    """Reuse immutable spelling only after the caller resolves its current cwd."""
+    return Path(absolute_text)
 
 
 class CacheCheckoutPathError(ValueError):
@@ -36,47 +89,30 @@ def checkout_relative_path(
     path: Path | str,
     roots: tuple[Path | str, ...],
 ) -> str:
-    """Encode one path by its unique ordered checkout root and safe relative path."""
-
+    """Encode a path under the current complete root set, preserving lexical links."""
     candidate_path = Path(path)
-    if not candidate_path.is_absolute():
+    is_relative = not candidate_path.is_absolute()
+    if is_relative:
         _validate_relative_text(candidate_path.as_posix())
         if len(roots) != 1:
             raise CacheCheckoutPathError(
                 f"relative path {candidate_path} is ambiguous across {len(roots)} roots"
             )
-        lexical_root = lexical_absolute_path(roots[0])
+    observed_roots = tuple(CheckoutRoot.capture(root) for root in roots)
+    if is_relative:
+        (root,) = observed_roots
         lexical_path = (
-            lexical_root
-            if lexical_root.is_file()
+            root.path
+            if root.is_file
             and (
-                candidate_path == Path(lexical_root.name)
-                or lexical_absolute_path(candidate_path) == lexical_root
+                candidate_path == Path(root.path.name)
+                or lexical_absolute_path(candidate_path) == root.path
             )
-            else lexical_absolute_path(lexical_root / candidate_path)
+            else lexical_absolute_path(root.path / candidate_path)
         )
     else:
         lexical_path = lexical_absolute_path(candidate_path)
-    matches: list[tuple[int, Path]] = []
-    for root_index, root_value in enumerate(roots):
-        lexical_root = lexical_absolute_path(root_value)
-        if lexical_root.is_file():
-            if lexical_path == lexical_root:
-                matches.append((root_index, Path(".")))
-            continue
-        try:
-            matches.append((root_index, lexical_path.relative_to(lexical_root)))
-        except ValueError:
-            continue
-    if len(matches) != 1:
-        reason = (
-            "outside every admitted root" if not matches else "matches multiple roots"
-        )
-        raise CacheCheckoutPathError(f"{lexical_path} {reason}")
-    root_index, relative_path = matches[0]
-    relative_text = relative_path.as_posix()
-    _validate_relative_text(relative_text)
-    return f"{root_index}:{relative_text}"
+    return _admitted_checkout_path(lexical_path, observed_roots)
 
 
 def absolute_checkout_path(
@@ -145,6 +181,5 @@ def _validate_relative_text(relative_text: str) -> None:
 
 
 def lexical_absolute_path(path: Path | str) -> Path:
-    """Canonicalize spelling without dereferencing an admitted source symlink."""
-
-    return Path(os.path.abspath(os.fspath(path)))
+    """Canonicalize current spelling without dereferencing a source symlink."""
+    return _absolute_path_value(os.path.abspath(os.fspath(path)))

@@ -14,6 +14,7 @@ from nominal_refactor_advisor.product_flow import (
     CompactBindingTarget,
     CompactControlBranchKind,
     CompactDefinitionTarget,
+    CompactEvaluatedAssignment,
     CompactMutation,
     CompactMutationKind,
     ExactCompactBindingMutation,
@@ -138,7 +139,9 @@ def test_bare_decorator_capture_precedes_default_rebinding(prefix, decorator_nam
     selection = flow.binding_resolution_for("selected", capture.position)
     assert isinstance(selection, ExactCompactBindingMutation)
     assert selection.mutation is first_binding
-    assert flow.exact_aliases_by_binding_mutation[first_binding].source == (
+    alias = flow.exact_alias_for(first_binding)
+    assert alias is not None
+    assert alias.source == (
         LexicalValueReference("first")
     )
     assert capture.position.dominates(later_binding.position)
@@ -201,7 +204,8 @@ def test_function_alias_capture_is_not_a_definition_or_decorator_capture():
     saved = next(
         alias for alias in flow.exact_value_aliases if alias.target.root_name == "saved"
     )
-    assert type(saved.binding_mutation.target) is CompactBindingTarget
+    assert type(saved.binding_mutation) is CompactEvaluatedAssignment
+    assert saved.binding_mutation.result is flow.evaluated_results[0]
     assert saved.binding_mutation is not definition
     assert saved.source_use is not definition.target.decorator_uses[0]
     assert definition.position.dominates(saved.source_position)
@@ -240,9 +244,11 @@ def test_repeated_source_creation_retains_loop_position_not_a_once_only_claim():
 def test_undecorated_definition_has_explicit_empty_capture_payload(declaration):
     definition = _definition(_projection(declaration).flows[0])
     assert definition.target.decorator_uses == ()
+    assert definition.target.input_uses == ()
     assert {field.name for field in fields(definition.target)} == {
         "owner",
         "decorator_uses",
+        "input_uses",
         "header_position",
     }
 

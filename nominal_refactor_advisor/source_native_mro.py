@@ -22,10 +22,7 @@ from .class_mro import DeclarationMroType, NativeMroBase
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .codemod_selection_context import CodemodSelectorContext
 from .native_class_mro import NativeClassMroDeclaration
-from .native_declarations import (
-    NativeDeclaration,
-    QualifiedDeclaration,
-)
+from .native_declarations import QualifiedDeclaration
 from .source_geometry import SourceByteSpan
 
 
@@ -62,19 +59,19 @@ class SourceNativeClassMro:
             (
                 NativeClassMroDeclaration(base)
                 for root in self.native_roots
-                for base in root.__mro__
+                for base in NativeClassMroDeclaration.native_mro(root)
             ),
             lambda declaration: declaration.qualified_name,
         )
 
-    @cached_property
+    @property
     def bindings(self) -> RepositoryModuleBindingProof:
-        return RepositoryModuleBindingProof(self.context.parsed_modules)
+        return self.context.execution_snapshot().module_binding_proof
 
     def required_native_type(self, native: NativeClassMroDeclaration) -> type:
         # Every source declaration supplied for this native island must agree.
-        for owner in native.declaration.__mro__:
-            declaration = NativeDeclaration(owner)
+        for owner in native.native_mro(native.declaration):
+            declaration = NativeClassMroDeclaration(owner)
             targets = self.context.source_index.targets_matching_repository_symbol(
                 declaration.qualified_name
             )
@@ -171,9 +168,10 @@ class SourceNativeClassMro:
             substitution.owner
         )
         expected = substitution.replacement.declaration
-        expected_owner = NativeClassMroDeclaration(
-            next(owner for owner in expected.__mro__ if method_name in vars(owner))
-        )
+        owner = NativeClassMroDeclaration(expected).member_owner(method_name)
+        if owner is None:
+            raise ValueError("Native replacement has no declared method owner")
+        expected_owner = NativeClassMroDeclaration(owner)
         ClassMemberLookupProof(
             projected,
             (

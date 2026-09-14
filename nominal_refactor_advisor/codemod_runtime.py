@@ -38,10 +38,10 @@ from .ast_tools import (
     ParsedModule,
     ParsedModuleSourceProjection,
     PythonModulePathAuthority,
-    SourceModule,
 )
 from .class_index import (
     ClassFamilyIndex,
+    RepositoryModuleBindingProof,
     build_class_family_index,
 )
 from .codemod_architecture_guards import (
@@ -105,7 +105,10 @@ from .codemod_target_selectors import (
     FindingEvidenceTargetSelector,
 )
 from .collection_algebra import sorted_tuple
-from .descriptor_algebra import ConstantProperty
+from .descriptor_algebra import (
+    AliasProperty,
+    ConstantProperty,
+)
 from .detectors._base import IssueDetector
 from .exact_field_authority import ExactDataclassFieldAuthorityComponentBuilder
 from .exact_method_authority import (
@@ -137,13 +140,14 @@ from .source_index import (
     AstTargetNodeIndex,
     CodemodSourceIndexReport,
     IndexedSourceAuthority,
-    SourceFileDigest,
     SourceIndex,
     SourceIndexBuildArtifacts,
     build_source_index_artifacts,
 )
 
-from .product_flow_authority import CompactProductFlowRepository
+from .product_flow_authority import (
+    SourceProductFlowRepository,
+)
 
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 
@@ -167,9 +171,11 @@ def _parsed_modules_from_source_mapping(
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
+    module_binding_proof = AliasProperty[RepositoryModuleBindingProof]("product_flow_repository")
+
     @cached_property
-    def product_flow_repository(self) -> CompactProductFlowRepository:
-        return CompactProductFlowRepository.from_modules(self.parsed_modules)
+    def product_flow_repository(self) -> SourceProductFlowRepository:
+        return SourceProductFlowRepository.from_modules(self.parsed_modules)
 
     @cached_property
     def exact_dataclass_field_authority_component_builder(
@@ -252,10 +258,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_by_path: Mapping[str, str],
         *,
         class_family_index: ClassFamilyIndex | None = None,
-        ast_target_node_cache: Mapping[str, "AstTargetNode"] | None = None,
-    ) -> "CodemodSourceSnapshot":
-        """Build the complete execution context for an existing source index."""
-
+        ast_target_node_cache: Mapping[str, AstTargetNode] | None = None,
+    ) -> CodemodSourceSnapshot:
+        """Join an existing index to one actual parse of the supplied sources."""
         canonical_sources = canonical_source_mapping(source_by_path)
         modules = tuple(
             source_index.module_path_authority.source_module(
@@ -264,27 +269,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ).parse()
             for file_path, source in sorted(canonical_sources.items())
         )
-        module_node_cache = {module.file_path: module.module for module in modules}
-        return cls(
-            source_index=source_index,
-            sources_by_file_path=canonical_sources,
-            class_family_index=(
+        return cls._from_modules_with_indexes(
+            modules,
+            (
                 build_class_family_index(modules)
                 if class_family_index is None
                 else class_family_index
             ),
-            module_node_cache=module_node_cache,
-            ast_target_node_cache=(
-                AstTargetNodeIndex.from_source_mapping(
-                    source_index,
-                    canonical_sources,
-                ).nodes_by_target_id
-                if ast_target_node_cache is None
-                else ast_target_node_cache
-            ),
-            module_import_graph_cache=SourceModuleImportGraph(
-                source_index=source_index,
-                module_nodes_by_file_path=module_node_cache,
+            SourceIndexBuildArtifacts(
+                source_index,
+                (
+                    AstTargetNodeIndex.from_modules(source_index, modules)
+                    if ast_target_node_cache is None
+                    else AstTargetNodeIndex(ast_target_node_cache)
+                ),
             ),
         )
 
@@ -312,7 +310,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         """Build from source and semantic indexes proved for that exact source."""
 
         module_node_cache = {module.file_path: module.module for module in modules}
-        return cls(
+        snapshot = cls(
             source_index=source_index_artifacts.source_index,
             sources_by_file_path={
                 module.file_path: module.source for module in modules
@@ -325,6 +323,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 module_nodes_by_file_path=module_node_cache,
             ),
         )
+        snapshot._parsed_modules_by_file_path.update(
+            (module.file_path, module) for module in modules
+        )
+        return snapshot
 
     def with_virtual_sources(
         self,
@@ -405,20 +407,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             source_overlay_by_file_path=source_overlay,
         )
 
-    def indexed_module(self, source_file: SourceFileDigest) -> ParsedModule:
-        file_path = source_file.file_path
-        source_module = SourceModule.from_path_identity(
-            source_file.module_path_identity,
-            self.sources_by_file_path[file_path],
-        )
-        if self.module_node_cache is not None and file_path in self.module_node_cache:
-            return source_module.parsed_module(self.module_node_cache[file_path])
-        return source_module.parse()
-
     @cached_property
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
         return tuple(
-            self.indexed_module(source_file) for source_file in self.source_index.files
+            self.parsed_module_for_source_path(source_file.file_path)
+            for source_file in self.source_index.files
         )
 
     def simulate_rewrites(
@@ -1050,7 +1043,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodPlanPreflightReport:
-        return self.preflight(snapshot).report
+        return self.as_sequence().preflight_snapshot(snapshot)
 
     def preflight(
         self,
@@ -1162,13 +1155,26 @@ class CodemodPlanDocumentPreflight:
                 active_guard_suite
             )
         )
-        return CodemodPlanDocumentSimulation(
+        candidate = CodemodPlanDocumentSimulation(
             document=self.document,
             edit_batch=edit_batch,
             preflight_report=self.report,
             simulation=simulation,
             architecture_guard_report=architecture_guard_report,
             after_snapshot_projection=after_snapshot_projection,
+        )
+        reports: list[CodemodOperationPreflightReport] = []
+        for recipe in self.document.recipes:
+            for operation in recipe.operations:
+                try:
+                    reports.extend(operation.simulation_reports(candidate))
+                except CodemodOperationPreflightError as error:
+                    reports.append(error.report)
+        if not reports:
+            return candidate
+        return replace(
+            candidate,
+            preflight_report=CodemodPlanPreflightReport((*self.report.reports, *reports)),
         )
 
 
@@ -1311,13 +1317,14 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         reports: list[CodemodOperationPreflightReport] = []
         for document in self.documents:
             preflight = document.preflight(active_snapshot)
-            report = preflight.report
-            reports.extend(report.reports)
-            if report.preflight_failed or not document.has_recipes:
-                if report.preflight_failed:
-                    break
-                continue
-            active_snapshot = preflight.simulate().required_after_snapshot
+            if preflight.report.preflight_failed:
+                reports.extend(preflight.report.reports)
+                break
+            stage = preflight.simulate()
+            reports.extend(stage.preflight_report.reports)
+            if stage.preflight_report.preflight_failed:
+                break
+            active_snapshot = stage.required_after_snapshot
         return CodemodPlanPreflightReport(tuple(reports))
 
     def simulate(
@@ -1334,6 +1341,7 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
                 before_snapshot,
                 backend=backend,
             )
+            stage.preflight_report.require_clean()
             active_snapshot = stage.required_after_snapshot
             stage_reports.append(
                 CodemodPlanSequenceStageReport(
@@ -3296,6 +3304,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
         try:
             document = CodemodPlanDocument(recipes=recipes)
             simulation = document.simulate(self.source_snapshot)
+            simulation.preflight_report.require_clean()
         except (
             PhysicalSourceEditConflictError,
             PlannedRewriteConflictError,

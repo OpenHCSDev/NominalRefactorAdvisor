@@ -13,7 +13,7 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from typing import cast
 
 from nominal_refactor_advisor.class_index import ClassMethodPromotionSafetyProfile
@@ -34,9 +34,7 @@ from .class_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
-    RepositoryModuleBindingProof,
     build_compact_class_family_index,
-    nominal_reference_root,
 )
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,
@@ -45,6 +43,17 @@ from .codemod_declaration_source import (
     PythonExpressionSourceFormatter,
 )
 from .codemod_imports import ImportFromSource
+from .codemod_native_requirements import (
+    DeclaredNativeUseInvariants,
+    NativeUseRequirement,
+    NativeUseResolution,
+)
+from .codemod_payload import PayloadRecordValueCodec, codemod_payload_field
+from .codemod_preflight import (
+    CodemodOperationPreflightError,
+    CodemodOperationPreflightReport,
+)
+from .descriptor_algebra import AliasProperty
 from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
@@ -66,10 +75,6 @@ from .lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .native_declarations import NativeDeclaration
-from .native_reference import (
-    NativeReferenceEnvironment,
-    ScopedNativeReference,
-)
 from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,
@@ -482,9 +487,48 @@ class _TypeKeyedBehaviorSourceDerivation:
     snapshot: CodemodSourceSnapshot
     component: TypeKeyedBehaviorProjectionComponent
     projection_root: IndexedClass
-    lookup_method_name: str
+    lookup_method: ast.FunctionDef
     facades: tuple[_TypeKeyedBehaviorFacade, ...]
-    rationale: str
+    operation: DescendTypeKeyedBehaviorProjectionOperation
+
+    lookup_method_name = AliasProperty[str]("lookup_method.name")
+    rationale = AliasProperty[str]("operation.rationale")
+
+    def require_native_uses(self) -> None:
+        for resolution in self.native_use_resolutions:
+            resolution.require_admitted()
+
+    @cached_property
+    def native_use_resolutions(self) -> tuple[NativeUseResolution, ...]:
+        return self.operation.supported_execution.resolve(self.native_use_requirements)
+
+    @cached_property
+    def native_use_requirements(self) -> tuple[NativeUseRequirement, ...]:
+        """Bind the selected syntax's distinct native uses to their actual producer."""
+        module = self.snapshot.parsed_module_for_source_path(
+            self.projection_root.file_path
+        )
+        environment = self.snapshot.module_binding_proof.native_reference_environment(
+            module
+        )
+        assignment = cast(
+            ast.Assign, statements_without_docstring(self.lookup_method.body)[0]
+        )
+        lookup = cast(ast.Call, assignment.value)
+        subject_type = cast(ast.Call, lookup.args[1])
+        return tuple(
+            NativeUseRequirement(
+                type(self.operation),
+                node,
+                (NativeDeclaration(declaration),),
+                environment,
+            )
+            for node, declaration in (
+                (self.lookup_method.decorator_list[0], classmethod),
+                (lookup.func, mro_registry_value),
+                (subject_type.func, type),
+            )
+        )
 
     @classmethod
     def required(
@@ -492,7 +536,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         snapshot: CodemodSourceSnapshot,
         projection_root_symbol: str,
         *,
-        rationale: str,
+        operation: DescendTypeKeyedBehaviorProjectionOperation,
     ) -> "_TypeKeyedBehaviorSourceDerivation":
         projections = CompactModuleClassProjectionFamily.collect_modules(
             snapshot.parsed_modules
@@ -516,8 +560,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             projection_root,
             component,
         )
-        lookup_method_name = cls._required_mro_lookup_method(
-            snapshot,
+        lookup_method = cls._required_mro_lookup_method(
             projection_root,
             component,
         )
@@ -525,13 +568,13 @@ class _TypeKeyedBehaviorSourceDerivation:
             snapshot=snapshot,
             component=component,
             projection_root=projection_root,
-            lookup_method_name=lookup_method_name,
+            lookup_method=lookup_method,
             facades=cls._facades(
                 projection_root.node,
-                lookup_method_name=lookup_method_name,
+                lookup_method_name=lookup_method.name,
                 behavior_method_names=frozenset(component.behavior_method_names),
             ),
-            rationale=rationale,
+            operation=operation,
         )
 
     @staticmethod
@@ -587,49 +630,30 @@ class _TypeKeyedBehaviorSourceDerivation:
 
     @staticmethod
     def _required_mro_lookup_method(
-        snapshot: CodemodSourceSnapshot,
         projection_root: IndexedClass,
         component: TypeKeyedBehaviorProjectionComponent,
-    ) -> str:
+    ) -> ast.FunctionDef:
         candidates = tuple(
             method
             for method in projection_root.node.body
             if isinstance(method, ast.FunctionDef)
             and method.name
             in component.projection_root.autoregister_registry_projection_names
-            if _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-                snapshot,
-                projection_root.file_path,
-                method,
-            )
+            if _TypeKeyedBehaviorSourceDerivation._has_mro_lookup_shape(method)
         )
         if len(candidates) != 1:
             raise ValueError(
                 "type-keyed behavior descent requires one MRO-aware registry lookup"
             )
-        return candidates[0].name
+        return candidates[0]
 
     @staticmethod
-    def _is_mro_lookup_method(
-        snapshot: CodemodSourceSnapshot,
-        file_path: str,
-        method: ast.FunctionDef,
-    ) -> bool:
+    def _has_mro_lookup_shape(method: ast.FunctionDef) -> bool:
+        """Select syntax only; native identity and behavior are separate obligations."""
         parameters = (*method.args.posonlyargs, *method.args.args)
-        if len(parameters) < 2:
+        if len(parameters) < 2 or len(method.decorator_list) != 1:
             return False
         cls_name, subject_name = parameters[0].arg, parameters[1].arg
-        module = snapshot.parsed_module_for_source_path(file_path)
-        binding_authority = ModuleNominalBindingAuthority(module)
-        if not (
-            len(method.decorator_list) == 1
-            and isinstance(method.decorator_list[0], ast.Name)
-            and method.decorator_list[0].id == "classmethod"
-            and binding_authority.snapshot_before(
-                method.lineno
-            ).resolves_unshadowed_builtin("classmethod")
-        ):
-            return False
         body = statements_without_docstring(method.body)
         if not (
             len(body) == 2
@@ -642,30 +666,6 @@ class _TypeKeyedBehaviorSourceDerivation:
             return False
         result_name = body[0].targets[0].id
         lookup_call = body[0].value
-        lookup_root = nominal_reference_root(lookup_call.func)
-        references = tuple(
-            surface
-            for surface in snapshot.module_lexical_dependency_projection_for_source_path(
-                file_path
-            ).direct_name_surfaces
-            if surface.reference is lookup_root
-        )
-        if len(references) != 1:
-            return False
-        reference = ScopedNativeReference(lookup_call.func, references[0].resolution)
-        try:
-            # Admission belongs to the same native gate used by other consumers.
-            # Its remaining capture/activation obligations are not proved here.
-            reference.require_native(
-                NativeReferenceEnvironment(
-                    RepositoryModuleBindingProof(snapshot.parsed_modules),
-                    module,
-                    lookup_call.lineno,
-                ),
-                (NativeDeclaration(mro_registry_value),),
-            )
-        except ValueError:
-            return False
         return bool(
             len(lookup_call.args) == 2
             and not lookup_call.keywords
@@ -674,15 +674,10 @@ class _TypeKeyedBehaviorSourceDerivation:
             and lookup_call.args[0].value.id == cls_name
             and lookup_call.args[0].attr == REGISTRY_ATTRIBUTE_NAME
             and isinstance(lookup_call.args[1], ast.Call)
-            and isinstance(lookup_call.args[1].func, ast.Name)
-            and lookup_call.args[1].func.id == "type"
             and len(lookup_call.args[1].args) == 1
             and not lookup_call.args[1].keywords
             and isinstance(lookup_call.args[1].args[0], ast.Name)
             and lookup_call.args[1].args[0].id == subject_name
-            and binding_authority.snapshot_before(
-                lookup_call.lineno
-            ).resolves_unshadowed_builtin("type")
             and _TypeKeyedBehaviorSourceDerivation._returns_optional_instance(
                 body[1],
                 result_name=result_name,
@@ -765,6 +760,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         return _TypeKeyedBehaviorFacade(method.name, sequence.behavior_method_name)
 
     def source_edits(self) -> tuple[NominalSourceEdit, ...]:
+        self.require_native_uses()
         replacements_by_path: dict[str, list[SourceTextSpanReplacement]] = defaultdict(
             list
         )
@@ -1178,6 +1174,37 @@ class _TypeKeyedBehaviorSourceDerivation:
 class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperation):
     """Re-prove and descend external type-keyed behavior onto nominal types."""
 
+    supported_execution: DeclaredNativeUseInvariants = codemod_payload_field(
+        PayloadRecordValueCodec(DeclaredNativeUseInvariants),
+        default_factory=DeclaredNativeUseInvariants,
+    )
+
+    def preflight_reports(
+        self, context: CodemodSelectorContext
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            resolutions = self.required_reproof(
+                lambda: self.source_derivation(
+                    context.execution_snapshot()
+                ).native_use_resolutions
+            )
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return tuple(resolution.preflight_report() for resolution in resolutions)
+
+    def native_use_requirements(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NativeUseRequirement, ...]:
+        """Expose exact unmet requirements without authoring their acceptance."""
+        return self.source_derivation(snapshot).native_use_requirements
+
+    def required_derivation(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> _TypeKeyedBehaviorSourceDerivation:
+        derivation = self.source_derivation(snapshot)
+        derivation.require_native_uses()
+        return derivation
+
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
@@ -1198,7 +1225,7 @@ class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperat
             ),
         )
 
-    def required_derivation(
+    def source_derivation(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> _TypeKeyedBehaviorSourceDerivation:
@@ -1208,7 +1235,7 @@ class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperat
         return _TypeKeyedBehaviorSourceDerivation.required(
             snapshot,
             snapshot.source_index.symbol_for_target(target),
-            rationale=self.rationale,
+            operation=self,
         )
 
 

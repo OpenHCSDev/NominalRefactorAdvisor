@@ -55,7 +55,8 @@ def test_actual_read_selects_overwrite_after_a_completed_branch(earlier, owner, 
     read = flow.calls[-1].arguments.positional[0].value
     selection = flow.binding_resolution_for("chosen", read.position)
     assert isinstance(selection, ExactCompactBindingMutation)
-    alias = flow.exact_aliases_by_binding_mutation[selection.mutation]
+    alias = flow.exact_alias_for(selection.mutation)
+    assert alias is not None
     assert alias.source == LexicalValueReference("final")
     assert flow.value_origin_for(
         LexicalValueReference("chosen"), read.position

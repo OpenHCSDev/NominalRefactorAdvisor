@@ -28,6 +28,10 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .codemod_native_requirements import NativeUseRequirement
+from .codemod_mapping_observation import (
+    RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
+)
 from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import NativeDeclaration
 from .codemod_declaration_operations import (
@@ -39,7 +43,9 @@ from .codemod_statement_source import (
     AssignmentDeletionSource,
     PythonBlockSource,
 )
-from .codemod_class_operations import InsertClassMemberOperation as InsertClassMemberOperation
+from .codemod_class_operations import (
+    InsertClassMemberOperation as InsertClassMemberOperation,
+)
 from .codemod_assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
     ReplaceModuleAssignmentOperation as ReplaceModuleAssignmentOperation,
@@ -297,18 +303,19 @@ from .codemod_architecture_guards import (
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
 from .codemod_declaration_source import (
-    DeclarationDecoratorsSourceAuthority as DeclarationDecoratorsSourceAuthority,
-    DeclarationRegionSourceAuthority as DeclarationRegionSourceAuthority,
-    FunctionAliasSourceAuthority as FunctionAliasSourceAuthority,
     ClassBodySourceAuthority as ClassBodySourceAuthority,
+    ClassBodyTailSourceAuthority,
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,
+    DeclarationDecoratorsSourceAuthority as DeclarationDecoratorsSourceAuthority,
+    DeclarationRegionSourceAuthority as DeclarationRegionSourceAuthority,
     DirectClassDeclarationAuthority as DirectClassDeclarationAuthority,
+    FunctionAliasSourceAuthority as FunctionAliasSourceAuthority,
     FunctionBindingProjectionSourceAuthority as FunctionBindingProjectionSourceAuthority,
     FunctionRegionSourceAuthority as FunctionRegionSourceAuthority,
+    FunctionSourceAuthority as FunctionSourceAuthority,
     FunctionSuiteLayout as FunctionSuiteLayout,
     FunctionSuiteSourceAuthority as FunctionSuiteSourceAuthority,
-    FunctionSourceAuthority as FunctionSourceAuthority,
 )
 from .codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
@@ -674,7 +681,6 @@ from .registry_identity import (
     INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     REGISTRY_ATTRIBUTE_NAME,
     REGISTRY_KEY_ATTRIBUTE_NAME,
-    SKIP_IF_NO_KEY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
     mro_registry_value,
 )
@@ -910,8 +916,7 @@ class RenameTopLevelBindingAuthorityOperationABC(
     ) -> tuple[PhysicalSourceEdit, ...]:
         proof = self.proof(snapshot)
         rationale = self.rationale or (
-            f"Rename declaration authority {proof.target.name!r} to "
-            f"{self.new_name!r}."
+            f"Rename declaration authority {proof.target.name!r} to {self.new_name!r}."
         )
         return tuple(
             edit
@@ -995,11 +1000,14 @@ class AssignmentDeletionOperationABC(SourceReprovedOperation, ABC):
             raise ValueError(f"{operation_key} requires unique assignment_names")
 
     @abstractmethod
-    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
+    def source_authority(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> AssignmentDeletionSource:
         raise NotImplementedError
 
     def source_edits_from_snapshot(
-        self, snapshot: CodemodSourceSnapshot,
+        self,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         authority = self.source_authority(snapshot)
         return authority.physical_edits(
@@ -1019,10 +1027,14 @@ class NamedScopeAssignmentDeletionOperationABC(AssignmentDeletionOperationABC, A
     def scope_kind(self) -> AstTargetNodeKind:
         raise NotImplementedError
 
-    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
+    def source_authority(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> AssignmentDeletionSource:
         _identifier, target, node = self.target_node_from_context(snapshot)
         if not self.scope_kind.accepts(node):
-            raise ValueError(f"Target {target.qualname!r} is not a {self.scope_kind.value} definition")
+            raise ValueError(
+                f"Target {target.qualname!r} is not a {self.scope_kind.value} definition"
+            )
         return AssignmentDeletionSource(
             source=snapshot.sources_by_file_path[target.file_path],
             node=node,
@@ -1506,7 +1518,9 @@ class _ClosedCarrierCollapseSourceRewrite:
         rewritten.keywords.append(
             ast.keyword(
                 arg=self.carrier_parameter_names[edge.callee_symbol],
-                value=edge.carrier_value_reference(self.carrier_parameter_names).as_expression(),
+                value=edge.carrier_value_reference(
+                    self.carrier_parameter_names
+                ).as_expression(),
             )
         )
         return SourceTextSpanReplacement.from_offsets(
@@ -1562,6 +1576,7 @@ class _ClosedCarrierCollapseSourceRewrite:
                 )
             )
         return tuple(replacements)
+
 
 @dataclass(frozen=True, kw_only=True)
 class CarrierCollapseOperationABC(RepositorySourceReprovedOperation, ABC):
@@ -1737,7 +1752,9 @@ class DeleteInheritedAutoRegisterConfigurationOperation(
 class DeleteModuleAssignmentsOperation(AssignmentDeletionOperationABC):
     """Delete named module-level assignment statements."""
 
-    def source_authority(self, snapshot: CodemodSourceSnapshot) -> AssignmentDeletionSource:
+    def source_authority(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> AssignmentDeletionSource:
         source_path = self.required_source_path(
             snapshot,
             "delete_module_assignments",
@@ -2657,13 +2674,17 @@ class RemoveClassBaseOperation(ClassBaseMutationOperationABC):
 class ReplaceClassBaseOperation(ClassBaseMutationOperationABC):
     """Replace one authored direct base while preserving direct-base precedence."""
 
-    replacement_base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    replacement_base_name: str = codemod_payload_field(
+        RequiredStringPayloadValueCodec()
+    )
 
     def replacement_header_lines(
         self,
         header_authority: ClassHeaderSpanSourceAuthority,
     ) -> tuple[str, ...]:
-        return header_authority.with_replaced_base(self.base_name, self.replacement_base_name)
+        return header_authority.with_replaced_base(
+            self.base_name, self.replacement_base_name
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2699,8 +2720,9 @@ class DirectClassBaseReplacementOperationABC(
             raise ValueError("Direct class-base replacement requires distinct classes")
         if "." in replacement.qualname:
             raise ValueError("Replacement class base must be a top-level declaration")
-        if replacement_symbol in snapshot.required_class_family_index.descendant_symbols(
-            replaced_symbol
+        if (
+            replacement_symbol
+            in snapshot.required_class_family_index.descendant_symbols(replaced_symbol)
         ):
             raise ValueError(
                 "Direct class-base replacement cannot introduce an inheritance cycle"
@@ -3092,16 +3114,23 @@ class LineWitnessSourceReprovedOperation(
     target_node_kind: ClassVar[AstTargetNodeKind]
 
     def required_witness(
-        self, snapshot: CodemodSourceSnapshot,
+        self,
+        snapshot: CodemodSourceSnapshot,
     ) -> CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT]:
         _identifier, target, node = self.target_node_from_context(snapshot)
-        target.require_kind(type(self).target_node_kind, "Unexpected line witness target kind")
+        target.require_kind(
+            type(self).target_node_kind, "Unexpected line witness target kind"
+        )
         if not type(self).target_node_kind.accepts(node):
-            raise ValueError("Line witness source does not match its indexed target kind")
+            raise ValueError(
+                "Line witness source does not match its indexed target kind"
+            )
         module = snapshot.parsed_module_for_source_path(target.file_path)
         candidates = tuple(
-            candidate for candidate in type(self).candidate_type.from_module(module)
-            if candidate.witness_name == target.qualname and candidate.line == target.line
+            candidate
+            for candidate in type(self).candidate_type.from_module(module)
+            if candidate.witness_name == target.qualname
+            and candidate.line == target.line
         )
         if len(candidates) != 1:
             raise ValueError(
@@ -3109,12 +3138,15 @@ class LineWitnessSourceReprovedOperation(
                 f"{type(self).candidate_type.__name__} witnesses"
             )
         return CurrentLineWitness(
-            target, cast(SourceRecipeNodeT, node),
-            cast(SourceRecipeCandidateT, candidates[0]), module,
+            target,
+            cast(SourceRecipeNodeT, node),
+            cast(SourceRecipeCandidateT, candidates[0]),
+            module,
         )
 
     def source_edits_from_snapshot(
-        self, snapshot: CodemodSourceSnapshot,
+        self,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         return self.source_edits_for_witness(snapshot, self.required_witness(snapshot))
 
@@ -3129,7 +3161,9 @@ class LineWitnessSourceReprovedOperation(
 
 @dataclass(frozen=True, kw_only=True)
 class DeriveCandidateCollectorOperation(
-    LineWitnessSourceReprovedOperation[CandidateCollectorBoilerplateCandidate, ast.FunctionDef],
+    LineWitnessSourceReprovedOperation[
+        CandidateCollectorBoilerplateCandidate, ast.FunctionDef
+    ],
 ):
     """Replace one proved forwarding method with its collector declaration."""
 
@@ -3214,7 +3248,7 @@ class RegistryKeyDeclarationRewriteMixin:
         targets: ClassMemberPromotionTargets,
         entries: tuple[SourceClassKeyEntry, ...],
         registry_key_attribute: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[SourceTextMutation, ...]:
         entries_by_class = {entry.class_name: entry for entry in entries}
         replacements = []
         for class_target in targets.targets:
@@ -3250,31 +3284,14 @@ class RegistryKeyDeclarationRewriteMixin:
         target: ResolvedClassTarget,
         entry: SourceClassKeyEntry,
         registry_key_attribute: str,
-    ) -> PhysicalSourceEdit:
-        body_authority = ClassBodySourceAuthority(
-            target.node,
-            targets.source_for(target.file_path),
+    ) -> SourceTextMutation:
+        body = ClassBodyTailSourceAuthority(
+            target.node, targets.source_for(target.file_path)
         )
-        assignment_line = (
-            f"{body_authority.indentation}{registry_key_attribute} = "
-            f"{entry.key_source}\n"
-        )
-        body = statements_without_docstring(target.node.body)
-        if len(body) == 1 and isinstance(body[0], ast.Pass):
-            statement = body[0]
-            return SourceSpanReplacement(
-                file_path=target.file_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
-                replacement_lines=(assignment_line,),
-                rationale=self.rationale_text(
-                    f"Declare registry key on {target.qualname!r}."
-                ),
-            )
-        return SourceInsertion(
+        member = f"{body.indentation}{registry_key_attribute} = {entry.key_source}\n"
+        return body.geometry.nominal_edit(
             file_path=target.file_path,
-            insertion_line=body_authority.declaration_insert_line + 1,
-            inserted_lines=(assignment_line,),
+            replacements=(body.member_insertion_replacement((member,)),),
             rationale=self.rationale_text(
                 f"Declare registry key on {target.qualname!r}."
             ),
@@ -3304,7 +3321,7 @@ class DeriveAutoregisterInstanceViewOperation(
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         _target_id, authority_digest, authority_node = self.target_node_from_context(
             snapshot
         )
@@ -3318,6 +3335,12 @@ class DeriveAutoregisterInstanceViewOperation(
         component = AutoRegisterInstanceViewComponent.from_module_authority(
             snapshot.module_nodes_by_file_path[source_path],
             authority_node.name,
+        )
+        component.require_destination_key_compatibility(component.authority)
+        component.require_original_entry_values(
+            snapshot.module_binding_proof.native_reference_environment(
+                snapshot.parsed_module_for_source_path(source_path)
+            )
         )
         concrete_targets = ClassMemberPromotionTargets.resolve(
             snapshot,
@@ -3342,12 +3365,12 @@ class DeriveAutoregisterInstanceViewOperation(
             self.assignment_replacement(source_path, component),
         )
 
-    def instance_method_replacements(
+    def authority_replacements(
         self,
         authority_target: ResolvedClassTarget,
         component: AutoRegisterInstanceViewComponent,
         source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[SourceTextMutation, ...]:
         if (
             self.instance_view_method_name
             in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
@@ -3358,67 +3381,18 @@ class DeriveAutoregisterInstanceViewOperation(
                 f"AutoRegister authority {authority_target.qualname!r} already binds "
                 f"{self.instance_view_method_name!r}"
             )
-        body_authority = ClassBodySourceAuthority(
-            component.authority_node,
-            source_by_path[authority_target.file_path],
+        body = ClassBodyTailSourceAuthority(
+            component.authority_node, source_by_path[authority_target.file_path]
         )
-        insertion_line = (
-            authority_target.node.end_lineno or authority_target.node.lineno
-        )
+        members = [self.instance_method_source(body.indentation)]
+        if not component.authority.declares_registry:
+            members.insert(0, f"{body.indentation}{REGISTRY_ATTRIBUTE_NAME} = {{}}\n")
         return (
-            SourceInsertion(
+            body.geometry.nominal_edit(
                 file_path=authority_target.file_path,
-                insertion_line=insertion_line + 1,
-                inserted_lines=SourceTargetEditor.source_lines(
-                    self.instance_method_source(body_authority.indentation)
-                ),
+                replacements=(body.member_insertion_replacement(tuple(members)),),
                 rationale=self.rationale_text(
-                    f"Add {self.instance_view_method_name!r} derived instance view to "
-                    f"{authority_target.qualname!r}."
-                ),
-            ),
-        )
-
-    def authority_replacements(
-        self,
-        authority_target: ResolvedClassTarget,
-        component: AutoRegisterInstanceViewComponent,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return (
-            *self.explicit_registry_replacements(
-                authority_target,
-                component,
-                source_by_path,
-            ),
-            *self.instance_method_replacements(
-                authority_target,
-                component,
-                source_by_path,
-            ),
-        )
-
-    def explicit_registry_replacements(
-        self,
-        authority_target: ResolvedClassTarget,
-        component: AutoRegisterInstanceViewComponent,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        if component.authority.declares_registry:
-            return ()
-        body_authority = ClassBodySourceAuthority(
-            component.authority_node,
-            source_by_path[authority_target.file_path],
-        )
-        return (
-            SourceInsertion(
-                file_path=authority_target.file_path,
-                insertion_line=body_authority.declaration_insert_line + 1,
-                inserted_lines=(
-                    f"{body_authority.indentation}{REGISTRY_ATTRIBUTE_NAME} = {{}}\n",
-                ),
-                rationale=self.rationale_text(
-                    f"Keep {authority_target.qualname!r} registry in memory."
+                    f"Derive {self.instance_view_method_name!r} from {authority_target.qualname!r}."
                 ),
             ),
         )
@@ -3491,6 +3465,12 @@ class ManualRegistryConversionTargets:
             module,
             anchor_node.name,
         )
+        component.require_destination_key_compatibility(component.destination_authority)
+        component.require_original_entry_values(
+            snapshot.module_binding_proof.native_reference_environment(
+                snapshot.parsed_module_for_source_path(source_path)
+            )
+        )
         registered_classes = ClassMemberPromotionTargets.resolve(
             snapshot,
             source_path=source_path,
@@ -3527,6 +3507,17 @@ class ConvertManualRegistryToAutoregisterOperation(
 ):
     """Derive and convert one direct registry component from an anchor class."""
 
+    def simulation_reports(
+        self, simulation: CodemodPlanDocumentSimulation
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        """Keep rendered candidates with unproved creator uses out of application."""
+        return self.required_reproof(
+            lambda: tuple(
+                requirement.inspect().preflight_report()
+                for requirement in self.candidate_native_use_requirements(simulation)
+            )
+        )
+
     def current_source_authority_claims(
         self,
         context: CodemodSelectorContext,
@@ -3557,6 +3548,39 @@ class ConvertManualRegistryToAutoregisterOperation(
             snapshot,
             anchor_target,
             anchor_node,
+        )
+
+    def candidate_native_use_requirements(
+        self, simulation: CodemodPlanDocumentSimulation
+    ) -> tuple[NativeUseRequirement, ...]:
+        """Expose candidate creator operands, not assert registration equivalence.
+
+        Requirements retain the actual after revision and native-use provenance.
+        Import execution, construction effects and selected observation relations
+        remain separate obligations; inspecting these does not admit those effects.
+        """
+        targets = self.required_targets(
+            simulation.after_snapshot_projection.base_snapshot
+        )
+        snapshot = simulation.required_after_snapshot
+        candidate = ResolvedClassTarget.from_rewrite_target(
+            snapshot,
+            SourceRewriteTarget(
+                file_path=targets.file_path,
+                qualname=targets.component.authority_name,
+            ),
+        )
+        authority = AutoRegisterClassAuthority(candidate.node)
+        environment = snapshot.product_flow_repository.native_reference_environment(
+            snapshot.parsed_module_for_source_path(targets.file_path)
+        )
+        return (
+            NativeUseRequirement(
+                type(self),
+                authority.metaclass_operand,
+                (authority.native_metaclass,),
+                environment,
+            ),
         )
 
     def source_edits_from_snapshot(
@@ -3597,7 +3621,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         component: DirectManualRegistryComponent,
         authority_target: ResolvedClassTarget | None,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[NominalSourceEdit, ...]:
         if authority_target is None:
             return (
                 self.generated_authority_insertion(component, targets),
@@ -3618,18 +3642,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         targets: ClassMemberPromotionTargets,
     ) -> PhysicalSourceEdit:
         class_target = targets.insertion_target
-        registry_source = (
-            f"    __registry__ = {component.registry_name}\n"
-            if component.initializes_empty_registry
-            else ""
-        )
-        authority_source = (
-            f"class {component.authority_name}(metaclass={AUTOREGISTER_META_NAME}):\n"
-            f"{registry_source}"
-            f"    {REGISTRY_KEY_ATTRIBUTE_NAME} = {DEFAULT_REGISTRY_KEY_ATTRIBUTE!r}\n"
-            f"    {SKIP_IF_NO_KEY_ATTRIBUTE_NAME} = True\n"
-            f"    {DEFAULT_REGISTRY_KEY_ATTRIBUTE} = None\n\n"
-        )
+        authority_source = ast.unparse(component.destination_authority.node) + "\n\n"
         return SourceInsertion(
             file_path=class_target.file_path,
             insertion_line=targets.insertion_line,
@@ -3643,19 +3656,22 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         component: DirectManualRegistryComponent,
         targets: ClassMemberPromotionTargets,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[SourceTextMutation, ...]:
         replacements = []
-        for class_target in targets.targets:
+        for target in targets.targets:
             header = ClassHeaderSpanSourceAuthority(
-                node=class_target.node,
-                source=targets.source_for(class_target.file_path),
+                target.node, targets.source_for(target.file_path)
             )
-            replacements.extend(
-                header.source_edits(
-                    header.with_added_base(component.authority_name),
-                    file_path=class_target.file_path,
+            replacements.append(
+                header.geometry.nominal_edit(
+                    file_path=target.file_path,
+                    replacements=(
+                        header.header_replacement(
+                            header.with_added_base(component.authority_name)
+                        ),
+                    ),
                     rationale=self.rationale_text(
-                        f"Add registry authority to {class_target.qualname!r}."
+                        f"Add registry authority to {target.qualname!r}."
                     ),
                 )
             )
@@ -3665,7 +3681,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         self,
         authority_target: ResolvedClassTarget,
         source: str,
-    ) -> tuple[PhysicalSourceEdit, ...]:
+    ) -> tuple[SourceTextMutation, ...]:
         header = ClassHeaderSpanSourceAuthority(authority_target.node, source)
         metaclass_keywords = tuple(
             keyword
@@ -3682,18 +3698,24 @@ class ConvertManualRegistryToAutoregisterOperation(
                     "incompatible metaclass"
                 )
             return ()
-        return header.source_edits(
-                header.with_items(
-                    header.base_items,
-                    (
-                        *header.keyword_items,
-                        f"metaclass={AUTOREGISTER_META_NAME}",
+        return (
+            header.geometry.nominal_edit(
+                replacements=(
+                    header.header_replacement(
+                        header.with_items(
+                            header.base_items,
+                            (
+                                *header.keyword_items,
+                                f"metaclass={AUTOREGISTER_META_NAME}",
+                            ),
+                        )
                     ),
                 ),
                 file_path=authority_target.file_path,
                 rationale=self.rationale_text(
                     f"Make {authority_target.qualname!r} own class registration."
                 ),
+            ),
         )
 
     def existing_authority_declaration_replacements(
@@ -3701,26 +3723,8 @@ class ConvertManualRegistryToAutoregisterOperation(
         authority_target: ResolvedClassTarget,
         source: str,
         component: DirectManualRegistryComponent,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        registry_values: tuple[tuple[str, ast.expr], ...] = (
-            (
-                (
-                    REGISTRY_ATTRIBUTE_NAME,
-                    ast.Name(id=component.registry_name, ctx=ast.Load()),
-                ),
-            )
-            if component.initializes_empty_registry
-            else ()
-        )
-        required_values = (
-            *registry_values,
-            (
-                REGISTRY_KEY_ATTRIBUTE_NAME,
-                ast.Constant(DEFAULT_REGISTRY_KEY_ATTRIBUTE),
-            ),
-            (SKIP_IF_NO_KEY_ATTRIBUTE_NAME, ast.Constant(True)),
-            (DEFAULT_REGISTRY_KEY_ATTRIBUTE, ast.Constant(None)),
-        )
+    ) -> tuple[SourceTextMutation, ...]:
+        required_values = component.destination_authority.assignment_pairs
         missing = []
         for name, expected_value in required_values:
             declarations = tuple(
@@ -3740,7 +3744,7 @@ class ConvertManualRegistryToAutoregisterOperation(
                 )
         if not missing:
             return ()
-        body_authority = ClassBodySourceAuthority(
+        body_authority = ClassBodyTailSourceAuthority(
             authority_target.node,
             source,
         )
@@ -3748,25 +3752,12 @@ class ConvertManualRegistryToAutoregisterOperation(
             f"{body_authority.indentation}{name} = {ast.unparse(value)}\n"
             for name, value in missing
         )
-        body = statements_without_docstring(authority_target.node.body)
-        if len(body) == 1 and isinstance(body[0], ast.Pass):
-            statement = body[0]
-            return (
-                SourceSpanReplacement(
-                    file_path=authority_target.file_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
-                    replacement_lines=inserted_lines,
-                    rationale=self.rationale_text(
-                        f"Declare registry semantics on {authority_target.qualname!r}."
-                    ),
-                ),
-            )
         return (
-            SourceInsertion(
+            body_authority.geometry.nominal_edit(
                 file_path=authority_target.file_path,
-                insertion_line=body_authority.declaration_insert_line + 1,
-                inserted_lines=inserted_lines,
+                replacements=(
+                    body_authority.member_insertion_replacement(inserted_lines),
+                ),
                 rationale=self.rationale_text(
                     f"Declare registry semantics on {authority_target.qualname!r}."
                 ),
@@ -3778,9 +3769,10 @@ class ConvertManualRegistryToAutoregisterOperation(
         source_path: str,
         component: DirectManualRegistryComponent,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        if component.declares_registry_entries:
+        replacements = []
+        if not component.reuses_registry_binding:
             statement = component.registry_assignment
-            return (
+            replacements.append(
                 SourceSpanReplacement(
                     file_path=source_path,
                     start_line=statement.lineno,
@@ -3791,16 +3783,20 @@ class ConvertManualRegistryToAutoregisterOperation(
                     rationale=self.rationale_text(
                         f"Derive {component.registry_name!r} from its class authority."
                     ),
-                ),
+                )
             )
-        return tuple(
-            SourceSpanDeletion(
-                file_path=source_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
-                rationale=self.rationale_text("Delete manual registry write."),
-            )
-            for statement in component.registration_statements
+        return (
+            *replacements,
+            *(
+                SourceSpanDeletion(
+                    file_path=source_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    rationale=self.rationale_text("Delete manual registry write."),
+                )
+                for statement in component.registration_statements
+                if statement is not component.registry_assignment
+            ),
         )
 
     @staticmethod
@@ -4655,6 +4651,7 @@ class FindingRecipeClassPlanReport(DataclassJsonReport):
             for execution_class in execution_plan.classes
         )
 
+
 def codemod_class_plan_from_findings(
     findings: Iterable[RefactorFinding],
     *,
@@ -4740,6 +4737,7 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
             evaluation_declaration_type=type(self),
         )
 
+
 class PrimaryEvidenceActionKeysMixin:
     """Derive one conflict key from a finding's primary source witness."""
 
@@ -4808,9 +4806,7 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
                 qualnames=(evidence.subject_symbol,),
             ).target_ids(context)
             if len(target_ids) != 1:
-                raise ValueError(
-                    f"Line witness target count is {len(target_ids)}"
-                )
+                raise ValueError(f"Line witness target count is {len(target_ids)}")
             operation = type(self).operation_type(
                 target=SourceRewriteTarget(target_id=target_ids[0]),
             )
@@ -4819,7 +4815,12 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=finding.summary,
             ).with_operation(operation)
-        except (CodemodOperationPreflightError, KeyError, TypeError, ValueError) as error:
+        except (
+            CodemodOperationPreflightError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
             return self.rejected_evaluation(str(error))
         return self.executable_evaluation(recipe)
 
@@ -4857,15 +4858,22 @@ class CollectorDeclarationOperation(
             ),
             PatchTargetOperation(
                 target=SourceRewriteTarget(target_id=witness.target.target_id),
-                replacements=(SourceTextReplacement(old_source=original, new_source=replacement),),
+                replacements=(
+                    SourceTextReplacement(old_source=original, new_source=replacement),
+                ),
             ),
         )
-        return tuple(edit for operation in operations for edit in operation.source_edits(snapshot))
+        return tuple(
+            edit
+            for operation in operations
+            for edit in operation.source_edits(snapshot)
+        )
 
     @classmethod
     @abstractmethod
     def replacement_source(
-        cls, witness: CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT],
+        cls,
+        witness: CurrentLineWitness[SourceRecipeCandidateT, SourceRecipeNodeT],
     ) -> str:
         raise NotImplementedError
 
@@ -4899,7 +4907,9 @@ class DeclareCandidateFindingRendererOperation(
     @classmethod
     def replacement_source(
         cls,
-        witness: CurrentLineWitness[DirectBuildFindingRendererCandidate, ast.FunctionDef],
+        witness: CurrentLineWitness[
+            DirectBuildFindingRendererCandidate, ast.FunctionDef
+        ],
     ) -> str:
         call = witness.candidate.build_call(witness.node)
         if call is None:
@@ -4921,6 +4931,7 @@ class DeclareCandidateFindingRendererOperation(
             ),
         )
         return ast.unparse(ast.fix_missing_locations(assignment))
+
 
 @dataclass(frozen=True, kw_only=True)
 class DeclareDetectorClassOperation(
@@ -4981,13 +4992,15 @@ class DeclareDetectorClassOperation(
 
 
 class DirectBuildFindingRendererFindingRecipeSynthesizer(
-    SourceReprovedLineWitnessFindingRecipeSynthesizer, ClassFamilyAuthorityConcept,
+    SourceReprovedLineWitnessFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
 ):
     operation_type = DeclareCandidateFindingRendererOperation
 
 
 class DeclarativeDetectorClassFindingRecipeSynthesizer(
-    SourceReprovedLineWitnessFindingRecipeSynthesizer, ClassFamilyAuthorityConcept,
+    SourceReprovedLineWitnessFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
 ):
     operation_type = DeclareDetectorClassOperation
 
@@ -5090,6 +5103,7 @@ class CarrierCollapseFindingRecipeSynthesizer(
             .with_operation(operation)
         )
         return self.executable_evaluation(recipe)
+
 
 @dataclass(frozen=True)
 class RepeatedCallAuthorityParameter:
@@ -6596,11 +6610,12 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         annotation_node = DataclassAuthorityReferenceProof.annotation_reference(
             annotation_node
         )
-        if (
-            not isinstance(annotation_node, ast.Subscript)
-            or AstExpressionProjection.terminal_name(annotation_node.value)
-            not in {"tuple", "Tuple"}
-        ):
+        if not isinstance(
+            annotation_node, ast.Subscript
+        ) or AstExpressionProjection.terminal_name(annotation_node.value) not in {
+            "tuple",
+            "Tuple",
+        }:
             return None
         slice_node = annotation_node.slice
         if not isinstance(slice_node, ast.Tuple) or len(slice_node.elts) != 2:
@@ -7649,8 +7664,7 @@ class AutoRegisterMroOrderingDerivation:
     @staticmethod
     def has_plain_root_bases(root_node: ast.ClassDef) -> bool:
         return all(
-            AstExpressionProjection.terminal_name(base)
-            in {"ABC", "Generic", "object"}
+            AstExpressionProjection.terminal_name(base) in {"ABC", "Generic", "object"}
             for base in root_node.bases
         ) and not any(
             isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -9812,9 +9826,7 @@ class DataclassAuthorityMappingRecipeBuilder(
     @cached_property
     def parts(self) -> RecipePartsT | None:
         return (
-            Maybe.of(
-                SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
-            )
+            Maybe.of(SemanticMirrorRecipeSeedLocations.from_finding(self.finding))
             .project(self.parts_from_seed)
             .unwrap_or_none()
         )

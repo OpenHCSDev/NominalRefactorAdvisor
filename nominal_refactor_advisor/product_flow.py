@@ -9,15 +9,20 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cached_property
+from functools import (
+    cached_property,
+    partial,
+)
 from itertools import chain
 from typing import (
     Callable,
+    ClassVar,
     Generic,
     Self,
+    TYPE_CHECKING,
     TypeAlias,
     TypeVar,
     cast,
@@ -30,6 +35,9 @@ from .ast_tools import (
     EagerFunctionAnnotationVisitor,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
+    VariableAnnotationVisitorABC,
+    is_docstring_statement,
+    module_syntax_index,
 )
 from .call_binding import (
     CallValueT,
@@ -51,17 +59,45 @@ from .lexical_bindings import (
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
-from .native_compilation import NativeFunctionExecution
+from .native_compilation import (
+    CPythonClassConstructionField,
+    ExactNativeClassCapture,
+    NativeCaptureSite,
+    NativeClassCapture,
+    NativeClassCaptureResolverABC,
+    NativeFunctionExecution,
+    NativeItemStoreOperand,
+    NativeItemStoreValue,
+    NativeProducedValue,
+    NativeReturn,
+    OpenNativeClassCapture,
+)
 from .python_module_identity import PythonModulePathIdentity
 from .source_geometry import SourceByteSpan
 from .value_expression import (
     CompactValueExpression as CompactValueExpression,
     LexicalValueReference as LexicalValueReference,
+    NonLexicalValueShape,
     OpaqueValueExpression as OpaqueValueExpression,
+    ResolutionContextT as ResolutionContextT,
+    TargetResolutionT as TargetResolutionT,
+    ValueExpressionNode,
+    ValueExpressionResolverABC as ValueExpressionResolverABC,
+    ValueExpressionShapeABC,
 )
-from .value_graph import DataclassGraphValue
+from .value_graph import (
+    DataclassGraphNode,
+    DataclassGraphValue,
+    StoredDataclassState,
+)
 
-SourcePositionedNode: TypeAlias = ast.expr | ast.stmt | ast.ExceptHandler | ast.pattern
+if TYPE_CHECKING:
+    from .native_reference import NativeReferenceEnvironment
+
+
+SourcePositionedNode: TypeAlias = (
+    ValueExpressionNode | ast.stmt | ast.ExceptHandler | ast.pattern
+)
 
 
 class CompactTransparentSignatureDecorator(StrEnum):
@@ -242,15 +278,25 @@ class CompactFlowOwnerKind(StrEnum):
     is_function_scope: bool
     is_class_body_scope: bool
 
+    def documentation_statement(self, statements: list[ast.stmt]) -> ast.Expr | None:
+        """Only the original module/class body entry installs documentation storage."""
+        if (
+            not self.is_function_scope
+            and statements
+            and is_docstring_statement(statements[0])
+        ):
+            return cast(ast.Expr, statements[0])
+        return None
+
     def visit_assignment_annotation(
         self,
-        visitor: ast.NodeVisitor,
+        visitor: VariableAnnotationVisitorABC,
         node: ast.AnnAssign,
         mode: ModuleAnnotationEvaluationMode,
     ) -> None:
         """Function-local annotations are declarations, never body evaluation."""
-        if not self.is_function_scope and mode.annotations_execute_at_declaration:
-            visitor.visit(node.annotation)
+        if not self.is_function_scope:
+            mode.visit_variable_annotation(visitor, node)
 
     def __new__(
         cls,
@@ -309,8 +355,32 @@ class CompactControlBranchKind(StrEnum):
         )
 
 
+NamespaceMemberT = TypeVar("NamespaceMemberT")
+
+
 class CompactBindingOperationABC(ABC):
     """Source-kind behaviour owned by the mutation declaration."""
+
+    def update_namespace_members(
+        self, names: set[NamespaceMemberT], name: NamespaceMemberT
+    ) -> None:
+        names.add(name)
+
+    def require_previous_binding(self, present: bool) -> None:
+        """Installation permits either an existing or an absent destination slot."""
+
+    def require_plain_store(self) -> None:
+        """Require direct RHS installation without an additional value operation."""
+        raise ValueError("Only direct assignment has plain storage semantics")
+
+    def bound_call_result(
+        self,
+        flow: CompactFunctionFlow,
+        binding: CompactMutation,
+        reference: LexicalValueReference,
+    ) -> CompactFunctionCall | None:
+        """Other operations do not establish an unchanged call result store."""
+        return None
 
     is_import_binding = False
     is_definition_binding = False
@@ -319,9 +389,9 @@ class CompactBindingOperationABC(ABC):
         self,
         context: CompactFlowContext,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
-    ) -> frozenset[CompactBindingVisit]:
-        return pending | {(context.owner_symbol, binding)}
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> frozenset[CompactBindingVisit[CompactFlowContext]]:
+        return pending | {CompactBindingVisit(context, binding)}
 
     def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:
         if origin is not None:
@@ -330,11 +400,11 @@ class CompactBindingOperationABC(ABC):
     @abstractmethod
     def resolve_source(
         self,
-        resolver: CompactBindingResolverABC[TargetResolutionT],
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
         context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         raise NotImplementedError
 
@@ -350,17 +420,62 @@ class CompactBindingOperationABC(ABC):
 class CompactValueBindingOperation(CompactBindingOperationABC):
     def resolve_source(
         self,
-        resolver: CompactBindingResolverABC[TargetResolutionT],
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
         context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
-        return resolver._possible_binding_resolution(
-            context,
-            reference,
-            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
-            pending,
+        return binding.resolve_binding_value(resolver, context, reference, pending)
+
+
+class CompactAssignmentBindingOperation(CompactValueBindingOperation):
+    """Direct assignment installs its already-evaluated RHS unchanged."""
+
+    def require_plain_store(self) -> None:
+        return None
+
+    def bound_call_result(
+        self,
+        flow: CompactFunctionFlow,
+        binding: CompactMutation,
+        reference: LexicalValueReference,
+    ) -> CompactFunctionCall | None:
+        matching_calls = tuple(
+            call
+            for call in flow.calls
+            if call.result.binding == reference
+            and binding.reference == reference
+            and binding.position.branch_path == call.position.branch_path
+            and binding.position.statement_index == call.position.statement_index
+            and call.position.dominates(binding.position)
+        )
+        return matching_calls[0] if len(matching_calls) == 1 else None
+
+
+class CompactDeletionBindingOperation(CompactBindingOperationABC):
+    """Remove an existing binding; absence is not an unknown stored value."""
+
+    def require_previous_binding(self, present: bool) -> None:
+        if not present:
+            raise ValueError("Native deletion requires an existing destination binding")
+
+    def update_namespace_members(
+        self, names: set[NamespaceMemberT], name: NamespaceMemberT
+    ) -> None:
+        self.require_previous_binding(name in names)
+        names.remove(name)
+
+    def resolve_source(
+        self,
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        return resolver._deleted_binding_resolution(
+            context, reference, binding, pending
         )
 
 
@@ -373,11 +488,11 @@ class CompactImportBindingOperation(CompactBindingOperationABC):
 
     def resolve_source(
         self,
-        resolver: CompactBindingResolverABC[TargetResolutionT],
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
         context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         return resolver._imported_name_resolution(context, reference, binding, pending)
 
@@ -389,17 +504,17 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
         self,
         context: CompactFlowContext,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
-    ) -> frozenset[CompactBindingVisit]:
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> frozenset[CompactBindingVisit[CompactFlowContext]]:
         return pending
 
     def resolve_source(
         self,
-        resolver: CompactBindingResolverABC[TargetResolutionT],
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
         context: CompactFlowContext,
         reference: LexicalValueReference,
         binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         return resolver._definition_binding_resolution(
             context,
@@ -421,9 +536,9 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
 class CompactMutationKind(StrEnum):
     """Source operations with one declaration-owned binding interpretation."""
 
-    ASSIGNMENT = "assignment"
+    ASSIGNMENT = "assignment", CompactAssignmentBindingOperation()
     AUGMENTED_ASSIGNMENT = "augmented_assignment"
-    DELETION = "deletion"
+    DELETION = "deletion", CompactDeletionBindingOperation()
     DEFINITION = "definition", CompactDefinitionBindingOperation()
     IMPORT = "import", CompactImportBindingOperation()
     ITERATION_BINDING = "iteration_binding"
@@ -464,20 +579,104 @@ class CompactMutationKind(StrEnum):
 
 
 class CompactValueDestinationKind(StrEnum):
-    """Immediate value destination with member-owned binding requirements."""
+    """Immediate value destinations own storage, scheduling and effect obligations."""
 
-    BOUND = "bound", True
+    def _open_expression_operations(
+        self,
+        result: CompactEvaluatedResult,
+        operations: tuple[SourceFlowOperation, ...],
+    ) -> tuple[SourceFlowOperation, ...]:
+        raise ValueError("Value destination has no expression-statement disposition")
+
+    def _discard_operations(
+        self,
+        result: CompactEvaluatedResult,
+        operations: tuple[SourceFlowOperation, ...],
+    ) -> tuple[SourceFlowOperation, ...]:
+        return tuple(operation for operation in operations if operation.event is result)
+
+    def _binding_operations(
+        self,
+        result: CompactEvaluatedResult,
+        operations: tuple[SourceFlowOperation, ...],
+    ) -> tuple[SourceFlowOperation, ...]:
+        return tuple(
+            operation
+            for operation in operations
+            if isinstance(operation.event, CompactEvaluatedAssignment)
+            and operation.event.result is result
+        )
+
+    def _open_expression(
+        self, environment: NativeReferenceEnvironment, node: ast.Expr
+    ) -> None:
+        raise ValueError("Value destination has no expression-statement obligation")
+
+    def _discard_expression(
+        self, environment: NativeReferenceEnvironment, node: ast.Expr
+    ) -> None:
+        environment.require_discard(node)
+
+    def _bound_expression(
+        self, environment: NativeReferenceEnvironment, node: ast.Expr
+    ) -> None:
+        environment.capture_value(node.value).require_closed()
+        environment.require_binding_write(node)
+
+    BOUND = "bound", True, _binding_operations, _bound_expression
     RETURNED = "returned", False
-    DISCARDED = "discarded", False
+    DISCARDED = "discarded", False, _discard_operations, _discard_expression
     EMBEDDED = "embedded", False
 
-    def __new__(cls, value: str, requires_binding: bool) -> Self:
+    def __new__(
+        cls,
+        value: str,
+        requires_binding: bool,
+        expression_operations: Callable[
+            [
+                CompactValueDestinationKind,
+                CompactEvaluatedResult,
+                tuple[SourceFlowOperation, ...],
+            ],
+            tuple[SourceFlowOperation, ...],
+        ] = _open_expression_operations,
+        expression_requirement: Callable[
+            [CompactValueDestinationKind, NativeReferenceEnvironment, ast.Expr], None
+        ] = _open_expression,
+    ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member._requires_binding = requires_binding
+        member._expression_operations = expression_operations
+        member._expression_requirement = expression_requirement
         return member
 
-    def validate_binding(self, binding: "LexicalValueReference | None") -> None:
+    def expression_operations(
+        self,
+        result: CompactEvaluatedResult,
+        operations: tuple[SourceFlowOperation, ...],
+    ) -> tuple[SourceFlowOperation, ...]:
+        selected = self._expression_operations(self, result, operations)
+        if len(selected) != 1:
+            raise ValueError(
+                "Expression disposition requires one original application operation"
+            )
+        return selected
+
+    def require_expression(
+        self, environment: NativeReferenceEnvironment, node: ast.Expr
+    ) -> None:
+        self._expression_requirement(self, environment, node)
+
+    def require_discarded_value(
+        self, value_use: CompactValueUse | None
+    ) -> CompactValueUse:
+        """Return the actual discarded value, not an unrelated destination's receipt."""
+        if self is not type(self).DISCARDED or value_use is None:
+            raise ValueError("Discard requires its actual value disposition")
+        return value_use
+
+    def validate_binding(self, binding: LexicalValueReference | None) -> None:
         if (binding is not None) != self._requires_binding:
             raise ValueError(f"{self.value} value binding does not match its use")
 
@@ -500,6 +699,16 @@ class CompactValueDestination:
 
     use: CompactValueDestinationKind
     binding: LexicalValueReference | None = None
+
+    @property
+    def direct_binding_name(self) -> str | None:
+        """A singular lexical destination, excluding computed object locations."""
+        binding = self.binding
+        return (
+            binding.root_name
+            if binding is not None and not binding.attribute_path
+            else None
+        )
 
     @classmethod
     def for_assignment(cls, targets: tuple[ast.expr, ...] | list[ast.expr]) -> Self:
@@ -557,12 +766,12 @@ class CompactCallArguments(Generic[CallValueT], DataclassGraphValue):
         return declaration.bind_call(self.positional, self.keywords)
 
 
-ResolutionContextT = TypeVar("ResolutionContextT")
-TargetResolutionT = TypeVar("TargetResolutionT")
-
-
 class CompactDefinitionResolverABC(ABC, Generic[TargetResolutionT]):
     """Select source definitions independently of callable-use projection."""
+
+    def _non_definition_resolution(self) -> TargetResolutionT:
+        """A proved non-definition is distinct from an unproved receiver."""
+        raise ValueError("This operation requires a source definition")
 
     @abstractmethod
     def _selected_class_resolution(
@@ -617,7 +826,9 @@ class CompactCallTargetResolverABC(
         context: ResolutionContextT,
         reference: LexicalValueReference,
         position: CompactFlowPosition,
-        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        pending_bindings: frozenset[
+            CompactBindingVisit[CompactFlowContext]
+        ] = frozenset(),
     ) -> TargetResolutionT:
         """Resolve a lexical access path through its reaching bindings."""
         raise NotImplementedError
@@ -650,7 +861,9 @@ class CompactCallTargetReference(ABC):
         context: ResolutionContextT,
         position: CompactFlowPosition,
         *,
-        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        pending_bindings: frozenset[
+            CompactBindingVisit[CompactFlowContext]
+        ] = frozenset(),
         attribute_path: tuple[str, ...] = (),
     ) -> TargetResolutionT:
         """Select the nominal lookup, then project any captured attribute access."""
@@ -698,7 +911,9 @@ class LexicalCallTargetReference(CompactCallTargetReference, ABC):
         context: ResolutionContextT,
         position: CompactFlowPosition,
         *,
-        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        pending_bindings: frozenset[
+            CompactBindingVisit[CompactFlowContext]
+        ] = frozenset(),
         attribute_path: tuple[str, ...] = (),
     ) -> TargetResolutionT:
         reference = self.lexical_reference
@@ -951,6 +1166,12 @@ class CompactFlowPosition:
 
     evaluation_path: tuple[CompactEvaluationBranch, ...] = ()
 
+    def may_precede_cut(self, other: CompactFlowPosition) -> bool:
+        """Strict entry cut, retaining an earlier iteration of the same source event."""
+        return self.may_precede(other) and (
+            self != other or any(branch.kind.can_repeat for branch in self.branch_path)
+        )
+
     def _comparison_indices(self, other: CompactFlowPosition) -> tuple[int, int] | None:
         """Project same-suite order without ordering unordered sibling members."""
         if self.statement_index != other.statement_index:
@@ -1054,7 +1275,7 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
         raise NotImplementedError
 
 
-class CompactAssignmentTargetABC(ABC):
+class CompactAssignmentTargetABC(DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
     imported_origin: ImportedNameOrigin | None = None
@@ -1142,9 +1363,15 @@ class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
 
     owner: CompactDefinitionFlowOwner
     decorator_uses: tuple[CompactValueUse, ...]
+    input_uses: tuple[CompactValueUse, ...]
     header_position: CompactFlowPosition
 
     bound_name = AliasProperty[str]("owner.bound_name")
+
+    @property
+    def header_uses(self) -> tuple[CompactValueUse, ...]:
+        """All eagerly consumed header receipts in their native evaluation order."""
+        return (*self.decorator_uses, *self.input_uses)
 
     def __post_init__(self) -> None:
         if not isinstance(self.owner, CompactDefinitionFlowOwner):
@@ -1223,7 +1450,7 @@ AssignmentTargetT = TypeVar("AssignmentTargetT", bound=CompactAssignmentTargetAB
 
 
 @dataclass(frozen=True)
-class CompactMutation(Generic[AssignmentTargetT]):
+class CompactMutation(DataclassGraphNode, Generic[AssignmentTargetT]):
     target: AssignmentTargetT
     kind: CompactMutationKind
     position: CompactFlowPosition
@@ -1239,6 +1466,15 @@ class CompactMutation(Generic[AssignmentTargetT]):
     ) -> TargetResolutionT:
         return self.target.resolve_mutation(resolver, context, self)
 
+    def resolve_binding_value(
+        self,
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        return resolver._value_binding_resolution(context, reference, self, pending)
+
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
         if self.kind.is_definition_binding != isinstance(
@@ -1249,7 +1485,75 @@ class CompactMutation(Generic[AssignmentTargetT]):
             )
 
 
-CompactBindingVisit: TypeAlias = tuple[str, CompactMutation]
+@dataclass(frozen=True)
+class CompactEvaluatedAssignment(CompactMutation[AssignmentTargetT]):
+    """One plain write owns the actual RHS, independently of destination kind."""
+
+    result: CompactEvaluatedResult
+    value_use = AliasProperty["CompactValueUse"]("result.value_use")
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.kind.binding_operation.require_plain_store()
+        if self.result.value_use is None:
+            raise ValueError("Evaluated assignment requires an actual RHS value use")
+        if not (
+            self.value_use.position.dominates(self.result.position)
+            and self.result.position.dominates(self.position)
+        ):
+            raise ValueError("Evaluated assignment must follow its actual RHS result")
+        name = self.result.destination.direct_binding_name
+        if name is not None and name != self.target.bound_name:
+            raise ValueError(
+                "Evaluated destination differs from the actual name target"
+            )
+
+    def resolve_binding_value(
+        self,
+        resolver: CompactBindingValueResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        return resolver._evaluated_binding_resolution(context, reference, self, pending)
+
+
+@dataclass(frozen=True, eq=False)
+class CompactBindingVisit(Generic[ResolutionContextT]):
+    """One original binding in its query context, retained for cycle detection.
+
+    Equal-looking snapshots or source events are not the same visit. Holding
+    the owners keeps identity keys valid without hashing their value graphs.
+    This is query-local traversal evidence, not a runtime object identity.
+    """
+
+    context: ResolutionContextT
+    mutation: CompactMutation
+
+    def __hash__(self) -> int:
+        return hash((id(self.context), id(self.mutation)))
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other = cast(CompactBindingVisit[object], other)
+        return self.context is other.context and self.mutation is other.mutation
+
+    def required_at_read(
+        self,
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> bool:
+        """Keep every visit that can participate in this historical lookup.
+
+        Positioned binding selection excludes a proved-future mutation in the
+        same activation. Its cycle guard is therefore irrelevant at that cut.
+        Other contexts cannot be ordered by this position; loops and unordered
+        evaluations remain possible under the existing position relation.
+        """
+        return self.context is not context or self.mutation.position.may_precede(
+            position
+        )
 
 
 class CompactFunctionTargetResolutionViolation(StrEnum):
@@ -1263,7 +1567,80 @@ class CompactFunctionTargetResolutionViolation(StrEnum):
     CYCLIC_BINDING = "cyclic_binding"
 
 
-class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
+class CompactBindingValueResolverABC(ABC, Generic[TargetResolutionT]):
+    """Interpret an already-selected operation, independently of alias traversal."""
+
+    @abstractmethod
+    def _possible_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        violation: CompactFunctionTargetResolutionViolation,
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _definition_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation[CompactDefinitionTarget],
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _imported_name_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    def _value_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        """A selected write alone does not prove the value which it installed."""
+        return self._possible_binding_resolution(
+            context,
+            reference,
+            CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
+            pending,
+        )
+
+    def _evaluated_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactEvaluatedAssignment,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        """Retained evaluation does not by itself prove a consumer's value semantics."""
+        return self._value_binding_resolution(context, reference, binding, pending)
+
+    def _deleted_binding_resolution(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: CompactMutation,
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> TargetResolutionT:
+        return self._possible_binding_resolution(
+            context,
+            reference,
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+            pending_bindings,
+        )
+
+
+class CompactBindingResolverABC(CompactBindingValueResolverABC[TargetResolutionT]):
     """Shared interpretation of a source selected in its actual flow."""
 
     def _selected_binding_resolution(
@@ -1272,14 +1649,14 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
         reference: LexicalValueReference,
         binding: CompactMutation,
         use_position: CompactFlowPosition | None,
-        pending_bindings: frozenset[CompactBindingVisit],
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
-        visit = (context.owner_symbol, binding)
+        visit = CompactBindingVisit(context, binding)
         if visit in pending_bindings:
             return self._cyclic_binding_resolution(pending_bindings)
         operation = binding.kind.binding_operation
         pending = operation.pending_after(context, binding, pending_bindings)
-        alias = context.flow.exact_aliases_by_binding_mutation.get(binding)
+        alias = context.flow.exact_alias_for(binding)
         if alias is not None:
             resolution = self._captured_alias_resolution(
                 alias, context, reference, use_position, pending
@@ -1289,7 +1666,7 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
 
     @abstractmethod
     def _cyclic_binding_resolution(
-        self, pending: frozenset[CompactBindingVisit]
+        self, pending: frozenset[CompactBindingVisit[CompactFlowContext]]
     ) -> TargetResolutionT:
         raise NotImplementedError
 
@@ -1300,7 +1677,7 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
         context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
-        pending: frozenset[CompactBindingVisit],
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         raise NotImplementedError
 
@@ -1310,36 +1687,6 @@ class CompactBindingResolverABC(ABC, Generic[TargetResolutionT]):
         resolution: TargetResolutionT,
         alias: CompactExactValueAlias,
         context: CompactFlowContext,
-    ) -> TargetResolutionT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _imported_name_resolution(
-        self,
-        context: CompactFlowContext,
-        reference: LexicalValueReference,
-        binding: CompactMutation,
-        pending: frozenset[CompactBindingVisit],
-    ) -> TargetResolutionT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _definition_binding_resolution(
-        self,
-        context: CompactFlowContext,
-        reference: LexicalValueReference,
-        binding: CompactMutation[CompactDefinitionTarget],
-        pending_bindings: frozenset[CompactBindingVisit],
-    ) -> TargetResolutionT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _possible_binding_resolution(
-        self,
-        context: CompactFlowContext,
-        reference: LexicalValueReference,
-        violation: CompactFunctionTargetResolutionViolation,
-        pending_bindings: frozenset[CompactBindingVisit],
     ) -> TargetResolutionT:
         raise NotImplementedError
 
@@ -1354,7 +1701,7 @@ class CompactBindingSource(ABC):
         context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
-        pending_bindings: frozenset[CompactBindingVisit],
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         """Project this source without nullable-field dispatch in the consumer."""
         raise NotImplementedError
@@ -1368,7 +1715,7 @@ class CompactBindingSource(ABC):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactMutation],
+        visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         raise NotImplementedError
 
@@ -1385,7 +1732,7 @@ class ExactCompactBindingMutation(CompactBindingSource):
         context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
-        pending_bindings: frozenset[CompactBindingVisit],
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         return resolver._selected_binding_resolution(
             context,
@@ -1399,23 +1746,24 @@ class ExactCompactBindingMutation(CompactBindingSource):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactMutation],
+        visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         mutation = self.selected_mutation
         possible_origins = flow._possible_alias_origins(
             reference, flow.mutations_by_root_name[reference.root_name]
         )
-        if mutation in visited_mutations:
+        visit = CompactBindingVisit(flow, mutation)
+        if visit in visited_bindings:
             return OpenCompactValueOrigin(
                 possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
             )
-        alias = flow.exact_aliases_by_binding_mutation.get(mutation)
+        alias = flow.exact_alias_for(mutation)
         if alias is None:
             return OpenCompactValueOrigin(
                 possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING
             )
         source_resolution = flow._value_origin_for(
-            alias.source, alias.source_position, visited_mutations | {mutation}
+            alias.source, alias.source_position, visited_bindings | {visit}
         )
         return source_resolution.through_alias(reference.attribute_path, mutation)
 
@@ -1434,7 +1782,7 @@ class UnresolvedCompactBindingSource(CompactBindingSource, ABC):
         context: CompactFlowContext,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition | None,
-        pending_bindings: frozenset[CompactBindingVisit],
+        pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
         return resolver._possible_binding_resolution(
             context,
@@ -1456,7 +1804,7 @@ class OpenCompactBindingMutation(UnresolvedCompactBindingSource):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactMutation],
+        visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         return OpenCompactValueOrigin(
             flow._possible_alias_origins(
@@ -1478,7 +1826,7 @@ class InitialCompactParameterBinding(UnresolvedCompactBindingSource):
         self,
         flow: CompactFunctionFlow,
         reference: LexicalValueReference,
-        visited_mutations: frozenset[CompactMutation],
+        visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         return ExactCompactValueOrigin(reference)
 
@@ -1609,10 +1957,136 @@ class CompactExactValueAlias:
         )
 
 
-class CompactPositionedReference(ABC):
+class CompactValueResolverABC(
+    ValueExpressionResolverABC[ResolutionContextT, TargetResolutionT],
+):
+    """Interpret retained flow results independently of their source syntax."""
+
+    def _compiler_operand_value_resolution(
+        self, value: CompilerOperandValue, context: ResolutionContextT
+    ) -> TargetResolutionT:
+        """Compiler operand metadata alone supplies no runtime value proof."""
+        return self._unproved_value_resolution(context)
+
+    def _subscription_result_value_resolution(
+        self,
+        value: SubscriptionResultValue,
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        """Retained operands do not establish the subscription's native result."""
+        return self._unproved_value_resolution(context)
+
+    def _tuple_value_resolution(
+        self,
+        value: CompactTupleValue,
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        """Retained input shape alone provides no construction or lifetime proof."""
+        return self._unproved_value_resolution(context)
+
+    @abstractmethod
+    def _compiler_stored_value_resolution(
+        self, value: CompilerStoredValue, context: ResolutionContextT
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _forwarded_result_value_resolution(
+        self,
+        value: ForwardedResultValue,
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _call_result_value_resolution(
+        self,
+        value: CallResultValue,
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
+class CompactResolvableValue(ValueExpressionShapeABC):
+    """A retained flow value interpreted by the complete flow resolver."""
+
+    @abstractmethod
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, eq=False)
+class CompactTupleValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
+    """Ordered original inputs of one non-unpacking tuple production."""
+
+    inputs: tuple[CompactValueUse, ...]
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._tuple_value_resolution(self, context)
+
+
+@dataclass(frozen=True, eq=False)
+class CompilerStoredValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
+    """An original expression whose stored value is supplied by the compiler."""
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._compiler_stored_value_resolution(self, context)
+
+
+@dataclass(frozen=True, eq=False)
+class CompilerOperandValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
+    """One implicit input of an original compiler-generated item transfer."""
+
+    role: NativeItemStoreOperand
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, NativeItemStoreOperand):
+            raise TypeError("Compiler operand requires a declared native input role")
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._compiler_operand_value_resolution(self, context)
+
+
+class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
     """A captured expression/reference with its actual source flow position."""
 
     position: CompactFlowPosition
+
+    def require_native_origin(
+        self,
+        source: SourceProductFlowProjection,
+        read: CompactFlowValue,
+        value: NativeProducedValue,
+    ) -> None:
+        operation = read.source_operation(source)
+        if read.use is not self or value.source_span != SourceByteSpan.require_node(
+            operation.node
+        ):
+            raise ValueError(
+                "Native operand does not belong to the original source expression"
+            )
 
     def reference_equivalents_in(
         self, flow: CompactFunctionFlow
@@ -1636,22 +2110,86 @@ class CompactPositionedReference(ABC):
             )
         return flow.value_origin_for(reference, self.position)
 
-    @property
-    @abstractmethod
-    def lexical_reference(self) -> LexicalValueReference | None:
-        raise NotImplementedError
-
 
 @dataclass(frozen=True, eq=False)
 class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
     """One evaluated expression value, retaining its source event."""
 
-    value: CompactValueExpression
+    value: CompactValueExpression | CompactResolvableValue
     position: CompactFlowPosition
+    indexes_source_expression: ClassVar[bool] = True
 
     lexical_reference = AliasProperty[LexicalValueReference | None](
         "value.lexical_reference"
     )
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return self.value.resolve_value(resolver, context)
+
+    def require_source_origin(
+        self,
+        source: SourceProductFlowProjection,
+        read: CompactFlowValue,
+        operation: SourceFlowOperation,
+    ) -> None:
+        canonical = source.value_reads_by_node.get(operation.node)
+        if (
+            not isinstance(operation.node, ValueExpressionNode)
+            or canonical is None
+            or canonical.context is not read.context
+            or canonical.use is not self
+        ):
+            raise ValueError("Value read has no unique original expression operation")
+
+
+@dataclass(frozen=True, eq=False)
+class CompactCompilerOperandUse(CompactValueUse):
+    """An observed implicit input attached to its actual enclosing source node."""
+
+    value: CompilerOperandValue
+    indexes_source_expression: ClassVar[bool] = False
+
+    def native_receipt(
+        self, source: SourceProductFlowProjection, read: CompactFlowValue
+    ) -> NativeReturn:
+        operation = source.value_operation(read)
+        if read.use is not self:
+            raise ValueError("Compiler operand requires its original source read")
+        return source.module.native_compilation.return_after_effect(
+            SourceByteSpan.require_node(operation.node), NativeItemStoreValue
+        )
+
+    def native_operand(
+        self, source: SourceProductFlowProjection, read: CompactFlowValue
+    ) -> NativeProducedValue:
+        receipt = self.native_receipt(source, read)
+        effect = receipt.effect_for(
+            SourceByteSpan.require_node(source.value_operation(read).node),
+            NativeItemStoreValue,
+        )
+        return self.value.role.select(effect)
+
+    def require_native_origin(
+        self,
+        source: SourceProductFlowProjection,
+        read: CompactFlowValue,
+        value: NativeProducedValue,
+    ) -> None:
+        if self.native_operand(source, read) is not value:
+            raise ValueError("Compiler input requires its original native operand")
+
+    def require_source_origin(
+        self,
+        source: SourceProductFlowProjection,
+        read: CompactFlowValue,
+        operation: SourceFlowOperation,
+    ) -> None:
+        if not isinstance(self.value, CompilerOperandValue):
+            raise ValueError("Compiler operand read requires its declared input role")
 
 
 @dataclass(frozen=True, eq=False)
@@ -1686,12 +2224,28 @@ class CompactCallableReferenceUse(CompactPositionedReference):
         "target.lexical_reference"
     )
 
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        # Computed callable targets have no retained evaluated object here. A source
+        # declaration candidate would not repair that missing captured identity.
+        reference = self.lexical_reference
+        return (
+            resolver._unproved_value_resolution(context)
+            if reference is None
+            else reference.resolve_value(resolver, context)
+        )
+
     def resolve(
         self,
         resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
         context: ResolutionContextT,
         *,
-        pending_bindings: frozenset[CompactBindingVisit] = frozenset(),
+        pending_bindings: frozenset[
+            CompactBindingVisit[CompactFlowContext]
+        ] = frozenset(),
         attribute_path: tuple[str, ...] = (),
     ) -> TargetResolutionT:
         """Resolve the captured target, retaining lexical cycle and suffix evidence."""
@@ -1731,8 +2285,7 @@ class CompactFunctionCall(DataclassGraphValue):
 
     def product_construction(self) -> "CompactProductConstruction | None":
         if (
-            self.result.use is not CompactValueDestinationKind.BOUND
-            or self.result.binding is None
+            self.result.binding is None
             or self.arguments.positional
             or any(argument.is_unpacked for argument in self.arguments.keywords)
             or len({argument.name for argument in self.arguments.keywords})
@@ -1749,10 +2302,63 @@ class CompactFunctionCall(DataclassGraphValue):
 
 
 @dataclass(frozen=True, eq=False)
-class CallResultValue(DataclassGraphValue, OpaqueValueExpression):
+class CompactSubscription(DataclassGraphValue):
+    """One load subscription, after capturing its original receiver and argument."""
+
+    receiver_use: CompactValueUse
+    argument_use: CompactValueUse
+    position: CompactFlowPosition
+    source_span: SourceByteSpan
+
+    line = AliasProperty[int]("source_span.start_line")
+
+
+@dataclass(frozen=True, eq=False)
+class ForwardedResultValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
+    """An expression forwards its retained value after its storage effects."""
+
+    result: CompactEvaluatedResult
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._forwarded_result_value_resolution(self, context)
+
+
+@dataclass(frozen=True, eq=False)
+class CallResultValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
     """A retained source call's value, without claiming completed execution."""
 
     invocation: CompactFunctionCall
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._call_result_value_resolution(self, context)
+
+
+@dataclass(frozen=True, eq=False)
+class SubscriptionResultValue(
+    DataclassGraphValue, NonLexicalValueShape, CompactResolvableValue
+):
+    """An original subscription result, independent of its execution admission."""
+
+    invocation: CompactSubscription
+
+    def resolve_value(
+        self,
+        resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+    ) -> TargetResolutionT:
+        return resolver._subscription_result_value_resolution(self, context)
 
 
 class CompactLocalSignatureObserver(StrEnum):
@@ -1856,11 +2462,42 @@ class CompactProductConstruction:
         return tuple(self.field_values)
 
 
+class FlowFrameResolverABC(ABC, Generic[TargetResolutionT]):
+    """Admission requirements selected by the existing nominal scope declaration."""
+
+    @abstractmethod
+    def _namespace_flow_frame(
+        self, context: CompactFlowContext, position: CompactFlowPosition | None
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _class_flow_frame(
+        self, context: CompactFlowContext, position: CompactFlowPosition | None
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _function_flow_frame(
+        self, context: CompactFlowContext, position: CompactFlowPosition | None
+    ) -> TargetResolutionT:
+        raise NotImplementedError
+
+
 class CompactFlowOwner(ABC):
     """Nominal scope owner, retaining its declaration when it is a function."""
 
     kind: CompactFlowOwnerKind
     qualname: str
+
+    @abstractmethod
+    def resolve_frame(
+        self,
+        resolver: FlowFrameResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        position: CompactFlowPosition | None,
+    ) -> TargetResolutionT:
+        raise NotImplementedError
 
     def initial_binding_for(self, root_name: str) -> CompactBindingSource | None:
         return None
@@ -1895,9 +2532,19 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
     """A positioned class body, independent of builder or metaclass results."""
 
     qualname: str
-    source_span: SourceByteSpan
+    capture: NativeClassCapture
+
+    source_span = AliasProperty[SourceByteSpan]("capture.source_span")
 
     kind = CompactFlowOwnerKind.CLASS_BODY
+
+    def resolve_frame(
+        self,
+        resolver: FlowFrameResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        position: CompactFlowPosition | None,
+    ) -> TargetResolutionT:
+        return resolver._class_flow_frame(context, position)
 
     @property
     def declaration(self) -> None:
@@ -1918,6 +2565,14 @@ class CompactNamespaceFlowOwner(CompactFlowOwner):
 
     kind: CompactFlowOwnerKind
     qualname: str
+
+    def resolve_frame(
+        self,
+        resolver: FlowFrameResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        position: CompactFlowPosition | None,
+    ) -> TargetResolutionT:
+        return resolver._namespace_flow_frame(context, position)
 
     def __post_init__(self) -> None:
         if not self.kind.is_module_scope:
@@ -1943,6 +2598,14 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     source_span = AliasProperty[SourceByteSpan]("execution.source_span")
     line = AliasProperty[int]("source_span.start_line")
     end_line = AliasProperty[int]("source_span.end_line")
+
+    def resolve_frame(
+        self,
+        resolver: FlowFrameResolverABC[TargetResolutionT],
+        context: CompactFlowContext,
+        position: CompactFlowPosition | None,
+    ) -> TargetResolutionT:
+        return resolver._function_flow_frame(context, position)
 
     def resolve_definition(
         self,
@@ -2063,8 +2726,20 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
         return signature.bind(positional_arguments, keyword_arguments)
 
 
+@dataclass(frozen=True)
+class CompactNativeCapture(DataclassGraphNode):
+    """An actual native capture positioned within source header evaluation.
+
+    The site's actual native frame origin is independent of the enclosing
+    source flow. A generated frame stays unjoined; no activation is inferred.
+    """
+
+    site: NativeCaptureSite
+    position: CompactFlowPosition
+
+
 @dataclass(frozen=True, eq=False)
-class CompactFunctionFlow(DataclassGraphValue):
+class CompactFunctionFlow(StoredDataclassState, DataclassGraphValue):
     owner: CompactFlowOwner
     lexical_scope_qualnames: tuple[str, ...]
     calls: tuple[CompactFunctionCall, ...]
@@ -2074,6 +2749,44 @@ class CompactFunctionFlow(DataclassGraphValue):
     exact_value_aliases: tuple[CompactExactValueAlias, ...]
     global_binding_names: tuple[str, ...]
     nonlocal_binding_names: tuple[str, ...]
+
+    native_captures: tuple[CompactNativeCapture, ...]
+
+    subscriptions: tuple[CompactSubscription, ...]
+
+    def local_binding_hides_outer_lookup(self, root_name: str) -> bool:
+        """A declared function local cannot fall through to globals when unbound."""
+        return (
+            self.owner.kind.is_function_scope
+            and root_name not in self.global_binding_names
+            and root_name not in self.nonlocal_binding_names
+            and (
+                root_name in self.mutations_by_root_name
+                or self.owner.initial_binding_for(root_name) is not None
+            )
+        )
+
+    @cached_property
+    def graph_nodes_by_identity(self) -> dict[int, DataclassGraphNode]:
+        """Retained source nodes, derived once from this immutable flow graph."""
+        return {id(node): node for node in self.graph_nodes()}
+
+    def stored_binding_resolution_for(
+        self,
+        root_name: str,
+        cut: CompactFlowPosition | None,
+    ) -> CompactBindingSource | None:
+        """Select actual storage before a cut, excluding the operation at that cut.
+
+        Incomparable possibly earlier writes remain candidates. Lexical forward
+        binding and outer lookup are separate scope obligations, not storage facts.
+        """
+        candidates = tuple(
+            mutation
+            for mutation in self.mutations_by_root_name.get(root_name, ())
+            if cut is None or mutation.position.may_precede_cut(cut)
+        )
+        return self._binding_resolution_for_mutations(candidates, cut, root_name)
 
     @property
     def reference_uses(self) -> Iterator[CompactCallableReferenceUse]:
@@ -2112,6 +2825,8 @@ class CompactFunctionFlow(DataclassGraphValue):
         root_name: str,
     ) -> CompactBindingSource | None:
         """Select a positioned write before materialising declaration entry evidence."""
+        if not mutations:
+            return self.owner.initial_binding_for(root_name)
         if use_position is not None:
             selected = next(
                 (
@@ -2144,8 +2859,6 @@ class CompactFunctionFlow(DataclassGraphValue):
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING
             )
         initial_binding = self.owner.initial_binding_for(root_name)
-        if not mutations:
-            return initial_binding
         if use_position is None:
             return self.owner.kind.deferred_binding_resolution(
                 tuple(
@@ -2190,10 +2903,20 @@ class CompactFunctionFlow(DataclassGraphValue):
         )
 
     @cached_property
-    def exact_aliases_by_binding_mutation(
+    def _exact_aliases_by_binding_identity(
         self,
-    ) -> dict[CompactMutation, CompactExactValueAlias]:
-        return {alias.binding_mutation: alias for alias in self.exact_value_aliases}
+    ) -> dict[int, CompactExactValueAlias]:
+        return {id(alias.binding_mutation): alias for alias in self.exact_value_aliases}
+
+    def exact_alias_for(
+        self, mutation: CompactMutation
+    ) -> CompactExactValueAlias | None:
+        """Look up the alias of this actual source event, not an equal snapshot.
+
+        Aliases retain their binding events, so the derived identity index is
+        valid for the flow's lifetime without hashing the events' value graphs.
+        """
+        return self._exact_aliases_by_binding_identity.get(id(mutation))
 
     def bound_call_result_for(
         self,
@@ -2211,18 +2934,11 @@ class CompactFunctionFlow(DataclassGraphValue):
             reference.root_name,
         )
         binding = None if selection is None else selection.mutation
-        if binding is None or binding.kind is not CompactMutationKind.ASSIGNMENT:
+        if binding is None:
             return None
-        matching_calls = tuple(
-            call
-            for call in self.calls
-            if call.result.binding == reference
-            and binding.reference == reference
-            and binding.position.branch_path == call.position.branch_path
-            and binding.position.statement_index == call.position.statement_index
-            and call.position.dominates(binding.position)
+        return binding.kind.binding_operation.bound_call_result(
+            self, binding, reference
         )
-        return matching_calls[0] if len(matching_calls) == 1 else None
 
     def value_origin_for(
         self,
@@ -2235,12 +2951,12 @@ class CompactFunctionFlow(DataclassGraphValue):
         self,
         reference: LexicalValueReference,
         use_position: CompactFlowPosition,
-        visited_mutations: frozenset[CompactMutation],
+        visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         selection = self.binding_resolution_for(reference.root_name, use_position)
         if selection is None:
             return ExactCompactValueOrigin(reference)
-        return selection.value_origin(self, reference, visited_mutations)
+        return selection.value_origin(self, reference, visited_bindings)
 
     def _possible_alias_origins(
         self,
@@ -2254,12 +2970,7 @@ class CompactFunctionFlow(DataclassGraphValue):
                     *(
                         alias.source_for(reference)
                         for mutation in mutations
-                        if (
-                            alias := self.exact_aliases_by_binding_mutation.get(
-                                mutation
-                            )
-                        )
-                        is not None
+                        if (alias := self.exact_alias_for(mutation)) is not None
                     ),
                 )
             )
@@ -2301,20 +3012,57 @@ CompactDefinitionSource: TypeAlias = tuple[
 
 
 @dataclass(frozen=True)
-class CompactFlowRead:
-    """A retained source read in its actual module and flow context."""
+class CompactFlowValue:
+    """An actual evaluated value with its canonical source-flow context."""
 
     context: CompactFlowContext
+    use: CompactPositionedReference
+
+    def source_operation(
+        self, source: SourceProductFlowProjection
+    ) -> SourceFlowOperation:
+        return source.value_operation(self)
+
+
+@dataclass(frozen=True)
+class CompactFlowRead(CompactFlowValue):
+    """A retained source read in its actual module and flow context."""
+
     use: CompactCallableReferenceUse
 
     source_span = AliasProperty[SourceByteSpan]("use.source_span")
 
+    def source_operation(
+        self, source: SourceProductFlowProjection
+    ) -> SourceFlowOperation:
+        operation = source.source_operation(self.context, self.use)
+        canonical = source.reference_reads_by_node.get(operation.node)
+        if (
+            canonical is None
+            or canonical.context is not self.context
+            or canonical.use is not self.use
+        ):
+            raise ValueError("Callable read has no original source operation")
+        return operation
+
 
 @dataclass(frozen=True)
-class CompactProductFlowModuleProjection(CompactModuleIdentity):
+class CompactProductFlowModuleProjection(StoredDataclassState, CompactModuleIdentity):
     """AST-free function declarations and source-ordered product-flow facts."""
 
     flows: tuple[CompactFunctionFlow, ...]
+
+    @cached_property
+    def value_captures_by_identity(self) -> dict[int, CompactFlowValue]:
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                CompactFlowValue(context, value)
+                for context in self.flow_contexts
+                for value in context.flow.graph_nodes_by_identity.values()
+                if isinstance(value, CompactValueUse)
+            ),
+            lambda capture: id(capture.use),
+        )
 
     @cached_property
     def definition_sources_by_owner(
@@ -2361,6 +3109,11 @@ class CompactProductFlowModuleProjection(CompactModuleIdentity):
             CompactFlowContext(self.module_name, self.file_path, flow)
             for flow in self.flows
         )
+
+    @cached_property
+    def flow_contexts_by_identity(self) -> dict[int, CompactFlowContext]:
+        """Actual context membership, distinct from unique declaration ownership."""
+        return {id(context): context for context in self.flow_contexts}
 
     @cached_property
     def function_declarations(self) -> tuple[CompactFunctionDeclaration, ...]:
@@ -2429,7 +3182,12 @@ class _DeclarationCollector(ast.NodeVisitor):
         self.class_contexts.append(
             _ClassContext(
                 node,
-                CompactClassDeclaration(qualname, SourceByteSpan.require_node(node)),
+                CompactClassDeclaration(
+                    qualname,
+                    self.module.native_compilation.class_capture_for(
+                        SourceByteSpan.require_node(node)
+                    ),
+                ),
                 lexical_scopes,
             )
         )
@@ -2508,7 +3266,7 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
     def generic_visit(self, node: ast.AST) -> CompactAssignmentTargetABC:
         raise ValueError("Expected a binding, attribute or item assignment target")
 
-    def visit_Name(self, node: ast.Name) -> CompactBindingTarget:
+    def visit_Name(self, node: ast.Name) -> CompactLexicalBindingTargetABC:
         return CompactBindingTarget(node.id)
 
     def visit_Attribute(self, node: ast.Attribute) -> CompactAttributeTarget:
@@ -2524,11 +3282,362 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
         )
 
 
+SourceFlowEvent: TypeAlias = (
+    CompactSubscription
+    | CompactFunctionCall
+    | CompactMutation
+    | CompactCallableReferenceUse
+    | CompactEvaluatedResult
+    | CompactValueUse
+    | CompactNativeCapture
+)
+
+
+@dataclass(frozen=True)
+class SourceFlowEvaluation:
+    """Observed visitor interval, not an exact implicit-operation timestamp.
+
+    The interval is retained even when it contains no compact event. Missing
+    modeled calls never certify that an expression or statement is effect-free.
+    These AST references belong to a task, not a cached compact flow payload.
+    """
+
+    node: ast.AST
+    owner: CompactFlowOwner
+    entry: CompactFlowPosition
+    exit: CompactFlowPosition
+
+
+@dataclass(frozen=True, eq=False)
+class SourceFlowOperation:
+    """Actual compact operation joined to its original source node and owner."""
+
+    node: SourcePositionedNode
+    owner: CompactFlowOwner
+    event: SourceFlowEvent
+
+    @property
+    def position(self) -> CompactFlowPosition:
+        return self.event.position
+
+
+@dataclass(frozen=True)
+class SourceProductFlowProjection:
+    """One task's ordered source observations and the exact flows they created."""
+
+    module: ParsedModule
+    compact: CompactProductFlowModuleProjection
+    evaluations: tuple[SourceFlowEvaluation, ...]
+    operations: tuple[SourceFlowOperation, ...]
+
+    def node_operation(
+        self, node: ast.AST, event_type: type[SourceFlowEvent]
+    ) -> SourceFlowOperation:
+        """Join one declared event family at its original source node."""
+        operations = tuple(
+            operation
+            for operation in self.operations_by_node.get(node, ())
+            if isinstance(operation.event, event_type)
+        )
+        if len(operations) != 1:
+            raise ValueError("Source node has no unique actual operation")
+        operation = operations[0]
+        canonical = self.event_operation(operation.event)
+        if canonical is not operation or operation.node is not node:
+            raise ValueError("Source operation has no original node association")
+        return operation
+
+    def definition_operation(self, node: ast.AST) -> SourceFlowOperation:
+        """Join an actual source definition to its canonical creation binding."""
+        operation = self.mutation_operation(node)
+        if not isinstance(
+            cast(CompactMutation, operation.event).target, CompactDefinitionTarget
+        ):
+            raise ValueError("Source definition requires an actual definition binding")
+        return operation
+
+    def event_operation(self, event: object) -> SourceFlowOperation:
+        """Join an actual event to its original node and canonical owning flow."""
+        operations = self.operations_by_event_identity.get(id(event), ())
+        if len(operations) != 1:
+            raise ValueError("Source event has no unique original operation")
+        operation = operations[0]
+        context = self.context_for_owner(operation.owner)
+        if (
+            operation.event is not event
+            or context.flow.graph_nodes_by_identity.get(id(event)) is not event
+        ):
+            raise ValueError("Source event belongs to a different canonical context")
+        return operation
+
+    def call_operation(self, span: SourceByteSpan) -> SourceFlowOperation:
+        """Resolve a complete call span to its canonical operation and context."""
+        operation = self.call_operations_by_span.get(span)
+        if operation is None:
+            raise ValueError("Call span has no unique original operation")
+        if (
+            self.event_operation(operation.event) is not operation
+            or not isinstance(operation.node, ast.Call)
+            or SourceByteSpan.require_node(operation.node) != span
+        ):
+            raise ValueError("Call span has no original node association")
+        return operation
+
+    @cached_property
+    def call_operations_by_span(self) -> dict[SourceByteSpan, SourceFlowOperation]:
+        """Index actual call events; ambiguous spans cannot select an occurrence."""
+        return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                site
+                for site in self.operations
+                if isinstance(site.event, CompactFunctionCall)
+            ),
+            lambda site: site.event.source_span,
+        )
+
+    def evaluation_operand_entry(
+        self,
+        evaluation: SourceFlowEvaluation,
+        operand: ast.expr,
+    ) -> CompactFlowPosition:
+        """Join an actual contained operand interval without inventing an event."""
+        if not any(
+            original is evaluation
+            for original in self.evaluation_bounds_by_node.get(evaluation.node, ())
+        ):
+            raise ValueError("Effect bound requires its original source evaluation")
+        candidates = tuple(
+            original
+            for original in self.evaluation_bounds_by_node.get(operand, ())
+            if original.owner is evaluation.owner
+        )
+        if len(candidates) != 1:
+            raise ValueError("Effect operand has no unique original evaluation")
+        original = candidates[0]
+        if original.node is not operand or not (
+            (
+                evaluation.entry == original.entry
+                or evaluation.entry.dominates(original.entry)
+            )
+            and (
+                original.exit == evaluation.exit
+                or original.exit.dominates(evaluation.exit)
+            )
+        ):
+            raise ValueError("Effect operand is outside its original evaluation")
+        return original.entry
+
+    def __post_init__(self) -> None:
+        nodes = module_syntax_index(self.module.module).node_membership
+        if any(
+            site.node not in nodes for site in chain(self.operations, self.evaluations)
+        ):
+            raise ValueError("Source flow sites must belong to their actual module AST")
+
+    @cached_property
+    def evaluation_bounds_by_node(
+        self,
+    ) -> dict[ast.AST, tuple[SourceFlowEvaluation, ...]]:
+        grouped: dict[ast.AST, list[SourceFlowEvaluation]] = {}
+        for evaluation in self.evaluations:
+            grouped.setdefault(evaluation.node, []).append(evaluation)
+        return {node: tuple(evaluations) for node, evaluations in grouped.items()}
+
+    @cached_property
+    def source_nodes_by_owner(self) -> dict[int, ast.AST]:
+        return {
+            id(self.module_context.flow.owner): self.module.module,
+            **{
+                id(site.event.target.owner): site.node
+                for site in self.operations
+                if isinstance(site.event, CompactMutation)
+                and isinstance(site.event.target, CompactDefinitionTarget)
+            },
+        }
+
+    @cached_property
+    def module_context(self) -> CompactFlowContext:
+        contexts = tuple(
+            context
+            for context in self.compact.flow_contexts
+            if context.flow.owner.kind.is_module_scope
+        )
+        if len(contexts) != 1:
+            raise ValueError("Source module entry requires one actual module flow")
+        return contexts[0]
+
+    def source_operation(
+        self, context: CompactFlowContext, event: object
+    ) -> SourceFlowOperation:
+        operation = self.event_operation(event)
+        if self.compact.flow_contexts_by_owner[operation.owner] is not context:
+            raise ValueError("Source event belongs to a different canonical context")
+        return operation
+
+    def value_operation(self, read: CompactFlowValue) -> SourceFlowOperation:
+        """Join an original evaluated value, not an earlier callable-reference read."""
+        operation = self.source_operation(read.context, read.use)
+        if not isinstance(read.use, CompactValueUse):
+            raise ValueError("Value read has no unique original expression operation")
+        read.use.require_source_origin(self, read, operation)
+        return operation
+
+    def mutation_operation(self, node: ast.AST) -> SourceFlowOperation:
+        """Join one actual mutation without selecting its storage semantics."""
+        return self.node_operation(node, CompactMutation)
+
+    def context_for_owner(self, owner: CompactFlowOwner) -> CompactFlowContext:
+        context = self.compact.flow_contexts_by_owner.get(owner)
+        if (
+            context is None
+            or context.flow.owner is not owner
+            or self.compact.flow_contexts_by_identity.get(id(context)) is not context
+        ):
+            raise ValueError("Source owner has no unique actual flow context")
+        return context
+
+    @cached_property
+    def operations_by_event_identity(
+        self,
+    ) -> Mapping[int, tuple[SourceFlowOperation, ...]]:
+        """Retain multiplicity when joining original source to actual compact events."""
+        grouped: dict[int, list[SourceFlowOperation]] = {}
+        for operation in self.operations:
+            grouped.setdefault(id(operation.event), []).append(operation)
+        return {identity: tuple(operations) for identity, operations in grouped.items()}
+
+    @cached_property
+    def value_reads_by_node(self) -> dict[ast.AST, CompactFlowValue]:
+        """Exact evaluated-value captures, distinct from earlier lexical reads."""
+        sites = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                site
+                for site in self.operations
+                if isinstance(site.event, CompactValueUse)
+                and site.event.indexes_source_expression
+            ),
+            lambda site: site.node,
+        )
+        captures = self.compact.value_captures_by_identity
+        return {
+            node: capture
+            for node, site in sites.items()
+            if (capture := captures.get(id(site.event))) is not None
+            and capture.use is site.event
+            and capture.context.flow.owner is site.owner
+        }
+
+    @cached_property
+    def operations_by_node(self) -> dict[ast.AST, tuple[SourceFlowOperation, ...]]:
+        """Keep all actual trigger operations; one node may own several phases."""
+        grouped: dict[ast.AST, list[SourceFlowOperation]] = {}
+        for operation in self.operations:
+            grouped.setdefault(operation.node, []).append(operation)
+        return {node: tuple(operations) for node, operations in grouped.items()}
+
+    @cached_property
+    def reference_reads_by_node(self) -> dict[ast.AST, CompactFlowRead]:
+        """Join original AST nodes to canonical reads, never just equal spans.
+
+        Callable capture may bypass a visitor evaluation interval. Operation
+        receipts retain that actual capture; both event and owner must be the
+        canonical objects in this projection. Duplicate node sites remain open.
+        """
+        sites = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            (
+                site
+                for site in self.operations
+                if isinstance(site.event, CompactCallableReferenceUse)
+            ),
+            lambda site: site.node,
+        )
+        reads = self.compact.reference_reads_by_span
+        return {
+            node: read
+            for node, site in sites.items()
+            if (read := reads.get(SourceByteSpan.require_node(node))) is not None
+            and read.use is site.event
+            and read.context.flow.owner is site.owner
+        }
+
+
+@dataclass(frozen=True)
+class _ClassHeaderCaptureProjection(NativeClassCaptureResolverABC[None]):
+    """Project an admitted native class header into its actual source traversal."""
+
+    collector: _CompactFlowCollector
+    node: ast.ClassDef
+
+    def _exact_class_capture_resolution(self, capture: ExactNativeClassCapture) -> None:
+        # Original admitted class lowering captures the builder and body before
+        # evaluating bases. Generic wrappers preserve that source phase order,
+        # but their actual frame remains the native site's unresolved origin.
+        for site in (capture.builder, capture.creation):
+            event = CompactNativeCapture(site, self.collector._position())
+            self.collector.native_captures.append(event)
+            self.collector._record_operation(self.node, event)
+
+    def _open_class_capture_resolution(self, capture: OpenNativeClassCapture) -> None:
+        # The declaration retains the reason; absence is no capture/order proof.
+        pass
+
+
 class _CompactFlowCollector(
     EagerFunctionAnnotationVisitor,
     DictionaryEvaluationVisitor,
+    VariableAnnotationVisitorABC,
 ):
     """Collect one source scope without descending into nested scope bodies."""
+
+    def visit_Tuple(self, node: ast.Tuple) -> CompactTupleValue | None:
+        if not isinstance(node.ctx, ast.Load) or any(
+            isinstance(element, ast.Starred) for element in node.elts
+        ):
+            self.generic_visit(node)
+            return None
+        return CompactTupleValue(
+            tuple(self._capture_value(element) for element in node.elts)
+        )
+
+    def visit_Constant(self, node: ast.Constant) -> CompilerStoredValue | None:
+        if (
+            self.documentation_statement is not None
+            and node is self.documentation_statement.value
+        ):
+            return CompilerStoredValue()
+        return None
+
+    def _visit_assignment_targets(
+        self,
+        targets: tuple[ast.expr, ...] | list[ast.expr],
+        result: CompactEvaluatedResult | None,
+    ) -> tuple[CompactMutation, ...]:
+        previous = self.assignment_result
+        self.assignment_result = (
+            (targets[0], result)
+            if result is not None
+            and len(targets) == 1
+            and isinstance(targets[0], (ast.Name, ast.Attribute, ast.Subscript))
+            else None
+        )
+        try:
+            return self._visit_mutation_targets(targets, CompactMutationKind.ASSIGNMENT)
+        finally:
+            self.assignment_result = previous
+
+    def _cursor_position(self) -> CompactFlowPosition:
+        """Snapshot the shared event cursor without inventing a source event."""
+        return CompactFlowPosition(
+            self.branch_path,
+            self.statement_index,
+            self.event_index,
+            self.evaluation_path,
+        )
+
+    def _record_operation(
+        self, node: SourcePositionedNode, event: SourceFlowEvent
+    ) -> None:
+        """Task collectors can retain this exact generated operation without replay."""
 
     def visit_unordered_annotations(self, roots: tuple[ast.expr, ...]) -> None:
         """Preserve each root's order without ordering sibling root evaluations."""
@@ -2555,6 +3664,14 @@ class _CompactFlowCollector(
         if isinstance(expression, ast.Call):
             self.call_results[id(expression)] = destination
         value_use = None if expression is None else self._capture_value(expression)
+        return self._record_evaluated_result(value_use, destination, statement)
+
+    def _record_evaluated_result(
+        self,
+        value_use: CompactValueUse | None,
+        destination: CompactValueDestination,
+        statement: SourcePositionedNode,
+    ) -> CompactEvaluatedResult:
         result = CompactEvaluatedResult(
             destination,
             value_use,
@@ -2562,29 +3679,50 @@ class _CompactFlowCollector(
             SourceByteSpan.require_node(statement),
         )
         self.evaluated_results.append(result)
+        self._record_operation(statement, result)
         return result
 
-    def visit_Subscript(self, node: ast.Subscript) -> None:
+    def visit_Subscript(self, node: ast.Subscript) -> SubscriptionResultValue | None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self._record_target_mutation(node)
-        else:
-            self.generic_visit(node)
+            return None
+        receiver = self._capture_value(node.value)
+        argument = self._capture_value(node.slice)
+        invocation = CompactSubscription(
+            receiver_use=receiver,
+            argument_use=argument,
+            position=self._position(),
+            source_span=SourceByteSpan.require_node(node),
+        )
+        self.subscriptions.append(invocation)
+        self._record_operation(node, invocation)
+        return SubscriptionResultValue(invocation)
 
     def _record_target_mutation(
         self,
         node: ast.expr,
         kind: CompactMutationKind | None = None,
     ) -> None:
-        self._record_mutation(self.mutation_targets.visit(node), node, kind)
-
-    def _capture_value(self, expression: ast.expr) -> CompactValueUse:
-        invocation: CompactFunctionCall | None = self.visit(expression)
-        value = (
-            CompactValueExpression.project(expression)
-            if invocation is None
-            else CallResultValue(invocation)
+        target = self.mutation_targets.visit(node)
+        result = (
+            self.assignment_result[1]
+            if self.assignment_result is not None and self.assignment_result[0] is node
+            else None
         )
-        return CompactValueUse(value, self._position())
+        self._record_mutation(target, node, kind, result=result)
+
+    def _capture_definition_input(self, expression: ast.expr) -> None:
+        self.definition_input_uses.append(self._capture_value(expression))
+
+    visit_annotation = _capture_definition_input
+
+    def _capture_value(self, expression: ValueExpressionNode) -> CompactValueUse:
+        value = self.visit(expression)
+        if value is None:
+            value = CompactValueExpression.project(expression)
+        use = CompactValueUse(value, self._position())
+        self._record_operation(expression, use)
+        return use
 
     def __init__(
         self,
@@ -2608,7 +3746,10 @@ class _CompactFlowCollector(
         self.current_class_qualname = current_class_qualname
         self.current_class_receiver_name = current_class_receiver_name
         self.calls: list[CompactFunctionCall] = []
+        self.subscriptions: list[CompactSubscription] = []
+        self.native_captures: list[CompactNativeCapture] = []
         self.evaluated_results: list[CompactEvaluatedResult] = []
+        self.definition_input_uses: list[CompactValueUse] = []
         self.callable_reference_uses: list[CompactCallableReferenceUse] = []
         self.mutations: list[CompactMutation] = []
         self.exact_value_aliases: list[CompactExactValueAlias] = []
@@ -2621,13 +3762,19 @@ class _CompactFlowCollector(
         self.call_results: dict[int, CompactValueDestination] = {}
         self.mutation_kind = CompactMutationKind.ASSIGNMENT
         self.mutation_targets = _CompactMutationTargetCollector(self)
+        self.assignment_result: tuple[ast.expr, CompactEvaluatedResult] | None = None
 
     def collect(self, statements: list[ast.stmt]) -> CompactFunctionFlow:
+        self.documentation_statement = self.owner.kind.documentation_statement(
+            statements
+        )
         self._collect_statements(statements)
         return CompactFunctionFlow(
             owner=self.owner,
             lexical_scope_qualnames=self.lexical_scope_qualnames,
             calls=tuple(self.calls),
+            subscriptions=tuple(self.subscriptions),
+            native_captures=tuple(self.native_captures),
             evaluated_results=tuple(self.evaluated_results),
             callable_reference_uses=tuple(self.callable_reference_uses),
             mutations=tuple(self.mutations),
@@ -2661,12 +3808,7 @@ class _CompactFlowCollector(
         self.branch_path = saved_path
 
     def _position(self) -> CompactFlowPosition:
-        position = CompactFlowPosition(
-            self.branch_path,
-            self.statement_index,
-            self.event_index,
-            self.evaluation_path,
-        )
+        position = self._cursor_position()
         self.event_index += 1
         return position
 
@@ -2675,14 +3817,22 @@ class _CompactFlowCollector(
         target: CompactAssignmentTargetABC,
         node: SourcePositionedNode,
         kind: CompactMutationKind | None = None,
+        *,
+        result: CompactEvaluatedResult | None = None,
     ) -> CompactMutation:
-        mutation = CompactMutation(
+        factory = (
+            CompactMutation
+            if result is None
+            else partial(CompactEvaluatedAssignment, result=result)
+        )
+        mutation = factory(
             target=target,
             kind=self.mutation_kind if kind is None else kind,
             position=self._position(),
             line=node.lineno,
         )
         self.mutations.append(mutation)
+        self._record_operation(node, mutation)
         return mutation
 
     def _call_target(self, expression: ast.expr) -> CompactCallTargetReference:
@@ -2712,13 +3862,15 @@ class _CompactFlowCollector(
         return QualifiedCallTargetReference(reference)
 
     def _callable_reference_use(self, node: ast.expr) -> CompactCallableReferenceUse:
-        return CompactCallableReferenceUse(
+        use = CompactCallableReferenceUse(
             target=self._call_target(node),
             position=self._position(),
             source_span=SourceByteSpan.require_node(node),
         )
+        self._record_operation(node, use)
+        return use
 
-    def visit_Call(self, node: ast.Call) -> CompactFunctionCall:
+    def visit_Call(self, node: ast.Call) -> CallResultValue:
         self._visit_reference_evaluation(node.func)
         target_use = self._callable_reference_use(node.func)
         arguments = CompactCallArguments[CompactValueUse].from_call(
@@ -2735,7 +3887,8 @@ class _CompactFlowCollector(
             source_span=SourceByteSpan.require_node(node),
         )
         self.calls.append(invocation)
-        return invocation
+        self._record_operation(node, invocation)
+        return CallResultValue(invocation)
 
     def _visit_reference_evaluation(self, expression: ast.expr) -> None:
         """Evaluate a reference's receiver and indices before its terminal access."""
@@ -2761,15 +3914,13 @@ class _CompactFlowCollector(
         result = self._capture_result(
             node.value, CompactValueDestination.for_assignment(node.targets), node
         )
-        mutations = self._visit_mutation_targets(
-            node.targets, CompactMutationKind.ASSIGNMENT
-        )
+        mutations = self._visit_assignment_targets(node.targets, result)
         self._record_exact_value_aliases(
             node.targets, result.lexical_reference, mutations
         )
 
     def _visit_annotated_assignment(self, node: ast.AnnAssign) -> None:
-        source = None
+        result = None
         if node.value is None:
             self.mutation_targets.visit(node.target)
             if not (
@@ -2780,15 +3931,51 @@ class _CompactFlowCollector(
             result = self._capture_result(
                 node.value, CompactValueDestination.for_assignment((node.target,)), node
             )
-            source = result.lexical_reference
-        mutations = self._visit_mutation_targets(
-            (node.target,), CompactMutationKind.ASSIGNMENT
+        mutations = self._visit_assignment_targets((node.target,), result)
+        self._record_exact_value_aliases(
+            (node.target,),
+            None if result is None else result.lexical_reference,
+            mutations,
         )
-        self._record_exact_value_aliases((node.target,), source, mutations)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self._visit_annotated_assignment(node)
         self.owner.kind.visit_assignment_annotation(self, node, self.annotation_mode)
+
+    def _capture_compiler_operand(
+        self, node: ast.AnnAssign, role: NativeItemStoreOperand
+    ) -> CompactCompilerOperandUse:
+        use = CompactCompilerOperandUse(CompilerOperandValue(role), self._position())
+        self._record_operation(node, use)
+        return use
+
+    def _store_variable_annotation(
+        self, node: ast.AnnAssign, result: CompactEvaluatedResult
+    ) -> None:
+        receiver = self._capture_compiler_operand(node, NativeItemStoreOperand.RECEIVER)
+        key = self._capture_compiler_operand(node, NativeItemStoreOperand.KEY)
+        self._record_mutation(CompactItemTarget(receiver, key), node, result=result)
+
+    def visit_eager_variable_annotation(self, node: ast.AnnAssign) -> None:
+        if node.simple:
+            result = self._capture_result(
+                node.annotation,
+                CompactValueDestination(CompactValueDestinationKind.EMBEDDED),
+                node.annotation,
+            )
+            self._store_variable_annotation(node, result)
+        else:
+            self.visit(node.annotation)
+
+    def visit_stringized_variable_annotation(self, node: ast.AnnAssign) -> None:
+        if node.simple:
+            use = self._capture_compiler_operand(node, NativeItemStoreOperand.VALUE)
+            result = self._record_evaluated_result(
+                use,
+                CompactValueDestination(CompactValueDestinationKind.EMBEDDED),
+                node.annotation,
+            )
+            self._store_variable_annotation(node, result)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         target = self.mutation_targets.visit(node.target)
@@ -2796,11 +3983,12 @@ class _CompactFlowCollector(
         self.visit(node.value)
         self._record_mutation(target, node, CompactMutationKind.AUGMENTED_ASSIGNMENT)
 
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        self._capture_result(
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> ForwardedResultValue:
+        result = self._capture_result(
             node.value, CompactValueDestination.for_assignment((node.target,)), node
         )
-        self._visit_mutation_targets((node.target,), CompactMutationKind.ASSIGNMENT)
+        self._visit_assignment_targets((node.target,), result)
+        return ForwardedResultValue(result)
 
     def visit_Delete(self, node: ast.Delete) -> None:
         self._visit_mutation_targets(node.targets, CompactMutationKind.DELETION)
@@ -2813,11 +4001,23 @@ class _CompactFlowCollector(
         )
 
     def visit_Expr(self, node: ast.Expr) -> None:
-        self._capture_result(
-            node.value,
-            CompactValueDestination(CompactValueDestinationKind.DISCARDED),
-            node,
+        destination = (
+            CompactValueDestination(
+                CompactValueDestinationKind.BOUND,
+                LexicalValueReference(
+                    CPythonClassConstructionField.DOCUMENTATION.value
+                ),
+            )
+            if node is self.documentation_statement
+            else CompactValueDestination(CompactValueDestinationKind.DISCARDED)
         )
+        result = self._capture_result(node.value, destination, node)
+        if destination.direct_binding_name is not None:
+            self._record_mutation(
+                CompactBindingTarget(destination.direct_binding_name),
+                node,
+                result=result,
+            )
 
     def _visit_mutation_targets(
         self,
@@ -2827,9 +4027,11 @@ class _CompactFlowCollector(
         mutation_start = len(self.mutations)
         saved_kind = self.mutation_kind
         self.mutation_kind = kind
-        for target in targets:
-            self.visit(target)
-        self.mutation_kind = saved_kind
+        try:
+            for target in targets:
+                self.visit(target)
+        finally:
+            self.mutation_kind = saved_kind
         return tuple(self.mutations[mutation_start:])
 
     def _is_exact_value_alias_assignment(
@@ -2894,17 +4096,24 @@ class _CompactFlowCollector(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
         decorator_uses: tuple[CompactValueUse, ...],
+        input_start: int,
     ) -> None:
         self._record_mutation(
             CompactDefinitionTarget(
-                self.definition_owners[node], decorator_uses, self._position()
+                self.definition_owners[node],
+                decorator_uses,
+                tuple(self.definition_input_uses[input_start:]),
+                self._position(),
             ),
             node,
             CompactMutationKind.DEFINITION,
         )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._bind_definition(node, self._visit_definition_expressions(node))
+        input_start = len(self.definition_input_uses)
+        self._bind_definition(
+            node, self._visit_definition_expressions(node), input_start
+        )
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -2913,18 +4122,22 @@ class _CompactFlowCollector(
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> tuple[CompactValueUse, ...]:
         decorator_uses = self._capture_decorators(node)
-        self.visit_argument_defaults(node.args)
+        for default in self.default_roots(node.args):
+            self._capture_definition_input(default)
         if self.annotation_mode.annotations_execute_at_declaration:
             self.visit_function_annotations(node)
         return decorator_uses
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        input_start = len(self.definition_input_uses)
         decorator_uses = self._capture_decorators(node)
+        declaration = cast(CompactClassDeclaration, self.definition_owners[node])
+        declaration.capture.resolve(_ClassHeaderCaptureProjection(self, node))
         for base in node.bases:
-            self.visit(base)
+            self._capture_definition_input(base)
         for keyword in node.keywords:
-            self.visit(keyword.value)
-        self._bind_definition(node, decorator_uses)
+            self._capture_definition_input(keyword.value)
+        self._bind_definition(node, decorator_uses, input_start)
 
     def visit_If(self, node: ast.If) -> None:
         self.visit(node.test)
@@ -2996,6 +4209,31 @@ class _CompactFlowCollector(
             )
 
 
+class _SourceFlowCollector(_CompactFlowCollector):
+    """Observe the inherited evaluation traversal; never re-interpret its AST."""
+
+    @cached_property
+    def source_evaluations(self) -> list[SourceFlowEvaluation]:
+        return []
+
+    @cached_property
+    def source_operations(self) -> list[SourceFlowOperation]:
+        return []
+
+    def visit(self, node: ast.AST) -> CompactResolvableValue | None:
+        entry = self._cursor_position()
+        result = super().visit(node)
+        self.source_evaluations.append(
+            SourceFlowEvaluation(node, self.owner, entry, self._cursor_position())
+        )
+        return result
+
+    def _record_operation(
+        self, node: SourcePositionedNode, event: SourceFlowEvent
+    ) -> None:
+        self.source_operations.append(SourceFlowOperation(node, self.owner, event))
+
+
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
@@ -3013,54 +4251,110 @@ def _match_bound_names(pattern: ast.pattern) -> tuple[str, ...]:
     )
 
 
+FlowCollectorT = TypeVar("FlowCollectorT", bound=_CompactFlowCollector)
+
+
+@dataclass(frozen=True)
+class _ProductFlowCollection(Generic[FlowCollectorT]):
+    """Instantiate the existing scope collectors once for either projection."""
+
+    parsed_module: ParsedModule
+    collector_type: type[FlowCollectorT]
+
+    @cached_property
+    def collectors(self) -> tuple[tuple[FlowCollectorT, list[ast.stmt]], ...]:
+        parsed_module = self.parsed_module
+        declarations = _DeclarationCollector(parsed_module)
+        declarations.visit(parsed_module.module)
+        definition_owners = declarations.owners_by_node
+        annotation_mode = ModuleAnnotationEvaluationMode.from_module(
+            parsed_module.module
+        )
+        collectors = [
+            (
+                self.collector_type(
+                    owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
+                    definition_owners=definition_owners,
+                    module_identity=parsed_module.module_path_identity,
+                    annotation_mode=annotation_mode,
+                    lexical_scope_qualnames=("",),
+                    current_class_qualname=None,
+                    current_class_receiver_name=None,
+                ),
+                parsed_module.module.body,
+            )
+        ]
+        collectors.extend(
+            (
+                self.collector_type(
+                    owner=context.declaration,
+                    definition_owners=definition_owners,
+                    module_identity=parsed_module.module_path_identity,
+                    lexical_scope_qualnames=context.lexical_scope_qualnames,
+                    current_class_qualname=context.current_class_qualname,
+                    current_class_receiver_name=None,
+                    annotation_mode=annotation_mode,
+                ),
+                context.node.body,
+            )
+            for context in declarations.class_contexts
+        )
+        collectors.extend(
+            (
+                self.collector_type(
+                    owner=context.declaration,
+                    definition_owners=definition_owners,
+                    module_identity=parsed_module.module_path_identity,
+                    lexical_scope_qualnames=context.lexical_scope_qualnames,
+                    current_class_qualname=context.current_class_qualname,
+                    current_class_receiver_name=context.declaration.nominal_receiver_name,
+                    annotation_mode=annotation_mode,
+                ),
+                context.node.body,
+            )
+            for context in declarations.function_contexts
+        )
+        return tuple(collectors)
+
+    @cached_property
+    def projection(self) -> CompactProductFlowModuleProjection:
+        return CompactProductFlowModuleProjection(
+            module_name=self.parsed_module.module_name,
+            file_path=self.parsed_module.file_path,
+            flows=tuple(collector.collect(body) for collector, body in self.collectors),
+        )
+
+
 def compact_product_flow_projection(
     parsed_module: ParsedModule,
 ) -> CompactProductFlowModuleProjection:
     """Project one parsed module into AST-free closed-flow evidence."""
+    return _ProductFlowCollection(parsed_module, _CompactFlowCollector).projection
 
-    declarations = _DeclarationCollector(parsed_module)
-    declarations.visit(parsed_module.module)
-    definition_owners = declarations.owners_by_node
-    annotation_mode = ModuleAnnotationEvaluationMode.from_module(parsed_module.module)
-    flows = [
-        _CompactFlowCollector(
-            owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
-            definition_owners=definition_owners,
-            module_identity=parsed_module.module_path_identity,
-            annotation_mode=annotation_mode,
-            lexical_scope_qualnames=("",),
-            current_class_qualname=None,
-            current_class_receiver_name=None,
-        ).collect(parsed_module.module.body)
-    ]
-    flows.extend(
-        _CompactFlowCollector(
-            owner=context.declaration,
-            definition_owners=definition_owners,
-            module_identity=parsed_module.module_path_identity,
-            lexical_scope_qualnames=context.lexical_scope_qualnames,
-            current_class_qualname=context.current_class_qualname,
-            current_class_receiver_name=None,
-            annotation_mode=annotation_mode,
-        ).collect(context.node.body)
-        for context in declarations.class_contexts
-    )
-    flows.extend(
-        _CompactFlowCollector(
-            owner=context.declaration,
-            definition_owners=definition_owners,
-            module_identity=parsed_module.module_path_identity,
-            lexical_scope_qualnames=context.lexical_scope_qualnames,
-            current_class_qualname=context.current_class_qualname,
-            current_class_receiver_name=context.declaration.nominal_receiver_name,
-            annotation_mode=annotation_mode,
-        ).collect(context.node.body)
-        for context in declarations.function_contexts
-    )
-    return CompactProductFlowModuleProjection(
-        module_name=parsed_module.module_name,
-        file_path=parsed_module.file_path,
-        flows=tuple(flows),
+
+def source_product_flow_projection(
+    parsed_module: ParsedModule,
+) -> SourceProductFlowProjection:
+    """Collect task-local effect obligations alongside their actual compact flows.
+
+    This is observation only. The source node-local effect authorities determine
+    which intervals and operations are admitted; collection grants no safety.
+    """
+    collection = _ProductFlowCollection(parsed_module, _SourceFlowCollector)
+    compact = collection.projection
+    return SourceProductFlowProjection(
+        collection.parsed_module,
+        compact,
+        tuple(
+            site
+            for collector, _ in collection.collectors
+            for site in collector.source_evaluations
+        ),
+        tuple(
+            site
+            for collector, _ in collection.collectors
+            for site in collector.source_operations
+        ),
     )
 
 

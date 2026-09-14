@@ -75,7 +75,7 @@ PLAN = CodemodPlanSequence.from_operations(
                 )
                 for mutation in mutations
                 if (context.owner_symbol, mutation) not in pending_bindings
-                and (alias := context.flow.exact_aliases_by_binding_mutation.get(mutation)) is not None
+                and (alias := context.flow.exact_alias_for(mutation)) is not None
             )),
             violation,
         )

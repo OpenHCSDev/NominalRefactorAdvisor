@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,20 @@ def _closed_expansion_source() -> str:
         "    context = _Context.merge(base)\n"
         "    return _middle(context.first, context.second)\n"
     )
+
+
+def test_rejected_carrier_boolean_does_not_force_callable_diagnostics() -> None:
+    builder = DeclaredCarrierExpansionBuilder.from_modules((
+        _module("pkg.lazy", _closed_expansion_source()),
+    ))
+    original = builder.assessed_components()[0].proof
+    proof = replace(original, carrier_authority=None)
+    assert not proof.is_proven
+    assert "violations" not in proof.__dict__
+    assert "escaping_callable_symbols" not in proof.callable_component.__dict__
+    assert DeclaredCarrierExpansionAuthorityViolation.UNPROVEN_CARRIER_PRODUCT in proof.violations
+    assert "escaping_callable_symbols" in proof.callable_component.__dict__
+    assert proof.is_proven == (not proof.violations)
 
 
 def test_conditional_carrier_rebinding_does_not_supply_a_refactor_proof() -> None:

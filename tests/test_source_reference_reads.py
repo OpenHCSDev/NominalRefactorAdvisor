@@ -171,8 +171,20 @@ def test_variable_annotation_reads_match_native_scope_phase_and_order(
     ]
     if eager and assignment:
         (annotation_call,) = annotation_calls
-        (assignment_write,) = flow.mutations
+        (assignment_write,) = (
+            mutation
+            for mutation in flow.mutations
+            if mutation.position.dominates(annotation_call.target_use.position)
+        )
         assert assignment_write.position.dominates(annotation_call.target_use.position)
+        annotation_writes = tuple(
+            mutation for mutation in flow.mutations if mutation is not assignment_write
+        )
+        assert len(annotation_writes) == (target == "field")
+        assert all(
+            annotation_call.position.dominates(mutation.position)
+            for mutation in annotation_writes
+        )
 
 
 def test_eager_nested_annotation_names_have_actual_class_read_receipts():

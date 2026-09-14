@@ -1,9 +1,11 @@
-"""Declaration-derived value comparison for immutable dataclass DAGs."""
+"""Declaration-owned graph traversal and immutable value comparison."""
+
+from __future__ import annotations
 
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import Field, fields
-from functools import partial
+from functools import cached_property, partial
 from typing import Any
 
 
@@ -40,7 +42,71 @@ class _HashValue:
         return self.value
 
 
-class DataclassGraphValue(ABC):
+class StoredDataclassState:
+    """Opt in only when declared field getters expose ordinary stored values.
+
+    Graph traversal alone does not establish this transport contract: descriptor
+    projections may differ from raw storage. Nonparticipating graph nodes keep
+    their existing native pickle behavior.
+    """
+
+    def __getstate__(self) -> dict[str, object]:
+        return {
+            declaration.name: getattr(self, declaration.name)
+            for declaration in fields(self)
+        }
+
+
+class CachedDataclassRepresentation(StoredDataclassState):
+    """Opt-in representation for acyclic, transitively immutable stored records.
+
+    Declare participants with ``frozen=True, repr=False``. Field values must have
+    stable representations throughout the record lifetime. Declared fields and
+    their repr flags remain the authority; the derived text is not transported.
+    """
+
+    @cached_property
+    def _representation(self) -> str:
+        members = ", ".join(
+            f"{declaration.name}={getattr(self, declaration.name)!r}"
+            for declaration in fields(self)
+            if declaration.repr
+        )
+        return f"{type(self).__qualname__}({members})"
+
+    def __repr__(self) -> str:
+        return self._representation
+
+
+class DataclassGraphNode(ABC):
+    """Declared record ownership, independent of comparison and hash behavior.
+
+    Only opted-in dataclass nodes and exact tuple containers are traversed.
+    Runtime objects, classes and nonparticipating records remain opaque.
+    Shared identities and cycles are visited once, without invoking equality.
+    """
+
+    @property
+    def graph_children(self) -> tuple[object, ...]:
+        """Declared edges; dataclass fields supply the default projection."""
+        return tuple(getattr(self, declaration.name) for declaration in fields(self))
+
+    def graph_nodes(self) -> Iterator[DataclassGraphNode]:
+        pending: list[object] = [self]
+        seen: set[int] = set()
+        while pending:
+            value = pending.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if type(value) is tuple:
+                pending.extend(reversed(value))
+            elif issubclass(type(value), DataclassGraphNode):
+                yield value
+                pending.extend(reversed(value.graph_children))
+
+
+class DataclassGraphValue(DataclassGraphNode):
     """Opt-in field equality and hashing with traversal-local DAG memoization.
 
     Participants are immutable dataclasses declared with eq=False. Inherited

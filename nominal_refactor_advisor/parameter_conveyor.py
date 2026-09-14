@@ -10,22 +10,19 @@ from functools import cached_property
 from collections.abc import Mapping
 from typing import Callable, Self, TypeAlias
 
-from .ast_tools import ParsedModule
 from .carrier_collapse import (
+    CarrierCollapseAuthorityProof,
+    CarrierCollapseBuilder,
     CarrierCollapseCallEdge,
     CarrierCollapseFieldBinding,
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
-)
-from .class_index import (
-    CompactModuleClassProjection,
 )
 from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
     CompactMutationKind,
     CompactFlowContext,
-    CompactProductFlowModuleProjection,
     CompactValueUse,
 )
 from .product_flow_authority import (
@@ -33,7 +30,6 @@ from .product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactFunctionCallResolution,
     CompactProductAuthority,
-    CompactProductFlowRepository,
     CompactResolvedFunctionCall,
     CompactResolvedProductConstruction,
 )
@@ -267,7 +263,7 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
 
 
 @dataclass(frozen=True)
-class ClosedParameterConveyorAuthorityProof:
+class ClosedParameterConveyorAuthorityProof(CarrierCollapseAuthorityProof):
     """Representation-independent proof that one whole component is final."""
 
     authority_symbols: tuple[str, ...]
@@ -304,7 +300,9 @@ class ClosedParameterConveyorAuthorityProof:
 
     @property
     def is_proven(self) -> bool:
-        return not self.violations
+        return not any(
+            violation.is_violated_by(self) for violation in ClosedParameterConveyorAuthorityViolation
+        )
 
     @property
     def rejection_reason(self) -> str:
@@ -377,31 +375,11 @@ _ValueProjectionKey: TypeAlias = tuple[str, LexicalValueReference]
 
 
 @dataclass(frozen=True)
-class ClosedParameterConveyorComponentBuilder:
+class ClosedParameterConveyorComponentBuilder(
+    CarrierCollapseBuilder[ClosedParameterConveyorComponent],
+):
     """Build maximal components before evaluating any executable candidate."""
 
-    repository: CompactProductFlowRepository
-
-    @classmethod
-    def from_projections(
-        cls,
-        product_projections: tuple[CompactProductFlowModuleProjection, ...],
-        class_projections: tuple[CompactModuleClassProjection, ...],
-    ) -> Self:
-        """Join the two declaration-owned fact families into one proof builder."""
-
-        return cls(
-            CompactProductFlowRepository(
-                product_projections=product_projections,
-                class_projections=class_projections,
-            )
-        )
-
-    @classmethod
-    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
-        """Collect both proof families from one complete source snapshot."""
-
-        return cls(CompactProductFlowRepository.from_modules(modules))
 
     @cached_property
     def calls_by_value_projection(
@@ -477,13 +455,6 @@ class ClosedParameterConveyorComponentBuilder:
         return tuple(
             self._assessed_component(seed, authority_symbols_by_participant)
             for seed in seeds
-        )
-
-    def proven_components(self) -> tuple[ClosedParameterConveyorComponent, ...]:
-        return tuple(
-            component
-            for component in self.assessed_components()
-            if component.proof.is_proven
         )
 
     def _component_seeds(self) -> tuple[_ParameterConveyorComponentSeed, ...]:

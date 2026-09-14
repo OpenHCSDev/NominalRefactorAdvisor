@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import (
     ClassVar,
     Self,
+    TYPE_CHECKING,
     cast,
 )
 
@@ -39,6 +40,10 @@ from .source_index import (
 )
 
 
+if TYPE_CHECKING:
+    from .codemod_runtime import CodemodPlanDocumentSimulation
+
+
 @dataclass(frozen=True, kw_only=True)
 class RefactorRecipeOperation(
     SourceRewritePlanItem,
@@ -58,6 +63,13 @@ class RefactorRecipeOperation(
     source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
         CodemodSourceDependencyScope.EXPLICIT_TARGETS
     )
+
+    def simulation_reports(
+        self,
+        simulation: CodemodPlanDocumentSimulation,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        """Inspect declared relations against the complete rendered document."""
+        return ()
 
     @classmethod
     def operation_key(cls) -> str:

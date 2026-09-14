@@ -15,6 +15,10 @@ import hashlib
 import re
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
+from collections.abc import (
+    Hashable,
+    Sequence,
+)
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -54,6 +58,8 @@ from .collection_algebra import (
     sorted_tuple,
 )
 from .class_mro import ClassMroAuthority
+from .source_entry import ImportedSourceModuleEntryPremise
+from .value_expression import CompactValueExpression
 from .declaration_dependencies import ClassScopeDependency
 from .descriptor_algebra import AliasProperty
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
@@ -64,10 +70,17 @@ from .lexical_bindings import (
 )
 from .native_declarations import (
     ClassNamespaceDeclaration,
+    DataclassRuntimeDeclaration as DataclassRuntimeDeclaration,
     NativeDeclaration,
     QualifiedDeclaration,
 )
 from .native_syntax import NativePythonSyntaxIndex
+from .native_reference import NativeReferenceEnvironment
+from .product_flow import (
+    SourceProductFlowProjection,
+    source_product_flow_projection,
+)
+from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
 from .source_identity import resolved_source_path_text
@@ -146,8 +159,9 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
                 declared_base_name
                 for base in node.bases
                 if (
-                    declared_base_name
-                    := ClassSymbolResolutionAuthority.declared_base_name(base)
+                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
+                        base
+                    )
                 )
                 is not None
             ),
@@ -162,9 +176,11 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
                     _class_scope_qualified_import_name(
                         module_binding_snapshot,
                         {},
-                        decorator.func
-                        if isinstance(decorator, ast.Call)
-                        else decorator,
+                        (
+                            decorator.func
+                            if isinstance(decorator, ast.Call)
+                            else decorator
+                        ),
                         frozenset(),
                     )
                 )
@@ -221,11 +237,24 @@ class CompactClassMemberDeclaration(NamedTuple):
     name: str
     line: int
     expression: str | None
-    constant_string: str | None
-    value_is_none_literal: bool
+    value: CompactValueExpression | None
     constructor_name: str | None
     constructor_keyword_names: tuple[str, ...]
     annotation_expression: str | None
+
+    @property
+    def constant_string(self) -> str | None:
+        return None if self.value is None else self.value.constant_string
+
+    @property
+    def value_is_none_literal(self) -> bool:
+        return self.value is not None and self.value.value_is_none_literal
+
+    def require_mapping_key(self) -> Hashable:
+        """Require original RHS evidence; an annotation supplies no value."""
+        if self.value is None:
+            raise ValueError("Class member has no assigned key value")
+        return self.value.require_mapping_key()
 
     @property
     def annotation_reference_parts(self) -> tuple[str, ...] | None:
@@ -432,70 +461,6 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
-class DataclassRuntimeDeclaration(StrEnum):
-    """Standard-library dataclass declarations with nominal qualified identity."""
-
-    DATACLASS = ("dataclass", True, False)
-    FIELD = ("field", False, True)
-
-    def __new__(
-        cls,
-        value: str,
-        is_dataclass_decorator: bool,
-        is_field_factory: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_dataclass_decorator = is_dataclass_decorator
-        member._is_field_factory = is_field_factory
-        return member
-
-    @property
-    def qualified_name(self) -> str:
-        return f"dataclasses.{self.value}"
-
-    @property
-    def is_dataclass_decorator(self) -> bool:
-        return self._is_dataclass_decorator
-
-    @property
-    def is_field_factory(self) -> bool:
-        return self._is_field_factory
-
-    def matches(self, qualified_name: str | None) -> bool:
-        return qualified_name == self.qualified_name
-
-    def matches_reference_name(self, reference_name: str | None) -> bool:
-        return reference_name in (self.value, self.qualified_name)
-
-    @classmethod
-    def for_qualified_name(cls, qualified_name: str | None) -> Self | None:
-        return next(
-            (member for member in cls if member.matches(qualified_name)),
-            None,
-        )
-
-    @classmethod
-    def for_reference_name(cls, reference_name: str | None) -> Self | None:
-        return next(
-            (member for member in cls if member.matches_reference_name(reference_name)),
-            None,
-        )
-
-    @classmethod
-    def dataclass_decorator_for_name(cls, reference_name: str | None) -> Self | None:
-        """Resolve a standard dataclass decorator from either source spelling."""
-
-        return next(
-            (
-                member
-                for member in cls
-                if member.is_dataclass_decorator
-                and member.matches_reference_name(reference_name)
-            ),
-            None,
-        )
-
 
 class CompactDataclassFieldDeclaration(NamedTuple):
     """One direct annotated member and its exact dataclass role."""
@@ -695,29 +660,45 @@ class CompactIndexedClass(CompactClassHeader):
     def assignments_by_name(self) -> dict[str, str | None]:
         return {
             name: declaration.expression
-            for name, declaration in self.direct_members_by_name.items()
+            for name, declaration in self.direct_value_writes_by_name.items()
         }
 
     @cached_property
-    def direct_members_by_name(self) -> dict[str, CompactClassMemberDeclaration]:
+    def direct_value_writes_by_name(self) -> dict[str, CompactClassMemberDeclaration]:
+        """Latest direct RHS writes, retaining their original declaration rows."""
         return {
             declaration.name: declaration
             for declaration in self.direct_member_declarations
+            if declaration.value is not None
         }
+
+    @cached_property
+    def direct_annotation_writes_by_name(
+        self,
+    ) -> dict[str, CompactClassMemberDeclaration]:
+        """Annotation writes are independent of subsequent unannotated values."""
+        return {
+            declaration.name: declaration
+            for declaration in self.direct_member_declarations
+            if declaration.annotation_expression is not None
+        }
+
+    @cached_property
+    def direct_declared_member_names(self) -> frozenset[str]:
+        return frozenset(
+            declaration.name for declaration in self.direct_member_declarations
+        )
+
+    def constant_string_assignment(self, name: str) -> str | None:
+        declaration = self.direct_value_writes_by_name.get(name)
+        return None if declaration is None else declaration.constant_string
 
     @property
     def direct_assignment_expressions(self) -> tuple[tuple[str, str | None], ...]:
         return tuple(self.assignments_by_name.items())
 
     @property
-    def direct_assignment_lines(self) -> tuple[tuple[str, int], ...]:
-        return tuple(
-            (declaration.name, declaration.line)
-            for declaration in self.direct_member_declarations
-        )
-
-    @property
-    def assignment_lines_by_name(self) -> dict[str, int]:
+    def declared_member_lines_by_name(self) -> dict[str, int]:
         lines: dict[str, int] = {}
         for declaration in self.direct_member_declarations:
             lines.setdefault(declaration.name, declaration.line)
@@ -732,7 +713,7 @@ class CompactIndexedClass(CompactClassHeader):
                 keyword_names=declaration.constructor_keyword_names,
                 line=declaration.line,
             )
-            for declaration in self.direct_members_by_name.values()
+            for declaration in self.direct_value_writes_by_name.values()
             if declaration.constructor_name is not None
         )
 
@@ -740,7 +721,7 @@ class CompactIndexedClass(CompactClassHeader):
     def direct_constant_string_assignments(self) -> tuple[tuple[str, str], ...]:
         return tuple(
             (declaration.name, declaration.constant_string)
-            for declaration in self.direct_members_by_name.values()
+            for declaration in self.direct_value_writes_by_name.values()
             if declaration.constant_string is not None
         )
 
@@ -748,7 +729,7 @@ class CompactIndexedClass(CompactClassHeader):
     def direct_non_none_assignment_names(self) -> tuple[str, ...]:
         return sorted_tuple(
             declaration.name
-            for declaration in self.direct_members_by_name.values()
+            for declaration in self.direct_value_writes_by_name.values()
             if not declaration.value_is_none_literal
         )
 
@@ -839,64 +820,11 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
     def from_declaration(
         cls,
         declaration: ModulePublicExportSourceAuthority,
-        preceding_bound_names: frozenset[str],
     ) -> "CompactExplicitPublicExportContract | None":
         references = declaration.literal_references
-        if references is not None:
-            return cls(sorted_tuple({reference.name for reference in references}))
-        value = declaration.value
-        if {"tuple", "globals"}.intersection(preceding_bound_names) or not (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "tuple"
-            and len(value.args) == 1
-            and not value.keywords
-            and isinstance(value.args[0], ast.GeneratorExp)
-        ):
+        if references is None:
             return None
-        generator = value.args[0]
-        if not (
-            isinstance(generator.elt, ast.Name)
-            and len(generator.generators) == 1
-        ):
-            return None
-        comprehension = generator.generators[0]
-        if not (
-            isinstance(comprehension.target, ast.Name)
-            and generator.elt.id == comprehension.target.id
-            and isinstance(comprehension.iter, ast.Call)
-            and isinstance(comprehension.iter.func, ast.Name)
-            and comprehension.iter.func.id == "globals"
-            and not comprehension.iter.args
-            and not comprehension.iter.keywords
-            and len(comprehension.ifs) == 1
-            and not comprehension.is_async
-        ):
-            return None
-        condition = comprehension.ifs[0]
-        if not (
-            isinstance(condition, ast.UnaryOp)
-            and isinstance(condition.op, ast.Not)
-            and isinstance(condition.operand, ast.Call)
-        ):
-            return None
-        predicate = condition.operand
-        if not (
-            isinstance(predicate.func, ast.Attribute)
-            and isinstance(predicate.func.value, ast.Name)
-            and predicate.func.value.id == comprehension.target.id
-            and predicate.func.attr == "startswith"
-            and len(predicate.args) == 1
-            and isinstance(predicate.args[0], ast.Constant)
-            and predicate.args[0].value == "__"
-            and not predicate.keywords
-        ):
-            return None
-        return cls(
-            sorted_tuple(
-                name for name in preceding_bound_names if not name.startswith("__")
-            )
-        )
+        return cls(sorted_tuple({reference.name for reference in references}))
 
     def exposure_for(self, name: str) -> CompactPublicNameExposure:
         return (
@@ -1465,7 +1393,8 @@ class ClassMethodPromotionSafetyProfile:
             source_lines,
         )
         return cls(
-            ClassScopeDependency.from_node(method) + tuple(
+            ClassScopeDependency.from_node(method)
+            + tuple(
                 hazard
                 for hazard in MethodPromotionHazard
                 if hazard.is_present(inspection)
@@ -1844,10 +1773,14 @@ class SelectionGuardKind(StrEnum):
     ) -> bool:
         """Return whether the observed guards prove exactly one selected item."""
 
-        return cls.NOT_EXACTLY_ONE in guard_kinds or {
-            cls.EMPTY,
-            cls.AMBIGUOUS,
-        } <= guard_kinds
+        return (
+            cls.NOT_EXACTLY_ONE in guard_kinds
+            or {
+                cls.EMPTY,
+                cls.AMBIGUOUS,
+            }
+            <= guard_kinds
+        )
 
     @classmethod
     def from_node(
@@ -2174,14 +2107,14 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         cls,
         projections_by_family: dict[
             type[CollectedFamily],
-            tuple[object, ...],
+            Sequence[object],
         ],
     ) -> Self:
         """Build the class anchor declared by a compact multi-family join."""
 
         return CompactClassFamilyIndexBuilder(
             cast(
-                tuple[CompactModuleClassProjection, ...],
+                Sequence[CompactModuleClassProjection],
                 projections_by_family[CompactModuleClassProjectionFamily],
             )
         ).build()
@@ -2376,20 +2309,26 @@ class ClosedLeafMethodAuthorityViolation(StrEnum):
     AMBIGUOUS_DIRECT_AUTHORITY = (
         "ambiguous_direct_authority",
         "the participants do not have exactly one resolved direct authority",
-        lambda proof: frozenset(proof.common_direct_base_symbols)
-        != frozenset((proof.authority_symbol,)),
+        lambda proof: (
+            frozenset(proof.common_direct_base_symbols)
+            != frozenset((proof.authority_symbol,))
+        ),
     )
     AMBIGUOUS_DECLARED_AUTHORITY = (
         "ambiguous_declared_authority",
         "the participants do not have exactly one declared nominal base",
-        lambda proof: proof.common_declared_nominal_base_simple_names
-        != frozenset((proof.authority_simple_name,)),
+        lambda proof: (
+            proof.common_declared_nominal_base_simple_names
+            != frozenset((proof.authority_simple_name,))
+        ),
     )
     INCOMPLETE_DIRECT_FAMILY = (
         "incomplete_direct_family",
         "the participants are not the complete direct-child family",
-        lambda proof: frozenset(proof.authority_direct_child_symbols)
-        != proof.participant_symbol_set,
+        lambda proof: (
+            frozenset(proof.authority_direct_child_symbols)
+            != proof.participant_symbol_set
+        ),
     )
     NON_LEAF_PARTICIPANT = (
         "non_leaf_participant",
@@ -2514,7 +2453,6 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
 
 @dataclass(frozen=True)
 class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass]):
-
     def class_records_excluding_files(
         self,
         file_paths: frozenset[str],
@@ -2779,14 +2717,8 @@ def module_public_export_contract(
     declaration = ModulePublicExportSourceAuthority.from_module(module)
     if declaration is None:
         return CompactUnresolvedPublicExportContract()
-    preceding_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-        module.body[: module.body.index(declaration.statement)]
-    )
     return (
-        CompactExplicitPublicExportContract.from_declaration(
-            declaration,
-            preceding_bound_names,
-        )
+        CompactExplicitPublicExportContract.from_declaration(declaration)
         or CompactUnresolvedPublicExportContract()
     )
 
@@ -2870,10 +2802,7 @@ class ModuleNominalBindingSnapshot:
         """Prove that one bare name still resolves through Python builtins."""
 
         return (
-            (
-                not self.star_import_ambiguity
-                or name in self.star_import_excluded_names
-            )
+            (not self.star_import_ambiguity or name in self.star_import_excluded_names)
             and name not in self.bindings_by_name
             and name not in self.unresolved_bound_names
             and name not in preceding_class_bound_names
@@ -3005,9 +2934,7 @@ class FunctionNominalParameterBindingAuthority:
     def stable_type_names_by_parameter(self) -> dict[str, str]:
         """Project nominal parameter types whose bindings remain unchanged."""
 
-        rebound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            self.function.body
-        )
+        rebound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
         return {
             parameter.arg: type_name
             for parameter in (
@@ -3049,6 +2976,40 @@ def nominal_reference_root_name(reference: ast.AST) -> str | None:
 
 class ModuleNominalBindingView(ABC):
     """Representation-independent nominal bindings at one module position."""
+
+    source_entry = staticmethod(ImportedSourceModuleEntryPremise.from_source)
+
+    @cached_property
+    def _source_projections(self) -> dict[int, SourceProductFlowProjection]:
+        return {}
+
+    def source_projection(self, module: ParsedModule) -> SourceProductFlowProjection:
+        """Retain one original observation graph per parsed owner in this proof."""
+        source = self._source_projections.get(id(module))
+        if source is None:
+            source = source_product_flow_projection(module)
+            self._source_projections[id(module)] = source
+        return source
+
+    def native_reference_environment(
+        self, module: ParsedModule
+    ) -> NativeReferenceEnvironment:
+        """Admit execution over this proof's existing original observations."""
+        environment = self._native_executions.get(id(module))
+        if environment is None:
+            source = self.source_projection(module)
+            entry = self.source_entry(source)
+            if entry.source is not source:
+                raise ValueError(
+                    "Source entry belongs to a different canonical projection"
+                )
+            environment = SourceModuleExecution(entry)
+            self._native_executions[id(module)] = environment
+        return environment
+
+    @cached_property
+    def _native_executions(self) -> dict[int, NativeReferenceEnvironment]:
+        return {}
 
     def reference_or_builtin_witness_at(
         self,
@@ -3182,7 +3143,11 @@ class RepositoryModuleBindingProof(
         self,
         module_name: str,
     ) -> tuple[CompactModuleStarImportOrigin, ...]:
-        return self.star_import_origins_by_module_name.get(module_name, ())
+        return (
+            self.star_import_origins_by_module_name[module_name]
+            if self.contains_module(module_name)
+            else ()
+        )
 
     def unshadowed_builtin_witness(
         self,
@@ -3359,16 +3324,12 @@ def _module_nominal_binding_snapshots(
             for binding_name in tuple(bindings):
                 if binding_name not in star_import_excluded_names:
                     del bindings[binding_name]
-            unresolved_bound_names.intersection_update(
-                star_import_excluded_names
-            )
+            unresolved_bound_names.intersection_update(star_import_excluded_names)
             star_import_ambiguity = True
             return
         direct_bindings = authority._direct_nominal_bindings(current, bindings)
         bound_names = _direct_statement_bound_names(current)
-        deleted_names = (
-            bound_names if isinstance(current, ast.Delete) else frozenset()
-        )
+        deleted_names = bound_names if isinstance(current, ast.Delete) else frozenset()
         for bound_name in bound_names:
             bindings.pop(bound_name, None)
             if bound_name in deleted_names:
@@ -3836,7 +3797,8 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     indexed_class.declares_autoregister_meta
                     or (
                         indexed_class.keyed_family_key_type_name is not None
-                        and "registry_key_attr" in indexed_class.assignments_by_name
+                        and "registry_key_attr"
+                        in indexed_class.direct_declared_member_names
                     )
                     for indexed_class in projection.classes
                 )
@@ -3943,9 +3905,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
-                public_export_contract=module_public_export_contract(
-                    parsed_module
-                ),
+                public_export_contract=module_public_export_contract(parsed_module),
                 star_import_origins=module_star_import_origins(parsed_module),
                 classes=_compact_indexed_classes(
                     parsed_module,
@@ -3987,9 +3947,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 import_aliases=tuple(
                     sorted(_module_import_aliases(parsed_module).items())
                 ),
-                public_export_contract=module_public_export_contract(
-                    parsed_module
-                ),
+                public_export_contract=module_public_export_contract(parsed_module),
                 star_import_origins=module_star_import_origins(parsed_module),
                 classes=classes,
                 sorted_key_calls=_compact_sorted_key_calls(parsed_module),
@@ -6018,19 +5976,13 @@ def _compact_class_member_declarations(
             if isinstance(value, ast.Call) and constructor_name is not None
             else ()
         )
+        compact_value = None if value is None else CompactValueExpression.project(value)
         declarations.extend(
             CompactClassMemberDeclaration(
                 name=target.id,
                 line=statement.lineno,
                 expression=ast.unparse(value) if value is not None else None,
-                constant_string=(
-                    value.value
-                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
-                    else None
-                ),
-                value_is_none_literal=(
-                    isinstance(value, ast.Constant) and value.value is None
-                ),
+                value=compact_value,
                 constructor_name=constructor_name,
                 constructor_keyword_names=constructor_keyword_names,
                 annotation_expression=(
@@ -6107,7 +6059,7 @@ def _terminal_reference_name(node: ast.AST) -> str | None:
 
 @dataclass(frozen=True)
 class CompactClassFamilyIndexBuilder:
-    projections: tuple[CompactModuleClassProjection, ...]
+    projections: Sequence[CompactModuleClassProjection]
 
     def build(self) -> CompactClassFamilyIndex:
         records = tuple(
@@ -6198,7 +6150,7 @@ class CompactClassFamilyIndexBuilder:
 
 
 def build_compact_class_family_index(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
 ) -> CompactClassFamilyIndex:
     """Build an exact inheritance graph from AST-free per-module facts."""
 
@@ -6215,7 +6167,7 @@ class CompactClassReferenceResolver:
     @classmethod
     def from_index(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> "CompactClassReferenceResolver":
         return cls(

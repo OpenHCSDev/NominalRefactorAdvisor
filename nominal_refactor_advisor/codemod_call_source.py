@@ -47,7 +47,7 @@ class DeclaredCallRewriteABC(ABC):
         callee_symbol = source_index.symbol_for_target(self.callee)
         callee_symbols = frozenset((callee_symbol,))
         repository = self.snapshot.product_flow_repository
-        context = repository.flow_contexts_by_owner_symbol.get(caller_symbol)
+        context = repository.flow_context_for_symbol(caller_symbol)
         if context is None:
             raise ValueError(
                 f"Call scope has no unique flow authority: {caller_symbol!r}"

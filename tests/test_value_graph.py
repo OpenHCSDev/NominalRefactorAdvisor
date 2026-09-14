@@ -1,9 +1,9 @@
 """Native value semantics for declaration-owned immutable graph records."""
 
-from dataclasses import dataclass, field, fields
 import multiprocessing
 import pickle
 import weakref
+from dataclasses import dataclass, field, fields
 
 import pytest
 
@@ -30,6 +30,31 @@ class FlaggedValue(DataclassGraphValue):
 @dataclass(frozen=True)
 class NativeValue:
     value: object
+
+
+class StoredField:
+    def __get__(self, instance, owner):
+        if instance is None:
+            raise AttributeError
+        return instance.__dict__["_value"]
+
+    def __set__(self, instance, value):
+        instance.__dict__["_value"] = value
+
+
+@dataclass(frozen=True, eq=False)
+class DescriptorGraphValue(DataclassGraphValue):
+    value: object = StoredField()
+
+
+class ProjectedField(StoredField):
+    def __get__(self, instance, owner):
+        return NativeValue(super().__get__(instance, owner))
+
+
+@dataclass(frozen=True, eq=False)
+class ProjectedDescriptorGraphValue(DataclassGraphValue):
+    value: object = ProjectedField()
 
 
 @dataclass(frozen=True, eq=False)
@@ -106,6 +131,15 @@ def test_inherited_fields_are_compared_and_hashed() -> None:
         "value",
         "label",
     )
+
+
+@pytest.mark.parametrize("owner", (DescriptorGraphValue, ProjectedDescriptorGraphValue))
+def test_descriptor_backed_graph_roundtrip_preserves_declared_value(owner):
+    original = owner(5)
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored.value == original.value
+    assert restored == original
+    assert hash(restored) == hash(original)
 
 
 def test_field_flags_remain_the_comparison_and_hash_authority() -> None:

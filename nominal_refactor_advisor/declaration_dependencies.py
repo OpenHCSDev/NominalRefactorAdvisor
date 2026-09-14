@@ -29,6 +29,7 @@ from .lexical_scopes import (
     FunctionBindingProjection as FunctionBindingProjection,
     LexicalNameResolution,
     LexicalScopeContext as LexicalScopeContext,
+    ModuleNamespaceScope,
     TypeParameterScope,
 )
 from .lexical_bindings import (
@@ -286,8 +287,7 @@ class ModuleLexicalDependencyProjection:
         module: ast.Module,
     ) -> "ModuleLexicalDependencyProjection":
         collector = _DeclarationDependencyCollector()
-        for statement in module.body:
-            collector.visit(statement)
+        collector.visit(module)
         return cls(
             name_surfaces=tuple(collector.name_surfaces),
             stringized_annotations=tuple(collector.stringized_annotation_surfaces),
@@ -479,6 +479,10 @@ class _DeclarationDependencyCollector(
         self.name_surfaces: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
 
+    def visit_Module(self, node: ast.Module) -> None:
+        with self._scope(ModuleNamespaceScope(node)):
+            self.generic_visit(node)
+
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
             self._record_class_binding((node.id,), LexicalNameResolution.INTERNAL)
@@ -526,9 +530,7 @@ class _DeclarationDependencyCollector(
             self.visit(node.target)
         self._visit_annotation(
             node.annotation,
-            evaluation_sensitive=(
-                not self.scopes or self._active_class_scope is not None
-            ),
+            evaluation_sensitive=(self.scopes[-1].records_variable_annotations),
         )
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -659,6 +661,7 @@ class _DeclarationDependencyCollector(
         context = (
             self._scope(
                 TypeParameterScope(
+                    node=node,
                     local_names=parameter_names,
                     global_names=frozenset(),
                     nonlocal_names=frozenset(),
@@ -697,6 +700,7 @@ class _DeclarationDependencyCollector(
             for name in _store_names(generator.target)
         }
         scope = FunctionBindingProjection(
+            node=node,
             local_names=frozenset(local_names),
             global_names=frozenset(),
             nonlocal_names=frozenset(),

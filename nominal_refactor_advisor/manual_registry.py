@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC
+from collections.abc import Hashable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TypeAlias
+from typing import (
+    TYPE_CHECKING,
+    TypeAlias,
+)
 
 from .ast_tools import (
     AstExpressionProjection,
@@ -17,11 +22,13 @@ from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .name_algebra import CLASS_NAME_ALGEBRA
+from .captured_reference import NamespaceContentsABC
 from .registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     REGISTRY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
 )
+from .value_expression import LiteralExpressionEffects
 
 RegistryAssignment: TypeAlias = ast.Assign | ast.AnnAssign
 
@@ -36,6 +43,11 @@ def _assignment_target(statement: RegistryAssignment) -> ast.expr:
 
 def _assignment_value(statement: RegistryAssignment) -> ast.AST | None:
     return statement.value
+
+
+if TYPE_CHECKING:
+    from .native_reference import NativeReferenceEnvironment
+    from .captured_reference import CapturedReferenceResolution
 
 
 @dataclass(frozen=True)
@@ -92,6 +104,50 @@ class SourceClassKeyEntry:
 
     class_node: ast.ClassDef
     key_node: ast.expr
+    value_node: ast.expr
+
+    def require_original_value(self, environment: NativeReferenceEnvironment) -> None:
+        """Authenticate the original registered operand, not the proposed replacement."""
+        self.require_class_value(self.captured_class(environment), environment)
+
+    def require_class_value(
+        self,
+        value: CapturedReferenceResolution,
+        environment: NativeReferenceEnvironment,
+    ) -> None:
+        """Require this entry's actual class value in the supplied execution.
+
+        A matching source producer in another activation is not the same class.
+        This relation does not establish class behavior across rewritten programs.
+        """
+        expected = environment.capture_definition(self.class_node)
+        expected.require_closed()
+        value.require_closed()
+        if not value.proves_same_object(expected):
+            raise ValueError(
+                "Registry value is not proved to be the selected class creation"
+            )
+
+    def captured_class(
+        self,
+        environment: NativeReferenceEnvironment,
+    ) -> CapturedReferenceResolution:
+        return environment.capture(self.value_node)
+
+    @property
+    def key_value(self) -> Hashable:
+        try:
+            return LiteralExpressionEffects(self.key_node).hashable_value
+        except (
+            ValueError,
+            TypeError,
+            SyntaxError,
+            MemoryError,
+            RecursionError,
+        ) as error:
+            raise ValueError(
+                f"Registry key equivalence remains unproved for {self.key_source!r}"
+            ) from error
 
     @property
     def class_name(self) -> str:
@@ -100,15 +156,6 @@ class SourceClassKeyEntry:
     @property
     def key_source(self) -> str:
         return ast.unparse(self.key_node)
-
-    @property
-    def key_identity(self) -> tuple[str, object]:
-        try:
-            value = ast.literal_eval(self.key_node)
-            hash(value)
-        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-            return "syntax", ast.dump(self.key_node, include_attributes=False)
-        return "literal", value
 
     def require_relocatable_key(self, module: ast.Module) -> None:
         reference_names = _relocatable_key_reference_names(self.key_node)
@@ -131,6 +178,85 @@ class SourceClassKeyEntry:
 
 
 @dataclass(frozen=True)
+class ConstructorClassKeyEntry(SourceClassKeyEntry):
+    """An original instance entry consumes a class and executes its constructor."""
+
+    value_node: ast.Call
+
+    def captured_class(
+        self,
+        environment: NativeReferenceEnvironment,
+    ) -> CapturedReferenceResolution:
+        return environment.capture(self.value_node.func)
+
+    def require_original_value(self, environment: NativeReferenceEnvironment) -> None:
+        super().require_original_value(environment)
+        environment.capture_value(self.value_node).require_closed()
+
+
+class RegistryEntries(ABC):
+    """Original declaration/key edges share ordering and native-key obligations."""
+
+    module: ast.Module
+    entries: tuple[SourceClassKeyEntry, ...]
+
+    class_names = CollectionAttributeProjection[str]("entries", "class_name")
+    class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
+
+    def require_original_entry_values(
+        self,
+        environment: NativeReferenceEnvironment,
+    ) -> None:
+        """Prove original operands only; new activation and observation remain separate."""
+        if environment.source.module.module is not self.module:
+            raise ValueError("Registry entries require their original source module")
+        for entry in self.entries:
+            entry.require_original_value(environment)
+
+    def require_class_mapping(
+        self, contents: NamespaceContentsABC, environment: NativeReferenceEnvironment
+    ) -> None:
+        """Require complete unordered keys and source class values at this observation."""
+        contents.require_closed()
+        if (
+            contents.kernel is not environment.kernel
+            or environment.source.module.module is not self.module
+        ):
+            raise ValueError("Class mapping requires its original source execution")
+        keys = tuple(entry.key_value for entry in self.entries)
+        if len(frozenset(keys)) != len(keys):
+            raise ValueError("Class mapping requires unique declared keys")
+        if contents.names != frozenset(keys):
+            raise ValueError("Complete keys do not match the selected class entries")
+        for key, entry in zip(keys, self.entries, strict=True):
+            entry.require_class_value(contents.require_member(key), environment)
+
+    def require_destination_key_compatibility(
+        self, authority: AutoRegisterClassAuthority
+    ) -> None:
+        authority.require_requested_key_compatibility(
+            tuple(
+                (entry.class_name, LiteralExpressionEffects(entry.key_node))
+                for entry in self.entries
+            )
+        )
+
+    def require_ordered_unique_entries(self) -> None:
+        if len(frozenset(self.class_names)) != len(self.class_names):
+            raise ValueError("Each registered declaration must have exactly one key")
+        declaration_order = tuple(
+            node.name for node in sorted(self.class_nodes, key=lambda node: node.lineno)
+        )
+        if self.class_names != declaration_order:
+            raise ValueError("Registry order must match class declaration order")
+        for entry in self.entries:
+            entry.require_relocatable_key(self.module)
+        keys = tuple(entry.key_value for entry in self.entries)
+        if len(frozenset(keys)) != len(keys):
+            raise ValueError("Registry keys must be unique")
+
+
+@dataclass(frozen=True)
 class DirectManualRegistryEntry(SourceClassKeyEntry):
     """One manual class-registration edge recovered directly from source."""
 
@@ -139,12 +265,36 @@ class DirectManualRegistryEntry(SourceClassKeyEntry):
 
 
 @dataclass(frozen=True)
-class DirectManualRegistryComponent:
+class DirectManualRegistryComponent(RegistryEntries):
     """Complete direct-registration component anchored by one registered class."""
 
     module: ast.Module
     registry_assignment: RegistryAssignment
     entries: tuple[DirectManualRegistryEntry, ...]
+
+    @property
+    def reuses_registry_binding(self) -> bool:
+        authority = self.existing_authority_node
+        authority_line = (
+            authority.lineno
+            if authority is not None
+            else min(node.lineno for node in self.class_nodes)
+        )
+        return (
+            self.initializes_empty_registry
+            and self.registry_assignment.lineno < authority_line
+        )
+
+    @cached_property
+    def destination_authority(self) -> AutoRegisterClassAuthority:
+        return AutoRegisterClassAuthority.for_registration(
+            self.authority_name,
+            (
+                ast.Name(id=self.registry_name, ctx=ast.Load())
+                if self.reuses_registry_binding
+                else ast.Dict(keys=[], values=[])
+            ),
+        )
 
     @classmethod
     def from_module_anchor(
@@ -211,23 +361,21 @@ class DirectManualRegistryComponent:
         value = _assignment_value(statement)
         if registry_name is None or not isinstance(value, ast.Dict) or not value.keys:
             return ()
-        if any(key is None for key in value.keys):
-            return ()
-        value_names = tuple(
-            AstExpressionProjection.identifier(item) for item in value.values
-        )
-        if any(name not in class_nodes for name in value_names):
-            return ()
-        return tuple(
-            DirectManualRegistryEntry(
-                registry_name=registry_name,
-                class_node=class_nodes[class_name],
-                key_node=key,
-                removal_node=statement,
+        entries = []
+        for key_node, value_node in zip(value.keys, value.values, strict=True):
+            class_node = class_nodes.get(AstExpressionProjection.identifier(value_node))
+            if class_node is None or key_node is None:
+                return ()
+            entries.append(
+                DirectManualRegistryEntry(
+                    registry_name=registry_name,
+                    class_node=class_node,
+                    key_node=key_node,
+                    value_node=value_node,
+                    removal_node=statement,
+                )
             )
-            for key, class_name in zip(value.keys, value_names, strict=True)
-            if key is not None and class_name is not None
-        )
+        return tuple(entries)
 
     @staticmethod
     def entry_from_subscript_assignment(
@@ -247,6 +395,7 @@ class DirectManualRegistryComponent:
             registry_name=registry_name,
             class_node=class_nodes[class_name],
             key_node=target.slice,
+            value_node=statement.value,
             removal_node=statement,
         )
 
@@ -277,9 +426,6 @@ class DirectManualRegistryComponent:
         if registry_name is None:
             raise ValueError("Registry assignment target is not a name")
         return registry_name
-
-    class_names = CollectionAttributeProjection[str]("entries", "class_name")
-    class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
 
     @cached_property
     def class_graph(self) -> DirectModuleClassGraph:
@@ -383,22 +529,7 @@ class DirectManualRegistryComponent:
     def require_complete(self) -> None:
         if len(self.entries) < 2:
             raise ValueError("Manual registry conversion requires at least two classes")
-        if len(frozenset(self.class_names)) != len(self.class_names):
-            raise ValueError("Each registered class must have exactly one registry key")
-        class_definition_order = tuple(
-            node.name for node in sorted(self.class_nodes, key=lambda node: node.lineno)
-        )
-        if self.class_names != class_definition_order:
-            raise ValueError("Manual registry order must match class declaration order")
-        key_identities = tuple(entry.key_identity for entry in self.entries)
-        if any(
-            left == right
-            for index, left in enumerate(key_identities)
-            for right in key_identities[index + 1 :]
-        ):
-            raise ValueError("Manual registry keys must be unique")
-        for entry in self.entries:
-            entry.require_relocatable_key(self.module)
+        self.require_ordered_unique_entries()
         if not isinstance(self.registry_value, ast.Dict):
             raise ValueError(
                 f"Registry {self.registry_name!r} is not initialized as a dict"
@@ -492,13 +623,19 @@ class DirectManualRegistryComponent:
 
 
 @dataclass(frozen=True)
-class AutoRegisterInstanceViewComponent:
+class AutoRegisterInstanceViewComponent(RegistryEntries):
     """One constructor-valued view proved against its AutoRegister authority."""
 
     module: ast.Module
     authority_node: ast.ClassDef
     assignment: RegistryAssignment
     entries: tuple[SourceClassKeyEntry, ...]
+
+    def require_original_entry_values(
+        self, environment: NativeReferenceEnvironment
+    ) -> None:
+        self.authority.require_native_metaclass(environment)
+        super().require_original_entry_values(environment)
 
     @classmethod
     def from_module_authority(
@@ -574,16 +711,13 @@ class AutoRegisterInstanceViewComponent:
                 authority_node.name,
             ):
                 return None
-            entries.append(SourceClassKeyEntry(class_node, key))
+            entries.append(ConstructorClassKeyEntry(class_node, key, value_node))
         return cls(
             module=module,
             authority_node=authority_node,
             assignment=statement,
             entries=tuple(entries),
         )
-
-    class_names = CollectionAttributeProjection[str]("entries", "class_name")
-    class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
 
     @cached_property
     def authority(self) -> AutoRegisterClassAuthority:
@@ -627,24 +761,7 @@ class AutoRegisterInstanceViewComponent:
                     f"AutoRegister authority {self.authority_name!r} must own an "
                     "empty direct registry"
                 )
-        if len(frozenset(self.class_names)) != len(self.class_names):
-            raise ValueError(
-                "Each instance-view class must have exactly one registry key"
-            )
-        class_definition_order = tuple(
-            node.name for node in sorted(self.class_nodes, key=lambda node: node.lineno)
-        )
-        if self.class_names != class_definition_order:
-            raise ValueError("Instance-view order must match class declaration order")
-        key_identities = tuple(entry.key_identity for entry in self.entries)
-        if any(
-            left == right
-            for index, left in enumerate(key_identities)
-            for right in key_identities[index + 1 :]
-        ):
-            raise ValueError("Instance-view registry keys must be unique")
-        for entry in self.entries:
-            entry.require_relocatable_key(self.module)
+        self.require_ordered_unique_entries()
         assignment_line = self.assignment.lineno
         if any(
             (node.end_lineno or node.lineno) >= assignment_line
@@ -680,12 +797,12 @@ def _source_span(node: ast.AST) -> tuple[int, int]:
     return node.lineno, node.end_lineno or node.lineno
 
 
-def _relocatable_key_reference_names(node: ast.AST) -> frozenset[str] | None:
-    if isinstance(node, ast.Constant):
-        try:
-            hash(node.value)
-        except TypeError:
-            return None
+def _relocatable_key_reference_names(node: ast.expr) -> frozenset[str] | None:
+    try:
+        LiteralExpressionEffects(node).hashable_value
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        pass
+    else:
         return frozenset()
     if isinstance(node, ast.Name):
         return frozenset((node.id,))
@@ -700,8 +817,6 @@ def _relocatable_key_reference_names(node: ast.AST) -> frozenset[str] | None:
         return frozenset(
             name for names in child_names if names is not None for name in names
         )
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
-        return _relocatable_key_reference_names(node.operand)
     return None
 
 

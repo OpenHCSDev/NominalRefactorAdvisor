@@ -147,7 +147,7 @@ def test_shared_interpreter_dispatches_without_a_callable_resolver(
         assert result.source.source[1] is mutation
         assert result.pending == frozenset()
     else:
-        assert result.pending == frozenset(((context.owner_symbol, mutation),))
+        assert result.pending == frozenset((CompactBindingVisit(context, mutation),))
         if expected in {"import", "missing"}:
             assert result.kind == "import"
             selected_context, reference, selected_binding = result.source
@@ -170,7 +170,8 @@ def test_shared_alias_path_retains_actual_capture_and_installation_receipts() ->
     context = _context()
     selection = context.flow.binding_resolution_for("alias")
     assert selection is not None and selection.mutation is not None
-    alias = context.flow.exact_aliases_by_binding_mutation[selection.mutation]
+    alias = context.flow.exact_alias_for(selection.mutation)
+    assert alias is not None
     reference = LexicalValueReference("alias", ("member",))
     position = context.flow.mutations[-1].position
     result = selection.resolve_binding(
@@ -184,14 +185,14 @@ def test_shared_alias_path_retains_actual_capture_and_installation_receipts() ->
     assert captured_context is context
     assert accessed_reference is reference
     assert accessed_position is position
-    assert result.pending == frozenset(((context.owner_symbol, selection.mutation),))
+    assert result.pending == frozenset((CompactBindingVisit(context, selection.mutation),))
 
 
 def test_cycle_is_projected_from_the_actual_pending_event_set() -> None:
     context = _context()
     selection = context.flow.binding_resolution_for("alias")
     assert selection is not None and selection.mutation is not None
-    pending = frozenset(((context.owner_symbol, selection.mutation),))
+    pending = frozenset((CompactBindingVisit(context, selection.mutation),))
     result = selection.resolve_binding(
         _SourceProbe(), context, LexicalValueReference("alias"), None, pending
     )

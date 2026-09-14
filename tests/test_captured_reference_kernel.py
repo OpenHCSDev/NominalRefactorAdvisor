@@ -21,6 +21,7 @@ from nominal_refactor_advisor.captured_reference import (
     InitialNativeFrame,
     InitialNativeIsland,
     OpenCapturedReference,
+    SingleFlowPrefix,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.product_flow import (
@@ -46,7 +47,7 @@ class FixtureEffects(CapturedReferenceEffectsABC):
 
     def admit(
         self, context: CompactFlowContext, position: CompactFlowPosition
-    ) -> InitialNativeFrame | OpenCapturedReference:
+    ) -> SingleFlowPrefix | OpenCapturedReference:
         if context is not self.context:
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
         statement = (
@@ -117,7 +118,7 @@ class FixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return self.frame
+        return SingleFlowPrefix(context, self.frame, position)
 
 
 def _fixture(source):
@@ -286,7 +287,10 @@ def test_effect_authority_has_no_default_or_cross_context_admission():
         CapturedReferenceEffectsABC()
     kernel, read, _ = _fixture("result = property\n")
     _, other, _ = _fixture("result = property\n")
-    assert kernel.effects.admit(read.context, read.use.position) is kernel.effects.frame
+    assert (
+        kernel.effects.admit(read.context, read.use.position).frame
+        is kernel.effects.frame
+    )
     assert (
         kernel.effects.admit(other.context, other.use.position).violation
         is CapturedReferenceViolation.UNPROVED_EFFECTS
@@ -386,7 +390,7 @@ class PlainModuleFixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return self.frame
+        return SingleFlowPrefix(context, self.frame, position)
 
 
 @contextmanager

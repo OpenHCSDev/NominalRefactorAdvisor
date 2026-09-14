@@ -23,6 +23,7 @@ from nominal_refactor_advisor.product_flow_authority import (
     CompactOpenFunctionCall,
     CompactProductFlowRepository,
     ResolvedCompactClassTarget,
+    SourceProductFlowRepository,
 )
 
 
@@ -72,6 +73,11 @@ def _repository(*modules: ParsedModule) -> CompactProductFlowRepository:
     )
 
 
+def _source_repository(*modules: ParsedModule) -> SourceProductFlowRepository:
+    """Retain original source and entry evidence for runtime-positive assertions."""
+    return SourceProductFlowRepository.from_modules(modules)
+
+
 def _open_product_violations(
     repository: CompactProductFlowRepository,
     class_symbol: str,
@@ -81,6 +87,39 @@ def _open_product_violations(
     ]
     assert isinstance(resolution, OpenCompactProductAuthority)
     return frozenset(failure.violation for failure in resolution.failures)
+
+
+def test_callable_proof_rejects_lazily_but_preserves_later_diagnostics() -> None:
+    repository = _repository(_module(
+        "pkg.lazy",
+        "def _leaf(value): return value\n"
+        "def leak(): return _leaf\n",
+    ))
+    proof = repository.callable_component_authority_proof(
+        {"pkg.lazy.missing": frozenset(), "pkg.lazy._leaf": frozenset({"value"})},
+        frozenset(),
+    )
+    assert "function_call_resolutions" not in repository.__dict__
+    assert "callable_escapes" not in repository.__dict__
+    assert not proof.is_closed
+    assert proof.missing_declaration_symbols == ("pkg.lazy.missing",)
+    assert "function_call_resolutions" not in repository.__dict__
+    assert "callable_escapes" not in repository.__dict__
+    assert proof.escaping_callable_symbols == ("pkg.lazy._leaf",)
+    assert "callable_escapes" in repository.__dict__
+    assert proof.escaping_callable_symbols is proof.escaping_callable_symbols
+
+
+def test_callable_proof_snapshots_caller_owned_component_inputs() -> None:
+    repository = _repository(_module("pkg.inputs", "def _leaf(value): return value\n"))
+    parameters = {"pkg.inputs._leaf": frozenset({"value"})}
+    proof = repository.callable_component_authority_proof(parameters, frozenset())
+    parameters.clear()
+    parameters["pkg.inputs.missing"] = frozenset()
+    assert proof.participant_symbols == ("pkg.inputs._leaf",)
+    assert proof.missing_declaration_symbols == ()
+    assert proof.signature_hazard_symbols == ()
+    assert proof.is_closed
 
 
 @pytest.mark.parametrize(
@@ -377,7 +416,7 @@ def test_imported_nested_class_resolves_each_namespace_binding() -> None:
 
 
 def test_repository_joins_local_calls_constructions_and_callable_escapes() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.sample",
             "from dataclasses import dataclass\n"
@@ -440,7 +479,7 @@ def test_constructor_proof_respects_enclosing_lexical_bindings(
     exec(source, namespace)
     assert namespace["outer"](*outer_arguments)(3) == "shadow"
 
-    repository = _repository(_module("pkg.sample", source))
+    repository = _source_repository(_module("pkg.sample", source))
     assert "pkg.sample.Payload" in repository.product_authorities_by_symbol
     assert repository.resolved_product_constructions == ()
 
@@ -512,7 +551,7 @@ def test_duplicate_function_flows_retain_their_own_declarations() -> None:
     ),
 )
 def test_constructor_proof_resolves_function_local_imports(binding_source: str) -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.models",
             "from dataclasses import dataclass\n"
@@ -591,7 +630,7 @@ def test_repository_resolves_imported_and_qualified_function_authorities() -> No
         "    return sink.consume(left=key.left, right=key.right)\n",
     )
 
-    repository = _repository(models, sink, worker)
+    repository = _source_repository(models, sink, worker)
 
     assert len(repository.resolved_product_constructions) == 2
     assert {
@@ -697,7 +736,7 @@ def test_repository_rejects_locally_opened_product_class_semantics(
 
 
 def test_function_local_class_names_do_not_open_the_module_product() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.local_class_name",
             "from dataclasses import dataclass\n"
@@ -1034,7 +1073,6 @@ def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
             "    if flag:\n        consume = replacement\n",
             CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
         ),
-        ("    del consume\n", CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING),
         (
             "    class consume: pass\n",
             None,
@@ -1071,6 +1109,31 @@ def test_method_selection_respects_class_body_writes(
     else:
         assert resolution.target_resolution.violation is violation
     assert "probe.Owner.consume" in resolution.target_resolution.possible_symbols
+
+
+@pytest.mark.parametrize("base", ("Owner", "Child"))
+def test_deleted_method_does_not_resurrect_a_historical_call_target(base: str) -> None:
+    repository = _repository(
+        _module(
+            "probe",
+            "class Owner:\n"
+            "    @staticmethod\n"
+            "    def consume(value): return value\n"
+            "    del consume\n"
+            "class Child(Owner): pass\n"
+            f"def run(): return {base}.consume(1)\n",
+        )
+    )
+    resolution = next(
+        r
+        for r in repository.function_call_resolutions
+        if r.context.owner_symbol == "probe.run"
+    )
+    assert resolution.resolved_call is None
+    assert resolution.target_resolution.violation is (
+        CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+    )
+    assert resolution.target_resolution.possible_symbols == ()
 
 
 @pytest.mark.parametrize(
@@ -1150,7 +1213,7 @@ def test_repository_keeps_star_import_function_binding_open() -> None:
 
 
 def test_repository_derives_single_inheritance_dataclass_product_fields() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.models",
             "from dataclasses import dataclass\n"
@@ -1185,7 +1248,7 @@ def test_repository_derives_single_inheritance_dataclass_product_fields() -> Non
 def test_repository_derives_exact_qualified_dataclass_roles_without_classvar_mirror() -> (
     None
 ):
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.qualified",
             "import dataclasses as dc\n"
@@ -1207,7 +1270,7 @@ def test_repository_derives_exact_qualified_dataclass_roles_without_classvar_mir
 
 
 def test_repository_treats_resolved_union_annotations_as_stored_fields() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.union_fields",
             "from dataclasses import dataclass\n"
@@ -1249,7 +1312,7 @@ def test_repository_keeps_unresolved_union_annotation_open() -> None:
 
 
 def test_repository_accepts_a_direct_nominal_dataclass_alias() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.direct_alias",
             "from dataclasses import dataclass as dc\n"
@@ -1267,7 +1330,7 @@ def test_repository_accepts_a_direct_nominal_dataclass_alias() -> None:
 
 
 def test_repository_treats_explicit_object_as_a_neutral_product_base() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.object_base",
             "from dataclasses import dataclass\n"
@@ -1305,7 +1368,7 @@ def test_repository_invalidates_dataclass_binding_after_star_import() -> None:
 def test_repository_proves_dataclass_binding_excluded_by_star_export_contract() -> (
     None
 ):
-    repository = _repository(
+    repository = _source_repository(
         _module("pkg.decorators", "__all__ = ('public_decorator',)\n"),
         _module(
             "pkg.proved_star_dataclass",
@@ -1375,7 +1438,7 @@ def test_repository_resolves_module_construction_from_its_execution_position(
     )
     consumer = _module("pkg.module_construction", consumer_source)
 
-    repository = _repository(models, consumer)
+    repository = _source_repository(models, consumer)
 
     assert len(repository.resolved_product_constructions) == (
         expected_construction_count
@@ -1427,7 +1490,7 @@ def test_repository_resolves_bases_from_the_class_declaration_position(
 
 
 def test_repository_composes_a_base_imported_before_the_product_declaration() -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.base",
             "from dataclasses import dataclass\n"
@@ -1494,7 +1557,7 @@ def test_repository_keeps_dynamic_dataclass_field_schemas_open(
 def test_repository_resolves_module_and_class_aliases_of_dataclass_field_roles() -> (
     None
 ):
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.role_aliases",
             "from dataclasses import KW_ONLY, dataclass\n"
@@ -1577,7 +1640,7 @@ def test_repository_keeps_unresolved_dataclass_annotation_roles_open(
 def test_child_field_override_repairs_an_inherited_product_role(
     base_field: str,
 ) -> None:
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.override_repair",
             "from dataclasses import InitVar, dataclass, field\n"
@@ -1674,7 +1737,7 @@ def test_repository_keeps_unproved_dataclass_semantics_explicitly_open(
 def test_repository_keeps_partial_product_construction_visible_for_proof_rejection() -> (
     None
 ):
-    repository = _repository(
+    repository = _source_repository(
         _module(
             "pkg.partial",
             "from dataclasses import dataclass\n"

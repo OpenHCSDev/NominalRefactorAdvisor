@@ -15,7 +15,7 @@ from nominal_refactor_advisor.codemod import (
     ReplaceDeclaredCallArgumentsOperation,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.product_flow_authority import CompactProductFlowRepository
+from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 
 
 def module_for(source: str) -> ParsedModule:
@@ -50,7 +50,7 @@ def test_rebound_receiver_does_not_select_the_original_method(use: str) -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run() == "other"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
     assert resolution.resolved_call is None
@@ -82,7 +82,7 @@ def test_entry_receiver_aliases_preserve_nominal_lookup(prefix: str) -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run() == "owner"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
     assert (
@@ -102,7 +102,7 @@ def test_target_capture_precedes_argument_receiver_rebinding() -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run() == ("owner", "other")
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     first, second = (
         repository.resolve_function_call(context, call)
@@ -131,7 +131,7 @@ def test_class_receiver_rebinding_is_not_an_original_class_method() -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"].run() == "other"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     assert (
         repository.resolve_function_call(context, context.flow.calls[-1]).resolved_call
@@ -154,7 +154,7 @@ def test_member_lookup_requires_the_entry_receiver(receiver: str) -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run() == "other"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
     assert resolution.resolved_call is None
@@ -198,7 +198,7 @@ def test_shadowed_runtime_type_lookup_has_no_proved_receiver_bound() -> None:
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run(lambda value: namespace["_Other"]) == "other"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
     assert resolution.resolved_call is None
@@ -218,7 +218,7 @@ def test_shadowed_runtime_type_lookup_has_no_proved_receiver_bound() -> None:
     ),
 )
 def test_exact_alias_reuses_the_nominal_source_read(binding: str) -> None:
-    repository = CompactProductFlowRepository.from_modules(
+    repository = SourceProductFlowRepository.from_modules(
         (module_for(source_for(f"    {binding}\n    return callback(7)\n")),)
     )
     flow = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"].flow
@@ -250,7 +250,7 @@ def test_unbounded_receiver_evidence_survives_alias_projection(body: str) -> Non
     namespace = {}
     exec(source, namespace)
     assert namespace["_Owner"]().run() == "other"
-    repository = CompactProductFlowRepository.from_modules((module_for(source),))
+    repository = SourceProductFlowRepository.from_modules((module_for(source),))
     context = repository.flow_contexts_by_owner_symbol["receiver._Owner.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
     alternative = frozenset(("receiver._Other.method",))

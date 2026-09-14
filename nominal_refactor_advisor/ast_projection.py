@@ -63,6 +63,37 @@ class AstExpressionProjection:
                 return None
 
 
+class AstClassProjection:
+    """Project original class syntax without proving evaluation or native binding."""
+
+    @staticmethod
+    def explicit_metaclass(node: ast.ClassDef) -> ast.expr | None:
+        """Return the original direct operand, or its unambiguous syntax absence.
+
+        Expanded keywords can supply or conflict with a metaclass, including
+        alongside a direct keyword. Other direct keywords remain separate
+        construction obligations; this projection does not prove full binding.
+        """
+        if any(keyword.arg is None for keyword in node.keywords):
+            raise ValueError(
+                "Expanded class keywords leave metaclass selection unproved"
+            )
+        operands = tuple(
+            keyword.value for keyword in node.keywords if keyword.arg == "metaclass"
+        )
+        if len(operands) > 1:
+            raise ValueError("Class header has multiple explicit metaclass operands")
+        return next(iter(operands), None)
+
+    @classmethod
+    def require_explicit_metaclass(cls, node: ast.ClassDef) -> ast.expr:
+        """Require one actual operand while preserving its source-node identity."""
+        operand = cls.explicit_metaclass(node)
+        if operand is None:
+            raise ValueError("Class requires one actual metaclass operand")
+        return operand
+
+
 @dataclass(frozen=True)
 class AstNameFamily:
     """Closed set of AST terminal names with declaration-owned matching."""

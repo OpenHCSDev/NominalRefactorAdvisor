@@ -18,7 +18,12 @@ import sys
 import tempfile
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field, replace
 from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
@@ -4284,8 +4289,8 @@ class CompactSemanticDescentResolution:
 class CompactSemanticDescentRepository:
     """Nominal owner of an AST-free repository semantic-descent derivation."""
 
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...]
-    class_projections: tuple[CompactModuleClassProjection, ...]
+    semantic_projections: Sequence[CompactSemanticModuleProjection]
+    class_projections: Sequence[CompactModuleClassProjection]
     class_index: CompactClassFamilyIndex
 
     @classmethod
@@ -4293,7 +4298,7 @@ class CompactSemanticDescentRepository:
         cls,
         projections_by_family: dict[
             type[CollectedFamily],
-            tuple[object, ...],
+            Sequence[object],
         ],
         *,
         class_index: CompactClassFamilyIndex,
@@ -4302,11 +4307,11 @@ class CompactSemanticDescentRepository:
 
         return cls.from_projections(
             cast(
-                tuple[CompactSemanticModuleProjection, ...],
+                Sequence[CompactSemanticModuleProjection],
                 projections_by_family[CompactSemanticModuleProjectionFamily],
             ),
             cast(
-                tuple[CompactModuleClassProjection, ...],
+                Sequence[CompactModuleClassProjection],
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             class_index=class_index,
@@ -4315,8 +4320,8 @@ class CompactSemanticDescentRepository:
     @classmethod
     def from_projections(
         cls,
-        semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-        class_projections: tuple[CompactModuleClassProjection, ...],
+        semantic_projections: Sequence[CompactSemanticModuleProjection],
+        class_projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> "CompactSemanticDescentRepository":
@@ -4467,8 +4472,8 @@ class CompactSemanticDescentRepository:
 
 
 def build_compact_semantic_descent_graph(
-    semantic_projections: tuple[CompactSemanticModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
+    semantic_projections: Sequence[CompactSemanticModuleProjection],
+    class_projections: Sequence[CompactModuleClassProjection],
     *,
     class_index: CompactClassFamilyIndex | None = None,
 ) -> SemanticDescentGraph:

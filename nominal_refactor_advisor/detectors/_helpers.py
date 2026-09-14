@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from itertools import combinations
@@ -1049,7 +1050,7 @@ def _projection_builder_groups(
         ):
             continue
         grouped[(builder.callee_name, builder.field_names)].append(builder)
-    candidates: list[tuple[BuilderCallShape, ...]] = []
+    candidates: list[Sequence[BuilderCallShape]] = []
     for builders in grouped.values():
         if len(builders) < 3:
             continue
@@ -2363,7 +2364,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> tuple["_MethodFamilyMethodPlan", ...]:
         methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
@@ -3002,7 +3003,7 @@ class CompactMethodFamilyContext:
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> "CompactMethodFamilyContext":
@@ -3113,7 +3114,7 @@ class CompactMethodFamilyContext:
         )
 
 
-def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
+def _builder_patch(builders: Sequence[BuilderCallShape]) -> str:
     target_file = builders[0].file_path
     callee_name = builders[0].callee_name
     return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+@classmethod\n+def from_source(cls, source):\n+    return {callee_name}(...)\n*** End Patch"
@@ -3122,7 +3123,7 @@ def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
 def _autoregister_patch(
     registry_name: str,
     class_names: set[str],
-    registrations: tuple[RegistrationShape, ...],
+    registrations: Sequence[RegistrationShape],
 ) -> str:
     target_file = registrations[0].file_path
     base_name = (

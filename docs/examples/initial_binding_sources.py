@@ -95,7 +95,7 @@ PLAN = CodemodPlanSequence.from_operations(
                         return OpenCompactValueOrigin(
                             possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
                         )
-                    alias = flow.exact_aliases_by_binding_mutation.get(mutation)
+                    alias = flow.exact_alias_for(mutation)
                     if alias is None:
                         return OpenCompactValueOrigin(
                             possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING

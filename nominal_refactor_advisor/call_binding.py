@@ -5,7 +5,10 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from enum import StrEnum
 from typing import (
     Generic,
@@ -178,6 +181,18 @@ class CompactFunctionSignature:
     """Python signature declaration which owns exact call binding semantics."""
 
     parameters: tuple[CompactFunctionParameter, ...]
+
+    def with_default_names(self, names: frozenset[str]) -> Self:
+        """Project a complete default association while retaining parameter structure."""
+        allowed = frozenset(p.name for p in self.parameters if not p.kind.variadic)
+        if not names <= allowed:
+            raise ValueError("Defaults require declared nonvariadic parameters")
+        return type(self)(
+            tuple(
+                replace(parameter, has_default=parameter.name in names)
+                for parameter in self.parameters
+            )
+        )
 
     @classmethod
     def from_arguments(cls, arguments: ast.arguments) -> Self:

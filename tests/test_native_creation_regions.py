@@ -367,8 +367,8 @@ def test_incoming_native_entry_clears_predecessor_creation(
     entry_kind: str,
     stage: str,
 ) -> None:
-    backend, compilation, _, load, make, attach = native_region
-    emission = NativeCodeEmission(compilation.identity, load)
+    backend, compilation, code, load, make, attach = native_region
+    emission = NativeCodeEmission(compilation.identity, load, code)
     current = backend.observe(None, load, emission)
     instruction = make
     if stage == "attach":
@@ -388,8 +388,8 @@ def test_intervening_native_operation_ends_the_creation_region(
     native_region,
     opcode_name: str,
 ) -> None:
-    backend, compilation, _, load, make, attach = native_region
-    emission = NativeCodeEmission(compilation.identity, load)
+    backend, compilation, code, load, make, attach = native_region
+    emission = NativeCodeEmission(compilation.identity, load, code)
     current = backend.observe(None, load, emission)
     current = backend.observe(current, make, None)
     intervening = next(
@@ -410,12 +410,12 @@ def test_intervening_native_operation_ends_the_creation_region(
 def test_code_load_at_native_entry_starts_a_new_region(
     native_region, entry_kind: str
 ) -> None:
-    backend, compilation, _, load, make, attach = native_region
-    old = NativeCodeEmission(compilation.identity, load)
+    backend, compilation, code, load, make, attach = native_region
+    old = NativeCodeEmission(compilation.identity, load, code)
     current = backend.observe(None, load, old)
     current = backend.observe(current, make, None)
     entry_load = load._replace(label=_native_entry_label(entry_kind))
-    fresh = NativeCodeEmission(compilation.identity, entry_load)
+    fresh = NativeCodeEmission(compilation.identity, entry_load, code)
     current = backend.observe(current, entry_load, fresh)
     assert current is fresh
     assert fresh.creation is None
@@ -430,9 +430,9 @@ def test_code_load_at_native_entry_starts_a_new_region(
 def test_unadmitted_attribute_operand_does_not_preserve_target(
     native_region, operand: int
 ) -> None:
-    backend, compilation, _, load, make, attach = native_region
+    backend, compilation, code, load, make, attach = native_region
     assert operand not in backend.attribute_flags
-    emission = NativeCodeEmission(compilation.identity, load)
+    emission = NativeCodeEmission(compilation.identity, load, code)
     current = backend.observe(None, load, emission)
     current = backend.observe(current, make, None)
     malformed = attach._replace(arg=operand, argval=operand)
@@ -444,7 +444,7 @@ def test_later_region_reset_does_not_erase_completed_attachment_witness(
     native_region,
 ) -> None:
     backend, compilation, code, load, make, attach = native_region
-    emission = NativeCodeEmission(compilation.identity, load)
+    emission = NativeCodeEmission(compilation.identity, load, code)
     current = backend.observe(None, load, emission)
     current = backend.observe(current, make, None)
     current = backend.observe(current, attach, None)

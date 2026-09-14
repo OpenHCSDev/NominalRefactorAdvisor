@@ -1520,7 +1520,7 @@ class EnvironmentBooleanAuthorityDriftDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[_EnvironmentBooleanModuleProjection, ...],
+        projections: Sequence[_EnvironmentBooleanModuleProjection],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config

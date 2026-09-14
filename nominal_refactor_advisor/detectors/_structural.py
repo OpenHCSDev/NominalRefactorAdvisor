@@ -7,6 +7,7 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
@@ -113,7 +114,7 @@ class _CompactMethodFamilyDetectorBase(
     @classmethod
     def _compact_context_from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> CompactMethodFamilyContext:
         del config

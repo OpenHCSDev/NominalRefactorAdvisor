@@ -8,7 +8,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import CompactMutationKind
 from nominal_refactor_advisor.product_flow_authority import (
-    CompactProductFlowRepository,
+    SourceProductFlowRepository,
     CompactProductRuntimeFailure,
     CompactProductRuntimeViolation,
 )
@@ -33,8 +33,8 @@ def _module(tail: str) -> ParsedModule:
     )
 
 
-def _repository(module: ParsedModule) -> CompactProductFlowRepository:
-    return CompactProductFlowRepository.from_modules((module,))
+def _repository(module: ParsedModule) -> SourceProductFlowRepository:
+    return SourceProductFlowRepository.from_modules((module,))
 
 
 @pytest.mark.parametrize(

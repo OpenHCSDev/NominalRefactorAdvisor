@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from abc import (
+    ABC,
+    abstractmethod,
+)
+
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import (
+    Any,
+    Generic,
+    TypeVar,
+    overload,
+)
 
 ItemT = TypeVar("ItemT")
 IdentityHandleT = TypeVar("IdentityHandleT")
@@ -28,6 +43,72 @@ class IdentityHandleCollisionError(ValueError):
             f"Identity handle {handle!r} resolves to unequal declarations: "
             f"{existing_declaration!r} and {colliding_declaration!r}"
         )
+
+
+class DeferredBatchSequence(Sequence[ItemT], ABC):
+    """Reiterable batches retaining only successful original materializations.
+
+    Iteration reads batches on demand. Length, indexing, hashing and
+    serialization request the complete sequence, with ordinary tuple
+    semantics. Failed or recursive reads never publish partial batches.
+    """
+
+    def __init__(self) -> None:
+        self._materialized_batches: dict[int, tuple[ItemT, ...]] = {}
+        self._pending_batches: set[int] = set()
+
+    @property
+    @abstractmethod
+    def batch_count(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _load_batch(self, index: int) -> tuple[ItemT, ...]:
+        raise NotImplementedError
+
+    def _batch(self, index: int) -> tuple[ItemT, ...]:
+        if index not in self._materialized_batches:
+            if index in self._pending_batches:
+                raise ValueError("Cyclic deferred batch materialization")
+            self._pending_batches.add(index)
+            try:
+                batch = self._load_batch(index)
+                self._materialized_batches[index] = batch
+            finally:
+                self._pending_batches.remove(index)
+        return self._materialized_batches[index]
+
+    @property
+    def materialized_item_count(self) -> int:
+        return sum(len(batch) for batch in self._materialized_batches.values())
+
+    def __iter__(self) -> Iterator[ItemT]:
+        for index in range(self.batch_count):
+            yield from self._batch(index)
+
+    def __len__(self) -> int:
+        return sum(len(self._batch(index)) for index in range(self.batch_count))
+
+    @overload
+    def __getitem__(self, index: int) -> ItemT: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[ItemT, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> ItemT | tuple[ItemT, ...]:
+        return tuple(self)[index]
+
+    def __eq__(self, other: object) -> bool:
+        return tuple(self) == other
+
+    def __hash__(self) -> int:
+        return hash(tuple(self))
+
+    def __repr__(self) -> str:
+        return repr(tuple(self))
+
+    def __reduce__(self) -> tuple[type[tuple], tuple[tuple[ItemT, ...]]]:
+        return tuple, (tuple(self),)
 
 
 @dataclass(frozen=True)

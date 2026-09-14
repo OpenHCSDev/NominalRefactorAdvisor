@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -106,7 +107,7 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> "TypeKeyedBehaviorProjectionComponentBuilder":
         return cls(
@@ -234,7 +235,9 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
         *,
         key_attribute_name: str,
     ) -> CompactIndexedClass | None:
-        declaration = projection_root.direct_members_by_name.get(key_attribute_name)
+        declaration = projection_root.direct_annotation_writes_by_name.get(
+            key_attribute_name
+        )
         if declaration is None or declaration.annotation_expression is None:
             return None
         reference_parts = self._type_class_reference_parts(

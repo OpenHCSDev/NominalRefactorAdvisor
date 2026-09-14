@@ -1,6 +1,5 @@
 """Source C3 projections share work only within one fixed proof scenario."""
 
-from abc import ABC
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
@@ -9,6 +8,10 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
+from nominal_refactor_advisor.captured_reference import (
+    CapturedReferenceRejection,
+    CapturedReferenceViolation,
+)
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.source_native_mro import (
@@ -60,20 +63,21 @@ def test_substitution_and_replaced_snapshot_get_independent_projections(
 ) -> None:
     path = tmp_path / "probe.py"
     snapshot = _snapshot(
-        path, "from abc import ABC\nclass Root(ABC): pass\nclass Leaf(Root): pass\n"
+        path, "class Base: pass\nclass Root(Base): pass\nclass Leaf(Root): pass\n"
     )
     classes = snapshot.required_class_family_index.classes_by_symbol
     root, leaf = classes["probe.Root"], classes["probe.Leaf"]
     hierarchy = SourceNativeClassMro(snapshot)
     original = hierarchy.for_source_class(leaf)
+    original_base = hierarchy.for_source_class(classes["probe.Base"])
     substitution = NativeClassBaseSubstitution(
         root, root.node.bases[0], NativeClassMroDeclaration(object)
     )
     changed = replace(hierarchy, substitution=substitution)
     projected = changed.for_source_class(leaf)
     assert projected is not original
-    assert ABC in original.__mro__
-    assert ABC not in projected.__mro__
+    assert original_base in original.__mro__
+    assert original_base not in projected.__mro__
     assert hierarchy.for_source_class(leaf) is original
     assert changed.for_source_class(leaf) is projected
 
@@ -85,6 +89,28 @@ def test_substitution_and_replaced_snapshot_get_independent_projections(
     next_projection = next_hierarchy.for_source_class(next_leaf)
     assert next_projection is not original
     assert next_projection.declaration is next_leaf
+
+
+def test_unadmitted_import_cannot_supply_a_successful_mro_cache_entry(
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot(
+        tmp_path / "probe.py",
+        "from abc import ABC\nclass Root(ABC): pass\nclass Leaf(Root): pass\n",
+    )
+    hierarchy = SourceNativeClassMro(snapshot)
+    leaf = snapshot.required_class_family_index.classes_by_symbol["probe.Leaf"]
+    for _ in range(2):
+        with pytest.raises(CapturedReferenceRejection) as raised:
+            hierarchy.for_source_class(leaf)
+        cause = raised.value
+        violations = []
+        while cause is not None:
+            if isinstance(cause, CapturedReferenceRejection):
+                violations.append(cause.violation)
+            cause = cause.__cause__
+        assert CapturedReferenceViolation.UNADMITTED_IMPORT in violations
+        assert leaf.symbol not in hierarchy._mro_types
 
 
 def test_unproved_class_is_not_cached_as_a_success_after_partial_traversal(

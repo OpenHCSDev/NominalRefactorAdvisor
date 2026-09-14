@@ -16,7 +16,6 @@ from .ast_tools import (
 from .class_index import (
     ClassFamilyIndex,
     CompactDataclassFieldRole,
-    DataclassRuntimeDeclaration,
     IndexedClass,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
@@ -25,6 +24,7 @@ from .class_index import (
 )
 from .collection_algebra import sorted_tuple
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .native_declarations import DataclassRuntimeDeclaration
 from .source_geometry import (
     ClassHeaderSourceSpan,
     SourceCommentLineIndex,

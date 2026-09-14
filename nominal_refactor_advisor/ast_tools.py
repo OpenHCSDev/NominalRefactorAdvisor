@@ -9,6 +9,7 @@ directly.
 from __future__ import annotations
 
 import ast
+import __future__
 from array import array
 import copy
 from contextlib import contextmanager
@@ -20,7 +21,7 @@ import pickle
 import sys
 import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
@@ -34,7 +35,10 @@ from metaclass_registry import AutoRegisterMeta
 
 from .ast_projection import AstExpressionProjection, AstNameFamily
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
-from .collection_algebra import sorted_tuple
+from .collection_algebra import (
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
 from .deadline import scan_deadline_checkpoint
 from .implementation_identity import (
     ImplementationSource,
@@ -51,6 +55,7 @@ from .native_compilation import (
     NativeCreationBackend,
     NativePythonCompilation,
 )
+from .native_declarations import NativeLanguageFeature
 from .native_syntax import NativePythonSyntaxIndex
 from .observation_graph import (
     NominalWitnessGroup,
@@ -77,6 +82,7 @@ from .python_module_identity import (
     python_module_name_is_importable as python_module_name_is_importable,
 )
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .scan_cache import ScanCache
 from .source_geometry import SourceLineSegmentAuthority, read_source_text
 from .source_identity import (
     SourceFileIdentity,
@@ -94,6 +100,7 @@ from .semantic_match import (
     single_item,
     single_return_call,
 )
+from .value_graph import CachedDataclassRepresentation, StoredDataclassState
 
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -224,8 +231,8 @@ class CollectedFamilyImplementationIdentity:
         )
 
 
-@dataclass(frozen=True)
-class CollectedFamilySchemaIdentity:
+@dataclass(frozen=True, repr=False)
+class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
     """Nominal identity of one collected family and its persisted item schema."""
 
     family_module: str
@@ -236,6 +243,7 @@ class CollectedFamilySchemaIdentity:
     implementation: CollectedFamilyImplementationIdentity
 
     @classmethod
+    @ScanCache.cached
     def from_family(
         cls,
         family: type["CollectedFamily[object]"],
@@ -303,7 +311,7 @@ class CollectedFamilyContentSignatureIndexPayload:
 
 
 @dataclass(frozen=True)
-class CollectedFamilyCacheIdentity:
+class CollectedFamilyCacheIdentity(StoredDataclassState):
     """Invalidation identity for one collected family in one parsed module."""
 
     path: str
@@ -313,7 +321,7 @@ class CollectedFamilyCacheIdentity:
     python_version: tuple[int, int]
     schema: CollectedFamilyCacheSchema
 
-    @property
+    @cached_property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
@@ -1088,7 +1096,7 @@ class SourceModuleBatchParser:
 
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
         worker_count = PythonParseWorkerPolicy(self.parse_workers).worker_count
-        with _suspend_cyclic_gc():
+        with suspend_cyclic_gc():
             if worker_count <= 1 or len(self.source_modules) <= 1:
                 return tuple(module.parse() for module in self.source_modules)
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -1251,28 +1259,62 @@ class BuiltinCallName(StrEnum):
         )
 
 
+class VariableAnnotationVisitorABC(ABC):
+    """Declaration-selected eager evaluation or compiler-supplied annotation text."""
+
+    @abstractmethod
+    def visit_eager_variable_annotation(self, node: ast.AnnAssign) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_stringized_variable_annotation(self, node: ast.AnnAssign) -> None:
+        raise NotImplementedError
+
+
 class ModuleAnnotationEvaluationMode(StrEnum):
     """Runtime representation policy for annotations declared by one module."""
 
-    EAGER = ("eager", "")
-    LAZY = ("lazy", "")
-    STRINGIZED = ("stringized", "from __future__ import annotations\n")
+    EAGER = (
+        "eager",
+        (),
+        True,
+        lambda visitor, node: visitor.visit_eager_variable_annotation(node),
+    )
+    LAZY = ("lazy", (), False, lambda visitor, node: None)
+    STRINGIZED = (
+        "stringized",
+        (NativeLanguageFeature(__future__.annotations),),
+        True,
+        lambda visitor, node: visitor.visit_stringized_variable_annotation(node),
+    )
 
     def __new__(
         cls,
         value: str,
-        new_module_prelude: str,
+        native_features: tuple[NativeLanguageFeature, ...],
+        stores_variable_annotations_at_definition: bool,
+        variable_annotation_visitor: Callable[
+            [VariableAnnotationVisitorABC, ast.AnnAssign], None
+        ],
     ) -> "ModuleAnnotationEvaluationMode":
         member = str.__new__(cls, value)
         member._value_ = value
-        member._new_module_prelude = new_module_prelude
+        member.native_features = native_features
+        member.stores_variable_annotations_at_definition = (
+            stores_variable_annotations_at_definition
+        )
+        member._variable_annotation_visitor = variable_annotation_visitor
         return member
+
+    def visit_variable_annotation(
+        self, visitor: VariableAnnotationVisitorABC, node: ast.AnnAssign
+    ) -> None:
+        self._variable_annotation_visitor(visitor, node)
 
     @property
     def new_module_prelude(self) -> str:
-        """Return source that preserves this policy in a new module."""
-
-        return self._new_module_prelude
+        """Derive source that preserves this policy from its native declarations."""
+        return "".join(feature.import_source for feature in self.native_features)
 
     @classmethod
     def runtime_default(cls) -> "ModuleAnnotationEvaluationMode":
@@ -1282,14 +1324,14 @@ class ModuleAnnotationEvaluationMode(StrEnum):
 
     @classmethod
     def from_module(cls, module: ast.Module) -> "ModuleAnnotationEvaluationMode":
-        if any(
-            isinstance(statement, ast.ImportFrom)
-            and statement.module == "__future__"
-            and any(alias.name == "annotations" for alias in statement.names)
-            for statement in module.body
-        ):
-            return cls.STRINGIZED
-        return cls.runtime_default()
+        return next(
+            (
+                mode
+                for mode in cls
+                if any(feature.imported_by(module) for feature in mode.native_features)
+            ),
+            cls.runtime_default(),
+        )
 
     @property
     def annotations_execute_at_declaration(self) -> bool:
@@ -1718,7 +1760,7 @@ class CollectedFamily(
         return declaration_implementation_module_names(cls.all_registered_families())
 
     @classmethod
-    @lru_cache(maxsize=None)
+    @ScanCache.cached
     def item_schema_signature(cls) -> str:
         """Derive persisted-item compatibility from the nominal item declaration."""
 
@@ -1758,7 +1800,7 @@ class CollectedFamily(
         ).hexdigest()
 
     @classmethod
-    @lru_cache(maxsize=None)
+    @ScanCache.cached
     def implementation_identity(cls) -> CollectedFamilyImplementationIdentity:
         """Derive projection semantics from the family's declared owners."""
 
@@ -1991,6 +2033,7 @@ class CollectedFamilyCacheContext:
     def resolved_path_text(self) -> str:
         return str(self.path.resolve())
 
+    @ScanCache.cached
     def identity(
         self,
         family: type[CollectedFamily[ShapeItemT]],
@@ -2213,13 +2256,26 @@ class CollectedFamilyCacheContext:
             pass
 
 
+@dataclass(frozen=True)
+class CollectedFamilyBatch(Generic[ShapeItemT]):
+    """Collected facts and the receipt from their owning cache publication."""
+
+    items: tuple[ShapeItemT, ...]
+    content_signature: str | None
+
+
 @lru_cache(maxsize=None)
-def _collect_family_items_cached(
+def collect_family_batch(
     parsed_module: ParsedModule, family: type[CollectedFamily[ShapeItemT]]
-) -> tuple[ShapeItemT, ...]:
+) -> CollectedFamilyBatch[ShapeItemT]:
+    """Collect once, retaining the signature returned by the cache authority."""
+
     cached_items = parsed_module.collected_family_cache.load_items(family)
     if cached_items is not None:
-        return cached_items
+        return CollectedFamilyBatch(
+            cached_items,
+            parsed_module.collected_family_cache.load_content_signature(family),
+        )
     items = tuple(
         (
             item
@@ -2227,8 +2283,10 @@ def _collect_family_items_cached(
             if isinstance(item, family.item_type)
         )
     )
-    parsed_module.collected_family_cache.store_items(family, items)
-    return items
+    return CollectedFamilyBatch(
+        items,
+        parsed_module.collected_family_cache.store_items(family, items),
+    )
 
 
 def collect_family_items(
@@ -2236,7 +2294,7 @@ def collect_family_items(
     family: type[CollectedFamily[ShapeItemT]],
 ) -> list[ShapeItemT]:
     """Collect and flatten items from one registered family."""
-    return list(_collect_family_items_cached(parsed_module, family))
+    return list(collect_family_batch(parsed_module, family).items)
 
 
 class RegisteredSpecCollectedFamily(
@@ -2426,7 +2484,7 @@ def _parse_module_roots(
     root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
     modules: list[ParsedModule] = []
-    with _suspend_cyclic_gc():
+    with suspend_cyclic_gc():
         for path in paths:
             scan_deadline_checkpoint("parse_python_module")
             modules.append(_parse_source_module(path, context=root_parser))
@@ -2441,15 +2499,19 @@ def _parse_module_roots_concurrently(
     def parse_path(path: Path) -> ParsedModule:
         return _parse_source_module(path, context=root_parser)
 
-    with _suspend_cyclic_gc():
+    with suspend_cyclic_gc():
         with ThreadPoolExecutor(max_workers=parse_workers) as executor:
             modules = list(executor.map(parse_path, paths))
     return modules
 
 
 @contextmanager
-def _suspend_cyclic_gc():
-    """Avoid repeated full-heap collections while materializing acyclic ASTs."""
+def suspend_cyclic_gc() -> Iterator[None]:
+    """Avoid repeated heap traversals while building one bounded fact batch.
+
+    Reference counting and explicit boundary collections remain active. Restore
+    the caller's automatic-collection policy even when a batch raises.
+    """
 
     was_enabled = gc.isenabled()
     if was_enabled:
@@ -2692,12 +2754,14 @@ def parse_python_module_roots(
             parse_workers=parse_workers,
             source_policy=source_policy,
         )
-        for module in parser.parsed_modules():
-            normalized_path = module.path.resolve()
+        admitted_paths: list[Path] = []
+        for path in PythonSourcePathDiscovery(root, parser.source_policy).paths():
+            normalized_path = path.resolve()
             if normalized_path in seen_paths:
                 continue
             seen_paths.add(normalized_path)
-            modules.append(module)
+            admitted_paths.append(path)
+        modules.extend(parser.parsed_source_paths(tuple(admitted_paths)))
     return modules
 
 
@@ -2802,6 +2866,36 @@ class ModuleSyntaxIndex:
     node_indices_by_type: dict[type[ast.AST], array]
     scopes: tuple[LexicalSyntaxScope, ...]
     named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
+
+    @cached_property
+    def children_by_node(self) -> dict[ast.AST, tuple[ast.AST, ...]]:
+        """Original child order projected from the unambiguous parent authority."""
+        children: dict[ast.AST, list[ast.AST]] = {}
+        for child, parent in self.parent_by_node.items():
+            children.setdefault(parent, []).append(child)
+        return {parent: tuple(nodes) for parent, nodes in children.items()}
+
+    @cached_property
+    def parent_by_node(self) -> dict[ast.AST, ast.AST]:
+        """Project unambiguous original parents without traversing the tree again."""
+        return {
+            node: self.depth_first_nodes[parent_index]
+            for node, parent_index in UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+                (
+                    (node, parent_index)
+                    for node, parent_index in zip(
+                        self.depth_first_nodes, self.parent_indices, strict=True
+                    )
+                    if parent_index >= 0
+                ),
+                lambda edge: edge[0],
+            ).values()
+        }
+
+    @cached_property
+    def node_membership(self) -> frozenset[ast.AST]:
+        """Actual nodes of this tree, shared by source-ownership checks."""
+        return frozenset(self.depth_first_nodes)
 
     def indexed_nodes_of_type(
         self,

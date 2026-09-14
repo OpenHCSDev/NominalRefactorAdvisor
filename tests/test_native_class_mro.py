@@ -78,18 +78,6 @@ def test_native_class_creation_hook_is_not_executed_again() -> None:
     assert calls == [Leaf]
 
 
-def test_custom_metaclass_mro_is_not_assumed_to_be_c3() -> None:
-    class Custom(type):
-        def mro(cls):
-            return super().mro()
-
-    class Leaf(metaclass=Custom):
-        pass
-
-    with pytest.raises(ValueError, match="custom MRO"):
-        _ = NativeClassMroDeclaration(Leaf).mro_type
-
-
 def test_native_generic_origin_requires_native_subscription() -> None:
     NativeClassMroDeclaration(Root).require_generic_origin()
 

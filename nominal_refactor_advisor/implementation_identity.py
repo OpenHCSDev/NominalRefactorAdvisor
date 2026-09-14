@@ -5,12 +5,13 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from functools import lru_cache
 import hashlib
 from pathlib import Path
 import sys
 from types import ModuleType
 from typing import Self, get_args
+
+from .scan_cache import ScanCache
 
 
 @dataclass(frozen=True)
@@ -19,25 +20,28 @@ class ImplementationSource:
 
     module_name: str
     source_signature: str
+    path: str = field(compare=False, repr=False)
 
     @classmethod
     def from_module_name(cls, module_name: str) -> Self:
         module = sys.modules.get(module_name)
         source_path = None if module is None else module.__dict__.get("__file__")
         if not isinstance(source_path, str):
-            return cls(module_name, _text_signature(module_name))
+            return cls(module_name, _text_signature(module_name), module_name)
         path = Path(source_path)
         try:
             path_stat = path.stat()
         except OSError:
-            return cls(module_name, _text_signature(str(path)))
+            return cls(module_name, _text_signature(str(path)), str(path))
+        path_text = str(path.resolve())
         return cls(
             module_name,
             _source_signature(
-                str(path.resolve()),
+                path_text,
                 path_stat.st_mtime_ns,
                 path_stat.st_size,
             ),
+            path_text,
         )
 
 
@@ -58,7 +62,7 @@ def declaration_implementation_module_names(
     return _declaration_implementation_module_names(tuple(declarations))
 
 
-@lru_cache(maxsize=None)
+@ScanCache.cached
 def _declaration_implementation_module_names(
     declaration_tuple: tuple[type[object], ...],
 ) -> tuple[str, ...]:
@@ -162,19 +166,28 @@ def _annotation_dependencies(
         if not isinstance(annotation, str):
             dependencies.append(annotation)
             continue
-        try:
-            annotation_tree = ast.parse(annotation, mode="eval")
-        except SyntaxError:
-            continue
-        annotation_stack = [annotation_tree]
-        while annotation_stack:
-            annotation_node = annotation_stack.pop()
-            if isinstance(annotation_node, ast.Name):
-                dependency = function_globals.get(annotation_node.id)
-                if dependency is not None:
-                    dependencies.append(dependency)
-            annotation_stack.extend(ast.iter_child_nodes(annotation_node))
+        for name in _annotation_reference_names(annotation):
+            dependency = function_globals.get(name)
+            if dependency is not None:
+                dependencies.append(dependency)
     return tuple(dependencies)
+
+
+@ScanCache.cached
+def _annotation_reference_names(annotation: str) -> tuple[str, ...]:
+    """Reuse syntax within a scan; resolve each name in its own live globals."""
+    try:
+        annotation_tree = ast.parse(annotation, mode="eval")
+    except SyntaxError:
+        return ()
+    names = []
+    annotation_stack = [annotation_tree]
+    while annotation_stack:
+        annotation_node = annotation_stack.pop()
+        if isinstance(annotation_node, ast.Name):
+            names.append(annotation_node.id)
+        annotation_stack.extend(ast.iter_child_nodes(annotation_node))
+    return tuple(names)
 
 
 def _closure_dependencies(function: object) -> tuple[object, ...]:
@@ -200,7 +213,7 @@ def _text_signature(value: str) -> str:
     return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
-@lru_cache(maxsize=None)
+@ScanCache.cached
 def _source_signature(
     path_text: str,
     mtime_ns: int,

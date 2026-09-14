@@ -13,15 +13,30 @@ from typing import (
     TypeVar,
 )
 
+from .captured_reference import (
+    CapturedReferenceRejection,
+    CapturedReferenceViolation,
+)
+
 from .codemod_architecture_guards import ArchitectureGuardRule
 from .codemod_operations import RefactorRecipeOperation
+from .codemod_payload import (
+    CodemodPayloadRecord,
+    OptionalStrEnumPayloadValueCodec,
+    PayloadRecordArrayValueCodec,
+    RequiredStringPayloadValueCodec,
+    codemod_payload_field,
+)
 from .codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTargetPreflightDetail
+from .codemod_selector_models import (
+    SourceRewriteTarget,
+    SourceRewriteTargetPreflightDetail,
+)
 from .codemod_semantics import (
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
@@ -30,6 +45,47 @@ from .codemod_source_edits import NominalSourceEdit
 from .semantic_descent import AuthorityClaim
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
+
+
+@dataclass(frozen=True)
+class ReproofCauseDiagnostic(CodemodPayloadRecord):
+    """Presentation of one actual cause; absent classification remains absent."""
+
+    violation: CapturedReferenceViolation | None = codemod_payload_field(
+        OptionalStrEnumPayloadValueCodec(CapturedReferenceViolation)
+    )
+    message: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+
+@dataclass(frozen=True)
+class SourceReproofDiagnostic(SourceRewriteTargetPreflightDetail):
+    """Source target and ordered refusal evidence, without runtime object graphs."""
+
+    causes: tuple[ReproofCauseDiagnostic, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(ReproofCauseDiagnostic)
+    )
+
+    @classmethod
+    def from_error(
+        cls, target: SourceRewriteTarget, error: BaseException
+    ) -> SourceReproofDiagnostic:
+        causes = []
+        visited: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            causes.append(
+                ReproofCauseDiagnostic(
+                    (
+                        current.violation
+                        if isinstance(current, CapturedReferenceRejection)
+                        else None
+                    ),
+                    str(current),
+                )
+            )
+            current = current.__cause__
+        return cls(target, tuple(causes))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -55,7 +111,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         except CodemodOperationPreflightError:
             raise
         except (TypeError, ValueError) as error:
-            raise self.failed_preflight(str(error)) from error
+            raise self.failed_preflight(error) from error
 
     def declared_authority_claims(
         self,
@@ -89,13 +145,15 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
 
         return super().declared_architecture_guard_rules(context)
 
-    def failed_preflight(self, message: str) -> CodemodOperationPreflightError:
+    def failed_preflight(
+        self, error: TypeError | ValueError
+    ) -> CodemodOperationPreflightError:
         return CodemodOperationPreflightError(
             CodemodOperationPreflightReport(
                 operation=self.operation_key(),
                 status=CodemodPreflightStatus.FAILED,
-                message=message,
-                detail=SourceRewriteTargetPreflightDetail(self.target),
+                message=str(error),
+                detail=SourceReproofDiagnostic.from_error(self.target, error),
             )
         )
 

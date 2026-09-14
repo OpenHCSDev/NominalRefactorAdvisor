@@ -16,11 +16,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
 from enum import Enum, StrEnum
+from functools import cached_property
 from pathlib import Path
 from time import perf_counter
 from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
+
+from .scan_cache import ScanCache
 
 from .source_geometry import read_source_text
 from .analysis import (
@@ -46,9 +49,11 @@ from .analysis import (
     release_module_analysis_memory,
 )
 from .analysis_cache import (
+    AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
+    AnalysisFindingSummaryCachePayload,
 )
 from .ast_tools import (
     ParsedModule,
@@ -160,7 +165,6 @@ from .structural_overlap import (
     build_structural_overlap_report,
 )
 from .refactor_concepts import RefactorConcept
-
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -1066,6 +1070,12 @@ class JsonFindingPayloadEnvelope(DataclassJsonReport):
 class JsonScanMode(StrEnum):
     """Nominal completeness semantics for one JSON scan execution path."""
 
+    exact_cache = (
+        "exact_cache",
+        True,
+        "validated_cache_covers_the_complete_requested_detector_roster",
+    )
+
     def __new__(cls, value: str, complete: bool, reason: str) -> "JsonScanMode":
         member = str.__new__(cls, value)
         member._value_ = value
@@ -1106,6 +1116,15 @@ class JsonScanStatus(DataclassJsonReport):
     analyzed_detector_count: int
     omitted_detector_count: int
 
+    @classmethod
+    def exact_cache(cls, identity: AnalysisCacheIdentity) -> "JsonScanStatus":
+        """Derive coverage from the roster authenticated by the cache lookup."""
+        return cls(
+            mode=JsonScanMode.exact_cache,
+            analyzed_detector_count=len(identity.detector_registry.detector_types),
+            omitted_detector_count=0,
+        )
+
     @json_report_property()
     def complete(self) -> bool:
         return self.mode.complete
@@ -1129,22 +1148,20 @@ class JsonScanStatus(DataclassJsonReport):
 class JsonLoopCachePayloadBuilder:
     """Build loop JSON directly from an exact cache-summary hit."""
 
-    summary: FindingSummary
+    cached: AnalysisFindingSummaryCachePayload
     timing: ScanTiming
 
     def build(self) -> JsonObject:
         payload_started = perf_counter()
         payload = json_report_object(
             JsonFindingPayloadEnvelope(
-                summary=self.summary,
+                summary=self.cached.summary,
                 section_policy=JsonPayloadProfile.loop.sections,
                 finding_payload=[],
             )
         )
         payload["scan_status"] = json_report_object(
-            JsonScanStatus.exact_compact_global(
-                len(default_detector_types_for_analysis())
-            )
+            JsonScanStatus.exact_cache(self.cached.identity)
         )
         payload["active_finding_surface"] = "raw_findings"
         payload["timing"] = json_report_object(self.timing)
@@ -2012,16 +2029,82 @@ class SingleRootModeAuthority:
 
 
 @dataclass(frozen=True)
-class CliCommand(ABC, metaclass=AutoRegisterMeta):
+class CliArguments:
+    """One parsed invocation and its declaration-derived execution context."""
+
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+
+    @classmethod
+    def from_argv(cls, argv: tuple[str, ...]) -> Self:
+        parser = argparse.ArgumentParser(
+            description="AST-driven refactoring advisor for nominal architecture."
+        )
+        for spec in _CLI_ARGUMENT_SPECS:
+            spec.add_to_parser(parser)
+        return cls(parser, parser.parse_args(argv))
+
+    @cached_property
+    def selected_command_type(self) -> type[CliCommand] | None:
+        return CliCommand.selected_type(self.parser, self.args)
+
+    @cached_property
+    def execution_mode(self) -> CodemodExecutionMode:
+        return CodemodExecutionMode.from_namespace(self.args, self.parser)
+
+    @cached_property
+    def detector_config(self) -> DetectorConfig:
+        return DetectorConfig.from_namespace(self.args)
+
+    @cached_property
+    def codemod_plan_sequence(self) -> CodemodPlanSequence:
+        return (
+            load_codemod_plan_sequence(self.args.codemod_plan)
+            if self.args.codemod_plan is not None
+            else CodemodPlanSequence()
+        )
+
+    @cached_property
+    def path_scope(self) -> AnalysisPathScope:
+        return AnalysisPathScope.from_requested_roots(
+            tuple(Path(path) for path in self.args.paths),
+            tuple(self.args.context_roots),
+            auto_context=self.args.auto_context_root,
+        )
+
+    @property
+    def cache_root(self) -> Path:
+        return self.path_scope.primary_analysis_root
+
+    @cached_property
+    def configured_parse_cache_dir(self) -> Path | None:
+        return ParseCacheDirAuthority(
+            root=self.cache_root,
+            requested_parse_cache_dir=self.args.cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+        ).parse_cache_dir()
+
+    @property
+    def scan_deadline_request(self) -> CliScanDeadlineRequest | None:
+        owner = self.selected_command_type or self.execution_mode.strategy
+        return owner.scan_deadline_request(self)
+
+
+@dataclass(frozen=True)
+class CliCommand(CliArguments, ABC, metaclass=AutoRegisterMeta):
     """Registered CLI command owner with shared parser and argument context."""
 
     __registry_key__ = "command_id"
     __skip_if_no_key__ = True
 
-    parser: argparse.ArgumentParser
-    args: argparse.Namespace
     command_id: ClassVar[str | None] = None
     selection_error_message: ClassVar[str] = "CLI commands are mutually exclusive"
+
+    @classmethod
+    def scan_deadline_request(
+        cls, invocation: CliArguments
+    ) -> CliScanDeadlineRequest | None:
+        return CliScanDeadlineRequest.from_namespace(invocation.args)
 
     @classmethod
     def selected_type(
@@ -2093,12 +2176,143 @@ class CliEarlyExitCommand(CliCommand, ABC):
     """Registered command that can satisfy CLI execution before source scanning."""
 
     @classmethod
+    def scan_deadline_request(
+        cls, invocation: CliArguments
+    ) -> CliScanDeadlineRequest | None:
+        return None
+
+    @classmethod
     def run_before_scan(
         cls,
         parser: argparse.ArgumentParser,
         args: argparse.Namespace,
     ) -> int | None:
         return cls(parser, args).run()
+
+
+class CliReportCommand(CliEarlyExitCommand, ABC):
+    """A report owns its execution, rendering and exit policy, outside a path scan."""
+
+    @property
+    @abstractmethod
+    def report(self) -> JsonReport:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def markdown(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def exit_code(self) -> int:
+        return 0
+
+    def run(self) -> int:
+        print(
+            json.dumps(json_report_object(self.report), indent=2)
+            if self.args.json
+            else self.markdown
+        )
+        return self.exit_code
+
+
+class CalibrationCliCommand(CliReportCommand):
+    command_id = "calibrate"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.calibrate is not None
+
+    @property
+    def cache_root(self) -> Path:
+        return self.args.calibrate.parent
+
+    @cached_property
+    def report(self) -> CalibrationReport:
+        return run_calibration_manifest(
+            self.args.calibrate,
+            config=self.detector_config,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+        )
+
+    @property
+    def markdown(self) -> str:
+        return format_calibration_markdown(self.report)
+
+    @property
+    def exit_code(self) -> int:
+        return CalibrationExitCodeAuthority(
+            self.report,
+            self.args.fail_on_calibration_regression,
+        ).exit_code()
+
+
+class SingleRootReportCliCommand(CliReportCommand, ABC):
+    """Report commands whose input is one prepared repository root."""
+
+    @property
+    def root(self) -> Path:
+        SingleRootModeAuthority(
+            self.parser,
+            self.path_scope.analysis_roots,
+            "--" + self.command_id.replace("_", "-"),
+        ).require()
+        return self.path_scope.primary_analysis_root
+
+
+class ScanPredictionCliCommand(SingleRootReportCliCommand):
+    command_id = "predict_scan"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.predict_scan
+
+    @cached_property
+    def report(self) -> ScanPredictionReport:
+        return build_scan_prediction_report(
+            self.root,
+            config=self.detector_config,
+            compare_ref=self.args.compare_ref,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.scan_prediction(self.report)
+
+
+class EconomicsProofCliCommand(SingleRootReportCliCommand):
+    command_id = "prove_economics"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.prove_economics
+
+    @cached_property
+    def report(self) -> EconomicsProofReport:
+        return build_economics_proof_report(
+            self.root,
+            config=self.detector_config,
+            compare_ref=self.args.compare_ref,
+            scan_budget_seconds=self.args.scan_budget_seconds,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.economics_proof(self.report)
+
+    @property
+    def exit_code(self) -> int:
+        return ProofExitCodeAuthority(
+            self.report, self.args.fail_on_proof_regression
+        ).exit_code()
 
 
 class DetectorCapabilitiesCliCommand(CliEarlyExitCommand):
@@ -2368,6 +2582,17 @@ class CodemodExecutionStrategy(ABC):
     unified_diff_requested: ClassVar[bool] = False
     requires_json_report: ClassVar[bool] = False
     allows_projected_findings: ClassVar[bool] = False
+
+    @classmethod
+    def scan_deadline_request(
+        cls, invocation: CliArguments
+    ) -> CliScanDeadlineRequest | None:
+        if invocation.execution_mode.exact_recipe_execution(
+            invocation.codemod_plan_sequence,
+            projects_findings=invocation.args.codemod_project_findings,
+        ):
+            return None
+        return CliScanDeadlineRequest.from_namespace(invocation.args)
 
     @classmethod
     def accepted_by(cls, command_type: type[CliCommand]) -> bool:
@@ -2651,6 +2876,17 @@ class CodemodExecutionMode(Enum):
     SIMULATE = SimulateCodemodExecutionStrategy
     APPLY = ApplyCodemodExecutionStrategy
 
+    def exact_recipe_execution(
+        self, sequence: CodemodPlanSequence, *, projects_findings: bool
+    ) -> bool:
+        """Share the scan requirement between deadline and execution consumers."""
+        return (
+            self.requested
+            and not projects_findings
+            and sequence.has_recipes
+            and not sequence.has_architecture_guards
+        )
+
     @property
     def strategy(self) -> type[CodemodExecutionStrategy]:
         return self.value
@@ -2767,11 +3003,9 @@ class CodemodPlanExecutionRequest:
 
     @property
     def exact_recipe_execution(self) -> bool:
-        return (
-            self.mode.requested
-            and self.finding_projection is None
-            and self.sequence.has_recipes
-            and not self.sequence.has_architecture_guards
+        return self.mode.exact_recipe_execution(
+            self.sequence,
+            projects_findings=self.finding_projection is not None,
         )
 
 
@@ -3334,22 +3568,17 @@ class CodemodRefactorGoalCliCommand(
         return 0 if report.stop_reason.completed else 1
 
 
-def _main_without_deadline() -> int:
+def _main_without_deadline(invocation: CliArguments) -> int:
     """Run the command-line interface and return a process status code."""
-    parser = argparse.ArgumentParser(
-        description="AST-driven refactoring advisor for nominal architecture."
-    )
-    for spec in _CLI_ARGUMENT_SPECS:
-        spec.add_to_parser(parser)
-    args = parser.parse_args()
+    parser, args = invocation.parser, invocation.args
 
-    selected_command_type = CliCommand.selected_type(parser, args)
+    selected_command_type = invocation.selected_command_type
     if args.codemod_plan_out is not None and not (
         selected_command_type is not None
         and issubclass(selected_command_type, CodemodPlanProducingCliCommand)
     ):
         parser.error("--codemod-plan-out requires a plan-producing codemod command")
-    codemod_execution_mode = CodemodExecutionMode.from_namespace(args, parser)
+    codemod_execution_mode = invocation.execution_mode
     codemod_execution_mode.require_valid(
         parser,
         projection_requested=args.codemod_project_findings,
@@ -3364,7 +3593,7 @@ def _main_without_deadline() -> int:
         if early_exit_code is not None:
             return early_exit_code
 
-    config = DetectorConfig.from_namespace(args)
+    config = invocation.detector_config
     try:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
     except ValueError as error:
@@ -3400,11 +3629,7 @@ def _main_without_deadline() -> int:
         parser.error(
             "--codemod-project-source-index requires --codemod-project-findings"
         )
-    codemod_plan_sequence = (
-        load_codemod_plan_sequence(args.codemod_plan)
-        if args.codemod_plan is not None
-        else CodemodPlanSequence()
-    )
+    codemod_plan_sequence = invocation.codemod_plan_sequence
     if (
         codemod_execution_mode.requested
         and selected_command_type is None
@@ -3414,41 +3639,10 @@ def _main_without_deadline() -> int:
     if codemod_requested and args.import_lean_export is not None:
         parser.error("--codemod-* options require parsed Python source paths")
 
-    if args.calibrate is not None:
-        parse_cache_dir = ParseCacheDirAuthority(
-            root=args.calibrate.parent,
-            requested_parse_cache_dir=args.cache_dir,
-            use_parse_cache=args.use_parse_cache,
-        ).parse_cache_dir()
-        calibration_report = run_calibration_manifest(
-            args.calibrate,
-            config=config,
-            cache_dir=parse_cache_dir,
-            use_parse_cache=args.use_parse_cache,
-            parse_workers=args.parse_workers,
-        )
-        if args.json:
-            print(json.dumps(json_report_object(calibration_report), indent=2))
-        else:
-            print(format_calibration_markdown(calibration_report))
-        return CalibrationExitCodeAuthority(
-            report=calibration_report,
-            fail_on_calibration_regression=args.fail_on_calibration_regression,
-        ).exit_code()
-
-    requested_roots = tuple(Path(path) for path in args.paths)
-    path_scope = AnalysisPathScope.from_requested_roots(
-        requested_roots,
-        tuple(args.context_roots),
-        auto_context=args.auto_context_root,
-    )
+    path_scope = invocation.path_scope
     roots = path_scope.analysis_roots
     root = path_scope.primary_analysis_root
-    parse_cache_dir = ParseCacheDirAuthority(
-        root=root,
-        requested_parse_cache_dir=args.cache_dir,
-        use_parse_cache=args.use_parse_cache,
-    ).parse_cache_dir()
+    parse_cache_dir = invocation.configured_parse_cache_dir
     if args.use_parse_cache and args.cache_dir is None:
         maintain_default_cache(root)
     analysis_cache_dir = analysis_cache_dir_for_root(
@@ -3490,49 +3684,6 @@ def _main_without_deadline() -> int:
         if selected_command_type is not None
         else not codemod_execution_request.exact_recipe_execution
     )
-    if args.predict_scan:
-        SingleRootModeAuthority(
-            parser=parser,
-            roots=roots,
-            option_name="--predict-scan",
-        ).require()
-        prediction_report = build_scan_prediction_report(
-            root,
-            config=config,
-            compare_ref=args.compare_ref,
-            cache_dir=parse_cache_dir,
-            use_parse_cache=args.use_parse_cache,
-            parse_workers=args.parse_workers,
-        )
-        if args.json:
-            print(json.dumps(json_report_object(prediction_report), indent=2))
-        else:
-            print(MARKDOWN_RENDERER.scan_prediction(prediction_report))
-        return 0
-
-    if args.prove_economics:
-        SingleRootModeAuthority(
-            parser=parser,
-            roots=roots,
-            option_name="--prove-economics",
-        ).require()
-        proof_report = build_economics_proof_report(
-            root,
-            config=config,
-            compare_ref=args.compare_ref,
-            scan_budget_seconds=args.scan_budget_seconds,
-            cache_dir=parse_cache_dir,
-            use_parse_cache=args.use_parse_cache,
-            parse_workers=args.parse_workers,
-        )
-        if args.json:
-            print(json.dumps(json_report_object(proof_report), indent=2))
-        else:
-            print(MARKDOWN_RENDERER.economics_proof(proof_report))
-        return ProofExitCodeAuthority(
-            report=proof_report,
-            fail_on_proof_regression=args.fail_on_proof_regression,
-        ).exit_code()
 
     fast_codemod_source_snapshot = None
     if (
@@ -3702,6 +3853,10 @@ def _main_without_deadline() -> int:
                         len(detector_types) - analyzed_detector_count
                     ),
                 )
+            else:
+                scan_status = JsonScanStatus.exact_cache(
+                    fast_cache_result.exact_cache_identity
+                )
         elif focused_loop_cold_policy.enabled:
             detector_types = default_detector_types_for_analysis()
             detector_partition = DetectorTypePartition(detector_types)
@@ -3745,9 +3900,7 @@ def _main_without_deadline() -> int:
             findings = SortedFindingsAuthority.sort(findings)
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
-            analysis_cache_status = AnalysisCacheStatus.combine(
-                module_cache_statuses
-            )
+            analysis_cache_status = AnalysisCacheStatus.combine(module_cache_statuses)
             scan_status = JsonScanStatus(
                 mode=JsonScanMode.focused_local_partial,
                 analyzed_detector_count=len(local_detector_types),
@@ -4052,37 +4205,10 @@ class CliScanDeadlineRequest:
     json_enabled: bool
 
     @classmethod
-    def from_argv(cls, argv: tuple[str, ...]) -> "CliScanDeadlineRequest | None":
-        if any(
-            option in argv
-            for option in (
-                "--help",
-                "-h",
-                "--prove-economics",
-                "--predict-scan",
-                "--calibrate",
-            )
-        ):
+    def from_namespace(cls, args: argparse.Namespace) -> CliScanDeadlineRequest | None:
+        if args.scan_budget_seconds <= 0.0:
             return None
-        budget_seconds = 20.0
-        for index, argument in enumerate(argv):
-            if argument.startswith("--scan-budget-seconds="):
-                raw_budget = argument.split("=", 1)[1]
-            elif argument == "--scan-budget-seconds" and index + 1 < len(argv):
-                raw_budget = argv[index + 1]
-            else:
-                continue
-            try:
-                budget_seconds = float(raw_budget)
-            except ValueError:
-                return None
-            break
-        if budget_seconds <= 0.0:
-            return None
-        return cls(
-            budget_seconds=budget_seconds,
-            json_enabled="--json" in argv,
-        )
+        return cls(budget_seconds=args.scan_budget_seconds, json_enabled=args.json)
 
     def timeout_payload(self, error: ScanDeadlineExceeded) -> JsonObject:
         return {
@@ -4117,19 +4243,20 @@ class CliScanDeadlineRequest:
         os._exit(124)
 
 
+@ScanCache.scope()
 def main(*, hard_exit_on_deadline: bool = False) -> int:
-    """Run the CLI under the declared absolute scan wall-clock budget."""
-
-    request = CliScanDeadlineRequest.from_argv(tuple(sys.argv[1:]))
+    """Parse once, then apply the selected declaration's scan budget policy."""
+    invocation = CliArguments.from_argv(tuple(sys.argv[1:]))
+    request = invocation.scan_deadline_request
     if request is None:
-        return _main_without_deadline()
+        return _main_without_deadline(invocation)
     deadline = ScanDeadline.start(request.budget_seconds)
     try:
         with enforce_scan_deadline(
             deadline,
-            hard_timeout=(request.terminate_process if hard_exit_on_deadline else None),
+            hard_timeout=request.terminate_process if hard_exit_on_deadline else None,
         ):
-            return _main_without_deadline()
+            return _main_without_deadline(invocation)
     except ScanDeadlineExceeded as error:
         if hard_exit_on_deadline:
             request.terminate_process(error)

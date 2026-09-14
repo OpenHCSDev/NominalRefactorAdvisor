@@ -302,7 +302,11 @@ class ResolvedClassTarget:
         context: CodemodSelectorContext,
         target_reference: SourceRewriteTarget,
     ) -> Self:
-        """Resolve one exact class identity from a recipe target."""
+        """Resolve a canonical class declaration in this source state.
+
+        Matching selectors across states do not prove retained source,
+        runtime identity, or behavior preservation.
+        """
 
         _target_id, target, node = context.target_node_for_rewrite_target(
             target_reference

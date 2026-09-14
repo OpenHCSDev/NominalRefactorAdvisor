@@ -853,15 +853,16 @@ moved declaration AST matches that snapshot after the rename. Fresh imports
 confirm that the retained source binding refers to the same declaration object.
 Later authored argument-proof behaviour is outside that replay's comparison.
 
-The nine-stage `referenced_namespace_effect_refactor.py` records the subsequent
-shared-base factor. Its automated replay reconstructs the unfactored fields and
-getters from current source, simulates through the CLI, applies through the DSL,
-and compares the complete module AST and fresh-process effect observations.
-This baseline is reconstructed, not a preserved pre-edit checkout. The plan uses
-import, insertion, base, decorator, assignment and deletion operations without
-whole-method replacements. It was recorded after the structural edit: future
-supported edits should use the DSL before mutation so projected continuation
-analysis can inform the next semantic decision.
+`referenced_namespace_effect_refactor.py` records the subsequent shared-base
+factor. The maintained six-stage replay uses a fixed, standalone specimen,
+simulates through the CLI, applies through the DSL, and compares leaf method
+ASTs, constructor signatures and fresh-process observations. It exercises field
+factoring without whole-method replacements. The specimen is an isolated
+example, not a preserved pre-edit checkout or current native-admission model.
+Both historical plans refer to carriers since removed in favour of direct
+captured-source identity. Future supported edits should use the DSL before
+mutation so projected continuation analysis can inform the next semantic
+decision.
 
 The API reference now describes cohort lookup and argument-effect boundaries.
 Two stale observation-family names were removed from autodoc after a clean

@@ -18,7 +18,10 @@ from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
 from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
 from ..patterns import PatternId
 from ..product_flow import CompactProductFlowModuleProjectionFamily
-from ..product_flow_authority import CompactProductFlowRepository
+from ..product_flow_authority import (
+    CompactProductFlowRepository,
+    ProductFlowRepository,
+)
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CompactMultiProjectionCandidateDetector,
@@ -51,13 +54,13 @@ class CarrierCollapseCandidateDetector(
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         del projections_by_family, config
         return self._proven_components(
-            CompactProductFlowRepository.require(context)
+            ProductFlowRepository.require(context)
         )
 
     @abstractmethod
     def _proven_components(
         self,
-        repository: CompactProductFlowRepository,
+        repository: ProductFlowRepository,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         raise NotImplementedError
 
@@ -135,7 +138,7 @@ class ClosedParameterConveyorDetector(CarrierCollapseCandidateDetector):
 
     def _proven_components(
         self,
-        repository: CompactProductFlowRepository,
+        repository: ProductFlowRepository,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         return ClosedParameterConveyorComponentBuilder(repository).proven_components()
 
@@ -172,6 +175,6 @@ class DeclaredCarrierExpansionDetector(CarrierCollapseCandidateDetector):
 
     def _proven_components(
         self,
-        repository: CompactProductFlowRepository,
+        repository: ProductFlowRepository,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         return DeclaredCarrierExpansionBuilder(repository).proven_components()

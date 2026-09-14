@@ -271,18 +271,25 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
         return SourceTextSpanReplacement.from_offsets(
             start_offset=span.start_offset,
             end_offset=span.end_offset,
-            replacement_source="".join(lines).removeprefix(self.indentation).rstrip("\r\n"),
+            replacement_source="".join(lines)
+            .removeprefix(self.indentation)
+            .rstrip("\r\n"),
         )
 
     def source_edits(
-        self, lines: tuple[str, ...], *, file_path: str, rationale: str,
+        self,
+        lines: tuple[str, ...],
+        *,
+        file_path: str,
+        rationale: str,
     ) -> tuple[PhysicalSourceEdit, ...]:
         """Apply header rendering through the shared exact-boundary contract."""
 
         if lines == self.current_header_lines:
             return ()
         return self.geometry.physical_edits(
-            file_path=file_path, replacements=(self.header_replacement(lines),),
+            file_path=file_path,
+            replacements=(self.header_replacement(lines),),
             rationale=rationale,
         )
 
@@ -420,6 +427,18 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
 class ClassBodySourceAuthority(ClassSourceAuthority):
     """Recover insertion geometry owned by one class body."""
 
+    member_insertion_offset = AliasProperty[int]("before_first_method_offset")
+
+    @property
+    def body_end_offset(self) -> int:
+        """Return the first offset after the complete existing class body."""
+        return (
+            self.geometry.line_offsets[self.node.end_lineno]
+            if self.node.end_lineno is not None
+            and self.node.end_lineno < len(self.geometry.line_offsets)
+            else self.geometry.end_offset
+        )
+
     @property
     def source_lines(self) -> list[str]:
         return self.source.splitlines(keepends=True)
@@ -459,12 +478,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
             None,
         )
         if first_method is None:
-            return (
-                self.geometry.line_offsets[self.node.end_lineno]
-                if self.node.end_lineno is not None
-                and self.node.end_lineno < len(self.geometry.line_offsets)
-                else self.geometry.end_offset
-            )
+            return self.body_end_offset
         insertion_line = self.geometry.node_start_line(
             SourceNodeSpan(first_method, SourceNodeDecoratorPolicy.INCLUDE)
         )
@@ -483,7 +497,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
     def member_source(self, members: tuple[str, ...]) -> str:
         """Render class members at this point with stable class-body spacing."""
 
-        insertion_offset = self.before_first_method_offset
+        insertion_offset = self.member_insertion_offset
         prefix = self.source[:insertion_offset]
         suffix = self.source[insertion_offset:]
         if prefix.endswith("\n\n"):
@@ -529,10 +543,16 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
                 + newline,
             )
         return SourceTextSpanReplacement.from_offsets(
-            start_offset=self.before_first_method_offset,
-            end_offset=self.before_first_method_offset,
+            start_offset=self.member_insertion_offset,
+            end_offset=self.member_insertion_offset,
             replacement_source=self.member_source(members),
         )
+
+
+class ClassBodyTailSourceAuthority(ClassBodySourceAuthority):
+    """Append declarations after existing body execution, reusing suite geometry."""
+
+    member_insertion_offset = AliasProperty[int]("body_end_offset")
 
 
 @dataclass(frozen=True)
@@ -691,7 +711,9 @@ class FunctionSourceAuthority(NamedDeclarationSourceAuthority):
 
     def __post_init__(self) -> None:
         if not isinstance(self.node, FunctionDefinitionNode):
-            raise ValueError("Function source authority requires a function declaration")
+            raise ValueError(
+                "Function source authority requires a function declaration"
+            )
 
 
 @dataclass(frozen=True)
@@ -833,7 +855,9 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
 
     @cached_property
     def layout(self) -> FunctionSuiteLayout:
-        signature_end = self.geometry.function_signature_suffix_span(self.node).end_offset
+        signature_end = self.geometry.function_signature_suffix_span(
+            self.node
+        ).end_offset
         header_line = self.geometry.line_number_for_offset(signature_end - 1)
         first_statement_line = self.geometry.node_start_line(
             SourceNodeSpan(
@@ -849,14 +873,18 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
             indentation = self.geometry.line_indent(signature_end) + "    "
         else:
             start_offset = self.geometry.line_offsets[header_line]
-            first_statement_offset = self.geometry.line_offsets[first_statement_line - 1]
+            first_statement_offset = self.geometry.line_offsets[
+                first_statement_line - 1
+            ]
             indentation = self.geometry.line_indent(first_statement_offset)
         return FunctionSuiteLayout(
             span=SourceTextSpan(
                 start_offset,
                 self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
             ),
-            indentation=indentation, newline=newline, is_inline=is_inline,
+            indentation=indentation,
+            newline=newline,
+            is_inline=is_inline,
         )
 
 
@@ -879,23 +907,31 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
 
     def replacement(self, body_source: str, /) -> SourceTextSpanReplacement:
         layout = self.layout
-        docstring = self.node.body[0] if is_docstring_statement(self.node.body[0]) else None
+        docstring = (
+            self.node.body[0] if is_docstring_statement(self.node.body[0]) else None
+        )
         remaining = self.node.body[1:] if docstring is not None else self.node.body
         body = layout.render(body_source)
         if layout.is_inline:
             end = (
                 self.geometry.required_node_offsets(remaining[0])[0]
-                if remaining else layout.span.end_offset
+                if remaining
+                else layout.span.end_offset
             )
             retained_docstring = ""
             if docstring is not None:
                 doc_start, doc_end = self.geometry.required_node_offsets(docstring)
-                retained_docstring = layout.render(self.source[
-                    doc_start : doc_end if remaining else layout.span.end_offset
-                ])
+                retained_docstring = layout.render(
+                    self.source[
+                        doc_start : doc_end if remaining else layout.span.end_offset
+                    ]
+                )
             return SourceTextSpanReplacement.from_offsets(
-                start_offset=layout.span.start_offset, end_offset=end,
-                replacement_source=layout.newline + retained_docstring + body
+                start_offset=layout.span.start_offset,
+                end_offset=end,
+                replacement_source=layout.newline
+                + retained_docstring
+                + body
                 + (layout.indentation if remaining else ""),
             )
         if docstring is not None:
@@ -915,9 +951,12 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
                 )
             )
             insertion = self.geometry.line_offsets[first_statement_line - 1]
-        separator = "" if self.source[:insertion].endswith(("\n", "\r")) else layout.newline
+        separator = (
+            "" if self.source[:insertion].endswith(("\n", "\r")) else layout.newline
+        )
         return SourceTextSpanReplacement.from_offsets(
-            start_offset=insertion, end_offset=insertion,
+            start_offset=insertion,
+            end_offset=insertion,
             replacement_source=separator + body,
         )
 

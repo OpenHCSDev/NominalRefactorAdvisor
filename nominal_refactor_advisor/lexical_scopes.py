@@ -56,9 +56,11 @@ class LexicalNameResolution(StrEnum):
 class LexicalScopeABC(ABC):
     """A scope owns whether and how it participates in lexical lookup."""
 
+    node: ast.AST
     declarations: ScopeBindingProjection
     requires_class_namespace_visibility: ClassVar[bool] = False
     hides_enclosing_class_namespace: ClassVar[bool] = True
+    records_variable_annotations: ClassVar[bool] = False
 
     def resolve_name(
         self,
@@ -95,6 +97,7 @@ class LexicalScopeABC(ABC):
 class ScopeBindingProjection:
     """Compile-time name ownership shared by function and class scopes."""
 
+    node: ast.AST
     local_names: frozenset[str]
     global_names: frozenset[str]
     nonlocal_names: frozenset[str]
@@ -104,12 +107,15 @@ class ScopeBindingProjection:
         cls,
         nodes: Iterable[ast.AST],
         argument_names: Iterable[str] = (),
+        *,
+        node: ast.AST,
     ) -> Self:
         collector = ScopeBindingCollector()
-        for node in nodes:
-            collector.visit(node)
+        for statement in nodes:
+            collector.visit(statement)
         local_names = collector.bound_names.union(argument_names)
         return cls(
+            node=node,
             local_names=frozenset(
                 local_names - collector.global_names - collector.nonlocal_names
             ),
@@ -136,7 +142,7 @@ class FunctionBindingProjection(ScopeBindingProjection, LexicalScopeABC):
     ) -> FunctionBindingProjection:
         nodes = (node.body,) if isinstance(node, ast.Lambda) else node.body
         return cls.from_nodes(
-            nodes, (LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node))
+            nodes, (LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)), node=node
         )
 
 
@@ -144,6 +150,21 @@ class TypeParameterScope(FunctionBindingProjection):
     """PEP 695 annotation scopes retain access to their enclosing class namespace."""
 
     hides_enclosing_class_namespace = False
+
+
+@dataclass(frozen=True)
+class ModuleNamespaceScope(LexicalScopeABC):
+    """The actual module source frame; module binding proof stays external."""
+
+    node: ast.Module
+    records_variable_annotations = True
+
+    @cached_property
+    def declarations(self) -> ScopeBindingProjection:
+        return ScopeBindingProjection.from_nodes(self.node.body, node=self.node)
+
+    def local_resolution_for(self, name: str) -> LexicalNameResolution | None:
+        return None
 
 
 @dataclass
@@ -158,10 +179,11 @@ class ClassNamespaceScope(LexicalScopeABC):
     )
     unproved_execution_names: frozenset[str] = frozenset()
     requires_class_namespace_visibility = True
+    records_variable_annotations = True
 
     @cached_property
     def declarations(self) -> ScopeBindingProjection:
-        return ScopeBindingProjection.from_nodes(self.node.body)
+        return ScopeBindingProjection.from_nodes(self.node.body, node=self.node)
 
     @property
     def class_declaration(self) -> ast.ClassDef:

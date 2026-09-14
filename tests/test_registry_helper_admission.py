@@ -5,8 +5,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-
 from registry_test_sources import _type_keyed_behavior_projection_source
+
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -15,33 +15,27 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.captured_reference import OpenCapturedReference
 from nominal_refactor_advisor.declaration_dependencies import (
     ModuleLexicalDependencyProjection,
 )
-from nominal_refactor_advisor.native_reference import ScopedNativeReference
-from nominal_refactor_advisor.projection_descent_codemod import (
-    _TypeKeyedBehaviorSourceDerivation,
-)
 from nominal_refactor_advisor.registry_identity import mro_registry_value
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
-@pytest.mark.parametrize("counterfeit", (False, True))
-def test_type_keyed_descent_preserves_selected_helper_behavior(
-    tmp_path, monkeypatch, counterfeit
-) -> None:
+def test_counterfeit_helper_is_not_implicitly_admitted(tmp_path, monkeypatch) -> None:
     import sys
 
     source = _type_keyed_behavior_projection_source()
-    if counterfeit:
-        helper_source = "def mro_registry_value(registry, cls):\n    return None\n"
-        (tmp_path / "counterfeit.py").write_text(helper_source)
-        helper = ModuleType("counterfeit")
-        exec(helper_source, helper.__dict__)
-        monkeypatch.setitem(sys.modules, "counterfeit", helper)
-        source = source.replace(
-            "from nominal_refactor_advisor.registry_identity import mro_registry_value",
-            "from counterfeit import mro_registry_value",
-        )
+    helper_source = "def mro_registry_value(registry, cls):\n    return None\n"
+    (tmp_path / "counterfeit.py").write_text(helper_source)
+    helper = ModuleType("counterfeit")
+    exec(helper_source, helper.__dict__)
+    monkeypatch.setitem(sys.modules, "counterfeit", helper)
+    source = source.replace(
+        "from nominal_refactor_advisor.registry_identity import mro_registry_value",
+        "from counterfeit import mro_registry_value",
+    )
     path = tmp_path / "subject.py"
     path.write_text(source)
     snapshot = CodemodSourceSnapshot.from_modules(
@@ -56,33 +50,21 @@ def test_type_keyed_descent_preserves_selected_helper_behavior(
             ),
         )
     )
-    try:
-        result = plan.simulate(snapshot)
-    except (ValueError, CodemodOperationPreflightError):
-        assert counterfeit, "Canonical supported helper unexpectedly rejected"
-        assert path.read_text() == source
-        return
-    if not result.is_clean:
-        assert counterfeit, "Canonical supported helper unexpectedly rejected"
-        return
-    outputs = []
-    for name, text in (
-        ("before", source),
-        (
-            "after",
-            result.final_snapshot.parsed_module_for_source_path(str(path)).source,
-        ),
-    ):
-        runtime = ModuleType(f"registry_identity_{name}")
-        monkeypatch.setitem(sys.modules, runtime.__name__, runtime)
-        exec(text, runtime.__dict__)
-        event = runtime.NamedEvent()
-        event.name = "specific"
-        event.value = "fallback"
-        outputs.append(runtime.render_event(event))
+    with pytest.raises((ValueError, CodemodOperationPreflightError)):
+        plan.simulate(snapshot)
+    assert path.read_text() == source
+    runtime = ModuleType("registry_identity_counterfeit")
+    monkeypatch.setitem(sys.modules, runtime.__name__, runtime)
+    exec(source, runtime.__dict__)
+    event = runtime.NamedEvent()
+    event.name = "specific"
+    event.value = "fallback"
+    assert runtime.EventProjection.projection_for(event) is None
+    assert runtime.mro_registry_value is helper.mro_registry_value
     assert (
-        outputs[0] == outputs[1]
-    ), "A clean refactor must preserve the actual selected helper behavior"
+        mro_registry_value(runtime.EventProjection.__registry__, type(event))
+        is not None
+    )
 
 
 def _helper_method_source(source: str):
@@ -97,64 +79,40 @@ def _helper_method_source(source: str):
     return parsed, method, CodemodSourceSnapshot.from_modules((parsed,))
 
 
-def test_helper_selection_obeys_the_shared_native_gate(monkeypatch) -> None:
+def test_requirements_retain_exact_native_reads_and_declaration_owners() -> None:
     parsed, method, snapshot = _helper_method_source(
         _type_keyed_behavior_projection_source()
     )
-    assert _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        snapshot, parsed.file_path, method
-    )
-    invocations = []
-
-    def reject(self, environment, declarations):
-        invocations.append((self, environment, declarations))
-        raise ValueError("Native helper admission remains unproved")
-
-    monkeypatch.setattr(ScopedNativeReference, "require_native", reject)
-    assert not _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        snapshot, parsed.file_path, method
-    )
-    ((reference, environment, declarations),) = invocations
-    assert reference.node is method.body[0].value.func
-    assert environment.module is snapshot.parsed_module_for_source_path(
-        parsed.file_path
-    )
-    assert len(declarations) == 1
-    assert declarations[0].declaration is mro_registry_value
-
-
-@pytest.mark.parametrize(
-    "import_source, expression",
-    (
-        (
-            "from nominal_refactor_advisor.registry_identity "
-            "import mro_registry_value as selected",
-            "selected",
-        ),
-        (
-            "from nominal_refactor_advisor import registry_identity as helpers",
-            "helpers.mro_registry_value",
-        ),
-    ),
-)
-def test_shared_helper_gate_accepts_declared_import_aliases(
-    import_source, expression
-) -> None:
-    source = (
-        _type_keyed_behavior_projection_source()
-        .replace(
-            "from nominal_refactor_advisor.registry_identity import mro_registry_value",
-            import_source,
-        )
-        .replace(
-            "mro_registry_value(cls.__registry__, type(event))",
-            f"{expression}(cls.__registry__, type(event))",
+    operation = DescendTypeKeyedBehaviorProjectionOperation(
+        target=SourceRewriteTarget(
+            file_path=parsed.file_path, qualname="EventProjection"
         )
     )
-    parsed, method, snapshot = _helper_method_source(source)
-    assert _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        snapshot, parsed.file_path, method
+    expected = (
+        (method.decorator_list[0], classmethod),
+        (method.body[0].value.func, mro_registry_value),
+        (method.body[0].value.args[1].func, type),
     )
+    environment = snapshot.module_binding_proof.native_reference_environment(parsed)
+    retained_reads = []
+    for _ in range(3):
+        requirements = operation.native_use_requirements(snapshot)
+        assert len(requirements) == len(expected)
+        reads = []
+        for requirement, (node, native) in zip(requirements, expected, strict=True):
+            assert requirement.node is node
+            assert requirement.module is parsed
+            assert requirement.environment is environment
+            assert len(requirement.declarations) == 1
+            assert requirement.declarations[0].declaration is native
+            read = environment.source.reference_reads_by_node[node]
+            assert read.use.source_span == SourceByteSpan.require_node(node)
+            reads.append(read)
+        if retained_reads:
+            assert all(
+                left is right for left, right in zip(reads, retained_reads, strict=True)
+            )
+        retained_reads = reads
 
 
 @pytest.mark.parametrize("shadow_scope", ("parameter", "closure"))
@@ -185,22 +143,51 @@ def test_helper_selection_respects_actual_function_lexical_ownership(
             + "    return Family\n"
         )
     parsed, method, snapshot = _helper_method_source(source)
-    assert not _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        snapshot, parsed.file_path, method
-    )
+    environment = snapshot.module_binding_proof.native_reference_environment(parsed)
+    reference = method.body[0].value.func
+    read = environment.source.reference_reads_by_node[reference]
+    flow = read.context.flow
+    assert flow.owner.source_span == SourceByteSpan.require_node(method)
+    assert isinstance(environment.capture(reference), OpenCapturedReference)
+    if shadow_scope == "parameter":
+        assert flow.owner.initial_binding_for("mro_registry_value") is not None
+        assert flow.lexical_scope_qualnames == ("Family.projection_for", "")
+    else:
+        assert flow.owner.initial_binding_for("mro_registry_value") is None
+        assert flow.lexical_scope_qualnames == (
+            "enclosing.Family.projection_for",
+            "enclosing",
+            "",
+        )
+        enclosing_flow = next(
+            item
+            for item in environment.source.compact.flows
+            if item.owner.qualname == "enclosing"
+        )
+        assert (
+            enclosing_flow.owner.initial_binding_for("mro_registry_value") is not None
+        )
 
     # Execute only this controlled fixture to demonstrate that the actual helper
     # is the supplied local object, not the identically named module import.
     namespace = {}
     exec(compile(source, "<trusted-helper-shadow>", "exec"), namespace)
 
+    calls = []
+    selected_result = object()
+
     def replacement(registry, declaration):
-        return None
+        calls.append((registry, declaration))
+        return lambda: selected_result
 
     if shadow_scope == "parameter":
-        assert namespace["Family"].projection_for(object(), replacement) is None
+        family = namespace["Family"]
+        assert family.projection_for(object(), replacement) is selected_result
     else:
-        assert namespace["enclosing"](replacement).projection_for(object()) is None
+        family = namespace["enclosing"](replacement)
+        assert family.projection_for(object()) is selected_result
+    assert calls == [(family.__registry__, object)]
+    assert calls[0][0] is family.__registry__
 
 
 def test_helper_reuses_lazy_canonical_source_dependency_projection(monkeypatch):
@@ -219,9 +206,7 @@ def test_helper_reuses_lazy_canonical_source_dependency_projection(monkeypatch):
     )
     assert calls == []
     for _ in range(3):
-        assert _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-            snapshot, parsed.file_path, method
-        )
+        snapshot.module_lexical_dependency_projection_for_source_path(parsed.file_path)
     actual_module = snapshot.parsed_module_for_source_path(parsed.file_path)
     assert len(calls) == 1
     assert calls[0] is actual_module.module
@@ -266,11 +251,20 @@ def test_source_overlay_rebuilds_dependency_ownership_without_stale_helper_read(
         if isinstance(node, ast.FunctionDef) and node.name == "projection_for"
     )
     assert current_method is not method
-    assert not _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        changed, parsed.file_path, current_method
-    )
-    assert _TypeKeyedBehaviorSourceDerivation._is_mro_lookup_method(
-        snapshot, parsed.file_path, method
+    before = snapshot.module_binding_proof.native_reference_environment(parsed)
+    after = changed.module_binding_proof.native_reference_environment(current_module)
+    original_read = method.body[0].value.func
+    current_read = current_method.body[0].value.func
+    assert before is not after
+    assert original_read in before.source.reference_reads_by_node
+    assert current_read in after.source.reference_reads_by_node
+    assert original_read not in after.source.reference_reads_by_node
+    assert current_read not in before.source.reference_reads_by_node
+    assert (
+        after.source.reference_reads_by_node[
+            current_read
+        ].context.flow.owner.initial_binding_for("mro_registry_value")
+        is not None
     )
     assert (
         snapshot.module_lexical_dependency_projection_for_source_path(parsed.file_path)

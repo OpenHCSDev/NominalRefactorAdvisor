@@ -1,4 +1,9 @@
-"""Give reusable argument evidence its generic owner and update all imports."""
+"""Historical rename-and-move plan for the former native argument carrier.
+
+Its intermediate source is described in the architecture alignment log. Current
+native admission consumes original operands directly; this plan does not target
+the current checkout.
+"""
 
 import json
 

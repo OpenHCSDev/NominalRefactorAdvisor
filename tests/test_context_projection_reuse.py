@@ -119,7 +119,7 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
         def terminate(self) -> None:
             terminated_children.append(self.name)
 
-    def raise_deadline() -> int:
+    def raise_deadline(invocation) -> int:
         raise error
 
     def hard_exit(exit_code: int) -> None:

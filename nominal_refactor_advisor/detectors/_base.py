@@ -680,12 +680,16 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         detector_id = type(self).effective_detector_id()
         if detector_id is None:
             raise TypeError(f"{type(self).__name__} has no detector_id")
-        return type(self).required_relation_finding_spec().build(
-            detector_id,
-            summary,
-            evidence,
-            context=context,
-            **overrides,
+        return (
+            type(self)
+            .required_relation_finding_spec()
+            .build(
+                detector_id,
+                summary,
+                evidence,
+                context=context,
+                **overrides,
+            )
         )
 
     @abstractmethod
@@ -895,10 +899,10 @@ class ContextualGlobalCacheContract(ABC):
 CompactProjectionItemT = TypeVar("CompactProjectionItemT")
 CompactProjectionGroups: TypeAlias = dict[
     type[CollectedFamily],
-    tuple[object, ...],
+    Sequence[object],
 ]
 CompactProjectionContextBuilder: TypeAlias = Callable[
-    [tuple[object, ...], DetectorConfig],
+    [Sequence[object], DetectorConfig],
     object,
 ]
 CompactProjectionGroupContextBuilder: TypeAlias = Callable[
@@ -916,7 +920,7 @@ CompactDerivedContextT = TypeVar("CompactDerivedContextT")
 class CompactClassRepositoryContext:
     """One scan-scoped inheritance graph plus lazily shared derived indexes."""
 
-    projections: tuple[CompactModuleClassProjection, ...]
+    projections: Sequence[CompactModuleClassProjection]
     config: DetectorConfig
     class_index: CompactClassFamilyIndex
     _derived: dict[Hashable, object] = field(
@@ -929,7 +933,7 @@ class CompactClassRepositoryContext:
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> "CompactClassRepositoryContext":
         return cls(
@@ -963,9 +967,9 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
     module_projection_family: ClassVar[type[CollectedFamily]]
-    compact_shared_context_builder: ClassVar[
-        CompactProjectionContextBuilder | None
-    ] = None
+    compact_shared_context_builder: ClassVar[CompactProjectionContextBuilder | None] = (
+        None
+    )
     compact_report_class_header_core_safe: ClassVar[bool] = False
     compact_report_context_promotion_predicate: ClassVar[
         CompactReportContextPromotionPredicate | None
@@ -1051,7 +1055,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
 
     def _findings_from_compact_projection_groups(
         self,
-        projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+        projections_by_family: dict[type[CollectedFamily], Sequence[object]],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         families = type(self).compact_projection_families()
@@ -1061,14 +1065,14 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
             )
         return self._findings_from_compact_projections(
             cast(
-                tuple[CompactProjectionItemT, ...], projections_by_family[families[0]]
+                Sequence[CompactProjectionItemT], projections_by_family[families[0]]
             ),
             config,
         )
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1078,7 +1082,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     @abstractmethod
     def _findings_from_compact_projections(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
@@ -1116,7 +1120,7 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[object, ...],
+        projections: Sequence[object],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del projections, config
@@ -1524,7 +1528,9 @@ def _contextual_global_candidate_signature(
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
     candidate_type: ClassVar[type[CandidateItemT]]
-    finding_renderer: ClassVar[CandidateFindingRendererABC[CandidateItemT] | None] = None
+    finding_renderer: ClassVar[CandidateFindingRendererABC[CandidateItemT] | None] = (
+        None
+    )
 
     @classmethod
     def required_candidate_type(cls) -> type[CandidateItemT]:
@@ -1551,8 +1557,10 @@ class RenderedFindingMixin(Generic[CandidateItemT]):
         return renderer
 
     def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
-        return type(self).required_finding_renderer().build(
-            cast(IssueDetector, self), candidate
+        return (
+            type(self)
+            .required_finding_renderer()
+            .build(cast(IssueDetector, self), candidate)
         )
 
 
@@ -1671,17 +1679,23 @@ class CandidateCollectorBaseReference:
 
     @classmethod
     def from_node(
-        cls, module: ParsedModule, node: ast.expr, *, line: int,
+        cls,
+        module: ParsedModule,
+        node: ast.expr,
+        *,
+        line: int,
     ) -> "CandidateCollectorBaseReference | None":
         source_name = ClassSymbolResolutionAuthority.declared_base_name(node)
         if source_name is None:
             return None
         qualified_name = ModuleNominalBindingAuthority(module).qualified_name_at(
-            node, line=line,
+            node,
+            line=line,
         )
         declaration = next(
             (
-                base for base in DerivedCandidateCollectorMixin.registered_collector_base_types()
+                base
+                for base in DerivedCandidateCollectorMixin.registered_collector_base_types()
                 if qualified_name == f"{base.__module__}.{base.__qualname__}"
             ),
             None,
@@ -1702,7 +1716,8 @@ class CandidateCollectorBaseReference:
     def require_for_target(cls, module: ParsedModule, node: ast.AST) -> None:
         owner = next(
             (
-                ancestor for ancestor in (node, *AstParentIndex(module.module).ancestors(node))
+                ancestor
+                for ancestor in (node, *AstParentIndex(module.module).ancestors(node))
                 if isinstance(ancestor, ast.ClassDef)
             ),
             None,
@@ -1868,9 +1883,7 @@ class SourceModuleCollectorCandidateDetector(
         syntax_index: NativePythonSyntaxIndex,
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
-        candidates = type(self).source_candidate_collector(
-            module, syntax_index, config
-        )
+        candidates = type(self).source_candidate_collector(module, syntax_index, config)
         if candidates is None:
             return None
         return [self._finding_for_candidate(candidate) for candidate in candidates]
@@ -2022,7 +2035,7 @@ class CompactProjectionCandidateDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
@@ -2033,7 +2046,7 @@ class CompactProjectionCandidateDetector(
     @abstractmethod
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
@@ -2093,7 +2106,7 @@ class CompactContextCandidateDetector(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         return self._candidates_from_compact_context(
@@ -2103,7 +2116,7 @@ class CompactContextCandidateDetector(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -2120,7 +2133,7 @@ class CompactContextCandidateDetector(
     @abstractmethod
     def _compact_context_from_projections(
         cls,
-        projections: tuple[CompactProjectionItemT, ...],
+        projections: Sequence[CompactProjectionItemT],
         config: DetectorConfig,
     ) -> CompactCandidateContextT:
         raise NotImplementedError
@@ -2161,7 +2174,7 @@ class CompactClassRepositoryCandidateDetector(
     @classmethod
     def _compact_context_from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> CompactClassRepositoryContext:
         return CompactClassRepositoryContext.from_projections(projections, config)
@@ -2261,9 +2274,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 
     @classmethod
     def explicit_class_field_names(cls) -> frozenset[str]:
-        return frozenset(
-            {cls.detector_name_field_name, cls.detector_base_field_name}
-        )
+        return frozenset({cls.detector_name_field_name, cls.detector_base_field_name})
 
     @classmethod
     def from_kwargs(
@@ -3046,8 +3057,7 @@ def _module_builder_call_shapes(
                 continue
             if (
                 callee_names is not None
-                and AstExpressionProjection.terminal_name(node.func)
-                not in callee_names
+                and AstExpressionProjection.terminal_name(node.func) not in callee_names
             ):
                 continue
             shape = _builder_call_shape(
@@ -3183,9 +3193,7 @@ class CandidateCollectionAuthority:
                 continue
             if len(normalized_roles) < 3:
                 continue
-            if SemanticFieldRole.required_carrier_coordinates() - set(
-                normalized_roles
-            ):
+            if SemanticFieldRole.required_carrier_coordinates() - set(normalized_roles):
                 continue
             if not SemanticFieldRole.carrier_naming_roles() & set(normalized_roles):
                 continue
@@ -4064,8 +4072,7 @@ def _module_keyed_selection_helper_candidates(
             if not all(
                 (
                     isinstance(element, ast.Call)
-                    and AstExpressionProjection.terminal_name(element.func)
-                    == node.name
+                    and AstExpressionProjection.terminal_name(element.func) == node.name
                     for element in elements
                 )
             ):
@@ -4151,16 +4158,6 @@ class _KeyedTableAxisSpec(_FileAxisCaseSpec):
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
 
 
-def _compact_constant_string(expression: str | None) -> str | None:
-    if expression is None:
-        return None
-    try:
-        value = ast.literal_eval(expression)
-    except (SyntaxError, ValueError):
-        return None
-    return value if isinstance(value, str) else None
-
-
 def _compact_keyed_family_axis_specs_from_index(
     class_index: CompactClassFamilyIndex,
 ) -> tuple[_KeyedFamilyAxisSpec, ...]:
@@ -4171,9 +4168,8 @@ def _compact_keyed_family_axis_specs_from_index(
         key_type_name = indexed_class.keyed_family_key_type_name
         if key_type_name is None:
             continue
-        assignments = indexed_class.assignments_by_name
-        registry_key_attr_name = _compact_constant_string(
-            assignments.get("registry_key_attr")
+        registry_key_attr_name = indexed_class.constant_string_assignment(
+            "registry_key_attr"
         )
         if registry_key_attr_name is None:
             continue
@@ -4206,7 +4202,7 @@ def _compact_keyed_family_axis_specs_from_index(
                 line=indexed_class.line,
                 family_name=family_name,
                 key_type_name=key_type_name,
-                family_label=_compact_constant_string(assignments.get("family_label")),
+                family_label=indexed_class.constant_string_assignment("family_label"),
                 registry_key_attr_name=registry_key_attr_name,
                 case_names=case_names,
             )
@@ -4215,7 +4211,7 @@ def _compact_keyed_family_axis_specs_from_index(
 
 
 def _compact_keyed_table_axis_specs(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
 ) -> tuple[_KeyedTableAxisSpec, ...]:
     return tuple(
         _KeyedTableAxisSpec(
@@ -4232,7 +4228,7 @@ def _compact_keyed_table_axis_specs(
 
 
 def _compact_manual_selector_axis_specs(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
 ) -> tuple[_ManualSelectorAxisSpec, ...]:
     return tuple(
         _ManualSelectorAxisSpec(
@@ -4454,7 +4450,7 @@ class ResidualClosedAxisBranchingIdentity:
 
 
 def _residual_closed_axis_branching_candidates_from_compact_specs(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     keyed_family_specs: tuple[_KeyedFamilyAxisSpec, ...],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
     authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
@@ -4829,7 +4825,7 @@ class _RegistryProjectionSurfaceAnalyzer:
             projection_role=projection_role,
             projected_names=projected_names,
             subset_policy_hint=self.subset_policy_hint(evidence.surface_name),
-            injectivity_proof=fact.injectivity_proof,
+            injectivity_proof=fact.require_proof(),
         )
 
     def policy_authority_candidates_from_surfaces(
@@ -5384,8 +5380,7 @@ def _common_abstract_base_names(
             indexed_class
             for class_name in class_names
             if (
-                indexed_class
-                := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
+                indexed_class := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
                     module, class_index, class_name
                 )
             )
@@ -5427,9 +5422,7 @@ def _concrete_type_case_function_candidates_for_function(
             isinstance(subnode, ast.Call)
             and len(subnode.args) == 2
             and (not subnode.keywords)
-            and (
-                AstExpressionProjection.terminal_name(subnode.func) == "isinstance"
-            )
+            and (AstExpressionProjection.terminal_name(subnode.func) == "isinstance")
         ):
             continue
         subject_expression = _attribute_family_subject_expression(
@@ -6953,15 +6946,28 @@ class InjectiveRegistryProofSurface(KeyedRegistryAxisSurface):
 
 
 @dataclass(frozen=True)
-class KeyedRegistryAxisFact(InjectiveRegistryProofSurface):
+class KeyedRegistryAxisFact(KeyedRegistryAxisSurface):
+    """Neutral source observation; unresolved keys are not counterexamples."""
+
     file_path: str
     line: int
     class_name: str
     missing_maturity_signals: tuple[str, ...]
+    injectivity_proof: InjectiveTypeRegistryProof | None
+
+    def require_proof(self) -> InjectiveTypeRegistryProof:
+        if self.injectivity_proof is None:
+            raise ValueError("Registry key equality remains unproved")
+        return self.injectivity_proof
 
     @property
     def is_mature_injective(self) -> bool:
-        return not self.missing_maturity_signals and self.injectivity_proof.is_injective
+        proof = self.injectivity_proof
+        return (
+            proof is not None
+            and not self.missing_maturity_signals
+            and proof.is_injective
+        )
 
 
 class KeyedRegistryFactCandidate(ABC):
@@ -7003,7 +7009,8 @@ class NonInjectiveTypeRegistryCandidate(
     @classmethod
     def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
         del cls
-        return not fact.injectivity_proof.is_injective
+        proof = fact.injectivity_proof
+        return proof is not None and not proof.is_injective
 
 
 @dataclass(frozen=True)
@@ -7162,9 +7169,7 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
 
     @property
     def finding_metrics(self) -> MappingMetrics:
-        field_names = sorted_tuple(
-            {item.key_field_name for item in self.classes}
-        )
+        field_names = sorted_tuple({item.key_field_name for item in self.classes})
         return MappingMetrics.from_field_names(
             mapping_site_count=len(self.classes),
             mapping_name="keyed_record_table",
@@ -7438,7 +7443,7 @@ class CandidateCollectorBoilerplateCandidate(
     def collector_declaration_source(self) -> str:
         return (
             f"{self.collector_declaration_name} = "
-    f"{self.collector_descriptor_type.__name__}({self.collector_name})"
+            f"{self.collector_descriptor_type.__name__}({self.collector_name})"
         )
 
     @property
@@ -7475,7 +7480,9 @@ class ConcreteCandidateDetectorShape:
 
     @classmethod
     def from_class(
-        cls, module: ParsedModule, node: ast.ClassDef,
+        cls,
+        module: ParsedModule,
+        node: ast.ClassDef,
     ) -> "ConcreteCandidateDetectorShape | None":
         declares_detector_id = any(
             binding is not None
@@ -7489,7 +7496,9 @@ class ConcreteCandidateDetectorShape:
             reference.source_name
             for base in node.bases
             for reference in (
-                CandidateCollectorBaseReference.from_node(module, base, line=node.lineno),
+                CandidateCollectorBaseReference.from_node(
+                    module, base, line=node.lineno
+                ),
             )
             if reference is not None and reference.is_candidate
         )
@@ -7500,7 +7509,8 @@ class ConcreteCandidateDetectorShape:
 
 @dataclass(frozen=True)
 class DirectBuildFindingRendererCandidate(
-    PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate,
+    PositionalKeywordCallSurface,
+    ClassMethodLineWitnessCandidate,
     ModuleCollectedLineWitnessCandidate,
 ):
     base_name: str
@@ -7550,9 +7560,7 @@ class DirectBuildFindingRendererCandidate(
                 parameter_name=method.args.args[1].arg,
                 positional_arg_count=len(call.args),
                 keyword_names=tuple(
-                    keyword.arg
-                    for keyword in call.keywords
-                    if keyword.arg is not None
+                    keyword.arg for keyword in call.keywords if keyword.arg is not None
                 ),
             )
             for method in node.body
@@ -7577,7 +7585,8 @@ class DirectBuildFindingRendererCandidate(
 
 @dataclass(frozen=True)
 class DeclarativeDetectorClassCandidate(
-    ClassLineWitnessCandidate, ModuleCollectedLineWitnessCandidate,
+    ClassLineWitnessCandidate,
+    ModuleCollectedLineWitnessCandidate,
 ):
     base_name: str
     candidate_type_name: str
@@ -7624,10 +7633,16 @@ class DeclarativeDetectorClassCandidate(
             return None
         base = ParameterizedBaseSource.from_node(node.bases[0])
         assignment_values = cls.assignment_values(node)
-        if base is None or not base.parameter_source.isidentifier() or assignment_values is None:
+        if (
+            base is None
+            or not base.parameter_source.isidentifier()
+            or assignment_values is None
+        ):
             return None
         reference = CandidateCollectorBaseReference.from_node(
-            module, node.bases[0], line=node.lineno,
+            module,
+            node.bases[0],
+            line=node.lineno,
         )
         if reference is None or not reference.is_candidate:
             return None

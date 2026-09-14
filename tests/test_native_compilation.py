@@ -191,7 +191,7 @@ def test_eliminated_definition_does_not_recover_by_name_or_line() -> None:
     assert result.violation is NativeExecutionUnavailable.NO_EMITTED_CODE
 
 
-def test_leaf_bodies_are_not_disassembled_to_find_nonexistent_child_code(
+def test_each_emitted_scope_is_observed_once_without_running_bodies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _module(
@@ -205,7 +205,6 @@ def test_leaf_bodies_are_not_disassembled_to_find_nonexistent_child_code(
     disassembled = []
 
     def observed_instructions(self, code):
-        assert any(isinstance(value, CodeType) for value in code.co_consts)
         disassembled.append(code.co_name)
         return native_instructions(code)
 
@@ -220,7 +219,14 @@ def test_leaf_bodies_are_not_disassembled_to_find_nonexistent_child_code(
         NativeFunctionExecutionMode.COROUTINE,
         NativeFunctionExecutionMode.ASYNC_GENERATOR,
     )
-    assert disassembled == ["<module>"]
+    assert len(disassembled) == 5
+    assert set(disassembled) == {
+        "<module>",
+        "ordinary",
+        "generator",
+        "coroutine",
+        "async_generator",
+    }
 
 
 def test_child_constants_still_require_emitted_instruction_evidence(
@@ -240,7 +246,6 @@ def test_child_constants_still_require_emitted_instruction_evidence(
     disassembled = []
 
     def observed_instructions(self, code):
-        assert any(isinstance(value, CodeType) for value in code.co_consts)
         disassembled.append(code.co_name)
         return native_instructions(code)
 
@@ -257,7 +262,7 @@ def test_child_constants_still_require_emitted_instruction_evidence(
         ).mode
         is NativeFunctionExecutionMode.GENERATOR
     )
-    assert disassembled == ["<module>", "outer"]
+    assert disassembled == ["<module>", "outer", "inner"]
 
 
 @pytest.mark.skipif(

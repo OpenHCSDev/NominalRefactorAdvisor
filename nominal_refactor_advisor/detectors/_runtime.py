@@ -248,10 +248,7 @@ class FormalBoundaryStringRegistryAuthority:
         constant_names = frozenset(constant.target_name for constant in constants)
         if not constant_names:
             return False
-        return any(
-            cls.call_consumes_constant(node, constant_names)
-            for node in calls
-        )
+        return any(cls.call_consumes_constant(node, constant_names) for node in calls)
 
     @staticmethod
     def is_registry_call(node: ast.Call) -> bool:
@@ -312,9 +309,7 @@ class FormalBoundaryStringRegistryAuthority:
             constants = cls.constants_from_statements(statements)
             if not constants:
                 return []
-            constant_names = frozenset(
-                constant.target_name for constant in constants
-            )
+            constant_names = frozenset(constant.target_name for constant in constants)
             calls: list[ast.Call] = []
             for call_node in sorted(
                 syntax_index.common_captures().get("call", ()),
@@ -361,11 +356,15 @@ class FormalBoundaryStringRegistryAuthority:
     ) -> bool:
         statement_source = syntax_index.source_for(statement).decode("utf-8")
         lowered_source = statement_source.lower()
-        return bool(statement_source) and any(
-            token in lowered_source
-            for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-        ) and any(
-            token in lowered_source for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
+        return (
+            bool(statement_source)
+            and any(
+                token in lowered_source
+                for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+            )
+            and any(
+                token in lowered_source for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
+            )
         )
 
 
@@ -450,6 +449,8 @@ class FormalBoundaryPythonStringConstantFamily(
                 parsed_module
             )
         ]
+
+
 FormalBoundaryStringConstantRecord: TypeAlias = FormalBoundaryPythonStringConstant
 FormalBoundaryStringConstantRecords: TypeAlias = tuple[
     FormalBoundaryStringConstantRecord,
@@ -719,7 +720,7 @@ class FormalBoundaryExternalStringRegistryMirrorDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[FormalBoundaryPythonStringConstant, ...],
+        projections: Sequence[FormalBoundaryPythonStringConstant],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -821,7 +822,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     def findings_from_sites(
         cls,
         detector: IssueDetector,
-        sites: tuple[GeneratedBoundarySemanticConstantSite, ...],
+        sites: Sequence[GeneratedBoundarySemanticConstantSite],
     ) -> list[RefactorFinding]:
         keys = tuple(sorted({site.key for site in sites}))
         return [
@@ -920,7 +921,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     def finding_for_key(
         detector: IssueDetector,
         key: tuple[str, str],
-        sites: tuple[GeneratedBoundarySemanticConstantSite, ...],
+        sites: Sequence[GeneratedBoundarySemanticConstantSite],
     ) -> RefactorFinding | None:
         matching_sites = tuple(site for site in sites if site.key == key)
         generated_sites = tuple(
@@ -1004,7 +1005,7 @@ class GeneratedBoundarySemanticConstantMirrorDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[GeneratedBoundarySemanticConstantSite, ...],
+        projections: Sequence[GeneratedBoundarySemanticConstantSite],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -1467,7 +1468,7 @@ class RepeatedBuilderCallDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[BuilderCallShape, ...],
+        projections: Sequence[BuilderCallShape],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
@@ -1485,7 +1486,7 @@ class RepeatedBuilderCallDetector(
 
     def _exact_mapping_findings(
         self,
-        builders: tuple[BuilderCallShape, ...],
+        builders: Sequence[BuilderCallShape],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         grouped: dict[
@@ -1513,9 +1514,7 @@ class RepeatedBuilderCallDetector(
             same_source = all(builder.source_arity == 1 for builder in ordered)
             if len(ordered) < 3 and not same_source:
                 continue
-            evidence = tuple(
-                builder.source_location for builder in ordered[:6]
-            )
+            evidence = tuple(builder.source_location for builder in ordered[:6])
             findings.append(
                 self.build_finding(
                     f"Call `{ordered[0].callee_name}` repeats the same field-mapping shape across {len(ordered)} sites.",
@@ -1577,7 +1576,7 @@ class ManualClassRegistrationDetector(
         return shape.registry_name
 
     def _finding_from_group(
-        self, shapes: tuple[RegistrationShape, ...], config: DetectorConfig
+        self, shapes: Sequence[RegistrationShape], config: DetectorConfig
     ) -> RefactorFinding | None:
         registrations = sorted_tuple(
             shapes,
@@ -1613,7 +1612,7 @@ class ManualClassRegistrationDetector(
 
 
 def _target_has_manual_subclass_roster_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """A roster finding reports the root that owns the roster, not its leaves."""
@@ -1629,7 +1628,7 @@ def _target_has_manual_subclass_roster_root(
 
 
 def _target_has_latent_roster(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """A latent-roster finding is anchored at the roster declaration itself."""
@@ -1645,7 +1644,7 @@ def _target_has_latent_roster(
 
 
 def _target_has_predicate_selected_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """Predicate-family evidence is located on its selector root."""
@@ -1653,7 +1652,7 @@ def _target_has_predicate_selected_root(
     del config
     return any(
         indexed_class.predicate_selected_methods
-        and "_registered_types" in indexed_class.assignments_by_name
+        and "_registered_types" in indexed_class.direct_declared_member_names
         for projection in projections_by_family.get(
             CompactModuleClassProjectionFamily, ()
         )
@@ -1673,7 +1672,7 @@ class _CompactConcreteFamilyContext:
 
 
 def _compact_concrete_family_context(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
     *,
     class_index: CompactClassFamilyIndex | None = None,
@@ -1742,7 +1741,7 @@ class _CompactConcreteFamilyDetectorBase(
     @classmethod
     def _compact_context_from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> _CompactConcreteFamilyContext:
         return _compact_concrete_family_context(projections, config)
@@ -2073,7 +2072,7 @@ def _compact_predicate_selected_concrete_family_candidates(
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
-        if "_registered_types" not in indexed_class.assignments_by_name:
+        if "_registered_types" not in indexed_class.direct_declared_member_names:
             continue
         descendants = _compact_concrete_descendants(class_index, indexed_class)
         if len(descendants) < config.min_registration_sites:
@@ -2126,14 +2125,14 @@ def _type_keyed_behavior_projection_components(
 
 
 def _enum_keyed_derived_map_facade_components(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
 ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
     facade_projections = cast(
-        tuple[EnumKeyedDerivedMapFacadeModuleProjection, ...],
+        Sequence[EnumKeyedDerivedMapFacadeModuleProjection],
         projections_by_family[EnumKeyedDerivedMapFacadeModuleProjectionFamily],
     )
     class_projections = cast(
-        tuple[CompactModuleClassProjection, ...],
+        Sequence[CompactModuleClassProjection],
         projections_by_family[CompactModuleClassProjectionFamily],
     )
     exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
@@ -2460,7 +2459,7 @@ class ExactTypeGuardInheritanceRetreatCandidate:
 
 
 def _exact_type_guard_candidates_from_compact_projections(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     *,
     class_index: CompactClassFamilyIndex | None = None,
 ) -> tuple[ExactTypeGuardInheritanceRetreatCandidate, ...]:

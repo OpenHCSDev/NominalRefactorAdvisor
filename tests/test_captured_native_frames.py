@@ -17,10 +17,14 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceKernel,
     CapturedReferenceViolation,
     CapturedSlotQuery,
+    ContextualMutation,
     InitialNativeFrame,
     InitialNativeIsland,
+    NamespaceCreationEvidenceABC,
+    NamespaceEvidenceABC,
     NativeNamespace,
     OpenCapturedReference,
+    SingleFlowPrefix,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.product_flow import (
@@ -28,6 +32,7 @@ from nominal_refactor_advisor.product_flow import (
     CompactFlowContext,
     CompactFlowPosition,
     CompactItemTarget,
+    CompactMutation,
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
@@ -94,7 +99,7 @@ class SimpleFrameEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return self.frame
+        return SingleFlowPrefix(context, self.frame, position)
 
 
 def _fixture(source, globals_storage=None, builtin_storage=None, locals_storage=None):
@@ -255,8 +260,8 @@ def test_lexical_write_reaches_only_its_actual_namespace(shared, global_declared
     prefix = "global property\n" if global_declared else ""
     source = prefix + "property = object\nresult = space\n"
     kernel, read = _fixture(source, globals_storage, builtin_storage, locals_storage)
-    # Resolve an actual initial slot through its retained namespace obligation;
-    # ordinary source lookup correctly selects the new lexical object instead.
+    # Resolve the exact storage slot, including the actual lexical installation;
+    # a write to a distinct globals dictionary leaves the builtin slot unchanged.
     resolution = kernel._slot(
         kernel.effects.frame.builtins,
         "property",
@@ -265,7 +270,10 @@ def test_lexical_write_reaches_only_its_actual_namespace(shared, global_declared
         frozenset(),
     )
     if shared:
-        assert resolution.violation is CapturedReferenceViolation.POSSIBLE_SLOT_WRITE
+        assert (
+            resolution.require_native_identity(NativeDeclaration(object)).declaration
+            is object
+        )
     else:
         assert resolution.value is property
     setup = (
@@ -331,7 +339,7 @@ def test_exact_dict_with_hostile_foreign_key_is_rejected_without_equality():
             raise AssertionError("Admission must not compare this key")
 
     storage = {ForeignKey(): property}
-    with pytest.raises(TypeError, match="exact string keys"):
+    with pytest.raises(TypeError, match="exact scalar key"):
         NativeNamespace(storage)
     assert events == []
 
@@ -346,7 +354,7 @@ def test_foreign_query_key_and_dict_subclass_are_rejected_without_lookup():
             raise AssertionError("Custom storage must not be inspected")
 
     namespace = NativeNamespace({"property": property})
-    with pytest.raises(TypeError, match="exact string key"):
+    with pytest.raises(TypeError, match="exact scalar key"):
         namespace.member(ForeignString("property"))
     with pytest.raises(TypeError, match="exact dictionary"):
         NativeNamespace(ForeignDict())
@@ -356,7 +364,7 @@ def test_foreign_string_storage_key_is_rejected_before_copy():
     class ForeignString(str):
         pass
 
-    with pytest.raises(TypeError, match="exact string keys"):
+    with pytest.raises(TypeError, match="exact scalar key"):
         NativeNamespace({ForeignString("property"): property})
 
 
@@ -371,16 +379,19 @@ def test_module_and_frame_reuse_the_same_namespace_owner():
     )
 
 
-def test_prefix_admission_count_does_not_scale_with_unrelated_lexical_writes():
+@pytest.mark.parametrize("write_count", (0, 40, 200))
+def test_prefix_admission_count_does_not_scale_with_unrelated_lexical_writes(
+    write_count,
+):
     source = (
-        "".join(f"alias_{index} = object\n" for index in range(40))
+        "".join(f"alias_{index} = object\n" for index in range(write_count))
         + "result = property\n"
     )
     kernel, read = _fixture(source)
     assert kernel.read(read).value is property
-    # Root admission plus initial globals and builtins slot obligations. Each
-    # already-admitted lexical effect shares those fixed frame handles.
-    assert len(kernel.effects.admissions) == 3
+    # The root admission plus original-frame authentication remain constant.
+    # Unrelated lexical writes need no source-value capture or re-admission.
+    assert len(kernel.effects.admissions) == 2
 
 
 def test_nonlocal_destinations_remain_open_and_other_contexts_are_not_admitted():
@@ -486,10 +497,14 @@ def test_slot_interval_preserves_loop_ambiguity_and_dominating_refresh(repeat):
     island = InitialNativeIsland((), ({},))
     namespace = island.namespaces[0]
     frame = InitialNativeFrame(namespace, namespace, namespace)
+    prefix = SingleFlowPrefix(context, frame, read.use.position)
     query = CapturedSlotQuery(
-        namespace, "saved", context, frame, frozenset(), installed
+        namespace, "saved", prefix, frozenset(), ContextualMutation(prefix, installed)
     )
-    assert (item_write in tuple(query.mutations_before(read.use.position))) is repeat
+    assert (
+        item_write
+        in tuple(event.mutation for event in query.mutations_after_installation())
+    ) is repeat
     # Actual native loop executions refresh this slot each iteration. The
     # compact interval deliberately retains an obligation, not a false proof
     # about repeated execution order.
@@ -506,17 +521,112 @@ def test_slot_interval_preserves_loop_ambiguity_and_dominating_refresh(repeat):
 def test_slot_interval_does_not_order_unproved_evaluation_siblings():
     kernel, read = _fixture("first = object\nsaved = property\nresult = saved\n")
     first, installed, _ = read.context.flow.mutations
-    first = replace(
-        first, position=CompactFlowPosition((), 0, 1, (CompactEvaluationBranch(0, 0),))
-    )
-    installed = replace(
-        installed,
-        position=CompactFlowPosition((), 0, 2, (CompactEvaluationBranch(0, 1),)),
+    # These synthetic sibling writes exercise interval ordering, without claiming
+    # that a source RHS was evaluated at either of the invented branch positions.
+    first, installed = (
+        CompactMutation(
+            target=mutation.target,
+            kind=mutation.kind,
+            position=CompactFlowPosition(
+                (), 0, index + 1, (CompactEvaluationBranch(0, index),)
+            ),
+            line=mutation.line,
+        )
+        for index, mutation in enumerate((first, installed))
     )
     flow = replace(read.context.flow, mutations=(first, installed))
     context = replace(read.context, flow=flow)
     frame = kernel.effects.frame
+    prefix = SingleFlowPrefix(context, frame, CompactFlowPosition((), 1, 0))
     query = CapturedSlotQuery(
-        frame.globals, "saved", context, frame, frozenset(), installed
+        frame.globals,
+        "saved",
+        prefix,
+        frozenset(),
+        ContextualMutation(prefix, installed),
     )
-    assert tuple(query.mutations_before(CompactFlowPosition((), 1, 0))) == (first,)
+    assert tuple(event.mutation for event in query.mutations_after_installation()) == (
+        first,
+    )
+
+
+@pytest.mark.parametrize("alias", (False, True))
+def test_qualified_known_global_does_not_demand_open_builtin_fallback(alias):
+    prefix = "saved = builtins\n" if alias else ""
+    source = prefix + (
+        "result = saved.property\n" if alias else "result = builtins.property\n"
+    )
+    kernel, read = _fixture(source, {"builtins": builtins})
+    original = kernel.effects.frame
+    unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
+    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    effects = replace(kernel.effects, frame=frame)
+    resolution = replace(kernel, effects=effects).read(read)
+    assert resolution.value is property
+    # The actual isolated frame has a different property fallback, but this
+    # qualified source never reads it. No imports/calls in the analyzed source
+    # need a builtin lookup to admit this prefix.
+    assert (
+        _native(
+            source,
+            "g = {'builtins': builtins, '__builtins__': {'property': object}}\nl = g\n",
+            "l['result'] is property",
+        )
+        == "True"
+    )
+
+
+def test_initial_global_binding_survives_open_builtin_fallback():
+    kernel, read = _fixture("result = property\n", {"property": object})
+    original = kernel.effects.frame
+    unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
+    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    assert (
+        replace(kernel, effects=replace(kernel.effects, frame=frame)).read(read).value
+        is object
+    )
+
+
+def test_demanded_builtin_namespace_preserves_open_evidence_without_hashing_it():
+    class UnhashableOpen(OpenCapturedReference):
+        __hash__ = None
+
+    kernel, read = _fixture("result = property\n")
+    original = kernel.effects.frame
+    unresolved = UnhashableOpen(CapturedReferenceViolation.UNPROVED_BINDING)
+    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    resolution = replace(kernel, effects=replace(kernel.effects, frame=frame)).read(
+        read
+    )
+    assert resolution is unresolved
+
+
+@pytest.mark.parametrize("unknown_locals", (False, True))
+def test_unknown_earlier_namespace_is_not_proved_absence(unknown_locals):
+    kernel, read = _fixture("result = property\n")
+    original = kernel.effects.frame
+    unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
+    frame = (
+        InitialNativeFrame(unresolved, original.globals, original.builtins)
+        if unknown_locals
+        else InitialNativeFrame(original.locals, unresolved, original.builtins)
+    )
+    resolution = replace(kernel, effects=replace(kernel.effects, frame=frame)).read(
+        read
+    )
+    assert resolution is unresolved
+
+
+def test_observed_namespace_uses_common_contract_without_fabricating_creation():
+    island = InitialNativeIsland((), ({"property": property},))
+    namespace = island.namespaces[0]
+    assert isinstance(namespace, NamespaceEvidenceABC)
+    assert namespace.member("property").value is property
+    assert namespace.member("missing") is None
+    assert namespace.is_initial_storage(namespace.storage)
+    assert not namespace.is_initial_storage(namespace.storage.copy())
+    namespace.require_admitted(island)
+    with pytest.raises(TypeError):
+        NamespaceEvidenceABC()
+    with pytest.raises(TypeError):
+        NamespaceCreationEvidenceABC()

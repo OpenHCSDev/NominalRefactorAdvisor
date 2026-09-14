@@ -17,7 +17,6 @@ from typing import Iterable, Sequence
 
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
-from .class_index import DataclassRuntimeDeclaration
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
@@ -25,6 +24,7 @@ from .models import (
     SourceLineReference,
     stable_source_location_id,
 )
+from .native_declarations import DataclassRuntimeDeclaration
 from .source_index import (
     STABLE_ID_AUTHORITY,
     AstTargetDigest,

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import (
+    Callable,
+    Hashable,
+    Iterable,
+    Sequence,
+)
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -14,14 +19,16 @@ import os
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import cast
+from typing import TypeVar, cast
 
 from .analysis_cache import (
-    AnalysisCacheIdentity,
+    CachedSourceFileSignature,
     AnalysisCacheFamilyIdentity,
+    AnalysisCacheIdentity,
     AnalysisCacheResolutionABC,
     AnalysisCacheStatus,
     AnalysisFindingCache,
+    AnalysisFindingSummaryCachePayload,
     AnalysisLatestPointerPolicy,
     ContextualModuleAnalysisCacheIdentity,
     DetectorRegistrySignature,
@@ -31,7 +38,9 @@ from .analysis_cache import (
     PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
+from .collection_algebra import DeferredBatchSequence
 from .python_module_identity import PythonModulePathIdentity
+from .scan_cache import ScanCache
 from .source_geometry import read_source_text
 from .ast_tools import (
     CollectedFamily,
@@ -46,11 +55,13 @@ from .ast_tools import (
     SourceModule,
     collected_family_demand_cache_signature,
     collected_family_items_content_signature,
+    collect_family_batch,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
     retains_python_ast,
     semantic_python_source_hash,
+    suspend_cyclic_gc,
 )
 from .cache_paths import (
     ParseCacheDirectory,
@@ -71,21 +82,21 @@ from .class_index import (
 from .detectors import (
     CompactClassRepositoryContext,
     CompactFindingStream,
-    CompactMultiModuleProjectionDetectorMixin,
     CompactModuleProjectionDetectorMixin,
+    CompactMultiModuleProjectionDetectorMixin,
     CompactProjectionContextBuilder,
     CompactProjectionGroupContextBuilder,
+    CompactProjectionGroups,
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
     DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
-    SourceLocalIssueDetectorMixin,
     SemanticDescentGraphIssueDetector,
+    SourceLocalIssueDetectorMixin,
     default_detectors,
 )
 from .deadline import scan_deadline_checkpoint
-from .finding_counts import FindingSummary
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .native_syntax import NativePythonSyntaxIndex
@@ -119,6 +130,17 @@ class AnalysisPathScope:
         repr=False,
         compare=False,
     )
+
+    def __post_init__(self) -> None:
+        # A report boundary covering every analysis root is not a focused scan.
+        # Canonicalize it here so cache identities and execution use the same
+        # scope, including callers constructing this declaration directly.
+        report_roots = tuple(root.resolve() for root in self.report_roots)
+        if report_roots and self.analysis_roots and all(
+            any(self._root_contains_path(report, root.resolve()) for report in report_roots)
+            for root in self.analysis_roots
+        ):
+            object.__setattr__(self, "report_roots", ())
 
     @classmethod
     def from_requested_roots(
@@ -243,6 +265,10 @@ class AnalysisContextRootResolver:
         return tuple(deduped)
 
 
+WorkItemT = TypeVar("WorkItemT")
+WorkResultT = TypeVar("WorkResultT")
+
+
 @dataclass(frozen=True)
 class DetectorAnalysisWorkerPlan:
     """Resolve detector-analysis process parallelism for one scan."""
@@ -251,6 +277,21 @@ class DetectorAnalysisWorkerPlan:
     work_item_count: int
     minimum_auto_work_items: int = 4
     max_auto_worker_count: int = 16
+
+    def map(
+        self,
+        function: Callable[[WorkItemT], WorkResultT],
+        items: Iterable[WorkItemT],
+    ) -> list[WorkResultT]:
+        """Run independent preparation tasks under this plan's worker budget."""
+        if not self.uses_process_pool:
+            return [function(item) for item in items]
+        with ProcessPoolExecutor(
+            max_workers=self.effective_worker_count,
+            mp_context=_analysis_process_pool_mp_context(),
+            initializer=ScanCache.initialize_worker,
+        ) as executor:
+            return list(executor.map(function, items, chunksize=1))
 
     @property
     def effective_worker_count(self) -> int:
@@ -265,7 +306,7 @@ class DetectorAnalysisWorkerPlan:
                 cpu_count,
                 self.work_item_count,
             )
-        return max(1, self.requested_worker_count)
+        return max(1, min(self.requested_worker_count, self.work_item_count))
 
     @property
     def uses_process_pool(self) -> bool:
@@ -321,6 +362,7 @@ def initialize_detector_analysis_worker(
 ) -> None:
     """Install parsed source once per process-pool worker."""
 
+    ScanCache.initialize_worker()
     global detector_analysis_worker_state
     detector_analysis_worker_state = state
 
@@ -361,6 +403,7 @@ def initialize_per_module_detector_shard_worker(
 ) -> None:
     """Install parsed source once per per-module shard worker."""
 
+    ScanCache.initialize_worker()
     global per_module_detector_shard_worker_state
     per_module_detector_shard_worker_state = state
 
@@ -707,7 +750,7 @@ class CompactGlobalProjectionAccumulator:
     def add_family_projections(
         self,
         family: type[CollectedFamily],
-        projections: tuple[object, ...],
+        projections: Sequence[object],
     ) -> None:
         """Retain validated facts loaded either from source or persistent cache."""
 
@@ -772,7 +815,7 @@ class CompactProjectionGroupContextCacheKey:
 
 def _compact_findings_by_detector(
     detector_types: tuple[type[IssueDetector], ...],
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: CompactProjectionGroups,
     config: DetectorConfig,
     *,
     shared_contexts: dict[Hashable, object] | None = None,
@@ -967,9 +1010,18 @@ class CompactProjectionCacheSource(CollectedFamilyCacheContext):
             parse_workers=1,
             source_policy=self.source_policy,
         )
-        return parser.parsed_source_path(
+        module = parser.parsed_source_path(
             self.path,
             source_semantic_hash=self.source_semantic_hash,
+        )
+        if python_source_cache_signature(module.source) != self.source_signature:
+            raise ValueError(
+                "Source changed after its projection identity was selected"
+            )
+        return replace(
+            module,
+            module_name=self.module_name,
+            family_cache_dir=self.family_cache_dir,
         )
 
 
@@ -986,13 +1038,41 @@ class CompactProjectionBuildRequest:
     bundle_families: tuple[type[CollectedFamily], ...] = ()
 
 
-@dataclass(frozen=True)
-class CompactFamilyProjectionBatch:
-    """One AST-free family projection and its derived content identity."""
+@dataclass(frozen=True, kw_only=True)
+class CompactFamilyProjectionReceipt:
+    """Publication identity sufficient to consume a persisted family batch."""
 
     family: type[CollectedFamily]
-    items: tuple[object, ...]
     content_signature: str | None = None
+
+    def add_to(
+        self,
+        manifest: BoundedCompactProjectionManifest,
+        source: CompactProjectionCacheSource,
+    ) -> None:
+        if self.content_signature is not None:
+            manifest._record_content_signature(source, self.family, self.content_signature)
+
+
+@dataclass(frozen=True)
+class CompactFamilyProjectionBatch(CompactFamilyProjectionReceipt):
+    """A publication receipt enriched with AST-free facts retained in memory."""
+
+    items: tuple[object, ...]
+
+    @property
+    def receipt(self) -> CompactFamilyProjectionReceipt:
+        return CompactFamilyProjectionReceipt(
+            family=self.family, content_signature=self.content_signature,
+        )
+
+    def add_to(
+        self,
+        manifest: BoundedCompactProjectionManifest,
+        source: CompactProjectionCacheSource,
+    ) -> None:
+        super().add_to(manifest, source)
+        manifest.runtime_projections[self.family, source.resolved_path_text] = self.items
 
     def __post_init__(self) -> None:
         if any(
@@ -1003,16 +1083,21 @@ class CompactFamilyProjectionBatch:
 
 @dataclass(frozen=True)
 class CompactProjectionBuildResult:
-    """AST-free result returned by one cold projection worker."""
+    """AST-free worker result, retaining facts only for incomplete publication.
+
+    A complete bundle is consumed through its source cache. Otherwise the
+    collected batches carry every requested fact back to the parent process.
+    """
 
     path: Path
-    projection_batches: tuple[CompactFamilyProjectionBatch, ...]
+    projection_batches: tuple[CompactFamilyProjectionReceipt, ...]
     cache_bundle_complete: bool
     local_findings: tuple[RefactorFinding, ...]
     local_analysis_seconds: float
     total_seconds: float
 
 
+@ScanCache.scope()
 def build_compact_projection_shard(
     request: CompactProjectionBuildRequest,
 ) -> CompactProjectionBuildResult:
@@ -1024,7 +1109,7 @@ def build_compact_projection_shard(
 
     def add_runtime_projection(
         family: type[CollectedFamily],
-        projections: tuple[object, ...],
+        projections: Sequence[object],
         signature: str | None,
     ) -> None:
         projection_batches.append(
@@ -1177,7 +1262,8 @@ def build_compact_projection_shard(
             if demanded_projections is not None:
                 projections = tuple(demanded_projections)
             else:
-                full_projections = tuple(collect_family_items(module, family))
+                full_batch = collect_family_batch(module, family)
+                full_projections = full_batch.items
                 projections = (
                     family.project_cached_demand(full_projections, demand)
                     if family in demand_by_family
@@ -1193,7 +1279,7 @@ def build_compact_projection_shard(
                     demand_signature_by_family[family],
                 )
             else:
-                projection_signature = source.store_items(family, projections)
+                projection_signature = full_batch.content_signature
             add_runtime_projection(family, projections, projection_signature)
         del module
     if local_findings:
@@ -1206,7 +1292,10 @@ def build_compact_projection_shard(
     release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
         path=source.path,
-        projection_batches=tuple(projection_batches),
+        projection_batches=(
+            tuple(batch.receipt for batch in projection_batches)
+            if cache_bundle_complete else tuple(projection_batches)
+        ),
         cache_bundle_complete=cache_bundle_complete,
         local_findings=local_findings,
         local_analysis_seconds=local_analysis_seconds,
@@ -1226,7 +1315,7 @@ class BoundedCompactProjectionManifest:
     )
     family_demands: dict[type[CollectedFamily], object] = field(default_factory=dict)
     report_scope: AnalysisPathScope | None = None
-    _projection_counts_by_family: dict[type[CollectedFamily], int] = field(
+    _materialized_source_counts: dict[tuple[type[CollectedFamily], str], int] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -1247,6 +1336,71 @@ class BoundedCompactProjectionManifest:
     _content_signature_indexes: dict[Path, CollectedFamilyContentSignatureIndex] = (
         field(default_factory=dict, init=False, repr=False)
     )
+
+    def deferred_projections_for_family(
+        self,
+        family: type[CollectedFamily],
+        *,
+        derive_content_identity: bool,
+    ) -> DeferredCompactProjectionFamily:
+        sequence = DeferredCompactProjectionFamily(
+            self, family, derive_content_identity
+        )
+        if derive_content_identity and self.fast_projection_signature(family) is None:
+            # Missing content evidence requires all original batches, just as
+            # eager loading did. A partial iterator cannot authenticate a global key.
+            for _ in sequence:
+                pass
+            self._projection_signatures_by_family[family] = (
+                self._combined_projection_signature(
+                    family,
+                    tuple(
+                        self._source_projection_signatures[
+                            family, source.resolved_path_text
+                        ]
+                        for source in sequence.sources
+                    ),
+                )
+            )
+        return sequence
+
+    def _source_family_items(
+        self,
+        source: CompactProjectionCacheSource,
+        family: type[CollectedFamily],
+        *,
+        derive_content_identity: bool,
+    ) -> tuple[object, ...]:
+        demand = self.family_demands.get(family)
+        is_context_demand = self._is_context_demand_source(source, demand)
+        source_key = family, source.resolved_path_text
+        source_projections = self.runtime_projections.get(source_key)
+        demanded_cache_hit = False
+        if source_projections is None and is_context_demand:
+            source_projections = source.load_items(
+                family, self._demand_signature(family)
+            )
+            demanded_cache_hit = source_projections is not None
+        if source_projections is None:
+            source_projections = source.load_items(family)
+        if source_projections is None:
+            source_projections = self._repair_source_family(source, family)
+        if is_context_demand and not demanded_cache_hit:
+            source_projections = family.project_cached_demand(
+                tuple(source_projections), demand
+            )
+        if derive_content_identity:
+            source_signature = self._source_projection_signatures.get(source_key)
+            if source_signature is None:
+                source_signature = self._indexed_content_signature(source, family)
+            if source_signature is None:
+                source_signature = collected_family_items_content_signature(
+                    tuple(source_projections)
+                )
+            self._record_content_signature(source, family, source_signature)
+        items = tuple(source_projections)
+        self._materialized_source_counts[source_key] = len(items)
+        return items
 
     def add_source(self, source: CompactProjectionCacheSource) -> None:
         self.sources.append(source)
@@ -1294,21 +1448,6 @@ class BoundedCompactProjectionManifest:
                 families.append(family)
         return tuple(families)
 
-    def add_runtime_batch(
-        self,
-        source: CompactProjectionCacheSource,
-        batch: CompactFamilyProjectionBatch,
-    ) -> None:
-        key = batch.family, source.resolved_path_text
-        self.runtime_projections[key] = batch.items
-        if batch.content_signature is not None:
-            self._source_projection_signatures[key] = batch.content_signature
-            self._record_content_signature(
-                source,
-                batch.family,
-                batch.content_signature,
-            )
-
     def _content_signature_index(
         self,
         source: CompactProjectionCacheSource,
@@ -1353,6 +1492,7 @@ class BoundedCompactProjectionManifest:
         family: type[CollectedFamily],
         signature: str,
     ) -> None:
+        self._source_projection_signatures[family, source.resolved_path_text] = signature
         index = self._content_signature_index(source)
         if index is None:
             return
@@ -1392,64 +1532,19 @@ class BoundedCompactProjectionManifest:
             ),
         )
 
+    @suspend_cyclic_gc()
     def _projections_for_family(
         self,
         family: type[CollectedFamily],
         *,
         derive_content_identity: bool,
     ) -> tuple[object, ...]:
-        projections: list[object] = []
-        source_signatures: list[str] = []
-        for source in self.sources:
-            demand = self.family_demands.get(family)
-            is_context_demand = self._is_context_demand_source(source, demand)
-            source_key = family, source.resolved_path_text
-            source_projections = self.runtime_projections.get(source_key)
-            demanded_cache_hit = False
-            if source_projections is None and is_context_demand:
-                source_projections = source.load_items(
-                    family,
-                    self._demand_signature(family),
-                )
-                demanded_cache_hit = source_projections is not None
-            if source_projections is None:
-                source_projections = source.load_items(family)
-            if source_projections is None:
-                source_projections = self._repair_source_family(source, family)
-            if is_context_demand and not demanded_cache_hit:
-                source_projections = family.project_cached_demand(
-                    tuple(source_projections),
-                    demand,
-                )
-            if derive_content_identity:
-                source_signature = self._source_projection_signatures.get(source_key)
-                if source_signature is None:
-                    source_signature = self._indexed_content_signature(source, family)
-                if source_signature is None:
-                    source_signature = collected_family_items_content_signature(
-                        tuple(source_projections)
-                    )
-                self._source_projection_signatures[source_key] = source_signature
-                self._record_content_signature(source, family, source_signature)
-                source_signatures.append(source_signature)
-            # Persisted family payloads are syntax-free by the cache write
-            # contract. Runtime values and repairs are checked at their insertion
-            # boundary, so recursively rescanning every warm item here only
-            # repeats the same proof for every exact analysis-cache miss.
-            projections.extend(source_projections)
-        family_projections = tuple(projections)
-        self._projection_counts_by_family.setdefault(
-            family,
-            len(family_projections),
-        )
-        if (
-            derive_content_identity
-            and family not in self._projection_signatures_by_family
-        ):
-            self._projection_signatures_by_family[family] = (
-                self._combined_projection_signature(family, tuple(source_signatures))
+        return tuple(
+            self.deferred_projections_for_family(
+                family,
+                derive_content_identity=derive_content_identity,
             )
-        return family_projections
+        )
 
     def projections_for_family(
         self,
@@ -1519,7 +1614,6 @@ class BoundedCompactProjectionManifest:
                 )
             if signature is None:
                 return None
-            self._source_projection_signatures[key] = signature
             self._record_content_signature(source, family, signature)
             source_signatures.append(signature)
         combined = self._combined_projection_signature(
@@ -1544,6 +1638,7 @@ class BoundedCompactProjectionManifest:
         release_module_analysis_memory(collect_cycles=False)
         return repaired
 
+    @suspend_cyclic_gc()
     def findings_by_detector(
         self,
         config: DetectorConfig,
@@ -1555,7 +1650,7 @@ class BoundedCompactProjectionManifest:
             Callable[
                 [
                     tuple[type[IssueDetector], ...],
-                    dict[type[CollectedFamily], tuple[object, ...]],
+                    CompactProjectionGroups,
                 ],
                 tuple[type[IssueDetector], ...],
             ]
@@ -1590,12 +1685,10 @@ class BoundedCompactProjectionManifest:
 
         def materialize_family(
             family: type[CollectedFamily],
-        ) -> tuple[object, ...]:
-            if detector_type_filter is None:
-                return self.projections_for_family(family)
-            return self._projections_for_family(
+        ) -> Sequence[object]:
+            return self.deferred_projections_for_family(
                 family,
-                derive_content_identity=True,
+                derive_content_identity=detector_type_filter is not None,
             )
 
         def release_class_derived_contexts() -> None:
@@ -1605,7 +1698,7 @@ class BoundedCompactProjectionManifest:
 
         def analyze_projection_group(
             detector_types: tuple[type[IssueDetector], ...],
-            projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+            projections_by_family: CompactProjectionGroups,
         ) -> None:
             selected_types = (
                 detector_types
@@ -1697,7 +1790,34 @@ class BoundedCompactProjectionManifest:
 
     @property
     def projection_count(self) -> int:
-        return sum(self._projection_counts_by_family.values())
+        return sum(self._materialized_source_counts.values())
+
+
+class DeferredCompactProjectionFamily(DeferredBatchSequence[object]):
+    """One stable source inventory with validated family batches loaded on demand."""
+
+    def __init__(
+        self,
+        manifest: BoundedCompactProjectionManifest,
+        family: type[CollectedFamily],
+        derive_content_identity: bool,
+    ) -> None:
+        super().__init__()
+        self.manifest = manifest
+        self.family = family
+        self.derive_content_identity = derive_content_identity
+        self.sources = tuple(manifest.sources)
+
+    @property
+    def batch_count(self) -> int:
+        return len(self.sources)
+
+    def _load_batch(self, index: int) -> tuple[object, ...]:
+        return self.manifest._source_family_items(
+            self.sources[index],
+            self.family,
+            derive_content_identity=self.derive_content_identity,
+        )
 
 
 @dataclass(frozen=True)
@@ -1713,6 +1833,7 @@ class CompactPathAnalysisResult:
     semantic_descent_graph: SemanticDescentGraph | None = None
 
 
+@ScanCache.scope()
 def analyze_compact_roots_with_cache(
     roots: tuple[Path, ...],
     config: DetectorConfig | None = None,
@@ -1980,6 +2101,31 @@ def analyze_compact_roots_with_cache(
         Path,
         tuple[tuple[RefactorFinding, ...] | None, ...],
     ] = {}
+    local_source_paths = tuple(
+        path for path in source_paths
+        if not aggregate_lookup.status.is_hit
+        and (
+            report_scope is None
+            or not report_scope.has_report_filter
+            or report_scope.includes_report_path(path)
+        )
+    )
+    local_source_path_set = frozenset(path.resolve() for path in local_source_paths)
+    if (
+        source_signature_cache is not None
+        and aggregate_lookup.status.can_reuse_findings
+        and per_module_detector_types
+    ):
+        pending_signatures = source_signature_cache.pending_semantic_hashes(local_source_paths)
+        signature_plan = DetectorAnalysisWorkerPlan(
+            requested_worker_count=parse_workers,
+            work_item_count=len(pending_signatures),
+            minimum_auto_work_items=2,
+        )
+        for signature in signature_plan.map(
+            CachedSourceFileSignature.with_semantic_hash, pending_signatures,
+        ):
+            source_signature_cache.record_semantic_hash(signature)
     source_path_set = {path.resolve() for path in source_paths}
     streamed_paths: set[Path] = set()
     for root in roots:
@@ -1998,14 +2144,7 @@ def analyze_compact_roots_with_cache(
             ):
                 continue
             streamed_paths.add(normalized_path)
-            include_local_findings = (
-                not aggregate_lookup.status.is_hit
-                and (
-                    report_scope is None
-                    or not report_scope.has_report_filter
-                    or report_scope.includes_report_path(path)
-                )
-            )
+            include_local_findings = normalized_path in local_source_path_set
             if (
                 not projection_manifest.projection_families
                 and not include_local_findings
@@ -2149,23 +2288,9 @@ def analyze_compact_roots_with_cache(
             str(request.source.path),
         ),
     )
-    if worker_plan.uses_process_pool:
-        with ProcessPoolExecutor(
-            max_workers=worker_plan.effective_worker_count,
-            mp_context=_analysis_process_pool_mp_context(),
-        ) as executor:
-            build_results = list(
-                executor.map(
-                    build_compact_projection_shard,
-                    ordered_build_requests,
-                    chunksize=1,
-                )
-            )
-    else:
-        build_results = [
-            build_compact_projection_shard(request)
-            for request in ordered_build_requests
-        ]
+    build_results = worker_plan.map(
+        build_compact_projection_shard, ordered_build_requests,
+    )
     build_wall_seconds = perf_counter() - build_started
     worker_total_seconds = sum(result.total_seconds for result in build_results)
     worker_local_seconds = sum(
@@ -2195,10 +2320,7 @@ def analyze_compact_roots_with_cache(
                 ),
             )
         for batch in result.projection_batches:
-            projection_manifest.add_runtime_batch(
-                projection_source,
-                batch,
-            )
+            batch.add_to(projection_manifest, projection_source)
         if not result.cache_bundle_complete:
             projection_manifest.cache_bundle_is_complete(projection_source)
     gc.collect()
@@ -2263,7 +2385,7 @@ def analyze_compact_roots_with_cache(
 
         def filter_projection_cached_detector_types(
             candidate_types: tuple[type[IssueDetector], ...],
-            projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+            projections_by_family: CompactProjectionGroups,
         ) -> tuple[type[IssueDetector], ...]:
             del projections_by_family
             nonlocal global_cache_hit_count
@@ -2349,13 +2471,13 @@ def analyze_compact_roots_with_cache(
     if include_semantic_descent_graph:
         semantic_descent_graph = build_compact_semantic_descent_graph(
             cast(
-                tuple[CompactSemanticModuleProjection, ...],
+                Sequence[CompactSemanticModuleProjection],
                 projection_manifest.projections_for_family(
                     CompactSemanticModuleProjectionFamily
                 ),
             ),
             cast(
-                tuple[CompactModuleClassProjection, ...],
+                Sequence[CompactModuleClassProjection],
                 projection_manifest.projections_for_family(
                     CompactModuleClassProjectionFamily
                 ),
@@ -2546,6 +2668,7 @@ def analyze_modules(
     )
 
 
+@ScanCache.scope()
 def analyze_detector_types(
     modules: list[ParsedModule],
     config: DetectorConfig,
@@ -2773,6 +2896,15 @@ class CachedAnalysisResult:
     cache_identity: AnalysisCacheIdentity | None = None
     previous_cache_identity: AnalysisCacheIdentity | None = None
     previous_findings: tuple[RefactorFinding, ...] = ()
+
+    @property
+    def exact_cache_identity(self) -> AnalysisCacheIdentity:
+        """Require exact request reuse, separately from partial shard reuse."""
+        if not self.cache_status.is_hit or self.cache_identity is None:
+            raise ValueError(
+                "An exact cache result requires its validated request identity"
+            )
+        return self.cache_identity
 
 
 @dataclass(frozen=True)
@@ -3007,6 +3139,7 @@ class IncrementalAnalysisResult:
     cache_status: AnalysisCacheStatus
 
 
+@ScanCache.scope()
 def analyze_module_detector_types_with_cache(
     module: ParsedModule,
     config: DetectorConfig,
@@ -3497,6 +3630,7 @@ class IncrementalAnalysisCacheResolver:
         ).cache_token
 
 
+@ScanCache.scope()
 def analyze_modules_with_cache(
     roots: tuple[Path, ...],
     modules: list[ParsedModule],
@@ -3552,6 +3686,7 @@ def analyze_modules_with_cache(
     return cache_result.cache_status.resolve(authority)
 
 
+@ScanCache.scope()
 def load_analysis_cache_for_roots(
     roots: tuple[Path, ...],
     config: DetectorConfig | None = None,
@@ -3601,6 +3736,7 @@ def load_analysis_cache_for_roots(
     )
 
 
+@ScanCache.scope()
 def load_analysis_summary_for_roots(
     roots: tuple[Path, ...],
     config: DetectorConfig | None = None,
@@ -3608,8 +3744,8 @@ def load_analysis_summary_for_roots(
     analysis_cache_dir: Path | None = None,
     source_policy: PythonSourcePathPolicy | None = None,
     report_roots: tuple[Path, ...] = (),
-) -> FindingSummary | None:
-    """Load count-only detector findings from persistent cache."""
+) -> AnalysisFindingSummaryCachePayload | None:
+    """Load count-only findings with their validated request identity."""
 
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
@@ -3625,12 +3761,7 @@ def load_analysis_summary_for_roots(
     summary_lookup = AnalysisFindingCache(analysis_cache_dir).load_summary(
         cache_identity
     )
-    if (
-        not summary_lookup.status.is_hit
-        or summary_lookup.summary is None
-    ):
-        return None
-    return summary_lookup.summary
+    return summary_lookup.payload
 
 
 def analysis_cache_dir_for_root(
@@ -3708,7 +3839,7 @@ class FastCachedPathAnalysisAuthority:
             return None
         return self._partial_result(cache_result)
 
-    def summary_result(self) -> FindingSummary | None:
+    def summary_result(self) -> AnalysisFindingSummaryCachePayload | None:
         if not self._request.use_parse_cache:
             return None
         return load_analysis_summary_for_roots(
@@ -3885,6 +4016,7 @@ class ChangedPathRootAssignment:
         raise ValueError(f"changed source path is outside analysis roots: {path}")
 
 
+@ScanCache.scope()
 def analyze_path(
     root: Path,
     config: DetectorConfig | None = None,
@@ -3939,6 +4071,7 @@ def analyze_path(
     ).findings
 
 
+@ScanCache.scope()
 def analyze_paths(
     roots: tuple[Path, ...],
     config: DetectorConfig | None = None,

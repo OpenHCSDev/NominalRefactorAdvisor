@@ -88,8 +88,7 @@ def _compact_concrete_type_case_function_facts(
                 isinstance(subnode, ast.Call)
                 and len(subnode.args) == 2
                 and not subnode.keywords
-                and AstExpressionProjection.terminal_name(subnode.func)
-                == "isinstance"
+                and AstExpressionProjection.terminal_name(subnode.func) == "isinstance"
             ):
                 continue
             subject_expression = _attribute_family_subject_expression(
@@ -326,8 +325,8 @@ def _compact_common_abstract_base_names(
 
 
 def _compact_repeated_concrete_type_case_candidates(
-    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactRemainingSystemicModuleProjection],
+    class_projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
     *,
     class_index: CompactClassFamilyIndex | None = None,
@@ -389,8 +388,8 @@ def _compact_repeated_concrete_type_case_candidates(
 
 
 def _compact_implicit_self_contract_mixin_candidates(
-    projections: tuple[CompactRemainingSystemicModuleProjection, ...],
-    class_projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactRemainingSystemicModuleProjection],
+    class_projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
     *,
     class_index: CompactClassFamilyIndex | None = None,
@@ -600,7 +599,7 @@ def _native_dataclass_namespace_cli_projections(
 
 
 def _dataclass_namespace_cli_mirror_candidates_from_projections(
-    projections: tuple[_DataclassNamespaceCliModuleProjection, ...],
+    projections: Sequence[_DataclassNamespaceCliModuleProjection],
 ) -> tuple[DataclassNamespaceCliMirrorCandidate, ...]:
     cli_specs = tuple(
         cli_spec for projection in projections for cli_spec in projection.cli_specs
@@ -649,10 +648,6 @@ _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
     parameter_count=1,
     callee_family_count=1,
 )
-
-
-
-
 
 
 @dataclass(frozen=True)
@@ -1033,7 +1028,7 @@ def _compact_keyed_family_axis_specs_from_context(
 
 
 def _target_has_keyed_family_axis_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """A keyed-family report names one of the roots that owns the axis."""
@@ -1041,7 +1036,7 @@ def _target_has_keyed_family_axis_root(
     del config
     return any(
         indexed_class.keyed_family_key_type_name is not None
-        and "registry_key_attr" in indexed_class.assignments_by_name
+        and "registry_key_attr" in indexed_class.direct_declared_member_names
         for projection in projections_by_family.get(
             CompactModuleClassProjectionFamily, ()
         )
@@ -1051,7 +1046,7 @@ def _target_has_keyed_family_axis_root(
 
 
 def _target_has_manual_selector_axis(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     del config
@@ -1065,7 +1060,7 @@ def _target_has_manual_selector_axis(
 
 
 def _target_has_closed_axis_branch(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     del config
@@ -1079,7 +1074,7 @@ def _target_has_closed_axis_branch(
 
 
 def _target_has_keyed_table_axis(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     del config
@@ -1093,7 +1088,7 @@ def _target_has_keyed_table_axis(
 
 
 def _target_has_axis_shadow_evidence(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     return _target_has_keyed_family_axis_root(
@@ -1102,7 +1097,7 @@ def _target_has_axis_shadow_evidence(
 
 
 def _target_has_residual_axis_evidence(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     return _target_has_keyed_family_axis_root(
@@ -1346,7 +1341,7 @@ def _external_enum_case_recovery_candidates(
 
 
 def _target_has_external_enum_case_recovery(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     del config
@@ -1569,7 +1564,7 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -1578,7 +1573,7 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1659,7 +1654,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -1668,7 +1663,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1680,7 +1675,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
 
     def _findings_from_class_index(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
@@ -1749,7 +1744,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
             candidate = class_index.class_for(symbol)
             if candidate is None:
                 continue
-            assignment_lines = candidate.assignment_lines_by_name
+            assignment_lines = candidate.declared_member_lines_by_name
             for axis_name in _EXPLICIT_CLASS_ORDER_AXIS_NAMES:
                 line = assignment_lines.get(axis_name)
                 if line is None:
@@ -1766,7 +1761,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
     @staticmethod
     def _sorts_registry_by_order_axis(
         root_name: str,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         axis_names: tuple[str, ...],
     ) -> bool:
         axis_name_set = frozenset(axis_names)
@@ -1811,7 +1806,7 @@ class NominalInstanceExplicitOrderingDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -1822,7 +1817,7 @@ class NominalInstanceExplicitOrderingDetector(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1834,7 +1829,7 @@ class NominalInstanceExplicitOrderingDetector(
 
     def _findings_from_class_index(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
@@ -1847,7 +1842,7 @@ class NominalInstanceExplicitOrderingDetector(
                 continue
             root_axis_lines = {
                 axis_name: line
-                for axis_name, line in family_root.assignment_lines_by_name.items()
+                for axis_name, line in family_root.declared_member_lines_by_name.items()
                 if axis_name in _EXPLICIT_CLASS_ORDER_AXIS_NAMES
             }
             if not root_axis_lines:
@@ -1956,7 +1951,7 @@ class NominalInstanceExplicitOrderingDetector(
 
 
 def _target_has_repeated_keyed_family_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """Repeated-keyed-family evidence consists exclusively of its roots."""
@@ -2000,7 +1995,7 @@ class RepeatedKeyedFamilyDetector(
 
     @staticmethod
     def _candidates_from_compact_projections(
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> tuple[RepeatedKeyedFamilyCandidate, ...]:
         return RepeatedKeyedFamilyCandidate.from_roots(
@@ -2046,16 +2041,6 @@ def _compact_registry_class_display_name(
     return indexed_class.symbol
 
 
-def _compact_string_literal(expression: str | None) -> str | None:
-    if expression is None:
-        return None
-    try:
-        value = ast.literal_eval(expression)
-    except (SyntaxError, ValueError):
-        return None
-    return value if isinstance(value, str) else None
-
-
 def _compact_registry_reference_edges(
     encoded_edges: str,
 ) -> Iterator[tuple[int, int, int]]:
@@ -2067,7 +2052,7 @@ def _compact_registry_reference_edges(
 
 
 def _compact_registry_consumer_index(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     relevant_keys: frozenset[tuple[str, str]],
 ) -> dict[tuple[str, str], frozenset[str]]:
     consumers: dict[tuple[str, str], set[str]] = {}
@@ -2109,7 +2094,7 @@ def _compact_registry_consumer_symbols(
 
 
 def _compact_keyed_registry_axis_facts(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
     *,
     class_index: CompactClassFamilyIndex | None = None,
@@ -2120,10 +2105,7 @@ def _compact_keyed_registry_axis_facts(
         indexed_class
         for indexed_class in class_index.classes_by_symbol.values()
         if indexed_class.keyed_family_key_type_name is not None
-        and _compact_string_literal(
-            indexed_class.assignments_by_name.get("registry_key_attr")
-        )
-        is not None
+        and indexed_class.constant_string_assignment("registry_key_attr") is not None
     )
     relevant_consumer_keys = frozenset(
         (family_name, method_name)
@@ -2143,8 +2125,8 @@ def _compact_keyed_registry_axis_facts(
         if PythonSourcePathPolicy.is_test_path(Path(indexed_class.file_path)):
             continue
         key_type_name = indexed_class.keyed_family_key_type_name
-        registry_key_attr_name = _compact_string_literal(
-            indexed_class.assignments_by_name.get("registry_key_attr")
+        registry_key_attr_name = indexed_class.constant_string_assignment(
+            "registry_key_attr"
         )
         if key_type_name is None or registry_key_attr_name is None:
             continue
@@ -2175,27 +2157,31 @@ def _compact_keyed_registry_axis_facts(
                 is not None
             }
         )
-        type_names_by_key: dict[str, list[str]] = {}
-        for descendant in concrete_descendants:
-            expression = descendant.assignments_by_name.get(registry_key_attr_name)
-            if expression is None:
-                continue
-            type_names_by_key.setdefault(expression, []).append(
-                _compact_registry_class_display_name(descendant, class_index)
-            )
-        injectivity_proof = InjectiveTypeRegistryProof.from_type_map(
-            key_axis_name=key_type_name,
-            type_names_by_key={
-                key_name: sorted_tuple(type_names)
-                for key_name, type_names in sorted(type_names_by_key.items())
-            },
-            registered_type_names=tuple(
-                _compact_registry_class_display_name(descendant, class_index)
+        try:
+            key_entries = tuple(
+                (
+                    member.require_mapping_key(),
+                    member.expression,
+                    (_compact_registry_class_display_name(descendant, class_index),),
+                )
                 for descendant in concrete_descendants
-            ),
-            reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
-            consumer_symbols=consumer_symbols,
-        )
+                for member in (
+                    descendant.direct_value_writes_by_name[registry_key_attr_name],
+                )
+            )
+        except (KeyError, ValueError):
+            injectivity_proof = None
+        else:
+            injectivity_proof = InjectiveTypeRegistryProof.from_key_entries(
+                key_axis_name=key_type_name,
+                key_entries=key_entries,
+                registered_type_names=tuple(
+                    _compact_registry_class_display_name(descendant, class_index)
+                    for descendant in concrete_descendants
+                ),
+                reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
+                consumer_symbols=consumer_symbols,
+            )
         facts.append(
             KeyedRegistryAxisFact(
                 file_path=indexed_class.file_path,
@@ -2243,7 +2229,7 @@ def _compact_registry_projection_import_aliases(
         (
             fact.class_name,
             fact.key_type_name,
-            *fact.injectivity_proof.registered_type_names,
+            *fact.require_proof().registered_type_names,
         )
     )
     return {
@@ -2273,7 +2259,7 @@ def _compact_registry_projection_surface_candidate(
     fact: KeyedRegistryAxisFact,
     import_aliases: dict[str, str],
 ) -> RegistryProjectionSurfaceCandidate | None:
-    proof = fact.injectivity_proof
+    proof = fact.require_proof()
     if surface.sequence_references:
         reference_names = tuple(
             _compact_registry_projection_reference_name(reference, import_aliases)
@@ -2349,7 +2335,7 @@ def _compact_registry_projection_surface_candidate(
 
 
 def _compact_registry_projection_surface_candidates_from_facts(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     facts: tuple[KeyedRegistryAxisFact, ...],
 ) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
     projections_by_path = {
@@ -2375,7 +2361,7 @@ def _compact_registry_projection_surface_candidates_from_facts(
                     fact.key_type_name in import_aliases.values()
                     or fact.class_name in import_aliases.values()
                     or frozenset(import_aliases.values())
-                    & frozenset(fact.injectivity_proof.registered_type_names)
+                    & frozenset(fact.require_proof().registered_type_names)
                 ):
                     continue
             for surface in projection.named_projection_surfaces:
@@ -2398,7 +2384,7 @@ def _compact_registry_projection_surface_candidates_from_facts(
 
 
 def _compact_registry_projection_surface_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
 ) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
     return _compact_registry_projection_surface_candidates_from_facts(
@@ -2408,7 +2394,7 @@ def _compact_registry_projection_surface_candidates(
 
 
 def _compact_registry_projection_policy_authority_candidates_from_facts(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     facts: tuple[KeyedRegistryAxisFact, ...],
 ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
     return (
@@ -2421,7 +2407,7 @@ def _compact_registry_projection_policy_authority_candidates_from_facts(
 
 
 def _compact_registry_projection_policy_authority_candidates(
-    projections: tuple[CompactModuleClassProjection, ...],
+    projections: Sequence[CompactModuleClassProjection],
     config: DetectorConfig,
 ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
     return _compact_registry_projection_policy_authority_candidates_from_facts(
@@ -2431,7 +2417,7 @@ def _compact_registry_projection_policy_authority_candidates(
 
 
 def _target_has_keyed_registry_axis_root(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """Registry-axis findings are anchored at the class that owns the axis."""
@@ -2439,10 +2425,7 @@ def _target_has_keyed_registry_axis_root(
     del config
     return any(
         indexed_class.keyed_family_key_type_name is not None
-        and _compact_string_literal(
-            indexed_class.assignments_by_name.get("registry_key_attr")
-        )
-        is not None
+        and indexed_class.constant_string_assignment("registry_key_attr") is not None
         for projection in projections_by_family.get(
             CompactModuleClassProjectionFamily, ()
         )
@@ -2452,7 +2435,7 @@ def _target_has_keyed_registry_axis_root(
 
 
 def _target_has_named_registry_projection_surface(
-    projections_by_family: dict[type[CollectedFamily], tuple[object, ...]],
+    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
     config: DetectorConfig,
 ) -> bool:
     """Projection findings report their manual surface, not the joined registry."""
@@ -2493,7 +2476,7 @@ class _CompactNonInjectiveTypeRegistryDetectorBase(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> Sequence[NonInjectiveTypeRegistryCandidate]:
         return NonInjectiveTypeRegistryCandidate.from_facts(
@@ -2502,7 +2485,7 @@ class _CompactNonInjectiveTypeRegistryDetectorBase(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -2522,7 +2505,7 @@ class _CompactInjectiveTypeRegistryDetectorBase(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> Sequence[InjectiveTypeRegistryCandidate]:
         return InjectiveTypeRegistryCandidate.from_facts(
@@ -2531,7 +2514,7 @@ class _CompactInjectiveTypeRegistryDetectorBase(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -2551,14 +2534,14 @@ class _CompactRegistryProjectionSurfaceDetectorBase(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> Sequence[RegistryProjectionSurfaceCandidate]:
         return _compact_registry_projection_surface_candidates(projections, config)
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -2582,7 +2565,7 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> Sequence[RegistryProjectionPolicyAuthorityCandidate]:
         return _compact_registry_projection_policy_authority_candidates(
@@ -2591,7 +2574,7 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
 
     def _findings_from_compact_context(
         self,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -2875,11 +2858,11 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
     ) -> list[RefactorFinding]:
         candidates = _compact_repeated_concrete_type_case_candidates(
             cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
+                Sequence[CompactRemainingSystemicModuleProjection],
                 projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
             ),
             cast(
-                tuple[CompactModuleClassProjection, ...],
+                Sequence[CompactModuleClassProjection],
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
@@ -2964,11 +2947,11 @@ class ImplicitSelfContractMixinDetector(
     ) -> list[RefactorFinding]:
         candidates = _compact_implicit_self_contract_mixin_candidates(
             cast(
-                tuple[CompactRemainingSystemicModuleProjection, ...],
+                Sequence[CompactRemainingSystemicModuleProjection],
                 projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
             ),
             cast(
-                tuple[CompactModuleClassProjection, ...],
+                Sequence[CompactModuleClassProjection],
                 projections_by_family[CompactModuleClassProjectionFamily],
             ),
             config,
@@ -3297,16 +3280,19 @@ class FindingSpecConstructionBoilerplateDetector(
     def _finding_for_candidate(
         self, field_candidate: FindingSpecConstructionCandidate
     ) -> RefactorFinding:
-        redundant_defaults = ", ".join(
-            (
-                f"{name}={value}"
-                for name, value in zip(
-                    field_candidate.redundant_keyword_names,
-                    field_candidate.redundant_keyword_values,
-                    strict=True,
+        redundant_defaults = (
+            ", ".join(
+                (
+                    f"{name}={value}"
+                    for name, value in zip(
+                        field_candidate.redundant_keyword_names,
+                        field_candidate.redundant_keyword_values,
+                        strict=True,
+                    )
                 )
             )
-        ) or "no explicit semantic defaults"
+            or "no explicit semantic defaults"
+        )
         return self.build_finding(
             (
                 f"`{field_candidate.constructor_name}` constructs FindingSpec directly "
@@ -3433,7 +3419,7 @@ class CompactDataclassNamespaceCliMirrorCandidateBase(
 
     def _candidates_from_compact_projections(
         self,
-        projections: tuple[_DataclassNamespaceCliModuleProjection, ...],
+        projections: Sequence[_DataclassNamespaceCliModuleProjection],
         config: DetectorConfig,
     ) -> Sequence[DataclassNamespaceCliMirrorCandidate]:
         del config

@@ -105,7 +105,7 @@ PLAN = CodemodPlanSequence.from_operations(
             return OpenCompactValueOrigin(possible_origins, CompactValueOriginViolation.AMBIGUOUS_BINDING)
         if mutation in visited_mutations:
             return OpenCompactValueOrigin(possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS)
-        alias = self.exact_aliases_by_binding_mutation.get(mutation)
+        alias = self.exact_alias_for(mutation)
         if alias is None:
             return OpenCompactValueOrigin(possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING)
         source_resolution = self._value_origin_for(

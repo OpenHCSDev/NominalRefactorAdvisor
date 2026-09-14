@@ -39,6 +39,9 @@ import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
 import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
 import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
 import nominal_refactor_advisor.codemod_workflow as codemod_workflow_module
+from nominal_refactor_advisor.codemod_native_requirements import (
+    DeclaredNativeUseInvariants,
+)
 import nominal_refactor_advisor.detectors._structural as structural_detectors
 import nominal_refactor_advisor.detectors._structural_step_regex_extractor as regex_extractor_detectors
 import nominal_refactor_advisor.observation_families as observation_families_module
@@ -889,13 +892,18 @@ def test_replace_target_reproves_declaration_identity(
     assert error.value.report.operation == ReplaceTargetOperation.operation_key()
     assert isinstance(error.value.report.detail, SourceRewriteTargetPreflightDetail)
     assert error.value.report.detail.target == operation.target
-    assert json_report_object(error.value.report)["details"] == {
-        "target": {
-            "target_id": None,
-            "target_qualname": "Alpha.run",
-            "file_path": module_path.as_posix(),
-        }
+    details = json_report_object(error.value.report)["details"]
+    assert set(details) == {"target", "causes"}
+    assert details["target"] == {
+        "target_id": None,
+        "target_qualname": "Alpha.run",
+        "file_path": module_path.as_posix(),
     }
+    assert details["causes"][0] == {
+        "violation": None,
+        "message": error.value.report.message,
+    }
+    assert all(cause["violation"] is None for cause in details["causes"])
 
 
 def test_codemod_apply_rejects_source_changed_after_simulation(
@@ -2721,21 +2729,21 @@ def test_recipe_snapshot_builds_target_node_index_once(
             )
         )
     )
-    original = AstTargetNodeIndex.from_source_mapping.__func__
+    original = AstTargetNodeIndex.from_modules.__func__
     index_build_count = 0
 
     def counted_index_build(
         cls: type[AstTargetNodeIndex],
         indexed_source: SourceIndex,
-        indexed_sources: Mapping[str, str],
+        indexed_modules: tuple[ParsedModule, ...],
     ) -> AstTargetNodeIndex:
         nonlocal index_build_count
         index_build_count += 1
-        return original(cls, indexed_source, indexed_sources)
+        return original(cls, indexed_source, indexed_modules)
 
     monkeypatch.setattr(
         AstTargetNodeIndex,
-        "from_source_mapping",
+        "from_modules",
         classmethod(counted_index_build),
     )
 
@@ -13076,6 +13084,17 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     assert small_work_plan.uses_process_pool is False
 
 
+@pytest.mark.parametrize("requested,jobs,expected", (
+    (16, 0, 1), (16, 1, 1), (16, 2, 2), (16, 100, 16), (1, 100, 1),
+))
+def test_explicit_worker_budget_is_bounded_by_available_jobs(requested, jobs, expected):
+    plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=requested, work_item_count=jobs,
+    )
+    assert plan.effective_worker_count == expected
+    assert plan.uses_process_pool is (expected > 1)
+
+
 def test_analysis_process_pool_uses_copy_on_write_on_linux() -> None:
     context = _analysis_process_pool_mp_context()
 
@@ -13601,8 +13620,6 @@ def test_single_case_registry_does_not_create_a_maturity_obligation(tmp_path: Pa
     )
     findings = analyze_path(tmp_path)
     assert all(finding.detector_id != "premature_registry_infrastructure" for finding in findings)
-
-
 
 
 def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
@@ -24011,7 +24028,7 @@ def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
     assert second_result.returncode == 0, second_result.stderr
     assert payload["timing"]["analysis_cache_status"] == "hit"
     assert scan_status["complete"] is True
-    assert scan_status["mode"] == "exact_compact_global"
+    assert scan_status["mode"] == "exact_cache"
     assert scan_status["omitted_detector_count"] == 0
     assert payload["active_finding_surface"] == "raw_findings"
 
@@ -26624,8 +26641,6 @@ def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(
     assert "`inner`" in findings[0].summary
 
 
-
-
 def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
     tmp_path: Path,
 ) -> None:
@@ -26668,6 +26683,33 @@ def test_type_keyed_behavior_projection_requires_one_mapped_type_hierarchy(
     )
 
 
+def _authored_fixture_descent(snapshot, module_path):
+    """Explicit fixture-author premise, never supplied by automatic synthesis.
+
+    These fixtures retain native classmethod/type and the real registry helper.
+    Other source/destination hazards remain independently checked below.
+    """
+    operation = DescendTypeKeyedBehaviorProjectionOperation(
+        target=SourceRewriteTarget(
+            file_path=module_path.as_posix(), qualname="EventProjection"
+        )
+    )
+    return _with_fixture_native_invariants(operation, snapshot)
+
+
+def _with_fixture_native_invariants(operation, snapshot):
+    """Accept native requirements as the fixture author, not as the planner."""
+    requirements = operation.native_use_requirements(snapshot)
+    assert len(requirements) == 3
+    return replace(
+        operation,
+        supported_execution=DeclaredNativeUseInvariants.from_requirements(
+            requirements,
+            rationale="Controlled fixture retains the declared native implementations at every use.",
+        ),
+    )
+
+
 def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     tmp_path: Path,
 ) -> None:
@@ -26688,17 +26730,28 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-    operation = plan.document.recipes[0].operations[0]
-    assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
-    assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
-    assert isinstance(
-        RefactorRecipeOperation.from_json_value(json_report_object(operation)),
-        DescendTypeKeyedBehaviorProjectionOperation,
+    assert (
+        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    assert "explicit supported-execution invariant" in plan.records[0].reason
+    proposal = plan.records[0].proposal
+    assert proposal is not None
+    assert plan.records[0].recipe is None
+    assert plan.records[0].candidate_recipes == ()
+    (operation,) = proposal.operations
+    assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
+    operation = _with_fixture_native_invariants(operation, snapshot)
+    assert (
+        RefactorRecipeOperation.from_json_value(json_report_object(operation))
+        == operation
+    )
+    authored = replace(proposal, operations=(operation,))
+    authored = RefactorRecipe.from_json_value(json_report_object(authored))
+    simulation = CodemodPlanDocument(recipes=(authored,)).as_sequence().simulate(
+        snapshot, backend=CodemodBackend.AST_SPAN
+    )
     assert simulation.is_clean is True
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.final_snapshot.sources_by_file_path[module_path.as_posix()]
     assert "class EventProjection" not in rewritten
     assert "class NamedEventProjection" not in rewritten
     assert rewritten.count("def render(self)") == 3
@@ -26780,11 +26833,7 @@ def test_type_keyed_descent_preserves_class_owned_method_semantics(
     assert namespace["render_event"](event) == expected
 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
-        target=SourceRewriteTarget(
-            file_path=module_path.as_posix(), qualname="EventProjection"
-        )
-    )
+    operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match=hazard):
         operation.source_edits_from_snapshot(snapshot)
     assert module_path.read_text(encoding="utf-8") == source
@@ -26809,11 +26858,7 @@ def test_type_keyed_descent_rejects_inherited_registry_key_overwrite(
     )
 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
-        target=SourceRewriteTarget(
-            file_path=module_path.as_posix(), qualname="EventProjection"
-        )
-    )
+    operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match="outside the proved type bindings"):
         operation.source_edits_from_snapshot(snapshot)
 
@@ -26837,14 +26882,9 @@ def test_type_keyed_descent_cli_preserves_runtime_or_rejects_without_writes(
     module_path.write_text(source.replace("\n", newline), encoding="utf-8", newline="")
     original = module_path.read_bytes()
     before = subprocess.check_output([sys.executable, str(module_path)])
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     plan = CodemodPlanSequence.from_operations(
-        (
-            DescendTypeKeyedBehaviorProjectionOperation(
-                target=SourceRewriteTarget(
-                    file_path=module_path.as_posix(), qualname="EventProjection"
-                )
-            ),
-        )
+        (_authored_fixture_descent(snapshot, module_path),)
     )
     result = subprocess.run(
         [
@@ -26889,11 +26929,7 @@ def test_type_keyed_descent_reuses_evaluated_default_ownership_guard(
     event.name = "source-owned"
     assert namespace["render_event"](event) == "source-owned"
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
-        target=SourceRewriteTarget(
-            file_path=module_path.as_posix(), qualname="EventProjection"
-        )
-    )
+    operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match="evaluated_default"):
         operation.source_edits_from_snapshot(snapshot)
 
@@ -26976,13 +27012,12 @@ def test_cross_module_behavior_descent_cli_reproves_global_authorities(
                 import_source=ensure_import,
             )
         )
-    operations.append(
-        DescendTypeKeyedBehaviorProjectionOperation(
-            target=SourceRewriteTarget(
-                file_path=projection_path.as_posix(), qualname="EventProjection"
-            )
-        )
-    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(package))
+    if operations:
+        preceding = CodemodPlanSequence.from_operations(operations).simulate(snapshot)
+        assert preceding.is_clean
+        snapshot = preceding.final_snapshot
+    operations.append(_authored_fixture_descent(snapshot, projection_path))
     plan = CodemodPlanSequence.from_operations(tuple(operations))
     result = subprocess.run(
         [
@@ -27034,4 +27069,7 @@ def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     assert plan.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "projection family reference remains" in plan.records[0].reason
+    assert "explicit supported-execution invariant" in plan.records[0].reason
+    operation = _authored_fixture_descent(snapshot, tmp_path / "pkg/mod.py")
+    with pytest.raises(ValueError, match="projection family reference remains"):
+        operation.source_edits_from_snapshot(snapshot)

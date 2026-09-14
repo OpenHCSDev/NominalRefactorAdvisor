@@ -1,101 +1,176 @@
-"""Use-point lexical evidence for references to known native declarations."""
+"""Original-source capture shared by native operation obligations."""
 
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import cast
 
-from .ast_projection import AstExpressionProjection
-from .lexical_scopes import LexicalNameResolution, LexicalScopeContext
+from .captured_reference import CapturedReferenceKernel, CapturedReferenceResolution
+from .descriptor_algebra import AliasProperty
+from .native_call import (
+    CallAuthority,
+    NativeCallAuthority,
+)
 from .native_declarations import NativeDeclaration
+from .native_subscription import NativeSubscriptionAuthority
+from .product_flow import (
+    CompactDefinitionTarget,
+    CompactFlowContext,
+    CompactFlowOwner,
+    CompactFunctionCall,
+    CompactMutation,
+    CompactSubscription,
+    SourceFlowOperation,
+    SourceProductFlowProjection,
+)
 
-if TYPE_CHECKING:
-    from .ast_tools import ParsedModule
-    from .class_index import ModuleNominalBindingView, ModuleNominalBindingWitness
 
+class NativeReferenceEnvironment(ABC):
+    """One required original-source capture authority for native operations.
 
-@dataclass(frozen=True)
-class NativeReferenceEnvironment:
-    bindings: ModuleNominalBindingView
-    module: ParsedModule
-    definition_line: int
+    The kernel's effect provider must admit the actual execution prefix. Equal
+    AST coordinates, lexical spelling and source-qualified names are not native
+    object identity. Consumers keep their separate operation obligations.
+    """
 
+    context_for_owner = AliasProperty[Callable[[CompactFlowOwner], CompactFlowContext]](
+        "source.context_for_owner"
+    )
 
-@dataclass(frozen=True)
-class ScopedNativeReference:
-    node: ast.expr
-    resolution: LexicalNameResolution
+    source_operation = AliasProperty[
+        Callable[[CompactFlowContext, object], SourceFlowOperation]
+    ]("source.source_operation")
 
-    @classmethod
-    def from_scope(
-        cls, node: ast.expr, scope: LexicalScopeContext
-    ) -> ScopedNativeReference:
-        chain = AstExpressionProjection.attribute_chain(node)
-        return cls(
-            node,
-            (
-                LexicalNameResolution.UNPROVED
-                if chain is None
-                else scope._resolve_name(chain[0])
-            ),
+    definition_operation = AliasProperty[Callable[[ast.AST], SourceFlowOperation]](
+        "source.definition_operation"
+    )
+
+    def require_subscription(self, node: ast.Subscript) -> None:
+        operation = self.source.node_operation(node, CompactSubscription)
+        self.subscription_authority(
+            self.context_for_owner(operation.owner), operation.event
+        ).require_closed()
+
+    def subscription_authority(
+        self,
+        context: CompactFlowContext,
+        invocation: CompactSubscription,
+    ) -> NativeSubscriptionAuthority:
+        return NativeSubscriptionAuthority.for_subscription(self, context, invocation)
+
+    def native_call_authority(
+        self, context: CompactFlowContext, call: CompactFunctionCall
+    ) -> NativeCallAuthority:
+        return NativeCallAuthority.for_call(self, context, call)
+
+    @cached_property
+    def _call_authorities(self) -> dict[SourceFlowOperation, CallAuthority]:
+        """Original invocations belong to this execution, not their source coordinates."""
+        return {}
+
+    def call_authority(
+        self, context: CompactFlowContext, call: CompactFunctionCall
+    ) -> CallAuthority:
+        operation = self.source_operation(context, call)
+        if operation not in self._call_authorities:
+            self._call_authorities[operation] = self.kernel._read_use(
+                call.target_use, context, frozenset()
+            ).call_authority(self, context, call)
+        return self._call_authorities[operation]
+
+    @abstractmethod
+    def require_import_operation(self, operation: SourceFlowOperation) -> None:
+        """Require one actual import binding, without admitting later aliases."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_discard(self, node: ast.Expr) -> None:
+        """Require evaluation and reference release at the actual result cut."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_call(self, node: ast.Call) -> None:
+        """Require actual call execution, independently of returned identity."""
+        raise NotImplementedError
+
+    def definition_result(
+        self,
+        context: CompactFlowContext,
+        binding: CompactMutation[CompactDefinitionTarget],
+    ) -> CapturedReferenceResolution:
+        """Query an actual definition result, not a newly fabricated source read.
+
+        The original creation event is checked even when its installed name is
+        rebound later. This query does not prove a later namespace slot stable.
+        """
+        self.source_operation(context, binding)
+        if not isinstance(binding.target, CompactDefinitionTarget):
+            raise ValueError("Definition result requires an actual definition binding")
+        return self.kernel._definition_binding_resolution(
+            context, binding.target.lexical_reference, binding, frozenset()
         )
 
-    def require_binding(
-        self, environment: NativeReferenceEnvironment
-    ) -> ModuleNominalBindingWitness:
-        if self.resolution is not LexicalNameResolution.EXTERNAL:
-            raise ValueError(
-                f"Class namespace execution at line {self.node.lineno} has no external binding proof"
-            )
-        witness = environment.bindings.reference_or_builtin_witness_at(
-            environment.module, self.node, line=environment.definition_line
+    def capture_definition(self, node: ast.AST) -> CapturedReferenceResolution:
+        """Resolve an actual definition result at its creation, not a later name read."""
+        operation = self.definition_operation(node)
+        return self.definition_result(
+            self.context_for_owner(operation.owner),
+            cast(CompactMutation[CompactDefinitionTarget], operation.event),
         )
-        if witness is None:
-            raise ValueError(
-                f"Class namespace execution at line {self.node.lineno} remains unproved"
-            )
-        return witness
+
+    def capture_value(self, node: ast.expr) -> CapturedReferenceResolution:
+        return self.kernel.read_source_value(self.source, node)
+
+    @property
+    @abstractmethod
+    def source(self) -> SourceProductFlowProjection:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def kernel(self) -> CapturedReferenceKernel:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_namespace_write(self, node: ast.Attribute) -> None:
+        """Require the actual write protocol separately from reading its receiver."""
+        raise NotImplementedError
+
+    def require_item_write(self, node: ast.Subscript | ast.AnnAssign) -> None:
+        """Environments without source setter proof leave this operation open."""
+        raise ValueError("Native item write remains unproved")
+
+    @abstractmethod
+    def require_class_creation(self, node: ast.ClassDef) -> None:
+        """Require class construction and installation, not merely value capture."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_import(self, node: ast.Import | ast.ImportFrom) -> None:
+        """Require the actual import execution and binding protocol."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_binding_write(self, node: ast.AST) -> None:
+        """Require storage and prior-value release at the original lexical mutation."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_assignment(
+        self, node: ast.Assign | ast.AnnAssign | ast.NamedExpr
+    ) -> None:
+        """Require expression evaluation; storage is a separate positioned mutation."""
+        raise NotImplementedError
+
+    def capture(self, node: ast.expr) -> CapturedReferenceResolution:
+        return self.kernel.read_source(self.source, node)
 
     def require_native(
         self,
-        environment: NativeReferenceEnvironment,
+        node: ast.expr,
         declarations: tuple[NativeDeclaration, ...],
     ) -> NativeDeclaration:
-        witness = self.require_binding(environment)
-        for declaration in declarations:
-            if declaration.qualified_name == witness.qualified_name:
-                return declaration
-        raise ValueError(
-            f"Class namespace execution at line {self.node.lineno} remains unproved"
-        )
-
-
-@dataclass(frozen=True)
-class NativeArgumentEvidence:
-    node: ast.expr
-    references: tuple[ScopedNativeReference, ...]
-
-    @classmethod
-    def from_scope(
-        cls, node: ast.expr, scope: LexicalScopeContext
-    ) -> NativeArgumentEvidence:
-        return cls(
-            node,
-            tuple(
-                ScopedNativeReference.from_scope(reference, scope)
-                for reference in ast.walk(node)
-                if isinstance(reference, (ast.Name, ast.Attribute))
-            ),
-        )
-
-    @cached_property
-    def references_by_node(self) -> dict[ast.expr, ScopedNativeReference]:
-        return {reference.node: reference for reference in self.references}
-
-    def required_reference(self, node: ast.expr) -> ScopedNativeReference:
-        reference = self.references_by_node.get(node)
-        if reference is None:
-            raise ValueError("Native argument has no closed declaration reference")
-        return reference
+        return self.capture(node).require_native(declarations)

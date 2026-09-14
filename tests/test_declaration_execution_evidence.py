@@ -180,8 +180,12 @@ def test_projection_compiles_once_and_does_not_execute_source(
 
     monkeypatch.setattr(builtins, "compile", observed_compile)
     first = compact_product_flow_projection(module)
+    initial_compile_count = len(calls)
     repeated = compact_product_flow_projection(module)
-    assert len(calls) == 1
+    # Cold native grammar probes may compile their own fixtures. They are not
+    # another compilation of the target, and neither may repeat on reuse.
+    assert sum(args[0] == module.source for args, _ in calls) == 1
+    assert len(calls) == initial_compile_count
     assert all(
         before.execution is after.execution
         for before, after in zip(
@@ -190,17 +194,29 @@ def test_projection_compiles_once_and_does_not_execute_source(
     )
 
 
-def test_module_without_function_does_not_activate_native_compilation(
+@pytest.mark.parametrize(
+    "source, expected_compilations",
+    (("value = 1\n", 0), ("class Plain:\n    value = 1\n", 1)),
+    ids=("no-definitions", "class-creation-demand"),
+)
+def test_native_compilation_follows_definition_demand_once(
     monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    expected_compilations: int,
 ) -> None:
-    module = _module("class Plain:\n    value = 1\n")
+    module = _module(source)
+    original_compile = builtins.compile
+    calls = []
 
-    def unexpected_compile(*args, **kwargs):
-        pytest.fail("No function declaration requested native execution evidence")
+    def observed_compile(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_compile(*args, **kwargs)
 
-    monkeypatch.setattr(builtins, "compile", unexpected_compile)
-    assert not compact_product_flow_projection(module).function_declarations
-    assert "native_compilation" not in vars(module)
+    monkeypatch.setattr(builtins, "compile", observed_compile)
+    for _ in range(2):
+        assert not compact_product_flow_projection(module).function_declarations
+        assert len(calls) == expected_compilations
+    assert ("native_compilation" in vars(module)) is bool(expected_compilations)
 
 
 def _assert_ast_free(value: object) -> None:

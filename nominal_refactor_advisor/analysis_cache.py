@@ -6,9 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from functools import lru_cache
 import hashlib
-import importlib.util
 import os
 from pathlib import Path
 import pickle
@@ -40,10 +38,16 @@ from .detectors import (
     IssueDetector,
 )
 from .finding_counts import FindingSummary
-from .implementation_identity import declaration_implementation_module_names
+from .implementation_identity import (
+    ImplementationSource,
+    declaration_implementation_module_names,
+)
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
+from .scan_cache import ScanCache
 from .source_geometry import read_source_text
+from .source_identity import python_source_cache_signature
+
 
 @dataclass(frozen=True)
 class AnalysisCacheSchema:
@@ -323,7 +327,16 @@ class AnalysisFindingSummaryLookup:
     """Result of consulting the count-only analysis summary cache."""
 
     status: AnalysisCacheStatus
-    summary: FindingSummary | None = None
+    payload: AnalysisFindingSummaryCachePayload | None = None
+
+    @property
+    def summary(self) -> FindingSummary | None:
+        """Project counts without discarding the validated cache identity."""
+        return None if self.payload is None else self.payload.summary
+
+    def __post_init__(self) -> None:
+        if self.status.is_hit != (self.payload is not None):
+            raise ValueError("A summary cache hit requires its validated payload")
 
 
 class ReprCacheTokenMixin:
@@ -384,7 +397,7 @@ class AnalysisFindingSummaryCachePayload:
     ) -> AnalysisFindingSummaryLookup:
         if self.identity != requested_identity:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
-        return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, self.summary)
+        return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, self)
 
 
 @dataclass(frozen=True)
@@ -472,6 +485,7 @@ class AnalysisEngineSignature:
     source_files: tuple[SourceFileSignature, ...]
 
     @classmethod
+    @ScanCache.cached
     def current(cls) -> "AnalysisEngineSignature":
         return cls(
             tuple(
@@ -552,6 +566,16 @@ class CachedSourceFileSignature:
             source_hash=source_hash,
         )
 
+    def with_semantic_hash(
+        self, source: str | None = None,
+    ) -> "CachedSourceFileSignature":
+        """Derive lexical identity from the exact source this record identifies."""
+        if source is None:
+            source = read_source_text(Path(self.path))
+        if python_source_cache_signature(source) != self.source_hash:
+            raise ValueError(f"Source changed during semantic preparation: {self.path}")
+        return replace(self, semantic_hash=semantic_python_source_hash(source))
+
     def matches(self, path: Path, path_stat: os.stat_result) -> bool:
         return (
             self.path == str(lexical_absolute_path(path))
@@ -581,72 +605,14 @@ class SourceFileSignatureCachePayload:
 def detector_module_source_hash(detector_type: type[IssueDetector]) -> str:
     """Hash the module file that owns one detector implementation."""
 
-    module = sys.modules.get(detector_type.__module__)
-    if module is None:
-        return _text_hash(detector_type.__module__)
-    raw_file_path = module.__dict__.get("__file__")
-    if not isinstance(raw_file_path, str):
-        return _text_hash(detector_type.__module__)
-    file_path = Path(raw_file_path)
-    try:
-        path_stat = file_path.stat()
-    except OSError:
-        return _text_hash(str(file_path))
-    return _detector_module_file_hash(
-        str(file_path.resolve()),
-        path_stat.st_mtime_ns,
-        path_stat.st_size,
-    )
-
-
-@lru_cache(maxsize=None)
-def _detector_module_file_hash(
-    path_text: str,
-    mtime_ns: int,
-    size: int,
-) -> str:
-    del mtime_ns, size
-    try:
-        payload = Path(path_text).read_bytes()
-    except OSError:
-        payload = path_text.encode("utf-8")
-    return hashlib.blake2s(payload, digest_size=16).hexdigest()
-
-
-def _text_hash(text: str) -> str:
-    return hashlib.blake2s(text.encode("utf-8"), digest_size=16).hexdigest()
+    return ImplementationSource.from_module_name(
+        detector_type.__module__
+    ).source_signature
 
 
 def _module_source_signature(module_name: str) -> SourceFileSignature:
-    spec = importlib.util.find_spec(module_name)
-    origin = None if spec is None else spec.origin
-    if origin is None or origin in {"built-in", "frozen"}:
-        return SourceFileSignature(module_name, _text_hash(module_name))
-    path = Path(origin)
-    try:
-        path_stat = path.stat()
-    except OSError:
-        return SourceFileSignature(str(path), _text_hash(str(path)))
-    return _module_source_signature_from_path(
-        module_name,
-        str(path.resolve()),
-        path_stat.st_mtime_ns,
-        path_stat.st_size,
-    )
-
-
-@lru_cache(maxsize=None)
-def _module_source_signature_from_path(
-    module_name: str,
-    path_text: str,
-    mtime_ns: int,
-    size: int,
-) -> SourceFileSignature:
-    del module_name, mtime_ns, size
-    try:
-        return SourceFileSignature.from_path(Path(path_text))
-    except OSError:
-        return SourceFileSignature(path_text, _text_hash(path_text))
+    source = ImplementationSource.from_module_name(module_name)
+    return SourceFileSignature(source.path, source.source_signature)
 
 
 _SEMANTIC_MODULE_HASH_ATTRIBUTE = "_nominal_refactor_advisor_semantic_hash"
@@ -747,7 +713,7 @@ class DetectorRegistrySignature:
         return cls.from_detector_types(IssueDetector.registered_detector_types())
 
     @classmethod
-    @lru_cache(maxsize=None)
+    @ScanCache.cached
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
@@ -1749,34 +1715,38 @@ class SourceFileSignatureCache:
         source: str | None = None,
     ) -> str:
         """Return the comment-insensitive hash behind local detector shards."""
+        self.source_file_signature(path)
+        signature = self.entries_by_path[str(lexical_absolute_path(path))]
+        if signature.semantic_hash is not None:
+            return signature.semantic_hash
+        return self.record_semantic_hash(signature.with_semantic_hash(source))
 
-        path_stat = path.stat()
-        cache_key = str(lexical_absolute_path(path))
-        cached_signature = self.entries_by_path.get(cache_key)
+    def pending_semantic_hashes(
+        self, paths: Iterable[Path],
+    ) -> tuple[CachedSourceFileSignature, ...]:
+        """Identify missing lexical identities without sending the cache to workers."""
+        pending = []
+        for path in paths:
+            self.source_file_signature(path)
+            signature = self.entries_by_path[str(lexical_absolute_path(path))]
+            if signature.semantic_hash is None:
+                pending.append(signature)
+        return tuple(pending)
+
+    def record_semantic_hash(self, signature: CachedSourceFileSignature) -> str:
+        """Publish a worker's derived identity only against its original source."""
+        if signature.semantic_hash is None:
+            raise ValueError("Semantic preparation returned no lexical identity")
+        path = Path(signature.path)
+        current = self.entries_by_path[signature.path]
         if (
-            cached_signature is not None
-            and cached_signature.matches(path, path_stat)
-            and cached_signature.semantic_hash is not None
+            not signature.matches(path, path.stat())
+            or replace(current, semantic_hash=signature.semantic_hash) != signature
         ):
-            return cached_signature.semantic_hash
-        if source is None:
-            source = read_source_text(path)
-        semantic_hash = semantic_python_source_hash(source)
-        source_hash = (
-            cached_signature.source_hash
-            if cached_signature is not None
-            and cached_signature.matches(path, path_stat)
-            else hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
-        )
-        self.entries_by_path[cache_key] = CachedSourceFileSignature(
-            path=cache_key,
-            mtime_ns=path_stat.st_mtime_ns,
-            size=path_stat.st_size,
-            source_hash=source_hash,
-            semantic_hash=semantic_hash,
-        )
+            raise ValueError(f"Source changed before semantic publication: {path}")
+        self.entries_by_path[signature.path] = signature
         self._dirty = True
-        return semantic_hash
+        return signature.semantic_hash
 
     @property
     def entries_by_path(self) -> dict[str, CachedSourceFileSignature]:

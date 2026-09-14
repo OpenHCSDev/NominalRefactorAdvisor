@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import (
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
+from typing import Generic, Self, TypeVar
 
-
-from .class_index import CompactProductAuthority
+from .ast_tools import ParsedModule
+from .class_index import CompactModuleClassProjection, CompactProductAuthority
 from .product_flow import (
     CompactFunctionDeclaration,
     CompactFlowContext,
+    CompactProductFlowModuleProjection,
 )
 from .product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactResolvedFunctionCall,
+    CompactProductFlowRepository,
+    ProductFlowRepository,
+    SourceProductFlowRepository,
 )
 from .value_expression import LexicalValueReference
+
 
 @dataclass(frozen=True)
 class CarrierCollapseFieldBinding:
@@ -85,11 +94,21 @@ class CarrierCollapseParticipant:
         return self.declaration.identity.symbol
 
 
+class CarrierCollapseAuthorityProof(ABC):
+    """Proof predicate shared by carrier-collapse component families."""
+
+    @property
+    @abstractmethod
+    def is_proven(self) -> bool:
+        raise NotImplementedError
+
+
 class ClosedCarrierCollapseComponent(ABC):
     """Nominal component contract consumed by the atomic carrier rewriter."""
 
     authority: CompactProductAuthority
     participants: tuple[CarrierCollapseParticipant, ...]
+    proof: CarrierCollapseAuthorityProof
 
     @property
     @abstractmethod
@@ -108,3 +127,44 @@ class ClosedCarrierCollapseComponent(ABC):
         """Raise unless the complete current component is proven rewritable."""
 
         raise NotImplementedError
+
+
+CarrierComponent = TypeVar("CarrierComponent", bound=ClosedCarrierCollapseComponent)
+
+
+@dataclass(frozen=True)
+class CarrierCollapseBuilder(ABC, Generic[CarrierComponent]):
+    """Share repository construction and proven-result admission across families."""
+
+    repository: ProductFlowRepository
+
+    @classmethod
+    def from_projections(
+        cls,
+        product_projections: Sequence[CompactProductFlowModuleProjection],
+        class_projections: Sequence[CompactModuleClassProjection],
+    ) -> Self:
+        return cls(
+            CompactProductFlowRepository(
+                product_projections=product_projections,
+                class_projections=class_projections,
+            )
+        )
+
+    @classmethod
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
+        return cls(SourceProductFlowRepository.from_modules(modules))
+
+    @abstractmethod
+    def assessed_components(self) -> tuple[CarrierComponent, ...]:
+        """Return assessments, including hypotheses without rewrite authority."""
+        raise NotImplementedError
+
+    def proven_components(self) -> tuple[CarrierComponent, ...]:
+        if not self.repository.product_authorities_by_symbol:
+            return ()
+        return tuple(
+            component
+            for component in self.assessed_components()
+            if component.proof.is_proven
+        )

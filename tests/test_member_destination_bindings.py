@@ -7,12 +7,18 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.captured_reference import CapturedReferenceViolation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     PromoteClassMembersToAncestorOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.codemod_authority_claims import (
+    AuthorityClaimDeclarationPreflightDetail,
+)
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.codemod_reproof import SourceReproofDiagnostic
 
 
 def _plan(path: Path) -> CodemodPlanSequence:
@@ -105,8 +111,16 @@ def test_subscription_guard_follows_native_annotation_evaluation(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     if sys.version_info < (3, 14):
         # Unsupported origins are rejected by the shared native-reference gate.
-        with pytest.raises(ValueError, match="remains unproved"):
+        with pytest.raises(CodemodOperationPreflightError) as rejected:
             _plan(path).simulate(snapshot)
+        detail = rejected.value.report.detail
+        assert isinstance(detail, AuthorityClaimDeclarationPreflightDetail)
+        diagnostic = detail.declaration_preflight.detail
+        assert isinstance(diagnostic, SourceReproofDiagnostic)
+        assert (
+            diagnostic.causes[0].violation
+            is CapturedReferenceViolation.UNPROVED_EFFECTS
+        )
         assert path.read_bytes() == source.encode("utf-8")
     else:
         simulation = _plan(path).simulate(snapshot)

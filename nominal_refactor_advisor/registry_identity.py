@@ -4,19 +4,33 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Mapping
+from collections.abc import (
+    Hashable,
+    Mapping,
+)
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TypeVar
+from typing import (
+    ClassVar,
+    TYPE_CHECKING,
+    TypeVar,
+)
+
+from metaclass_registry import AutoRegisterMeta
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import AstExpressionProjection
+from .ast_projection import (
+    AstClassProjection,
+    AstExpressionProjection,
+)
+from .native_declarations import NativeDeclaration
+from .value_expression import LiteralExpressionEffects
 
 RegisteredDeclarationT = TypeVar("RegisteredDeclarationT")
 RegisteredValueT = TypeVar("RegisteredValueT")
 
 DEFAULT_REGISTRY_KEY_ATTRIBUTE = "registry_key"
-AUTOREGISTER_META_NAME = "AutoRegisterMeta"
+AUTOREGISTER_META_NAME = AutoRegisterMeta.__name__
 REGISTRY_ATTRIBUTE_NAME = "__registry__"
 REGISTRY_KEY_ATTRIBUTE_NAME = "__registry_key__"
 KEY_EXTRACTOR_ATTRIBUTE_NAME = "__key_extractor__"
@@ -62,11 +76,109 @@ def suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
+if TYPE_CHECKING:
+    from .native_reference import NativeReferenceEnvironment
+
+
 @dataclass(frozen=True)
 class AutoRegisterClassAuthority:
     """Nominal source facts for AutoRegisterMeta-shaped class declarations."""
 
     node: ast.ClassDef
+    native_metaclass: ClassVar[NativeDeclaration] = NativeDeclaration(AutoRegisterMeta)
+
+    @property
+    def metaclass_operand(self) -> ast.expr:
+        """Select the actual source operand without claiming its native identity."""
+        return AstClassProjection.require_explicit_metaclass(self.node)
+
+    def require_native_metaclass(self, environment: NativeReferenceEnvironment) -> None:
+        """Authenticate the original metaclass operand; its name is only discovery."""
+        environment.require_native(self.metaclass_operand, (self.native_metaclass,))
+
+    def require_requested_key_compatibility(
+        self, entries: tuple[tuple[str, LiteralExpressionEffects], ...]
+    ) -> None:
+        """Check the requested installed policy on inert classes, not target execution.
+
+        This necessary compatibility condition does not authenticate the source's
+        metaclass binding, configuration inheritance, hooks or class bodies.
+        Only literal configuration and keys enter analyzer-owned native classes.
+        """
+        key_attribute = self.registry_key_attribute
+        if key_attribute is None:
+            raise ValueError("Requested registration has no declared key attribute")
+        storage: dict[Hashable, type] = {}
+        try:
+            attributes = {
+                name: LiteralExpressionEffects(value).value
+                for name, value in self.assignment_pairs
+                if name in AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
+                and name != REGISTRY_ATTRIBUTE_NAME
+            }
+            attributes[REGISTRY_ATTRIBUTE_NAME] = storage
+            native_entries = tuple((name, key.hashable_value) for name, key in entries)
+            base = self.native_metaclass.declaration(self.node.name, (), attributes)
+            classes = tuple(
+                self.native_metaclass.declaration(name, (base,), {key_attribute: key})
+                for name, key in native_entries
+            )
+        except (
+            ValueError,
+            TypeError,
+            SyntaxError,
+            MemoryError,
+            RecursionError,
+        ) as error:
+            raise ValueError(
+                "Requested native registration policy is incompatible"
+            ) from error
+        if (
+            base.__registry__ is not storage
+            or tuple(storage) != tuple(key for _name, key in native_entries)
+            or any(
+                actual is not expected
+                for actual, expected in zip(storage.values(), classes, strict=True)
+            )
+        ):
+            raise ValueError(
+                "Requested native registration does not preserve source entries"
+            )
+
+    @classmethod
+    def for_registration(
+        cls, name: str, registry: ast.expr
+    ) -> AutoRegisterClassAuthority:
+        """Declare a proposed in-memory family; this does not capture runtime identity."""
+        assignments = (
+            (REGISTRY_ATTRIBUTE_NAME, registry),
+            (REGISTRY_KEY_ATTRIBUTE_NAME, ast.Constant(DEFAULT_REGISTRY_KEY_ATTRIBUTE)),
+            (SKIP_IF_NO_KEY_ATTRIBUTE_NAME, ast.Constant(True)),
+            (DEFAULT_REGISTRY_KEY_ATTRIBUTE, ast.Constant(None)),
+        )
+        return cls(
+            ast.fix_missing_locations(
+                ast.ClassDef(
+                    name=name,
+                    bases=[],
+                    keywords=[
+                        ast.keyword(
+                            arg="metaclass",
+                            value=ast.Name(id=AUTOREGISTER_META_NAME, ctx=ast.Load()),
+                        )
+                    ],
+                    body=[
+                        ast.Assign(
+                            targets=[ast.Name(id=attribute, ctx=ast.Store())],
+                            value=value,
+                        )
+                        for attribute, value in assignments
+                    ],
+                    decorator_list=[],
+                    type_params=[],
+                )
+            )
+        )
 
     @cached_property
     def assignment_pairs(self) -> tuple[tuple[str, ast.AST], ...]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import combinations
@@ -88,12 +89,16 @@ class ExactMethodOrbitComponent:
 
     def __post_init__(self) -> None:
         if not self.orbits:
-            raise ValueError("Exact-method component requires at least one method orbit")
+            raise ValueError(
+                "Exact-method component requires at least one method orbit"
+            )
         cohort = (self.orbits[0].file_path, self.orbits[0].class_symbols)
         if any(
             (orbit.file_path, orbit.class_symbols) != cohort for orbit in self.orbits
         ):
-            raise ValueError("Exact-method component orbits must share one class cohort")
+            raise ValueError(
+                "Exact-method component orbits must share one class cohort"
+            )
         method_names = tuple(orbit.method_name for orbit in self.orbits)
         if method_names != tuple(sorted(set(method_names))):
             raise ValueError("Exact-method component orbits must be uniquely ordered")
@@ -192,9 +197,7 @@ class ParallelMirroredLeafFamilyComponent:
     roles: tuple[ExactMirroredLeafRoleComponent, ...]
 
     root_symbols = CollectionAttributeProjection[str]("roots", "symbol")
-    shared_leaf_family_names = CollectionAttributeProjection[str](
-        "roles", "role_name"
-    )
+    shared_leaf_family_names = CollectionAttributeProjection[str]("roles", "role_name")
 
     def __post_init__(self) -> None:
         if len(self.roots) < 2:
@@ -204,9 +207,7 @@ class ParallelMirroredLeafFamilyComponent:
         if not self.roles:
             raise ValueError("Parallel leaf family requires at least one exact role")
         if any(len(role.classes) != len(self.roots) for role in self.roles):
-            raise ValueError(
-                "Every parallel role must span the complete root product"
-            )
+            raise ValueError("Every parallel role must span the complete root product")
 
     @property
     def file_path(self) -> str:
@@ -292,13 +293,13 @@ class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
 class ExactLeafMethodAncestorPromotionComponentBuilder:
     """Recover exact promotion components from one complete class projection."""
 
-    projections: tuple[CompactModuleClassProjection, ...]
+    projections: Sequence[CompactModuleClassProjection]
     class_index: CompactClassFamilyIndex
 
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> Self:
@@ -616,7 +617,7 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
         return frozenset(
             (
                 *indexed_class.method_names,
-                *(name for name, _value in indexed_class.direct_assignment_expressions),
+                *indexed_class.direct_declared_member_names,
             )
         )
 
@@ -777,7 +778,7 @@ class ParallelMirroredLeafFamilyComponentBuilder:
     @classmethod
     def from_projections(
         cls,
-        projections: tuple[CompactModuleClassProjection, ...],
+        projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
     ) -> Self:
@@ -805,7 +806,7 @@ class ParallelMirroredLeafFamilyComponentBuilder:
             (
                 indexed_class
                 for indexed_class in self.class_index.classes_by_symbol.values()
-                if "_registered_types" in indexed_class.assignments_by_name
+                if "_registered_types" in indexed_class.direct_declared_member_names
                 and indexed_class.abstract_method_names
             ),
             key=lambda indexed_class: indexed_class.symbol,
@@ -898,9 +899,7 @@ class ParallelMirroredLeafFamilyComponentBuilder:
         if any("." in root.qualname for root in roots):
             return None
         shared_contract = sorted_tuple(
-            set.intersection(
-                *(set(root.abstract_method_names) for root in roots)
-            )
+            set.intersection(*(set(root.abstract_method_names) for root in roots))
         )
         if not shared_contract:
             return None

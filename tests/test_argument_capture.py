@@ -10,11 +10,11 @@ from nominal_refactor_advisor.product_flow import (
     LexicalValueReference,
     CompactValueOriginViolation,
 )
-from nominal_refactor_advisor.product_flow_authority import CompactProductFlowRepository
+from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 
 
-def repository_for(source: str) -> CompactProductFlowRepository:
-    return CompactProductFlowRepository.from_modules(
+def repository_for(source: str) -> SourceProductFlowRepository:
+    return SourceProductFlowRepository.from_modules(
         (
             ParsedModule(
                 path=Path("arguments.py"),

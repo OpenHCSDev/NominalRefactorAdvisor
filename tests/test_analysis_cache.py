@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import importlib.util
 import os
@@ -12,6 +13,7 @@ from time import sleep
 import weakref
 
 import pytest
+
 
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.analysis import (
@@ -65,9 +67,7 @@ from nominal_refactor_advisor import (
 )
 from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
-from nominal_refactor_advisor import (
-    implementation_identity as implementation_identity_module,
-)
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor import native_syntax as native_syntax_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
 from nominal_refactor_advisor.cache_paths import (
@@ -126,6 +126,25 @@ from nominal_refactor_advisor.semantic_descent import (
     build_semantic_descent_graph,
     build_compact_semantic_descent_graph,
 )
+
+
+@contextmanager
+def assert_no_calls(function):
+    """Observe execution without changing the implementation being signed."""
+    code = function.__code__
+    previous = sys.getprofile()
+
+    def observe(frame, event, arg):
+        if event == "call" and frame.f_code is code:
+            raise AssertionError(f"Cache reuse called {function.__qualname__}")
+        if previous is not None:
+            previous(frame, event, arg)
+
+    sys.setprofile(observe)
+    try:
+        yield
+    finally:
+        sys.setprofile(previous)
 
 
 @pytest.mark.parametrize(
@@ -2957,17 +2976,8 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_member_declarations=(
-                    class_index_module.CompactClassMemberDeclaration(
-                        "_registered_types",
-                        1,
-                        "[]",
-                        None,
-                        False,
-                        None,
-                        (),
-                        None,
-                    ),
+                direct_member_declarations=class_index_module._compact_class_member_declarations(
+                    ast.parse("class Root: _registered_types = []").body[0]
                 ),
                 predicate_selected_methods=((2, "select", "matches", "context"),),
             ),
@@ -2978,17 +2988,8 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_member_declarations=(
-                    class_index_module.CompactClassMemberDeclaration(
-                        "registry_key_attr",
-                        1,
-                        "'kind'",
-                        "kind",
-                        False,
-                        None,
-                        (),
-                        None,
-                    ),
+                direct_member_declarations=class_index_module._compact_class_member_declarations(
+                    ast.parse("class Root: registry_key_attr = 'kind'").body[0]
                 ),
                 keyed_family_key_type_name="Kind",
             ),
@@ -3619,7 +3620,7 @@ def test_mixed_projection_shard_uses_only_python_ast(
         del cls, source_text
         raise AssertionError("mixed shard should not build a second syntax tree")
 
-    try:
+    with ScanCache.scope():
         with monkeypatch.context() as patch_context:
             patch_context.setattr(
                 NativePythonSyntaxIndex,
@@ -3640,31 +3641,26 @@ def test_mixed_projection_shard_uses_only_python_ast(
                     ),
                 )
             )
-            assert [batch.family for batch in result.projection_batches] == [
+            assert all(
+                type(receipt) is analysis_module.CompactFamilyProjectionReceipt
+                for receipt in result.projection_batches
+            )
+            assert result.cache_bundle_complete
+            for family in (
                 RegistrationShapeFamily,
                 systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
-            ]
-            assert result.cache_bundle_complete
-            assert {
-                batch.family: batch.content_signature
-                for batch in result.projection_batches
-            } == {
-                batch.family: ast_tools_module.collected_family_items_content_signature(
-                    batch.items
+            ):
+                items = projection_source.load_items(family)
+                assert items is not None
+                assert projection_source.load_content_signature(family) == (
+                    ast_tools_module.collected_family_items_content_signature(items)
                 )
-                for batch in result.projection_batches
-            }
             assert (
                 projection_source.load_content_signature(
                     systemic_detectors.CompactRemainingSystemicModuleProjectionFamily,
                 )
                 is not None
             )
-    finally:
-        CollectedFamily.implementation_identity.cache_clear()
-        (
-            implementation_identity_module._declaration_implementation_module_names.cache_clear()
-        )
 
 
 def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
@@ -3699,20 +3695,12 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     assert cold.cache_status is AnalysisCacheStatus.MISS
     assert cold.projection_count > 0
 
-    def unexpected_parser(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("aggregate hit should bypass compact projection parsing")
-
-    monkeypatch.setattr(
-        ast_tools_module.PythonModuleRootParser,
-        "for_root",
-        unexpected_parser,
-    )
-    warm = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=cache_dir,
-        analysis_cache_dir=analysis_cache_dir,
-    )
+    with assert_no_calls(ast_tools_module.PythonModuleRootParser.for_root):
+        warm = analyze_compact_roots_with_cache(
+            (package_root,),
+            cache_dir=cache_dir,
+            analysis_cache_dir=analysis_cache_dir,
+        )
 
     assert warm.cache_status is AnalysisCacheStatus.HIT
     assert warm.findings == cold.findings
@@ -3750,25 +3738,37 @@ def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
         encoding="utf-8", newline="",
     )
 
-    def unexpected_individual_signature_load(self, family, demand_signature=""):
-        del self, family, demand_signature
-        raise AssertionError(
-            "consolidated index should cover unchanged source families"
+    with assert_no_calls(ast_tools_module.CollectedFamilyCacheContext.load_content_signature):
+        incremental = analyze_compact_roots_with_cache(
+            (package_root,),
+            cache_dir=cache_dir,
+            analysis_cache_dir=analysis_cache_dir,
         )
-
-    monkeypatch.setattr(
-        ast_tools_module.CollectedFamilyCacheContext,
-        "load_content_signature",
-        unexpected_individual_signature_load,
-    )
-    incremental = analyze_compact_roots_with_cache(
-        (package_root,),
-        cache_dir=cache_dir,
-        analysis_cache_dir=analysis_cache_dir,
-    )
 
     assert incremental.cache_status is AnalysisCacheStatus.PARTIAL
     assert incremental.findings == cold.findings
+
+
+def test_single_file_rebuild_does_not_start_idle_projection_workers(tmp_path):
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    edited_path = package_root / "edited.py"
+    edited_path.write_text("def value(): return 1\n")
+    (package_root / "unchanged.py").write_text("def value(): return 2\n")
+    cache_dir = tmp_path / "cache" / "ast"
+    analysis_cache_dir = tmp_path / "cache" / "analysis"
+    analyze_compact_roots_with_cache(
+        (package_root,), cache_dir=cache_dir, analysis_cache_dir=analysis_cache_dir,
+    )
+    edited_path.write_text("def value(): return 3\n")
+    with assert_no_calls(analysis_module.ProcessPoolExecutor.__init__):
+        incremental = analyze_compact_roots_with_cache(
+            (package_root,), cache_dir=cache_dir, analysis_cache_dir=analysis_cache_dir,
+            parse_workers=16,
+        )
+    assert incremental.cache_status is AnalysisCacheStatus.PARTIAL
+    expected = analyze_compact_roots_with_cache((package_root,), use_parse_cache=False)
+    assert incremental.findings == expected.findings
 
 
 def test_collected_family_content_signature_index_rejects_stale_source(
@@ -3850,16 +3850,8 @@ def test_compact_family_bundle_marker_skips_per_family_cache_stat_fanout(
     assert family_cache.bundle_is_complete(families)
     assert marker_path.read_bytes() == b"complete-v4\n"
 
-    def unexpected_family_stat(self, family, demand_signature=""):
-        del self, family, demand_signature
-        raise AssertionError("complete bundle marker should bypass family stat fan-out")
-
-    monkeypatch.setattr(
-        ast_tools_module.CollectedFamilyCacheContext,
-        "entry_exists",
-        unexpected_family_stat,
-    )
-    assert family_cache.bundle_is_complete(families)
+    with assert_no_calls(ast_tools_module.CollectedFamilyCacheContext.entry_exists):
+        assert family_cache.bundle_is_complete(families)
 
 
 def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
@@ -3888,19 +3880,11 @@ def test_demanded_family_bundle_marker_skips_per_family_cache_stat_fanout(
         ((family, demand_signature),),
     )
 
-    def unexpected_family_stat(self, family, demand_signature=""):
-        del self, family, demand_signature
-        raise AssertionError("complete demand bundle should bypass family stat fan-out")
-
-    monkeypatch.setattr(
-        ast_tools_module.CollectedFamilyCacheContext,
-        "entry_exists",
-        unexpected_family_stat,
-    )
-    assert family_cache.bundle_is_complete(
-        (family,),
-        ((family, demand_signature),),
-    )
+    with assert_no_calls(ast_tools_module.CollectedFamilyCacheContext.entry_exists):
+        assert family_cache.bundle_is_complete(
+            (family,),
+            ((family, demand_signature),),
+        )
 
 
 def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> None:
@@ -3947,10 +3931,8 @@ def test_compact_family_cache_identity_derives_item_schema(
     )
 
     monkeypatch.setattr(BuilderCallShapeFamily, "item_type", StringItem)
-    BuilderCallShapeFamily.item_schema_signature.cache_clear()
     string_identity = family_cache.identity(BuilderCallShapeFamily)
     monkeypatch.setattr(BuilderCallShapeFamily, "item_type", IntegerItem)
-    BuilderCallShapeFamily.item_schema_signature.cache_clear()
     integer_identity = family_cache.identity(BuilderCallShapeFamily)
 
     assert (
@@ -6316,6 +6298,7 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
     source_signature_cache = cache.source_signature_cache()
     assert source_signature_cache is not None
     original_read_bytes = Path.read_bytes
+    scanned_paths = {first_path.resolve(), second_path.resolve()}
 
     first_identity = AnalysisCacheIdentity.from_roots(
         (package_root,),
@@ -6324,7 +6307,11 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
     )
 
     def fail_read_bytes(path: Path) -> bytes:
-        raise AssertionError(f"unexpected source reread for {path}")
+        if path.resolve() in scanned_paths:
+            raise AssertionError(f"unexpected scanned-source reread for {path}")
+        # A new invocation revalidates the advisor implementation independently
+        # of its persisted signatures for the user's unchanged source files.
+        return original_read_bytes(path)
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
     cached_source_signature_cache = cache.source_signature_cache()
@@ -6340,7 +6327,8 @@ def test_analysis_identity_reuses_cached_source_hashes_for_unchanged_files(
     read_paths: list[Path] = []
 
     def count_read_bytes(path: Path) -> bytes:
-        read_paths.append(path.resolve())
+        if path.resolve() in scanned_paths:
+            read_paths.append(path.resolve())
         return original_read_bytes(path)
 
     second_path.write_text("VALUE = 200\n", encoding="utf-8", newline="")
