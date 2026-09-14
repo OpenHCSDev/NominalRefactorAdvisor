@@ -91,6 +91,10 @@ if TYPE_CHECKING:
     from .native_call import CallAuthority
     from .native_reference import NativeReferenceEnvironment
     from .source_entry import SourceModuleEntryPremise
+    from .source_execution import (
+        SourceDefinitionDecoratorApplicationABC,
+        SourceFunctionActivationABC,
+    )
 
 
 class CapturedReferenceViolation(StrEnum):
@@ -117,6 +121,17 @@ class CapturedReferenceRejection(ValueError):
 
 
 class CapturedReferenceResolution(NativeScalarValueABC):
+
+    def require_definition_application_argument(self) -> None:
+        """Require this value as the actual input to a definition transformer."""
+        self.require_closed()
+
+    def definition_application_activation(
+        self, application: SourceDefinitionDecoratorApplicationABC
+    ) -> SourceFunctionActivationABC:
+        """Select callable source activation from the actual application operand."""
+        self.require_closed()
+        raise ValueError("Definition application callable remains unproved")
 
     def require_native_installation(
         self, prefix: AdmittedExecutionPrefixABC
@@ -1430,6 +1445,68 @@ class FunctionInvocationPrefix(AdmittedExecutionPrefixABC):
         intervals: list[SingleFlowPrefix],
     ) -> None:
         pending.extend((self.child, self.parent))
+
+
+class SourceDefinitionApplicationAuthorityABC(ABC):
+    """One definition-owned decorator application and its exact completed cut."""
+
+    @property
+    @abstractmethod
+    def application_prefix(self) -> AdmittedExecutionPrefixABC:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def definition_application(self) -> CompactMutation[CompactDefinitionTarget]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def decorator_use(self) -> CompactValueUse:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_original_application(self) -> None:
+        """Join source position and compiler operand topology for this application."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, eq=False)
+class DefinitionApplicationPrefix(AdmittedExecutionPrefixABC):
+    """One original definition application followed by its callable activation."""
+
+    application: SourceDefinitionApplicationAuthorityABC
+    declaration: CompactFunctionDeclaration
+    child: AdmittedExecutionPrefixABC
+
+    def __post_init__(self) -> None:
+        application = self.application
+        application.require_original_application()
+        parent = application.application_prefix.endpoint
+        definition = application.definition_application
+        child = self.child.intervals[0]
+        if (
+            not any(definition is event for event in parent.context.flow.mutations)
+            or parent.position != definition.target.header_position
+            or not any(
+                application.decorator_use is use
+                for use in definition.target.decorator_uses
+            )
+        ):
+            raise ValueError(
+                "Function entry requires its original definition application cut"
+            )
+        if child.context.flow.owner is not self.declaration or child.after is not None:
+            raise ValueError(
+                "Function entry requires the callee declaration's fresh body interval"
+            )
+
+    def _expand_intervals(
+        self,
+        pending: list[AdmittedExecutionPrefixABC],
+        intervals: list[SingleFlowPrefix],
+    ) -> None:
+        pending.extend((self.child, self.application.application_prefix))
 
 
 @dataclass(frozen=True)
