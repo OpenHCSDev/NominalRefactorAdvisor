@@ -13,6 +13,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.native_compilation import (
     ExactNativeClassCapture,
+    GeneratedClassNativeFrameOrigin,
     NativeCreationBackend,
     NativeExecutionUnavailable,
     NativePythonCompilation,
@@ -184,10 +185,13 @@ def test_actual_native_header_phase_and_strict_source_cuts(monkeypatch, generic)
     ]
     assert (native_builder.containing_code is code) is not generic
     if generic:
-        assert isinstance(builder.event.site.frame, OpenNativeFrameOrigin)
+        origin = builder.event.site.frame
+        assert isinstance(origin, GeneratedClassNativeFrameOrigin)
+        assert creation.event.site.frame is origin
+        assert origin.activation.frame is origin.execution.creation.frame
         assert (
-            builder.event.site.frame.reason
-            is NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN
+            origin.activation.instruction_offset
+            > origin.execution.creation.instruction_offset
         )
 
 
@@ -257,14 +261,18 @@ def test_open_native_capture_does_not_fabricate_positioned_native_events(monkeyp
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="Native generic class syntax")
-def test_equal_generic_native_sites_are_not_source_identity():
+def test_generic_native_sites_retain_distinct_source_identity():
     module, projection = _project("class First[T]: pass\nclass Second[T]: pass\n")
     first, second = tuple(
         _definition_site(projection, node).event.target.owner
         for node in module.module.body
     )
-    assert first.capture.builder == second.capture.builder
+    assert first.capture.builder != second.capture.builder
     assert first.capture.builder is not second.capture.builder
+    assert isinstance(first.capture.builder.frame, GeneratedClassNativeFrameOrigin)
+    assert isinstance(second.capture.builder.frame, GeneratedClassNativeFrameOrigin)
+    assert first.capture.builder.frame.execution.source_span == first.source_span
+    assert second.capture.builder.frame.execution.source_span == second.source_span
     for node, owner in zip(module.module.body, (first, second), strict=True):
         events = tuple(
             site

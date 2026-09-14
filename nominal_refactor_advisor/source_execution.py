@@ -50,6 +50,7 @@ from .captured_reference import (
     NamespaceMemberInventory,
     CapturedNativeObject,
     NativeTypeCapture,
+    NativeTypePremise,
     OpaqueCapturedObjectOperations,
     OpenCapturedReference,
     RecordedNamespace,
@@ -80,6 +81,7 @@ from .native_compilation import (
     NativeBindingTransferResolverABC,
     NativeCallValue,
     NativeCaptureSite,
+    NativeClassClosureValue,
     NativeLocalValue,
     NativeClassCaptureResolverABC,
     NativeClassPrologueResolverABC,
@@ -106,6 +108,7 @@ from .native_compilation import (
     NativeTypedValue,
     NativeValueResolverABC,
     NativeValueStore,
+    GeneratedClassNativeFrameOrigin,
     OpenNativeClassCapture,
     OpenNativeClassPrologue,
     OpenNativeFrameOrigin,
@@ -247,6 +250,11 @@ class SourceNativeFrameResolver(NativeFrameOriginResolverABC[CompactFlowContext]
             namespace.require_closed()
         namespace.require_native_creator(origin.execution)
         return endpoint.context
+
+    def _generated_class_frame_origin_resolution(
+        self, origin: GeneratedClassNativeFrameOrigin
+    ) -> CompactFlowContext:
+        raise ValueError("Generated class frame has no matching source entry")
 
     def _open_frame_origin_resolution(
         self,
@@ -3001,6 +3009,31 @@ class SourceClassBodyEntryABC(
             raise ValueError("Native class capture has no unique source operation")
         native_site.frame.resolve(self)
         return sites[0]
+
+    def _generated_class_frame_origin_resolution(
+        self, origin: GeneratedClassNativeFrameOrigin
+    ) -> CompactFlowContext:
+        capture = self.capture
+        if (
+            capture.builder.frame is not origin
+            or capture.creation.frame is not origin
+            or origin.execution.source_span != capture.source_span
+            or origin.activation.frame is not origin.execution.creation.frame
+            or origin.activation.instruction_offset
+            <= origin.execution.creation.instruction_offset
+        ):
+            raise ValueError("Generated class frame differs from its source entry")
+        origin.activation.frame.resolve(self)
+        return self.parent_context
+
+    def _class_closure_native_value_resolution(
+        self, value: NativeClassClosureValue
+    ) -> CapturedReferenceResolution:
+        origin = self.capture.creation.frame
+        origin.resolve(self)
+        self.require_preparation()
+        declaration = origin.class_closure_declaration(value)
+        return NativeTypePremise(declaration.declaration)
 
     @cached_property
     def builder_value(self) -> CapturedReferenceResolution:

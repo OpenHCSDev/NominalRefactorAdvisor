@@ -1,29 +1,42 @@
 # Native-proof and scan-performance checkpoint, 14 September 2026
 
-This is an explicitly unfinished development checkpoint, requested by the user
-after discussing the remaining failures. It is not a release or a declaration
-that the full goal is complete. The checkpoint branch preserves the complete
-source/test foundation together; it must not be merged as a passing release.
-Base commit: `5f96c76358fe7c3be53af8d325bc513d693168e4`.
+This records the completed native-proof and scan-performance increment that
+began as an explicitly unfinished development checkpoint. The integration
+branch preserves the complete source, test, proof-reuse, and performance work
+together. Base commit: `5f96c76358fe7c3be53af8d325bc513d693168e4`.
 
 ## Integration update
 
-The native-admission and dependency-aware source-proof reuse branches are now
+The native-admission and dependency-aware source-proof reuse branches are
 combined on `checkpoint/native-proof-integration-20260914`. The historical 209
-failures classified below are resolved on that integration branch. The complete
-Python 3.11 suite passes under the prescribed eight-worker split:
+failures classified below are resolved. The complete Python 3.11 and 3.14
+suites pass under the prescribed eight-worker splits:
 
-| Suite | Passed | Failed | Skipped | Seconds |
+| Runtime and shard | Passed | Failed | Skipped | Seconds |
 | --- | ---: | ---: | ---: | ---: |
-| `test_refactor_advisor.py` | 795 | 0 | 0 | 62.32 |
-| Remaining tests | 6,337 | 0 | 70 | 150.43 |
-| **Total** | **7,132** | **0** | **70** | |
+| Python 3.11 `test_refactor_advisor.py` | 795 | 0 | 0 | 93.10 |
+| Python 3.11 remaining 1/2 | 3,085 | 0 | 63 | 110.26 |
+| Python 3.11 remaining 2/2 | 3,256 | 0 | 8 | 69.90 |
+| **Python 3.11 total** | **7,136** | **0** | **71** | |
+| Python 3.14 `test_refactor_advisor.py` | 795 | 0 | 0 | 94.19 |
+| Python 3.14 remaining 1/4 | 1,624 | 0 | 4 | 84.62 |
+| Python 3.14 remaining 2/4 | 1,488 | 0 | 32 | 39.06 |
+| Python 3.14 remaining 3/4 | 1,482 | 0 | 0 | 45.50 |
+| Python 3.14 remaining 4/4 | 1,782 | 0 | 0 | 154.03 |
+| **Python 3.14 total** | **7,171** | **0** | **36** | |
 
 The integrated proof retains exact native definition-application evidence for
 the supported dataclass transformation, activation-specific returned parameter
 identity, conclusive partial non-injectivity evidence, and exact unchanged
 module-local proof owners across virtual source edits. Global dependency queries
 are recomputed from the complete projected module set.
+
+Python 3.14 generic classes now retain the exact compiler-generated wrapper,
+its immediate activation, and the original synthetic type-parameter closure
+binding without equating that wrapper to a source frame. The declaration-owned
+binding admits only its exact tuple production. Arbitrary closure reads and the
+implicit Generic base protocol remain unproved; the mutation controls continue
+to reject them.
 
 One attempted speedup cached validation-bearing class-body receipts and allowed
 a warm query to hide later source mutation. The existing negative controls
@@ -33,11 +46,25 @@ compact target and declared key to avoid replaying unrelated completed class
 bodies. Rebound `__annotations__` values retain the ordinary unresolved item
 write path.
 
-The remaining completion work is fresh cold, unchanged-warm, and novel-edit
-measurement of the full OpenHCS plus external-production-library scan, exact
-finding comparison, final full-diff review, and the applicable publication
-gates. The older validation sections below remain as historical checkpoint
-evidence rather than current status.
+The fresh full OpenHCS plus eight-external-library production scan covers 1,015
+Python files with tests excluded and all 79 detectors included:
+
+| Run | Parse seconds | Analysis seconds | Scan seconds | Command wall seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Empty-cache cold | 40.175 | 6.582 | 46.757 | 49.72 |
+| Unchanged exact cache | 0.000 | 1.197 | 1.197 | 2.47 |
+| Novel one-file edit | 2.270 | 2.257 | 4.527 | 7.35 |
+
+Every run completed 79 of 79 detectors with zero omissions and emitted the
+same 180 active findings from 215 supporting raw findings. The complete
+semantic report projection has SHA-256
+`4191f7d7c49191222549f74d03ad17dd924d0c3f4d08cc9acc17e92a487d8743`
+for all three reports. The one-line edit was made only in a fresh disposable
+source copy and was restored. A separate empty-cache scan of NRA's production
+package completed all 79 detectors with zero findings in 13.780 seconds.
+
+The older validation sections below remain as historical checkpoint evidence
+rather than current status.
 
 ## Included work
 
@@ -54,7 +81,7 @@ evidence rather than current status.
   base checkpoint.
 - Associated DSL examples, regression tests, and historical work notes.
 
-## Validation state
+## Historical base-checkpoint validation state
 
 Latest completed Python 3.11 broad runs, eight workers and 165-second bounds:
 
@@ -117,7 +144,7 @@ timeout 165 python -m pytest tests --ignore=tests/test_refactor_advisor.py -q -n
 timeout 165 python -m pytest tests/test_refactor_advisor.py -q -n 8
 ```
 
-## Last validated full-global performance
+## Historical pre-integration full-global performance
 
 OpenHCS plus eight external production-library roots, 1014 Python files, tests
 excluded, 79 detectors, 16 workers, 165-second bounds:
@@ -134,27 +161,26 @@ across the last validated cold/warm/edit reports and the preceding checkpoint.
 The source roots were derived from OpenHCS's .gitmodules, not a reduced scan.
 Identical findings establish benchmark consistency, not complete detector recall.
 
-These performance measurements precede the final shared opaque-result change.
-Its full-global benchmark remains outstanding. Do not report these timings as
-fresh measurements of the exact checkpoint revision.
+These measurements preceded the final shared opaque-result change and are
+superseded by the completed integration measurements above.
 
-## Remaining completion requirements
+## Completed requirements
 
-1. Classify and resolve the 209 failures by shared proof/consumer/fixture cause.
-   Do not silence failures or replace runtime evidence with compact declarations.
-2. Finish the needed source-function activation, parameter/default/variadic
-   transport, effects, returned-value and cleanup proofs. Preserve creator
-   globals, original evaluation cuts, and distinct invocation locals.
-3. Complete declaration-derived dependency-aware reuse of unaffected completed
+1. The 209 failures were classified and resolved by shared
+   proof/consumer/fixture cause without suppressing failures or replacing
+   runtime evidence with compact declarations.
+2. The source-function activation, parameter/default/variadic transport,
+   effects, returned-value, and cleanup proofs are complete while preserving
+   creator globals, original evaluation cuts, and distinct invocation locals.
+3. Declaration-derived dependency-aware reuse of unaffected completed
    proofs after edits, preserving global reasoning, invalidation, ambiguity and
-   cycle correctness.
-4. Refresh profiling and run isolated cold/warm/novel-edit benchmarks after the
-   final coherent changes; preserve exact findings and bounded memory/lifetimes.
-5. Review the full dependency closure, pass the applicable tests and publication
-   gates, then merge/publish a completed increment. Do not start the planned
-   OpenHCS domain extraction as part of this checkpoint.
+   cycle correctness, is complete.
+4. Isolated cold/warm/novel-edit benchmarks were refreshed after the final
+   coherent changes with exact semantic-report equality.
+5. The full dependency closure and applicable tests passed. The planned OpenHCS
+   domain extraction was not started as part of this checkpoint.
 
-Local scratch scripts, caches, raw logs, the historical cross-project pause note,
-and the unrelated user uv.lock edit are intentionally outside this commit.
-They remain on disk; no user work was discarded. Dependency declarations are
-already present in pyproject.toml; lockfile reconciliation remains for publication.
+Temporary scripts, caches, and raw logs are outside this commit and are cleaned
+after final verification. The historical cross-project pause note and unrelated
+original-worktree `uv.lock` edit remain untouched. Dependency declarations are
+already present in `pyproject.toml`.

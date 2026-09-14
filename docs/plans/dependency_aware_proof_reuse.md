@@ -44,9 +44,8 @@ becoming visible, multistage retention, foreign-owner rejection, and
 non-transfer of global call-resolution caches.
 
 The complete Python 3.11 suite passes in the prescribed eight-worker split:
-**795 passed** in `test_refactor_advisor.py`, followed by **6,337 passed and 70
-skipped** across the remaining tests. No known test failure is retained by the
-combined branch.
+**7,136 passed and 71 skipped**. Python 3.14 passes **7,171 tests with 36
+skipped**. No known test failure is retained by the combined branch.
 
 ## Persistence boundary
 
@@ -62,5 +61,8 @@ signatures; changed family contents invalidate the affected detector result.
 Evidence-local partial findings are explicitly nonterminal and cannot certify a
 complete scan. Neither cache surface is treated as native execution evidence.
 
-The remaining work for this checkpoint is fresh cold, warm, and novel-edit scan
-measurement followed by complete diff and publication-gate review.
+The final integrated full-package scan completes in 46.757 seconds cold, 1.197
+seconds unchanged-warm, and 4.527 seconds after one novel source edit. All three
+runs cover 79 of 79 detectors with the same 180 active findings and identical
+semantic report content. The complete semantic projection hash is
+`4191f7d7c49191222549f74d03ad17dd924d0c3f4d08cc9acc17e92a487d8743`.
