@@ -126,8 +126,10 @@ from .native_call import (
 )
 from .product_flow import (
     CompactAttributeTarget,
+    CompactBranchPredicateResolverABC,
     CompactBindingValueResolverABC,
     CompactBindingVisit,
+    CompactCallableReferenceUse,
     CompactClassDeclaration,
     CompactCompilerOperandUse,
     CompactDefinitionResolverABC,
@@ -4038,7 +4040,7 @@ class ActivationLocalEffectResolver(
 
 
 @dataclass(eq=False)
-class SourceFunctionExecution(SourceExecutionABC):
+class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolverABC):
     """One immediate source-function activation selected by its original call."""
 
     entry: SourceFunctionEntry
@@ -4088,6 +4090,76 @@ class SourceFunctionExecution(SourceExecutionABC):
             if value is returned or value.proves_same_object(returned):
                 continue
             value.require_release_in(self.entry.frame)
+
+    def proves_boolean(
+        self,
+        predicate_use: CompactCallableReferenceUse,
+        expected: bool,
+    ) -> bool:
+        """Resolve one direct predicate from this activation's entry bindings."""
+        flow = self.entry.context.flow
+        if not any(use is predicate_use for use in flow.callable_reference_uses):
+            return False
+        reference = predicate_use.lexical_reference
+        if reference is None or reference.attribute_path:
+            return False
+        binding = flow.stored_binding_resolution_for(
+            reference.root_name, predicate_use.position
+        )
+        if (
+            not isinstance(binding, InitialCompactParameterBinding)
+            or binding.parameter.name not in self.entry.initial_entries
+        ):
+            return False
+        value = self.entry.initial_entries[binding.parameter.name]
+        try:
+            value.require_constant_contents(expected)
+        except ValueError:
+            return False
+        return True
+
+    def require_returned_parameter_identity(
+        self, parameter_name: str
+    ) -> CapturedReferenceResolution:
+        """Prove every possible successful return retains one entry parameter."""
+        self.entry.require_admitted(self.initial)
+        self.entry.call.callee.native_execution.mode.require_immediate_activation()
+        flow = self.entry.context.flow
+        declaration = flow.owner.declaration
+        if declaration is None:
+            raise ValueError("Function activation has no source declaration")
+        parameters = tuple(
+            parameter
+            for parameter in declaration.signature.parameters
+            if parameter.name == parameter_name
+        )
+        if len(parameters) != 1 or parameter_name not in self.entry.initial_entries:
+            raise ValueError("Returned parameter is absent from this activation")
+        parameter = parameters[0]
+        possible_returns = tuple(
+            result
+            for result in flow.evaluated_results
+            if result.destination.use is CompactValueDestinationKind.RETURNED
+            and not result.position.is_proved_excluded(self)
+        )
+        if not possible_returns:
+            raise ValueError("Function has no possible explicit return")
+        for result in possible_returns:
+            value_use = result.value_use
+            if (
+                value_use is None
+                or value_use.lexical_reference != LexicalValueReference(parameter_name)
+            ):
+                raise ValueError("Function can return a different object")
+            binding = flow.stored_binding_resolution_for_activation(
+                parameter_name, value_use.position, self
+            )
+            if (
+                not isinstance(binding, InitialCompactParameterBinding)
+                or binding.parameter is not parameter
+            ):
+                raise ValueError("Returned parameter can be replaced")
+        return self.entry.initial_entries[parameter_name]
 
     def require_closed(self) -> None:
         _ = self.entry.frame

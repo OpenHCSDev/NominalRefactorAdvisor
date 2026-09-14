@@ -10,7 +10,9 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import (
+    CompactBranchPredicateResolverABC,
     CompactControlBranchKind,
+    CompactCallableReferenceUse,
     CompactFunctionFlow,
     CompactMutation,
     OpenCompactBindingMutation,
@@ -35,6 +37,19 @@ def _flow(source: str, owner: str = "sample") -> CompactFunctionFlow:
         for flow in compact_product_flow_projection(module).flows
         if flow.owner.qualname == owner
     )
+
+
+class ExactPredicateBoolean(CompactBranchPredicateResolverABC):
+    def __init__(self, predicate_use: CompactCallableReferenceUse, value: bool) -> None:
+        self.predicate_use = predicate_use
+        self.value = value
+
+    def proves_boolean(
+        self,
+        predicate_use: CompactCallableReferenceUse,
+        expected: bool,
+    ) -> bool:
+        return predicate_use is self.predicate_use and expected is self.value
 
 
 @pytest.mark.parametrize(
@@ -393,6 +408,58 @@ def test_branch_returns_keep_alternative_ownership_without_claiming_completion()
         assert result.value_use is not None
         assert result.value_use.origin_in(flow).exact_origin == LexicalValueReference(
             name
+        )
+
+
+def test_if_branches_own_the_exact_direct_predicate_and_selection_semantics() -> None:
+    flow = _flow(
+        "def sample(flag, left, right):\n"
+        "    if flag:\n"
+        "        return left\n"
+        "    else:\n"
+        "        return right\n"
+    )
+    left, right = flow.evaluated_results
+    body = left.position.branch_path[-1]
+    alternative = right.position.branch_path[-1]
+    predicate_use = body.predicate_use
+    assert predicate_use is not None
+    assert alternative.predicate_use is predicate_use
+    assert predicate_use.lexical_reference == LexicalValueReference("flag")
+    assert body.is_proved_excluded(ExactPredicateBoolean(predicate_use, False))
+    assert not alternative.is_proved_excluded(
+        ExactPredicateBoolean(predicate_use, False)
+    )
+    assert not body.is_proved_excluded(ExactPredicateBoolean(predicate_use, True))
+    assert alternative.is_proved_excluded(ExactPredicateBoolean(predicate_use, True))
+
+    restored = pickle.loads(pickle.dumps(flow))
+    restored_left, restored_right = restored.evaluated_results
+    restored_predicate = restored_left.position.branch_path[-1].predicate_use
+    assert restored_predicate is not None
+    assert restored_right.position.branch_path[-1].predicate_use is restored_predicate
+    assert any(use is restored_predicate for use in restored.callable_reference_uses)
+
+
+def test_computed_if_predicate_retains_conservative_branch_possibility() -> None:
+    flow = _flow(
+        "def sample(flag, left, right):\n"
+        "    if not flag:\n"
+        "        return left\n"
+        "    else:\n"
+        "        return right\n"
+    )
+    left, right = flow.evaluated_results
+    (observed_flag,) = tuple(
+        use
+        for use in flow.callable_reference_uses
+        if use.lexical_reference == LexicalValueReference("flag")
+    )
+    for result in (left, right):
+        branch = result.position.branch_path[-1]
+        assert branch.predicate_use is None
+        assert not branch.is_proved_excluded(
+            ExactPredicateBoolean(observed_flag, False)
         )
 
 

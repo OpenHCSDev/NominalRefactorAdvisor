@@ -150,6 +150,113 @@ def test_nested_source_calls_preserve_the_original_argument_result():
     assert authority.result().require_native_scalar() == 5
 
 
+def test_activation_proves_parameter_identity_when_replacement_branch_is_false():
+    _, authority = invocation(
+        "if replace:\n    value = object()\nreturn value",
+        header="def chosen(value, replace=False):",
+        arguments="None, False",
+    )
+    result = authority.activation.require_returned_parameter_identity("value")
+    result.require_constant_contents(None)
+
+
+def test_activation_rejects_parameter_identity_when_replacement_branch_is_true():
+    _, authority = invocation(
+        "if replace:\n    value = object()\nreturn value",
+        header="def chosen(value, replace=False):",
+        arguments="None, True",
+    )
+    with pytest.raises(ValueError, match="can be replaced"):
+        authority.activation.require_returned_parameter_identity("value")
+
+
+def test_activation_excludes_a_foreign_return_only_from_a_false_branch():
+    body = "if replace:\n    return object()\nreturn value"
+    _, unchanged = invocation(
+        body,
+        header="def chosen(value, replace=False):",
+        arguments="None, False",
+    )
+    unchanged.activation.require_returned_parameter_identity("value")
+    _, replaced = invocation(
+        body,
+        header="def chosen(value, replace=False):",
+        arguments="None, True",
+    )
+    with pytest.raises(ValueError, match="different object"):
+        replaced.activation.require_returned_parameter_identity("value")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "value = object()\nreturn value",
+        "def value():\n    pass\nreturn value",
+        "import math as value\nreturn value",
+        "try:\n    pass\nexcept Exception as value:\n    pass\nreturn value",
+        "match None:\n    case value:\n        pass\nreturn value",
+    ),
+    ids=("assignment", "definition", "import", "exception", "pattern"),
+)
+def test_activation_identity_uses_every_compact_local_binding_form(body):
+    _, authority = invocation(body)
+    with pytest.raises(ValueError, match="can be replaced"):
+        authority.activation.require_returned_parameter_identity("value")
+
+
+def test_activation_keeps_computed_predicate_identity_conservative():
+    _, authority = invocation(
+        "if not replace:\n    value = object()\nreturn value",
+        header="def chosen(value, replace=False):",
+        arguments="None, True",
+    )
+    with pytest.raises(ValueError, match="can be replaced"):
+        authority.activation.require_returned_parameter_identity("value")
+
+
+def test_activation_rejects_a_predicate_read_from_another_flow():
+    _, authority = invocation(
+        "if replace:\n    value = object()\nreturn value",
+        header="def chosen(value, replace=False):",
+        arguments="None, False",
+    )
+    _, foreign = invocation(
+        "if replace:\n    value = object()\nreturn value",
+        header="def chosen(value, replace=False):",
+        arguments="None, False",
+    )
+    predicate_use = foreign.activation.entry.context.flow.callable_reference_uses[0]
+    assert not authority.activation.proves_boolean(predicate_use, False)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "return object()",
+        "return",
+        "pass",
+    ),
+    ids=("foreign-return", "bare-return", "implicit-return"),
+)
+def test_activation_identity_requires_an_explicit_return_of_the_parameter(body):
+    _, authority = invocation(body)
+    with pytest.raises(ValueError):
+        authority.activation.require_returned_parameter_identity("value")
+
+
+@pytest.mark.parametrize(
+    "header,body",
+    (
+        ("def chosen(value):", "yield value\nreturn value"),
+        ("async def chosen(value):", "return value"),
+    ),
+)
+def test_suspended_activation_cannot_claim_call_result_identity(header, body):
+    _, authority = invocation(body, header=header)
+    with pytest.raises(ValueError):
+        authority.activation.require_returned_parameter_identity("value")
+
+
 @pytest.mark.parametrize(
     "body", ("return", "global marker\nmarker = value\nreturn value")
 )
