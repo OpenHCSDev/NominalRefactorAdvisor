@@ -3794,6 +3794,27 @@ class SourceFunctionExecution(SourceExecutionABC):
     def completed_result(self) -> CapturedReferenceResolution:
         return self.completed_return.result(self.completion_prefix)
 
+    @cached_property
+    def completed_locals(self) -> NamespaceMemberInventory:
+        """Derive the local references released by this exact returning frame."""
+        return NamespaceMemberInventory(self.kernel, self.entry, self.completion_prefix)
+
+    def require_frame_cleanup(self) -> None:
+        """Prove final local decrements or their retention by the return value.
+
+        The native return receipt and source join establish that ``completed_result``
+        escapes the frame.  Every other live local reference is released when the
+        activation ends and therefore retains its ordinary lifetime obligation.
+        """
+        returned = self.completed_result
+        returned.require_closed()
+        for name in self.completed_locals.names:
+            value = self.completed_locals.require_member(name)
+            value.require_closed()
+            if value is returned or value.proves_same_object(returned):
+                continue
+            value.require_release_in(self.entry.frame)
+
     def require_closed(self) -> None:
         _ = self.entry.frame
         _ = self.entry.call.entry_continuation
@@ -3801,6 +3822,7 @@ class SourceFunctionExecution(SourceExecutionABC):
         ActivationLocalEffectResolver(self.entry).require_retained(
             self.completion_prefix
         )
+        self.require_frame_cleanup()
 
     def resolve_fast_local_store(
         self, binding: NativeBindingTransfer

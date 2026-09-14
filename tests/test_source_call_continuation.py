@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from nominal_refactor_advisor.captured_reference import CapturedNativeObject
 from nominal_refactor_advisor.source_entry import NoninterferingSourceModuleEntryPremise
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from test_source_function_result import execution
@@ -155,4 +156,51 @@ def test_nested_source_calls_preserve_the_original_argument_result():
 def test_source_call_keeps_unproved_return_and_external_effects_open(body):
     _, authority = invocation(body, arguments="1")
     with pytest.raises(ValueError, match="unproved"):
+        authority.require_closed()
+
+
+class FinalizablePayload:
+    """A heap instance whose frame-release behavior has no native proof."""
+
+
+@pytest.mark.parametrize("body", ("return value", "result = value\nreturn result"))
+def test_returned_argument_retains_opaque_value_across_frame_cleanup(body):
+    source = (
+        "def chosen(value):\n"
+        + "\n".join(f"    {line}" for line in body.splitlines())
+        + "\nresult = chosen(payload)\n"
+    )
+    original = execution(source).entry
+    payload = CapturedNativeObject(FinalizablePayload())
+    bindings = dict(original.initial_entries)
+    bindings["payload"] = payload
+    environment = SourceModuleExecution(
+        NoninterferingSourceModuleEntryPremise(
+            source=original.source,
+            native_island=original.initial,
+            bindings=bindings,
+            builtins=original.builtins,
+        )
+    )
+    context, call = environment.source_call(environment.module.module.body[-1].value)
+    authority = environment.call_authority(context, call)
+    assert authority.result() is payload
+
+
+def test_discarded_opaque_argument_keeps_frame_cleanup_open():
+    source = "def chosen(value):\n    return None\nresult = chosen(payload)\n"
+    original = execution(source).entry
+    bindings = dict(original.initial_entries)
+    bindings["payload"] = CapturedNativeObject(FinalizablePayload())
+    environment = SourceModuleExecution(
+        NoninterferingSourceModuleEntryPremise(
+            source=original.source,
+            native_island=original.initial,
+            bindings=bindings,
+            builtins=original.builtins,
+        )
+    )
+    context, call = environment.source_call(environment.module.module.body[-1].value)
+    authority = environment.call_authority(context, call)
+    with pytest.raises(ValueError, match="Native instance lifetime remains unproved"):
         authority.require_closed()

@@ -39,9 +39,11 @@ activation per original invocation:
 4. The function execution must retain its own kernel and frame.  Distinct calls
    may not share locals merely because they share a declaration.
 5. Only source and native return paths that join at the same original body may
-   publish a completed result.  Defaults, variadic activation containers,
-   closures, suspended execution, branches, external writes, and cleanup remain
-   closed until their own evidence is implemented.
+   publish a completed result. Final locals retain their ordinary release
+   obligations unless the joined return value supplies the escaping reference.
+   Defaults, variadic activation containers, closures, suspended execution,
+   branches, and external writes remain closed until their own evidence is
+   implemented.
 
 This boundary is upstream of the registry, collector, product, conveyor, and DSL
 consumers.  Those consumers should be rerun after each proof increment; none

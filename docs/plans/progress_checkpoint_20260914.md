@@ -17,7 +17,8 @@ Base commit: `5f96c76358fe7c3be53af8d325bc513d693168e4`.
   can retain an opaque result without proving its type, identity or protocols.
   Calls and subscriptions share this behavior through inheritance.
 - Source-call native entry continuity. This is only a prerequisite: source
-  function body execution and cleanup are still explicitly unproved.
+  function body execution and cleanup were still explicitly unproved at the
+  base checkpoint.
 - Associated DSL examples, regression tests, and historical work notes.
 
 ## Validation state
@@ -49,14 +50,19 @@ benign. The exact outstanding test identifiers remain in
 The next source-function activation increment now joins one original invocation
 to fresh activation-local storage, exact explicit/default parameter values, its
 native entry-to-return receipt, local assignments, and its returned source
-value. Distinct and nested calls retain distinct kernels and locals. Suspended
-functions, variadic activation containers, bare returns, and effects outside the
-activation-local namespace remain explicitly open. Surrounding source/native
-proof coverage passes 544 tests with 5 skips on Python 3.11; the 60 highest-risk
-activation and assignment cases pass on Python 3.14. Rerunning the affected
-files still produces exactly 209 failures, 1328 passes, and 1 skip. This confirms
-that activation is a prerequisite, while the next shared blocker remains the
-declaration-derived admission of supported native operations.
+value. Its exact final local inventory now proves frame cleanup: the returned
+value is retained across frame exit, while every other live local must satisfy
+its ordinary release contract. An opaque discarded argument therefore stays
+open rather than acquiring an inert lifetime. Distinct and nested calls retain
+distinct kernels and locals. Suspended functions, variadic activation
+containers, bare returns, and effects outside the activation-local namespace
+remain explicitly open. The source/native regression surface passes 2,577 tests
+with 50 skips on Python 3.11 in 47.16 seconds using eight workers. The earlier
+high-risk activation and assignment cases also pass on Python 3.14. Rerunning
+the affected files before the cleanup increment still produced exactly 209
+failures, 1328 passes, and 1 skip. This confirms that activation is a
+prerequisite, while the next shared blocker remains the declaration-derived
+admission of supported native operations.
 
 Reproduce the broad tests from an environment with the dev dependencies installed:
 
