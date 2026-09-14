@@ -30,8 +30,8 @@ snapshots continue to create independent source activations; only a proved
 virtual transition can retain an unchanged activation.
 
 The production edit was applied through the NRA DSL batch
-`.codex-temp/dependency_proof_reuse.py` using declaration-targeted import,
-member-insertion, and exact target-patch operations.
+[`dependency_proof_reuse.py`](../examples/dependency_proof_reuse.py) using
+declaration-targeted import, member-insertion, and exact target-patch operations.
 
 ## Validation
 
