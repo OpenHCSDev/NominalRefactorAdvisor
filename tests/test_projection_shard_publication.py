@@ -35,7 +35,7 @@ def test_full_family_is_published_once_per_shard(
 ):
     path = tmp_path / "source.py"
     source = "def target(): pass\nalias = target\nalias()\n"
-    path.write_text(source)
+    path.write_bytes(source.encode())
     parser = PythonModuleRootParser.for_root(
         tmp_path, cache_dir=tmp_path / "cache", use_parse_cache=use_cache
     )
@@ -88,12 +88,19 @@ def test_full_family_is_published_once_per_shard(
         (receipt,) = result.projection_batches
         assert type(receipt) is CompactFamilyProjectionReceipt
         assert receipt.family is family
-        assert receipt.content_signature == collected_family_items_content_signature(items)
+        assert receipt.content_signature == collected_family_items_content_signature(
+            items
+        )
         assert request_source.load_items(family) == items
         manifest = BoundedCompactProjectionManifest(())
         receipt.add_to(manifest, request_source)
         assert not manifest.runtime_projections
-        assert manifest._source_projection_signatures[family, request_source.resolved_path_text] == receipt.content_signature
+        assert (
+            manifest._source_projection_signatures[
+                family, request_source.resolved_path_text
+            ]
+            == receipt.content_signature
+        )
     else:
         (batch,) = result.projection_batches
         assert batch.items == items
@@ -102,7 +109,7 @@ def test_full_family_is_published_once_per_shard(
 
 def test_list_collection_and_batch_share_the_same_publication(tmp_path, monkeypatch):
     path = tmp_path / "source.py"
-    path.write_text("def target(): pass\nalias = target\nalias()\n")
+    path.write_bytes(b"def target(): pass\nalias = target\nalias()\n")
     module = PythonModuleRootParser.for_root(
         tmp_path, cache_dir=tmp_path / "cache"
     ).parsed_source_path(path)
@@ -123,21 +130,33 @@ def test_list_collection_and_batch_share_the_same_publication(tmp_path, monkeypa
 def test_incomplete_publication_keeps_all_facts_in_memory(tmp_path, monkeypatch):
     path = tmp_path / "source.py"
     source = "class Example: pass\ndef target(): return Example()\n"
-    path.write_text(source)
+    path.write_bytes(source.encode())
     parser = PythonModuleRootParser.for_root(tmp_path, cache_dir=tmp_path / "cache")
     projection_source = CompactProjectionCacheSource(
-        path=path, module_name="source",
+        path=path,
+        module_name="source",
         source_signature=python_source_cache_signature(source),
         family_cache_dir=parser.collected_family_cache_dir,
-        scan_root=tmp_path, cache_dir=parser.parse_cache_dir,
-        use_parse_cache=True, source_policy=PythonSourcePathPolicy(),
+        scan_root=tmp_path,
+        cache_dir=parser.parse_cache_dir,
+        use_parse_cache=True,
+        source_policy=PythonSourcePathPolicy(),
     )
-    families = (CompactModuleClassProjectionFamily, CompactProductFlowModuleProjectionFamily)
-    monkeypatch.setattr(CompactProductFlowModuleProjectionFamily, "cache_payload_max_bytes", 0)
-    result = build_compact_projection_shard(CompactProjectionBuildRequest(
-        source=projection_source, missing_families=families,
-        config=DetectorConfig(), bundle_families=families,
-    ))
+    families = (
+        CompactModuleClassProjectionFamily,
+        CompactProductFlowModuleProjectionFamily,
+    )
+    monkeypatch.setattr(
+        CompactProductFlowModuleProjectionFamily, "cache_payload_max_bytes", 0
+    )
+    result = build_compact_projection_shard(
+        CompactProjectionBuildRequest(
+            source=projection_source,
+            missing_families=families,
+            config=DetectorConfig(),
+            bundle_families=families,
+        )
+    )
     assert not result.cache_bundle_complete
     assert tuple(batch.family for batch in result.projection_batches) == families
     stored, retained = result.projection_batches

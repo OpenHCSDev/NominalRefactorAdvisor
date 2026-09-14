@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,17 @@ def test_codemod_snapshot_canonicalizes_source_mapping_identity() -> None:
         )
         == "pkg.mod.Alpha"
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows root-relative path semantics")
+def test_context_free_module_identity_uses_the_lexical_windows_anchor() -> None:
+    path = Path("/repo/subject.py")
+
+    identity = PythonModulePathIdentity.from_source_path(path)
+
+    assert identity.path == path
+    assert identity.import_name == "repo.subject"
+    assert not identity.is_package_init
 
 
 def test_canonical_source_mapping_rejects_duplicate_path_identities() -> None:

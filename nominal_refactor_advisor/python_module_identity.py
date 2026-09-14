@@ -49,7 +49,7 @@ class PythonModulePathIdentity(SourceFileIdentity):
     def from_source_path(cls, path: Path) -> "PythonModulePathIdentity":
         """Derive context-free identity when no parsed project declarations exist."""
 
-        import_root = Path(path.anchor) if path.is_absolute() else Path.cwd()
+        import_root = Path(path.anchor) if path.anchor else Path.cwd()
         return cls.from_import_root(path, import_root)
 
     def resolve_import_from_module(

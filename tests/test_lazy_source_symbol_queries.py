@@ -17,6 +17,7 @@ from nominal_refactor_advisor.product_flow_authority import (
     CompactProductFlowRepository,
     SourceProductFlowRepository,
 )
+from nominal_refactor_advisor.source_identity import source_path_text
 
 
 def module(name, source, path=None):
@@ -183,7 +184,7 @@ def test_ambiguous_module_does_not_select_one_star_import_source():
 
 
 def test_new_snapshot_cannot_reuse_a_pre_edit_unique_symbol(tmp_path):
-    path = str(tmp_path / "probe.py")
+    path = source_path_text(tmp_path / "probe.py")
     original = "def render(value): return value\ndef run(): return render(1)\n"
     snapshot = CodemodSourceSnapshot.from_source_mapping({path: original})
     first = snapshot.product_flow_repository.flow_context_for_symbol("probe.render")

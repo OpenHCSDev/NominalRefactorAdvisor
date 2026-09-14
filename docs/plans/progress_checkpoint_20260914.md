@@ -25,6 +25,15 @@ suites pass under the prescribed eight-worker splits:
 | Python 3.14 remaining 4/4 | 1,782 | 0 | 0 | 154.03 |
 | **Python 3.14 total** | **7,171** | **0** | **36** | |
 
+Final cross-platform hardening makes context-free module identity derive from
+the source path's lexical anchor rather than the process working directory.
+This preserves root-relative Windows source identities without coupling them to
+the checkout path. Exact-source test fixtures now write exact bytes and consume
+the same slash-normalized path projection as the source index. After this
+change, the complete local Python 3.11 suite passes 7,136 tests with 72 skips;
+the affected Python 3.11 and 3.14 surfaces each pass 55 tests with one
+platform-specific skip.
+
 The integrated proof retains exact native definition-application evidence for
 the supported dataclass transformation, activation-specific returned parameter
 identity, conclusive partial non-injectivity evidence, and exact unchanged
