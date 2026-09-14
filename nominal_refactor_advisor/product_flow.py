@@ -323,11 +323,50 @@ class CompactFlowOwnerKind(StrEnum):
         )
 
 
+class CompactBranchPredicateResolverABC(ABC):
+    """Resolve an exact predicate read for one supplied activation."""
+
+    @abstractmethod
+    def proves_boolean(
+        self,
+        predicate_use: CompactCallableReferenceUse,
+        expected: bool,
+    ) -> bool:
+        """Return whether this exact read has the expected built-in Boolean value."""
+        raise NotImplementedError
+
+
 class CompactControlBranchKind(StrEnum):
     """Child-suite repetition and try completion order for flow reasoning."""
 
-    IF_BODY = "if_body", False, None
-    IF_ELSE = "if_else", False, None
+    @staticmethod
+    def _possibly_selected(
+        resolver: CompactBranchPredicateResolverABC,
+        predicate_use: CompactCallableReferenceUse | None,
+    ) -> bool:
+        """A branch without a supported predicate remains possibly selected."""
+        return False
+
+    @staticmethod
+    def _truthy_branch_excluded(
+        resolver: CompactBranchPredicateResolverABC,
+        predicate_use: CompactCallableReferenceUse | None,
+    ) -> bool:
+        return bool(
+            predicate_use is not None and resolver.proves_boolean(predicate_use, False)
+        )
+
+    @staticmethod
+    def _falsey_branch_excluded(
+        resolver: CompactBranchPredicateResolverABC,
+        predicate_use: CompactCallableReferenceUse | None,
+    ) -> bool:
+        return bool(
+            predicate_use is not None and resolver.proves_boolean(predicate_use, True)
+        )
+
+    IF_BODY = "if_body", False, None, _truthy_branch_excluded
+    IF_ELSE = "if_else", False, None, _falsey_branch_excluded
     LOOP_BODY = "loop_body", True, None
     LOOP_ELSE = "loop_else", False, None
     TRY_BODY = "try_body", False, 0
@@ -338,12 +377,23 @@ class CompactControlBranchKind(StrEnum):
     MATCH_CASE = "match_case", False, None
 
     def __new__(
-        cls, value: str, can_repeat: bool, completion_phase: int | None
+        cls,
+        value: str,
+        can_repeat: bool,
+        completion_phase: int | None,
+        excluded_by: Callable[
+            [
+                CompactBranchPredicateResolverABC,
+                CompactCallableReferenceUse | None,
+            ],
+            bool,
+        ] = _possibly_selected,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.can_repeat = can_repeat
         member._completion_phase = completion_phase
+        member._excluded_by = excluded_by
         return member
 
     def may_precede(self, other: CompactControlBranchKind) -> bool:
@@ -353,6 +403,14 @@ class CompactControlBranchKind(StrEnum):
             or other._completion_phase is None
             or self._completion_phase <= other._completion_phase
         )
+
+    def is_proved_excluded(
+        self,
+        resolver: CompactBranchPredicateResolverABC,
+        predicate_use: CompactCallableReferenceUse | None,
+    ) -> bool:
+        """Delegate selection semantics to this declared branch member."""
+        return self._excluded_by(resolver, predicate_use)
 
 
 NamespaceMemberT = TypeVar("NamespaceMemberT")
@@ -1207,6 +1265,10 @@ class CompactControlBranch:
     parent_statement_index: int
     kind: CompactControlBranchKind
     alternative_index: int = 0
+    predicate_use: CompactCallableReferenceUse | None = None
+
+    def is_proved_excluded(self, resolver: CompactBranchPredicateResolverABC) -> bool:
+        return self.kind.is_proved_excluded(resolver, self.predicate_use)
 
 
 @dataclass(frozen=True)
@@ -1230,6 +1292,10 @@ class CompactFlowPosition:
     event_index: int
 
     evaluation_path: tuple[CompactEvaluationBranch, ...] = ()
+
+    def is_proved_excluded(self, resolver: CompactBranchPredicateResolverABC) -> bool:
+        """Return whether an exact enclosing branch cannot run in this activation."""
+        return any(branch.is_proved_excluded(resolver) for branch in self.branch_path)
 
     def may_precede_cut(self, other: CompactFlowPosition) -> bool:
         """Strict entry cut, retaining an earlier iteration of the same source event."""
@@ -2881,6 +2947,23 @@ class CompactFunctionFlow(StoredDataclassState, DataclassGraphValue):
         )
         return self._binding_resolution_for_mutations(candidates, cut, root_name)
 
+    def stored_binding_resolution_for_activation(
+        self,
+        root_name: str,
+        cut: CompactFlowPosition,
+        resolver: CompactBranchPredicateResolverABC,
+    ) -> CompactBindingSource | None:
+        """Select storage after removing branches disproved by this activation."""
+        if cut.is_proved_excluded(resolver):
+            raise ValueError("Excluded source event has no activation binding")
+        candidates = tuple(
+            mutation
+            for mutation in self.mutations_by_root_name.get(root_name, ())
+            if mutation.position.may_precede_cut(cut)
+            and not mutation.position.is_proved_excluded(resolver)
+        )
+        return self._binding_resolution_for_mutations(candidates, cut, root_name)
+
     @property
     def reference_uses(self) -> Iterator[CompactCallableReferenceUse]:
         """Actual source reads, including callees captured before their arguments."""
@@ -3891,11 +3974,17 @@ class _CompactFlowCollector(
         statements: list[ast.stmt],
         kind: CompactControlBranchKind,
         alternative_index: int = 0,
+        predicate_use: CompactCallableReferenceUse | None = None,
     ) -> None:
         saved_path = self.branch_path
         self.branch_path = (
             *saved_path,
-            CompactControlBranch(self.statement_index, kind, alternative_index),
+            CompactControlBranch(
+                self.statement_index,
+                kind,
+                alternative_index,
+                predicate_use,
+            ),
         )
         self._collect_statements(statements)
         self.branch_path = saved_path
@@ -4232,10 +4321,33 @@ class _CompactFlowCollector(
             self._capture_definition_input(keyword.value)
         self._bind_definition(node, decorator_uses, input_start)
 
+    def _direct_predicate_use(
+        self, expression: ast.expr
+    ) -> CompactCallableReferenceUse | None:
+        """Retain the exact direct-name read used by one control predicate."""
+        read_start = len(self.callable_reference_uses)
+        self.visit(expression)
+        reads = tuple(self.callable_reference_uses[read_start:])
+        if (
+            not isinstance(expression, ast.Name)
+            or len(reads) != 1
+            or reads[0].source_span != SourceByteSpan.require_node(expression)
+        ):
+            return None
+        return reads[0]
+
     def visit_If(self, node: ast.If) -> None:
-        self.visit(node.test)
-        self._collect_branch(node.body, CompactControlBranchKind.IF_BODY)
-        self._collect_branch(node.orelse, CompactControlBranchKind.IF_ELSE)
+        predicate_use = self._direct_predicate_use(node.test)
+        self._collect_branch(
+            node.body,
+            CompactControlBranchKind.IF_BODY,
+            predicate_use=predicate_use,
+        )
+        self._collect_branch(
+            node.orelse,
+            CompactControlBranchKind.IF_ELSE,
+            predicate_use=predicate_use,
+        )
 
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
