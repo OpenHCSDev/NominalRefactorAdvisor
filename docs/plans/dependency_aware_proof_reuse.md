@@ -1,9 +1,8 @@
 # Dependency-aware source-proof reuse
 
-Checkpoint record, 14 September 2026. This is a conservative first slice of
-the cross-edit proof-reuse requirement on
-`checkpoint/native-proof-performance-20260914`; it does not complete persistent
-reuse across separate scan invocations.
+Checkpoint record, 14 September 2026. This is the source-proof reuse boundary
+for the cross-edit requirement on
+`checkpoint/native-proof-performance-20260914`.
 
 ## Ownership and invalidation
 
@@ -49,12 +48,19 @@ immutable `ee1ae0c` run, which reports the same **2,148 passed, 69 failed, and 1
 skipped** in 55.78 seconds. These are the checkpoint's existing native-admission
 failures, not regressions from source-proof reuse.
 
-## Remaining work
+## Persistence boundary
 
-This slice improves multi-stage in-memory DSL refactoring, where successive
-virtual edits share exact unaffected source proof owners. Separate process scans
-still require a persistable dependency receipt capable of proving positive and
-negative global dependencies before completed global proofs can be reused.
-Source-path invalidation alone remains insufficient: new consumers, changed
-providers, declaration ambiguity, public-export changes, star imports, escaping
-references, and cycles must all participate in that receipt.
+This reuse intentionally belongs to a multi-stage in-memory DSL trajectory.
+Completed native proofs retain their original loaded declaration, source owner,
+activation, evaluation cuts, and observed events. Serialising a summary and
+restoring it as a completed proof in another process would replace that evidence
+with a structurally similar claim and is therefore outside the proof contract.
+
+Persistent scan caches remain a separate derived-result system. Their global
+detector identities already derive from complete demanded-family content
+signatures; changed family contents invalidate the affected detector result.
+Evidence-local partial findings are explicitly nonterminal and cannot certify a
+complete scan. Neither cache surface is treated as native execution evidence.
+
+The remaining work for this checkpoint is integration with the native-admission
+batch, broad validation, and fresh cold, warm, and novel-edit scan measurement.

@@ -137,9 +137,7 @@ def test_virtual_source_creation_is_visible_without_recollecting_existing_source
     changed = snapshot.with_virtual_sources(
         {
             "/repo/consumer.py": (
-                "from provider import render\n"
-                "def run():\n"
-                "    return render(1)\n"
+                "from provider import render\n" "def run():\n" "    return render(1)\n"
             )
         }
     )
@@ -148,18 +146,73 @@ def test_virtual_source_creation_is_visible_without_recollecting_existing_source
     assert changed_repository.source_projection(provider) is provider_projection
     assert len(changed_repository.function_call_resolutions) == 1
     assert (
-        changed_repository.function_call_resolutions[0]
-        .target_resolution.declaration
+        changed_repository.function_call_resolutions[0].target_resolution.declaration
         is not None
     )
+
+
+def test_multistage_virtual_edits_retain_each_still_current_proof_owner():
+    provider_path = "/repo/provider.py"
+    first_consumer_path = "/repo/first_consumer.py"
+    second_consumer_path = "/repo/second_consumer.py"
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {
+            provider_path: "def render(value):\n    return value\n",
+            first_consumer_path: (
+                "from provider import render\n" "def run():\n" "    return render(1)\n"
+            ),
+        }
+    )
+    repository = snapshot.product_flow_repository
+    provider = snapshot.parsed_module_for_source_path(provider_path)
+    first_consumer = snapshot.parsed_module_for_source_path(first_consumer_path)
+    provider_execution = repository.native_reference_environment(provider)
+    first_consumer_execution = repository.native_reference_environment(first_consumer)
+
+    added = snapshot.with_virtual_sources(
+        {
+            second_consumer_path: (
+                "from provider import render\n" "def run():\n" "    return render(2)\n"
+            )
+        }
+    )
+    added_repository = added.product_flow_repository
+    second_consumer = added.parsed_module_for_source_path(second_consumer_path)
+    second_consumer_execution = added_repository.native_reference_environment(
+        second_consumer
+    )
+    assert added_repository.native_reference_environment(provider) is provider_execution
+    assert (
+        added_repository.native_reference_environment(first_consumer)
+        is first_consumer_execution
+    )
+    assert len(added_repository.resolved_function_calls) == 2
+
+    changed = added.with_virtual_sources(
+        {first_consumer_path: added.sources_by_file_path[first_consumer_path] + "\n"}
+    )
+    changed_repository = changed.product_flow_repository
+    assert (
+        changed_repository.native_reference_environment(provider) is provider_execution
+    )
+    assert (
+        changed_repository.native_reference_environment(second_consumer)
+        is second_consumer_execution
+    )
+    assert (
+        changed.parsed_module_for_source_path(first_consumer_path) is not first_consumer
+    )
+    assert (
+        id(changed.parsed_module_for_source_path(first_consumer_path))
+        not in changed_repository._native_executions
+    )
+    assert len(changed_repository.resolved_function_calls) == 2
 
 
 def test_repository_projection_rejects_a_foreign_source_owner():
     path = "/repo/subject.py"
     first = CodemodSourceSnapshot.from_source_mapping({path: "chosen = property\n"})
-    foreign = CodemodSourceSnapshot.from_source_mapping(
-        {path: "chosen = property\n"}
-    )
+    foreign = CodemodSourceSnapshot.from_source_mapping({path: "chosen = property\n"})
 
     with pytest.raises(ValueError, match="different parsed module owners"):
         first.product_flow_repository.projected_with_source_projection(
