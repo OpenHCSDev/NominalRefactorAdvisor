@@ -1,7 +1,7 @@
-"""Original literal equality is distinct from source spelling and unknown keys.
+"""Original key equality is distinct from source spelling and unknown keys.
 
-These tests exercise original compact values and the unknown fact boundary,
-not an Enum whitelist.
+These tests exercise exact literals, closed standard Enum declarations, and the
+unknown fact boundary.
 """
 
 import ast
@@ -94,8 +94,17 @@ def test_actual_literal_keys_own_detector_injectivity(left, right, count):
         assert "is not injective" in finding.summary
 
 
-@pytest.mark.parametrize("right", ("Mode.BETA", "Mode.ALPHA", "unknown()"))
-def test_unproved_keys_are_neither_injective_nor_noninjective(right):
+@pytest.mark.parametrize(
+    "right,expected_summary",
+    (
+        ("Mode.BETA", "mature injective registry"),
+        ("Mode.ALPHA", "is not injective"),
+        ("unknown()", None),
+    ),
+)
+def test_declared_enum_keys_are_proved_while_unknown_keys_remain_open(
+    right, expected_summary
+):
     source = keyed_registry_source().replace("mode = Mode.BETA", f"mode = {right}")
     module = parsed(source)
     projections = _systemic.InjectiveTypeRegistryDetector.compact_module_projections(
@@ -104,11 +113,17 @@ def test_unproved_keys_are_neither_injective_nor_noninjective(right):
     (fact,) = _systemic._compact_keyed_registry_axis_facts(
         projections, DetectorConfig()
     )
-    assert fact.injectivity_proof is None
-    assert not fact.is_mature_injective
-    with pytest.raises(ValueError, match="equality remains unproved"):
-        fact.require_proof()
-    assert findings(source) == []
+    detected = findings(source)
+    if expected_summary is None:
+        assert fact.injectivity_proof is None
+        assert not fact.is_mature_injective
+        with pytest.raises(ValueError, match="equality remains unproved"):
+            fact.require_proof()
+        assert detected == []
+        return
+    assert fact.injectivity_proof is not None
+    assert len(detected) == 1
+    assert expected_summary in detected[0].summary
 
 
 @pytest.mark.parametrize("direct_write", ("pass", "mode: object"))

@@ -19,7 +19,6 @@ from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
 from nominal_refactor_advisor.source_index import build_source_index
 
-
 _DISTINCT_ENUM = """class Mode(Enum):
     ALPHA = auto()
     BETA = auto()"""
@@ -130,9 +129,9 @@ def test_injective_finding_requires_distinct_mapping_keys(
     findings = analyze_detector_types(
         [_parsed(source)], DetectorConfig(), detector_types=detectors
     )
-    assert len(findings) == (1 if key_count == 2 else 0), (
-        "Member spelling and distinct object identity do not prove unequal mapping keys"
-    )
+    assert len(findings) == (
+        1 if key_count == 2 else 0
+    ), "Member spelling and distinct object identity do not prove unequal mapping keys"
 
 
 @pytest.mark.parametrize("enum_source,aliases,key_count", _KEY_CASES)
@@ -171,9 +170,7 @@ def test_manual_conversion_does_not_assume_member_spellings_are_unique(
         build_source_index([module], ()), {module.file_path: source}
     )
     operation = ConvertManualRegistryToAutoregisterOperation(
-        target=SourceRewriteTarget(
-            file_path=module.file_path, qualname="AlphaHandler"
-        )
+        target=SourceRewriteTarget(file_path=module.file_path, qualname="AlphaHandler")
     )
     if key_count == 1:
         # The operation currently promises unique keys. Preserving dict overwrite
@@ -182,9 +179,11 @@ def test_manual_conversion_does_not_assume_member_spellings_are_unique(
             operation.source_edits_from_snapshot(snapshot)
         return
 
-    result = RefactorRecipe("distinct-registry-keys").with_operation(
-        operation
-    ).simulate(snapshot)
+    result = (
+        RefactorRecipe("distinct-registry-keys")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
     assert result.is_clean
     converted = _native_keys(
         result.simulation.rewritten_sources[module.file_path], aliases, key_count
@@ -192,3 +191,30 @@ def test_manual_conversion_does_not_assume_member_spellings_are_unique(
     assert len(converted.REGISTRY) == 2
     assert converted.REGISTRY[converted.Mode.ALPHA] is converted.AlphaHandler
     assert converted.REGISTRY[converted.Mode.BETA] is converted.BetaHandler
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        _MANUAL_SOURCE.replace(
+            "from enum import Enum, auto",
+            "from enum import auto\n\nclass Enum:\n    pass",
+        ),
+        _MANUAL_SOURCE.replace(
+            "class Mode(Enum):",
+            "auto = lambda: 1\n\nclass Mode(Enum):",
+        ),
+        _MANUAL_SOURCE.replace(
+            "class Mode(Enum):",
+            "def decorate(cls):\n    return cls\n\n@decorate\nclass Mode(Enum):",
+        ),
+    ),
+    ids=("shadowed-enum", "shadowed-auto", "decorated-enum"),
+)
+def test_enum_key_proof_requires_closed_standard_library_declarations(source):
+    module = _parsed(source)
+    with pytest.raises(ValueError, match="semantics remain unproved"):
+        DirectManualRegistryComponent.from_module_anchor(
+            module.module,
+            "AlphaHandler",
+        )

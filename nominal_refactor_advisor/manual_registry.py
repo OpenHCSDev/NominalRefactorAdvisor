@@ -7,6 +7,7 @@ from abc import ABC
 from collections.abc import Hashable
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     TypeAlias,
@@ -15,9 +16,11 @@ from typing import (
 from .ast_tools import (
     AstExpressionProjection,
     EagerNameLoadCollector,
+    ParsedModule,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
 )
+from .class_index import ModuleNominalBindingAuthority
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -28,7 +31,16 @@ from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
 )
-from .value_expression import LiteralExpressionEffects
+from .value_expression import (
+    CompactValueExpression,
+    LexicalValueReference,
+    LiteralExpressionEffects,
+    MappingKeyResolverABC,
+)
+from .enum_semantics import (
+    PYTHON_ENUM_BASE_AUTHORITY,
+    PythonEnumDeclarationAuthority,
+)
 
 RegistryAssignment: TypeAlias = ast.Assign | ast.AnnAssign
 
@@ -96,6 +108,64 @@ class DirectModuleClassGraph:
             for node in self.classes_by_name.values()
             if self.descends_from(node, ancestor_name)
         )
+
+
+@dataclass(frozen=True)
+class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
+    """Resolve AST key expressions from their exact module-local declarations."""
+
+    module: ast.Module
+
+    @cached_property
+    def parsed_module(self) -> ParsedModule:
+        return ParsedModule(
+            Path("__nra_registry_key__.py"),
+            "__nra_registry_key__",
+            False,
+            self.module,
+            ast.unparse(self.module),
+        )
+
+    @cached_property
+    def enum_declarations_by_name(
+        self,
+    ) -> dict[str, PythonEnumDeclarationAuthority]:
+        bindings = ModuleNominalBindingAuthority(self.parsed_module)
+        declarations: dict[str, PythonEnumDeclarationAuthority] = {}
+        for name, node in DirectModuleClassGraph(self.module).classes_by_name.items():
+            snapshot = bindings.snapshot_before(node.lineno)
+
+            def qualified_reference(
+                reference: ast.expr,
+                shadowed_names: frozenset[str],
+            ) -> str | None:
+                parts = AstExpressionProjection.attribute_chain(reference)
+                if not parts or parts[0] in shadowed_names:
+                    return None
+                nominal = snapshot.reference_for(parts)
+                return None if nominal.root_binding is None else nominal.qualified_name
+
+            try:
+                declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
+                    node,
+                    identity=f"{self.parsed_module.module_name}.{name}",
+                    qualified_reference=qualified_reference,
+                )
+            except ValueError:
+                continue
+        return declarations
+
+    def _lexical_mapping_key(
+        self,
+        reference: LexicalValueReference,
+        context: ast.Module,
+    ) -> Hashable:
+        if context is not self.module or len(reference.attribute_path) != 1:
+            raise ValueError("Mapping key reference has no exact module declaration")
+        declaration = self.enum_declarations_by_name.get(reference.root_name)
+        if declaration is None:
+            raise ValueError("Mapping key declaration semantics remain unproved")
+        return declaration.require_mapping_key(reference.attribute_path[0])
 
 
 @dataclass(frozen=True)
@@ -203,6 +273,17 @@ class RegistryEntries(ABC):
     class_names = CollectionAttributeProjection[str]("entries", "class_name")
     class_nodes = CollectionAttributeProjection[ast.ClassDef]("entries", "class_node")
 
+    @cached_property
+    def mapping_key_values(self) -> tuple[Hashable, ...]:
+        authority = SourceModuleMappingKeyAuthority(self.module)
+        return tuple(
+            CompactValueExpression.project(entry.key_node).resolve_mapping_key(
+                authority,
+                self.module,
+            )
+            for entry in self.entries
+        )
+
     def require_original_entry_values(
         self,
         environment: NativeReferenceEnvironment,
@@ -223,7 +304,7 @@ class RegistryEntries(ABC):
             or environment.source.module.module is not self.module
         ):
             raise ValueError("Class mapping requires its original source execution")
-        keys = tuple(entry.key_value for entry in self.entries)
+        keys = self.mapping_key_values
         if len(frozenset(keys)) != len(keys):
             raise ValueError("Class mapping requires unique declared keys")
         if contents.names != frozenset(keys):
@@ -235,10 +316,7 @@ class RegistryEntries(ABC):
         self, authority: AutoRegisterClassAuthority
     ) -> None:
         authority.require_requested_key_compatibility(
-            tuple(
-                (entry.class_name, LiteralExpressionEffects(entry.key_node))
-                for entry in self.entries
-            )
+            tuple(zip(self.class_names, self.mapping_key_values, strict=True))
         )
 
     def require_ordered_unique_entries(self) -> None:
@@ -251,7 +329,7 @@ class RegistryEntries(ABC):
             raise ValueError("Registry order must match class declaration order")
         for entry in self.entries:
             entry.require_relocatable_key(self.module)
-        keys = tuple(entry.key_value for entry in self.entries)
+        keys = self.mapping_key_values
         if len(frozenset(keys)) != len(keys):
             raise ValueError("Registry keys must be unique")
 

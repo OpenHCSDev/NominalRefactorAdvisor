@@ -97,7 +97,7 @@ class AutoRegisterClassAuthority:
         environment.require_native(self.metaclass_operand, (self.native_metaclass,))
 
     def require_requested_key_compatibility(
-        self, entries: tuple[tuple[str, LiteralExpressionEffects], ...]
+        self, entries: tuple[tuple[str, Hashable], ...]
     ) -> None:
         """Check the requested installed policy on inert classes, not target execution.
 
@@ -117,7 +117,7 @@ class AutoRegisterClassAuthority:
                 and name != REGISTRY_ATTRIBUTE_NAME
             }
             attributes[REGISTRY_ATTRIBUTE_NAME] = storage
-            native_entries = tuple((name, key.hashable_value) for name, key in entries)
+            native_entries = entries
             base = self.native_metaclass.declaration(self.node.name, (), attributes)
             classes = tuple(
                 self.native_metaclass.declaration(name, (base,), {key_attribute: key})
