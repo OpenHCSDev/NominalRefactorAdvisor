@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import marshal
+import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -4789,16 +4790,43 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
 
     @classmethod
     def from_function(cls, function: FunctionType) -> Self:
-        """Read the complete defining source without invoking the function."""
+        """Authenticate physical candidates, not loader callbacks or activation."""
         if type(function) is not FunctionType:
             raise ValueError("Python implementation requires an exact function")
-        try:
-            lines, _ = inspect.findsource(function)
-        except (OSError, TypeError, IndexError) as error:
-            raise ValueError(
-                "Python implementation has no inspectable source"
-            ) from error
-        return cls("".join(lines), function.__code__.co_filename)
+        namespace = function.__globals__
+        backend = NativeCreationBackend.current()
+        for key in namespace:
+            backend.require_dictionary_key(key)
+        module_file = namespace["__file__"] if "__file__" in namespace else None
+        if module_file is not None and type(module_file) is not str:
+            raise ValueError("Python source path requires an exact native string")
+        filename = function.__code__.co_filename
+        paths = dict.fromkeys(
+            (filename,) if module_file is None else (filename, module_file)
+        )
+        matches = []
+        rejection = None
+        for path in paths:
+            try:
+                with tokenize.open(path) as stream:
+                    source = stream.read()
+            except (OSError, UnicodeError, SyntaxError):
+                continue
+            compilation = cls(source, filename)
+            try:
+                _ = compilation.function_source_span(function)
+            except (ValueError, SyntaxError) as error:
+                rejection = error
+                continue
+            if compilation not in matches:
+                matches.append(compilation)
+        if not matches:
+            if rejection is not None:
+                raise rejection
+            raise ValueError("Python implementation has no inspectable physical source")
+        if len(matches) != 1:
+            raise ValueError("Python implementation has ambiguous physical source")
+        return matches[0]
 
     @property
     def module_annotation_setup(self) -> NativeValueStore | None:

@@ -34,7 +34,18 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Current work at 19:43 UTC: the body-cache validation correction and its shared
+Current work at 20:06 UTC: the new physical-source acquisition is local and
+uncommitted, with focused Python 3.11/3.14 tests and exact two-stage DSL replay
+passing. Its installed-wheel/API and complete production self-scan also pass;
+the 39-stage authored replay matches all five production files exactly. Its
+complete frozen-source suites pass 7,247/74 on Python 3.11 and 7,283/38 on
+Python 3.14. Its isolated complete-package cold/warm/edit gate passes with
+all 79 detectors, zero omissions and equal normalized reports: 48.935,
+1.033 and 4.409 scan seconds respectively. It is ready for a scoped
+checkpoint commit; hosted CI for this new code has not yet been dispatched.
+The following
+published gates apply to the preceding parent-operand checkpoint, not this
+new acquisition edit. The body-cache validation correction and its shared
 source-geometry factoring are committed and pushed as
 `b3749510cb309b723234a6968b10ec9523e31a32`. Four adversarial
 controls reproduce failures on the published source and pass after the
@@ -1212,3 +1223,189 @@ for this correction. This status-only follow-up may have a different HEAD
 from the code SHA under test. The supplied handoff remains untracked and
 unstaged; main, other worktrees, release tags and publications are untouched.
 Generated construction/registration remains the active unfinished objective.
+
+## Actual imported-function physical-source acquisition
+
+Two new real controls fail on the published source on Python 3.11: the actual
+frozen `ABCMeta.__new__` cannot be acquired, and acquisition of a function
+with an unretained executable filename executes its custom loader's
+`get_source` callback. The log is `current-physical-source-311-before.txt`:
+two failures, 2.22 seconds, eight workers under the 60-second bound.
+
+The existing `NativePythonCompilation.from_function` now obtains physical
+source candidates only from the actual function's code filename and actual
+globals' file metadata. Existing native dictionary-key admission precedes
+metadata lookup, source paths must be exact strings, and Python's encoding
+cookie is respected by the physical reader. Candidate paths are not source
+or execution proof: each readable candidate must match the complete current
+native code through the existing `function_source_span` contract. Different
+matching full-source contexts are rejected as ambiguous. No `sys.modules`
+label, descriptor, custom loader, target function or constructor is invoked.
+Pure source/code correspondence reuse remains bounded by `ScanCache.scope`;
+the current file and actual code are rejoined on subsequent acquisition.
+
+Ten new controls cover actual frozen ABC source without target invocation,
+custom-loader nonexecution with a real physical counterpart, unregistered
+function globals with a real executable filename, ambiguous source contexts,
+warmed physical-file edits, active path subclasses, active namespace keys,
+unavailable loader-only source, non-UTF-8 encoding, and the portable DSL chain.
+The Python 3.14 first-pass loader fixture used `code.replace` rather than
+compiling its real alternate executable filename and failed exact code/source
+correspondence. The corrected fixture compiles and creates that actual function;
+no production matching rule was relaxed.
+
+The edit is expressed by `docs/examples/native_physical_source_acquisition.py`
+through the existing import and function-body operations. The two-stage plan
+is clean from the committed production snapshot, its formatted result matches
+the current production file exactly, and the input snapshot is unchanged.
+Result: `current-physical-source-replay.txt`. It proves syntax composition,
+not body execution, source birth, entry conditions or registration.
+
+Focused frozen-source suites, seven files, eight workers, 60-second bounds:
+
+| Runtime | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 | 179 | 1 | 9.06 |
+| Python 3.14 | 180 | 0 | 11.22 |
+
+Files are `test_native_function_source`, `test_native_behavior_proof`,
+`test_native_source_class_preparation`, `test_native_class_mro`,
+`test_authored_native_use_invariants`, `test_type_keyed_native_contract`, and
+`test_registry_candidate_requirements`, with `.py` suffixes. Logs use
+`current-physical-source-{311,314}-final-selected.txt`. All retain the existing
+unproved native construction and generated registration-result obligations.
+Loader-only, virtual and archived source need an independent explicit source
+provider; they are not automatically acquired by executing arbitrary loader
+hooks. The existing explicit-source `NativePythonCompilation` API is unchanged.
+Broader suites, docs/package, installed-wheel/API and complete cold/warm/edit
+gates remain pending on this source. The upstream CI code SHA is still
+`98ca65bf4a104e990bd3ffe2cf10aac97fd991b0`, not this uncommitted edit.
+
+At 19:52 UTC, fresh Sphinx output passes with the same two duplicate API-object
+warnings and fresh isolated sdist/wheel builds pass. Installed-wheel controls
+run from outside the checkout with `-I`: all 141 production-module bytes match
+the checkout and wheel archive, all ten new real controls pass, and every
+production import resolves under the installed prefix. Logs are
+`current-physical-docs.txt`, `current-physical-build.txt`, and
+`current-physical-wheel-controls.txt`. Both complete collections are terminal
+with 7,321 tests; collection is not a full-suite result. The large Python 3.14
+`0::16` shard is running alone, with eight workers and a 165-second bound.
+The preceding parent-operand hosted run remains live: docs/wheel passes and
+six runtime jobs are running. None of those hosted jobs tests the current
+uncommitted acquisition change.
+
+At 19:56 UTC, the large Python 3.14 shard is terminal: 318 passed in 133.32
+seconds, with two existing warnings and no weakened test inputs or assertions.
+The remaining full file-disjoint matrix runs two pools of eight workers under
+individual 165-second bounds. Both advisor shards are terminal: 795 passed
+on Python 3.11 in 118.75 seconds and 795 passed on Python 3.14 in 117.82
+seconds; the latter has two existing warnings. The Python 3.14 `8::16` shard
+also passes: 457 passed/3 skipped in 20.89 seconds. The rest remains running;
+these are not final suite totals. Logs use `current-physical-full-*`.
+
+The installed public API runs outside the checkout with `-I`, the actual
+`Path` root and the existing `parse_workers=8`/`analysis_workers=8` contract:
+it returns a list with zero production findings. Log:
+`current-physical-wheel-api-final.txt`. The first command mistakenly passed
+`workers`, rejected before API execution; its handle is terminal and the
+fresh empty cache was verified before correcting the caller. No product
+signature or proof contract was changed to accept the wrong argument.
+
+The complete independent CLI production self-scan is terminal with all 79
+detectors, zero omissions and zero findings; 35.034 scan seconds overlapped
+the test matrix and are not a performance benchmark. Report and stderr:
+`current-physical-self-final.{json,stderr}`. Its first command used incorrect
+CLI flags, rejected by argparse before scanning; only after that handle was
+terminal was the caller corrected to the existing `--json`, `--json-payload`
+and `--scan-budget-seconds` declarations. Original command-error logs remain.
+
+The authored trajectory is now replayed from committed baseline
+`ec541bd2d22d3e3d42097df962a793741b9ddb5f` over five production modules:
+`[11, 3, 5, 1, 13, 4, 2]`, 39 stages, all clean. Its formatted final source
+matches the current `native_call`, `native_compilation`, `source_geometry`,
+`codemod_source_edits` and `native_class_mro` files exactly; the original
+snapshot remains unchanged. Log: `current-physical-composed-39-replay.txt`.
+This verifies syntactic composition and replay across the actual successive
+states, not behavioral equivalence, automatic semantic decisions or measured
+author-time savings. No new DSL-engine surface was required.
+
+The parent-operand code SHA's hosted run has three passing jobs (docs/wheel,
+Ubuntu 3.14 and macOS 3.14) and four running jobs at the latest check.
+Complete-package cold/warm/edit timing awaits terminal local heavy jobs to
+avoid conflating competing workload with a performance measurement. The
+physical-source implementation remains uncommitted pending these gates.
+
+### Final physical-source complete-suite validation
+
+At 20:01 UTC the complete disjoint supervisor is terminal with exit zero.
+Every shard passed, with no assertion or input-size reduction. The final
+7,321-test collections match 7,247 passed/74 skipped on Python 3.11 and
+7,283 passed/38 skipped on Python 3.14. The source/test inputs remain frozen
+from the final fixture edit; the ten new cases account for the increase.
+
+| Runtime | Shard | Passed | Skipped | Seconds |
+| --- | --- | ---: | ---: | ---: |
+| Python 3.11 | Advisor | 795 | 0 | 118.75 |
+| Python 3.11 | `0::4` | 1,791 | 12 | 105.22 |
+| Python 3.11 | `1::4` | 1,615 | 9 | 49.97 |
+| Python 3.11 | `2::4` | 1,607 | 15 | 78.87 |
+| Python 3.11 | `3::4` | 1,439 | 38 | 49.25 |
+| Python 3.14 | Advisor | 795 | 0 | 117.82 |
+| Python 3.14 | `0::16` | 318 | 0 | 133.32 |
+| Python 3.14 | `8::16` | 457 | 3 | 20.89 |
+| Python 3.14 | `4::8` | 1,023 | 2 | 71.51 |
+| Python 3.14 | `1::4` | 1,620 | 4 | 42.14 |
+| Python 3.14 | `2::4` | 1,616 | 6 | 79.59 |
+| Python 3.14 | `3::8` | 663 | 23 | 34.97 |
+| Python 3.14 | `7::8` | 791 | 0 | 19.47 |
+
+The large `0::16` shard ran alone; the remaining matrix used two pools of
+eight workers and individual 165-second bounds. Applicable existing warnings
+are retained in the per-shard logs, not suppressed. After process inspection
+confirmed that every local heavy validation job was terminal, the fresh
+1,057-file complete-package cold measurement started with sixteen
+parse/analysis workers and the documented 165-second bound. Warm and one-edit
+measurements use the same scope/cache and 60-second bounds after the preceding
+handle is terminal. No timing result is yet claimed for the new source.
+
+The preceding parent-operand CI run has four passing jobs, including both
+macOS versions and docs/wheel. Three runtime jobs remain running at this check;
+it still does not test this uncommitted acquisition change.
+
+### Final physical-source complete-package timing
+
+At 20:06 UTC all three isolated scan handles are terminal with exit zero.
+The retained scope is the complete 1,057-file OpenHCS/eight-library source copy,
+excluding tests. Sixteen parse and analysis workers use the same fresh cache:
+a 165-second cold bound, then 60-second warm and one-edit bounds. No local
+heavy validation job competed with these measurements.
+
+| State | Scan seconds | Wall seconds | Analysis cache |
+| --- | ---: | ---: | --- |
+| Cold | 48.935 | 51.88 | Miss |
+| Warm | 1.033 | 2.29 | Hit |
+| One edit | 4.409 | 7.06 | Partial |
+
+Each report completes all 79 detectors with zero omissions, 180 retained
+findings and 215 raw findings. Removing timing and cache-mode/reason fields
+produces the same SHA-256 in all three reports:
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100`.
+Reports and wall measurements use `current-physical-{cold,warm,edit}` in
+the retained validation directory. The copied-source comment was removed
+after the edit scan finished; production source was not changed by this
+performance control. These observations are not a detector-recall proof,
+behavioral-equivalence proof or causal speedup estimate.
+
+The complete local suites, docs/distributions, exact installed-wheel
+controls/public API, independent production self-scan and 39-stage replay
+are now terminal and passing. Before checkpoint publication, six exact
+task-owned disposable caches/fixture directories (756,392 KiB total) were
+selected for cleanup after process inspection confirmed no active local
+validation handles. Logs, reports, helpers, source copy, environments,
+documentation builds and distribution artifacts are retained. Such caches
+and fixtures are regeneratable, not archived proof evidence.
+
+The preceding parent-operand hosted run `35015301107`, exact code SHA
+`98ca65bf4a104e990bd3ffe2cf10aac97fd991b0`, has six passing jobs;
+Windows 3.11 remains live. It is not CI validation of this physical-source
+checkpoint. Generated construction/registration still remains unproved.

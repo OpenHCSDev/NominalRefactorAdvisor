@@ -1,5 +1,6 @@
 """Native Python source correspondence precedes, and does not imply, effects."""
 
+import abc
 import ast
 import dataclasses
 import marshal
@@ -284,6 +285,191 @@ def test_stdlib_dataclass_code_is_matched_to_current_source():
             function
         ).function_definition(function)
         assert definition.name == function.__name__
+
+
+def test_actual_frozen_abc_constructor_joins_current_source_without_invocation():
+    function = vars(abc.ABCMeta)["__new__"].__func__
+    assert function.__globals__ is vars(abc)
+    observed = []
+
+    def observe(frame, event, argument):
+        if frame.f_code is function.__code__:
+            observed.append(event)
+
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(observe)
+        with ScanCache.scope():
+            owner = NativePythonFunctionSource.from_function(function)
+            assert owner.definition.name == "__new__"
+            assert tuple(
+                parameter.name for parameter in owner.signature.parameters
+            ) == ("mcls", "name", "bases", "namespace", "kwargs")
+    finally:
+        sys.setprofile(previous)
+    assert not observed
+
+
+def test_source_acquisition_does_not_execute_a_custom_loader(tmp_path, monkeypatch):
+    source = "def sample(value):\n    raise AssertionError('target must not run')\n"
+    _, function = compiled_function(tmp_path, monkeypatch, source)
+    namespace = function.__globals__
+    exec(
+        compile(
+            source,
+            str(tmp_path / "not_retained_executable.py"),
+            "exec",
+            dont_inherit=True,
+            optimize=0,
+        ),
+        namespace,
+    )
+    function = namespace["sample"]
+    observed = []
+
+    class ActiveLoader:
+        def get_source(self, name):
+            observed.append(name)
+            return source
+
+    function.__globals__["__loader__"] = ActiveLoader()
+    owner = NativePythonFunctionSource.from_function(function)
+    assert owner.definition.name == "sample"
+    assert not observed
+
+
+def test_physical_source_does_not_require_registered_module_metadata(tmp_path):
+    path = tmp_path / "unregistered.py"
+    source = "def sample(value):\n    return value\n"
+    path.write_text(source)
+    namespace = {}
+    exec(compile(source, str(path), "exec", dont_inherit=True, optimize=0), namespace)
+    function = namespace["sample"]
+    assert "__file__" not in function.__globals__
+    assert (
+        NativePythonFunctionSource.from_function(function).definition.name == "sample"
+    )
+
+
+def test_ambiguous_physical_source_context_is_not_selected(tmp_path, monkeypatch):
+    source = "def sample(value):\n    return value\nafter = 1\n"
+    _, function = compiled_function(tmp_path, monkeypatch, source)
+    other = tmp_path / "other.py"
+    other.write_text(source.replace("after = 1", "after = 2"))
+    function.__globals__["__file__"] = str(other)
+    with pytest.raises(ValueError, match="ambiguous physical source"):
+        NativePythonFunctionSource.from_function(function)
+
+
+def test_warmed_source_acquisition_rereads_edited_physical_body(tmp_path, monkeypatch):
+    compilation, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    with ScanCache.scope():
+        owner = NativePythonFunctionSource.from_function(function)
+        assert owner.definition.name == "sample"
+        Path(compilation.file_path).write_text("def sample(value):\n    return 99\n")
+        with pytest.raises(ValueError, match="differs from compiled source"):
+            NativePythonFunctionSource.from_function(function)
+        # The prior immutable source still corresponds to the unchanged code;
+        # it is neither an observation of the edited file nor an activation proof.
+        assert owner.definition.name == "sample"
+
+
+def test_source_path_subclass_is_rejected_without_path_hooks(tmp_path, monkeypatch):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    observed = []
+
+    class ActivePath(str):
+        def __fspath__(self):
+            observed.append("path")
+            return str(self)
+
+    function.__globals__["__file__"] = ActivePath(function.__globals__["__file__"])
+    with pytest.raises(ValueError, match="exact native string"):
+        NativePythonFunctionSource.from_function(function)
+    assert not observed
+
+
+def test_source_namespace_rejects_active_keys_before_lookup(tmp_path, monkeypatch):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    observed = []
+
+    class ActiveKey:
+        def __hash__(self):
+            observed.append("hash")
+            return 3
+
+    function.__globals__[ActiveKey()] = "foreign"
+    observed.clear()
+    with pytest.raises(ValueError):
+        NativePythonFunctionSource.from_function(function)
+    assert not observed
+
+
+def test_loader_only_source_remains_unproved_without_executing_loader(
+    tmp_path, monkeypatch
+):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    Path(function.__globals__["__file__"]).unlink()
+    observed = []
+
+    class ActiveLoader:
+        def get_source(self, name):
+            observed.append(name)
+            return "def sample(value):\n    return value\n"
+
+    function.__globals__["__loader__"] = ActiveLoader()
+    with pytest.raises(ValueError, match="no inspectable physical source"):
+        NativePythonFunctionSource.from_function(function)
+    assert not observed
+
+
+def test_physical_source_reader_respects_python_encoding_cookie(tmp_path):
+    path = tmp_path / "encoded.py"
+    source = b"# coding: latin-1\ndef sample():\n    return 'caf\xe9'\n"
+    path.write_bytes(source)
+    namespace = {}
+    exec(compile(source, str(path), "exec", dont_inherit=True, optimize=0), namespace)
+    owner = NativePythonFunctionSource.from_function(namespace["sample"])
+    assert owner.definition.body[0].value.value == "caf\u00e9"
+
+
+def test_physical_source_acquisition_dsl_keeps_input_and_original_signature():
+    from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
+
+    path = "nominal_refactor_advisor/native_compilation.py"
+    source = "class NativePythonCompilation:\n    @classmethod\n"
+    source += "    def from_function(cls, function): return cls('', '')\n"
+    original = CodemodSourceSnapshot.from_source_mapping({path: source})
+    plan = runpy.run_path(
+        str(
+            Path(__file__).parents[1]
+            / "docs/examples/native_physical_source_acquisition.py"
+        )
+    )["physical_source_plan"](original)
+    result = plan.simulate(original)
+    assert result.is_clean and result.stage_count == 2
+    assert original.sources_by_file_path[path] == source
+    final = result.final_snapshot.sources_by_file_path[path]
+    assert "import tokenize" in final and "inspect.findsource" not in final
+    module = result.final_snapshot.parsed_module_for_source_path(path)
+    (definition,) = (
+        node
+        for node in ast.walk(module.module)
+        if isinstance(node, ast.FunctionDef) and node.name == "from_function"
+    )
+    assert tuple(argument.arg for argument in definition.args.args) == (
+        "cls",
+        "function",
+    )
+    assert definition.decorator_list[0].id == "classmethod"
 
 
 def test_executable_filename_preserves_backslashes_separately_from_source_identity():
