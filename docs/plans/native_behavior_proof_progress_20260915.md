@@ -35,7 +35,7 @@ or begin OpenHCS extraction or manuscript work.
 ## Status
 
 An audit after the registry-hit checkpoint found an unproved type-query operand
-cleanup that was incorrectly admitted. The working-tree correction reuses
+cleanup that was incorrectly admitted. The committed correction reuses
 original-frame lifetime evidence and passes 142 focused regressions per Python
 version, both complete local suites, docs, distribution builds, and an isolated
 installed-wheel API self-scan, and complete-package cold/warm/one-edit scans.
@@ -43,6 +43,16 @@ See the cleanup audit below. Prior CI
 success does not discharge that newly identified obligation.
 
 Latest published code checkpoint:
+`997d85f95466d5f902679d3f221259b15f23748b`, committed and pushed to
+`checkpoint/native-proof-integration-20260914`. The complete corrected-source
+local gates are recorded in the final checkpoint section below. Its exact-SHA
+hosted integration run is
+[35002821051](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35002821051),
+queued as of 17:41 UTC; it is not yet a passing gate. The persistent goal remains
+active. Generated construction/registration and source-created class keys are
+still unproved and remain the next implementation work.
+
+Preceding registry-hit code checkpoint:
 `c425cbb20a38031a6cb01bc54a4fb6aa26997ce9`, committed and pushed to
 `checkpoint/native-proof-integration-20260914`. Complete local gates for its
 registry-hit increment are recorded below. Its hosted integration run is
@@ -486,3 +496,11 @@ current source/default/global/cell evidence; it must not masquerade as an
 original source-created function. Existing `SourceFunctionActivationABC`
 currently assumes the latter and must be factored at that ownership boundary
 before admitting metaclass-body execution. The persistent goal remains active.
+
+After all local validation processes finished, the four exact task-owned roots
+for the corrected-source self cache, installed-wheel cache, timing cache, and
+pytest fixtures were removed (approximately 732 MiB). They are disposable and
+regenerable, not retained proof evidence. Reports, logs, distributions, source
+copy, documentation output, and the installed-wheel environment are retained.
+The original `/home/ts/code/projects/nominal-refactor-advisor` checkout is
+unchanged: its inherited `uv.lock`, `PAUSED_NRA_GOAL.md`, and `cufile.log` remain.
