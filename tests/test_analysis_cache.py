@@ -2153,9 +2153,11 @@ def test_uncertified_family_cache_payload_is_invalidated(
     assert certified_payload.ast_free is True
 
 
+@pytest.mark.parametrize("payload_margin", (0, -1))
 def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    payload_margin: int,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -2176,19 +2178,41 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
         "collected_family_cache_schema",
         schema,
     )
-    monkeypatch.setattr(
-        BuilderCallShapeFamily,
-        "cache_payload_max_bytes",
-        10_000,
-    )
+    monkeypatch.setattr(BuilderCallShapeFamily, "cache_payload_max_bytes", None)
+    measured_sizes = []
+    serialize = pickle.dumps
 
+    def measure_payload(payload, *arguments, **keywords):
+        serialized = serialize(payload, *arguments, **keywords)
+        if isinstance(payload, ast_tools_module.CollectedFamilyCachePayload):
+            measured_sizes.append(len(serialized))
+        return serialized
+
+    monkeypatch.setattr(pickle, "dumps", measure_payload)
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     assert collect_family_items(module, BuilderCallShapeFamily)
-    payload_paths = tuple((cache_dir / "collected-family").glob("*.pickle"))
+    family_cache_dir = cache_dir / "collected-family"
+    assert not tuple(family_cache_dir.glob("*.pickle"))
+    assert len(measured_sizes) == 1
+    payload_bound = measured_sizes[0] + payload_margin
+    assert payload_bound > schema.max_payload_bytes
 
-    assert len(payload_paths) == 1
-    assert payload_paths[0].stat().st_size > schema.max_payload_bytes
-    assert payload_paths[0].stat().st_size <= 10_000
+    # The fixture's exact boundary derives from the real serializer receipt,
+    # including implementation metadata and platform-specific path contents.
+    monkeypatch.setattr(
+        BuilderCallShapeFamily, "cache_payload_max_bytes", payload_bound
+    )
+    ast_tools_module.collect_family_batch.cache_clear()
+    assert collect_family_items(module, BuilderCallShapeFamily)
+    payload_paths = tuple(family_cache_dir.glob("*.pickle"))
+
+    if payload_margin < 0:
+        assert not payload_paths
+        assert measured_sizes[-1] == payload_bound + 1
+    else:
+        assert len(payload_paths) == 1
+        assert payload_paths[0].stat().st_size > schema.max_payload_bytes
+        assert payload_paths[0].stat().st_size == payload_bound
 
 
 def test_generated_boundary_global_projection_reuses_compact_module_cache(

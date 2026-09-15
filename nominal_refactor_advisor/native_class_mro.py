@@ -60,7 +60,7 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
                 "Native preparation does not select the exact type descriptor"
             )
 
-    def python_constructor(self) -> FunctionType:
+    def python_constructor(self, *, start_after: type | None = None) -> FunctionType:
         """Select current Python __new__ through actual ordinary metaclass lookup.
 
         A constructor's implicit class cell belongs to the selected MRO owner,
@@ -69,7 +69,7 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
         """
         if type(self.declaration) is not type:
             raise ValueError("Native metaclass invocation has unproved metameta hooks")
-        owner = self.member_owner("__new__")
+        owner = self.member_owner("__new__", start_after=start_after)
         if owner is None:
             raise ValueError("Native metaclass has no selected constructor")
         descriptor = self.stored_namespace(owner)["__new__"]
@@ -118,13 +118,22 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
     def member_binding_names(self) -> frozenset[str]:
         return frozenset(self.stored_namespace(self.declaration))
 
-    def member_owner(self, name: str) -> type | None:
+    def member_owner(
+        self, name: str, *, start_after: type | None = None
+    ) -> type | None:
+        """Select current stored C3 members; descriptor execution remains unproved."""
+        if type(name) is not str:
+            raise ValueError("Lookup requires an exact native member name")
+        mro = self.native_mro(self.declaration)
+        if start_after is not None:
+            starts = tuple(
+                index for index, owner in enumerate(mro) if owner is start_after
+            )
+            if len(starts) != 1:
+                raise ValueError("Native MRO lookup start owner is absent or ambiguous")
+            mro = mro[starts[0] + 1 :]
         return next(
-            (
-                owner
-                for owner in self.native_mro(self.declaration)
-                if name in self.stored_namespace(owner)
-            ),
+            (owner for owner in mro if name in self.stored_namespace(owner)),
             None,
         )
 

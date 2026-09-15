@@ -34,7 +34,7 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Current work at 19:13 UTC: the body-cache validation correction and its shared
+Current work at 19:42 UTC: the body-cache validation correction and its shared
 source-geometry factoring are committed and pushed as
 `b3749510cb309b723234a6968b10ec9523e31a32`. Four adversarial
 controls reproduce failures on the published source and pass after the
@@ -49,7 +49,13 @@ diagnostic, with all assertions/input sizes preserved. The installed public-API
 gate now passes against a fresh owned cache. Complete-package cold/warm/edit
 gates pass with unchanged complete semantic reports. Exact-SHA hosted run
 [35012319015](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35012319015)
-is queued; its source SHA is verified, but hosted validation has not yet passed.
+is terminal: five jobs pass and both macOS runtime jobs fail the same
+collected-family fixture assertion. The new current-C3 parent-operand contract
+and derived exact cache-size fixture correction are local and uncommitted.
+Their complete local suites pass 7,237/74 and 7,273/38, respectively, along
+with fresh docs/package, installed-wheel/API and production self-scan gates.
+Complete cold/warm/edit gates also pass with unchanged semantic reports.
+Scoped publication and new exact-SHA hosted verification follow.
 Generated
 construction/registration still rejects the same unproved obligations.
 
@@ -997,3 +1003,193 @@ No completed hosted result from the previous metadata commit is transferred to
 this correction. A later documentation-only status commit does not change
 which code SHA the run validates. The long-running goal remains active because
 generated construction/registration evidence is not complete.
+
+## Current-C3 parent operand and hosted fixture correction
+
+Status at 19:31 UTC: local and uncommitted. The generated-class construction
+and registration obligations still reject; no new automatic status was asserted.
+
+### Declaration-owned parent selection
+
+`NativeClassMroDeclaration.member_owner` now accepts an optional exact
+`start_after` owner. It reads the current native C3 order on every query, finds
+the starting owner by identity, and inspects subsequent stored namespaces using
+the existing key-validation contract. A foreign or missing starting owner
+rejects without invoking equality or representation hooks. Query names must
+be exact native strings before hashing. The old method accepted a `str`
+subclass and invoked its active hash in a new adversarial control.
+
+`python_constructor` projects the same scoped lookup, retaining its existing
+ordinary-metameta, exact-staticmethod, exact-function and class-cell validation.
+For the real AutoRegisterMeta, the selected parent is the actual ABCMeta
+function, with its class cell bound to ABCMeta. In a diamond, traversal after
+the left branch selects the right sibling before the common ancestor. Neither
+member selection nor source metadata proves descriptor execution, original
+`super()` activation, parent construction, ABC initialization or registry writes.
+
+Six controls fail on the pre-edit source; after the implementation and fixture
+correction, both runtime selections pass 143 tests. Three additional controls
+revalidate the selected sibling cell, current descriptor and portable DSL
+signature/rewrite composition. The first MRO mutation fixture used pytest's
+class-attribute patching, which treats the inherited `__bases__` descriptor as
+absent and attempts an invalid deletion during cleanup. Its corrected fixture
+restores the actual native base tuple in `finally`; the mutation assertions are
+unchanged. Logs are `current-super-lookup-{311,314}-final-selected.txt`.
+
+The authored four-stage plan is `docs/examples/current_super_mro_lookup.py`.
+It uses the existing signature and body operations and source-derived call
+geometry. Its clean combined simulation reproduces the formatted production
+file exactly and preserves the committed input snapshot
+(`current-super-lookup-replay.txt`). This is syntax composition, not a
+behavioral-equivalence or elapsed-time proof.
+
+### Actual frozen parent boundary
+
+The genuine parent function has code filename `<frozen abc>` in both runtimes.
+Python 3.11's current source loader rejects it with `Python implementation has
+no inspectable source`. Python 3.14's current loader succeeds and the current
+source signature contains four positional-only parameters plus variadic
+keyword parameters. Logs are `current-super-parent-source-{311,314}.txt`.
+The next source-entry work must supply genuine source provenance for the
+frozen function and rejoin its exact current code. Injecting linecache text,
+trusting a module name, or treating a filename as behavioral evidence would
+not discharge that requirement.
+
+The existing `SourceFunctionActivationABC` requires a source-created callee;
+its default binding and `SourceFunctionEntry` creator frame likewise come from
+that source creation. Actual imported constructor activation needs the shared
+body/entry contracts to consume its existing current native source owner,
+actual defining globals/builtins and validated cells. It must not invent a
+source creation event. Subsequent parent construction and original receiver
+effect transport remain required before a generated registry entry can pass.
+
+### Hosted failure and exact serialized fixture boundary
+
+Exact code-SHA run 35012319015 reports the same single failure on macOS/Python
+3.11 and 3.14: `test_collected_family_can_opt_into_a_larger_bounded_cache_payload`
+retains zero files where its fixed 10,000-byte allowance expects one. The
+respective jobs otherwise pass 7,226 and 7,262 tests, with 74 and 38 skips.
+The Ubuntu/Python 3.14 and docs/wheel jobs pass; the remaining jobs are live.
+The complete job logs are `current-body-macos{311,314}-ci.txt`.
+
+The retained log does not report the macOS payload's actual byte count. A real
+Linux serialization probe records 8,532 bytes under the ordinary fixture path.
+The same committed test with a longer real path serializes 11,792 bytes and
+reproduces its assertion failure. The new derived-boundary fixture passes on
+that real path with a 11,794-byte receipt. Implementation-source paths are part
+of the serialized payload even though they are excluded from its repr/equality.
+This corroborates the fixed-size fixture problem; it does not substitute a
+measured macOS byte count. Logs are `current-ci-payload-{probe,long-path}.txt`.
+
+The test now measures the real unchanged serializer output under the default
+64-byte test limit and verifies that it is not retained. It then opts into the
+measured exact boundary through the same collection/publication path and
+requires a file of precisely that size. An additional case sets a limit one
+byte smaller and requires rejection. The production schema and family policy
+are unchanged. Both runtime selections pass three tests
+(`current-ci-cache-{311,314}-final-selected.txt`); hosted confirmation follows
+the eventual scoped code checkpoint, not a rerun of unchanged failed code.
+
+### Broader validation in progress
+
+The final current-source file inventory matches the full pytest collection.
+There are nine new MRO cases plus one additional cache-boundary case; expected
+full totals are 7,237/74 on Python 3.11 and 7,273/38 on Python 3.14. Python 3.14
+`0::16` is terminal and passes 318 tests in 133.58 seconds. The remaining
+file-disjoint shards run with two concurrent jobs, eight workers each, canonical
+diagnostic settings and 165-second bounds. The temporary driver is
+`current_super_suite.py`; worklist and logs use `current-super-full-*` under
+the validation root. The live supervisor session is `36825` at this checkpoint.
+No full-suite pass is claimed until every required shard is terminal.
+
+Fresh docs and isolated wheel/sdist builds pass with the two existing docs
+warnings (`current-super-{docs,build}.txt`). Installed-wheel controls/API,
+production self-scan, and complete cold/warm/edit gates follow on this frozen
+source. The earlier passing gates belong to the pushed body correction, not
+this subsequent parent-operand contract. Own live-run caches and fixtures must
+remain until their handles are terminal; clean them after retaining evidence.
+
+The installed wheel matches all 141 production module bytes against both the
+archive and checkout. All nine new MRO/DSL controls and both actual serialized
+cache boundaries pass outside the checkout, with every imported production
+module verified under the installed prefix (`current-super-wheel-controls.txt`).
+Fresh installed public-API and production self-scan requests are live in
+sessions `14894` and `12358`; their results are not yet passes.
+
+A further Python 3.11 probe verifies that the actual ABCMeta parent function's
+globals are the actual `abc` module dictionary. Reading that module's physical
+source, preserving the function's frozen code filename for compilation, and
+using the existing full current-code matcher succeeds. It also derives four
+positional-only parameters plus keyword variadic parameters. No target function
+or constructor was invoked and no linecache content was injected
+(`current-super-frozen-physical-source-311.txt`). Thus the automatic loader gap
+is source acquisition, not absence of matching source in this environment.
+This explicit-input probe is not an automatic source-loader implementation or
+a constructor-effect proof; authenticating actual source candidates still
+belongs in the existing source owner before imported activation can use them.
+
+### Terminal broad gates for the parent-operand correction
+
+All 13 file-disjoint suite shards are terminal with exit zero. The aggregate
+counts match the full collected scope: 7,237 passed/74 skipped on Python 3.11
+and 7,273 passed/38 skipped on Python 3.14. The extra one-byte rejection case
+increases the final full collection to 7,311; the collected file inventory is
+unchanged. All source/test inputs remain frozen from the final fixture edit.
+
+| Runtime | Shard | Passed | Skipped | Seconds |
+| --- | --- | ---: | ---: | ---: |
+| Python 3.11 | Advisor | 795 | 0 | 106.49 |
+| Python 3.11 | `0::4` | 1,791 | 12 | 95.53 |
+| Python 3.11 | `1::4` | 1,615 | 9 | 46.42 |
+| Python 3.11 | `2::4` | 1,597 | 15 | 73.82 |
+| Python 3.11 | `3::4` | 1,439 | 38 | 62.20 |
+| Python 3.14 | Advisor | 795 | 0 | 108.65 |
+| Python 3.14 | `0::16` | 318 | 0 | 133.58 |
+| Python 3.14 | `8::16` | 457 | 3 | 15.05 |
+| Python 3.14 | `4::8` | 1,023 | 2 | 71.21 |
+| Python 3.14 | `1::4` | 1,620 | 4 | 41.27 |
+| Python 3.14 | `2::4` | 1,606 | 6 | 95.16 |
+| Python 3.14 | `3::8` | 663 | 23 | 38.27 |
+| Python 3.14 | `7::8` | 791 | 0 | 18.55 |
+
+The installed public API is terminal, returns a list with zero production
+findings, and verifies production imports under the installed environment.
+The separate complete CLI production self-scan is terminal, with 79 detectors,
+zero omissions, complete status and zero findings. Its 40.337 scan seconds
+overlapped the matrix, so are not a performance benchmark. Both gates retain
+fresh isolated caches and the existing eight-worker configuration.
+
+Earlier hosted run 35012319015 is terminal with five passing jobs and two
+macOS fixture failures. That red result remains recorded. It is not a passing
+gate for this later source. After every local heavy process was terminal, the
+complete-package cold run started with the restored 1,057-file source copy and
+fresh cache `current-super-perf-cache-ScMPQI`, sixteen parse/analysis workers,
+and the same 165-second bound. Warm and one-edit use 60-second bounds and follow
+terminal preceding runs. Logs use `current-super-{cold,warm,edit}`.
+
+### Final parent-operand complete-package performance gate
+
+| Run | Scan seconds | Command wall seconds | Cache result |
+| --- | ---: | ---: | --- |
+| Empty-cache cold | 48.913 | 51.67 | MISS |
+| Unchanged warm | 1.080 | 2.30 | HIT |
+| Novel one-file edit | 4.538 | 7.33 | PARTIAL |
+
+All three complete-package runs include the same 1,057-file production source
+copy and all 79 detectors, with zero omissions, 180 retained findings and 215
+supporting raw findings. Removing only timing fields and scan cache-mode/reason
+fields gives the same complete semantic report hash as the preceding checkpoint:
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100`.
+This checks report consistency, not detector recall, behavioral equivalence or
+a causal performance improvement from one measurement. The copied-source EOF
+edit was restored after its process completed. Both final full collections
+record 7,311 tests, matching the disjoint-suite pass/skip totals above.
+
+After authoritative process inspection confirmed that every task-owned test,
+collection, installed-wheel, self-scan and performance process was terminal,
+the seven exact validated disposable paths were removed: the parent-operand
+self/API/API-analysis/performance caches, installed-wheel fixtures, pytest
+fixtures, and the long-path payload probe fixtures. This freed approximately
+741 MiB. These caches and fixture files are regenerable; retained logs, reports,
+source copy, docs, distributions, helper scripts and environments were not
+removed. No other checkout or shared cache was cleaned.
