@@ -34,6 +34,15 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
+Latest validated code checkpoint:
+`c425cbb20a38031a6cb01bc54a4fb6aa26997ce9`, committed and pushed to
+`checkpoint/native-proof-integration-20260914`. Complete local gates for its
+registry-hit increment are recorded below. Its hosted integration run is
+[34999888194](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/34999888194),
+currently queued, not yet a passing gate. The persistent goal remains active;
+generated construction/registration and source-created class keys are still
+unproved. Work continues on those original-source joins.
+
 Checkpoint `308375890ef8927aafeb95b4eed0a27f50ff95b6` is committed and pushed to
 `checkpoint/native-proof-integration-20260914`. Its scoped implementation passes
 the frozen-source local gates below. Hosted cross-platform validation is running:
