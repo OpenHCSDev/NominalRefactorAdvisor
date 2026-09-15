@@ -3490,6 +3490,18 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             self.require_static_type_release(owner)
         return owners
 
+    def require_type_query(self, declaration: NativeDeclaration) -> None:
+        """Require the one-operand type primitive, not dynamic type construction."""
+        raise ValueError("Native one-operand type query remains unproved")
+
+    def require_descriptor_wrapping(self, declaration: NativeDeclaration) -> None:
+        """Require a supported native wrapper over independently proved metadata."""
+        raise ValueError("Native descriptor wrapping remains unproved")
+
+    def require_scalar_dictionary_class_lookup(self, declaration_type: type) -> None:
+        """Require exact-dict membership for a static type and inert scalar keys."""
+        raise ValueError("Native dictionary class-key lookup remains unproved")
+
     def require_invocation(
         self, prelude: list[dis.Instruction], call: dis.Instruction
     ) -> None:
@@ -4180,6 +4192,10 @@ class CPythonClassConstructionField(StrEnum):
 
 class CPythonClassConstruction(NativeCreationBackend):
 
+    descriptor_wrappers: ClassVar[tuple[NativeDeclaration, ...]] = tuple(
+        NativeDeclaration(native) for native in (classmethod, property, staticmethod)
+    )
+
     # These exact native getters implement ordinary attribute lookup. The
     # declaration is about lookup behavior, not membership in a scalar domain.
     # No analyzed instance, descriptor or user-defined getter is invoked.
@@ -4188,6 +4204,27 @@ class CPythonClassConstruction(NativeCreationBackend):
         for owner in (object, str, int, bool, tuple, list, dict)
     )
     abstract_member_marker = "__isabstractmethod__"
+
+    def require_type_query(self, declaration: NativeDeclaration) -> None:
+        # type(x) reads Py_TYPE(x); unlike three-operand type(), it neither
+        # performs attribute lookup nor invokes construction or instance hooks.
+        if declaration.declaration is not type:
+            raise ValueError("Type query does not select the exact native primitive")
+        self.require_static_type_release(type)
+
+    def require_descriptor_wrapping(self, declaration: NativeDeclaration) -> None:
+        if declaration not in self.descriptor_wrappers:
+            raise ValueError("Descriptor wrapping has no supported native contract")
+        self.require_static_type_mro(declaration.declaration)
+
+    def require_scalar_dictionary_class_lookup(self, declaration_type: type) -> None:
+        # Exact static type objects hash and compare by native identity. Scalar
+        # keys have independently admitted native hash/equality and cannot be a
+        # class object. The caller proves exact dict storage and original keys.
+        self.require_static_type_mro(declaration_type)
+        self.require_static_type_release(dict)
+        if type(declaration_type) is not type:
+            raise ValueError("Class-key lookup has an unproved metaclass hash hook")
 
     def require_nonabstract_member_type(self, value_type: type) -> None:
         self.require_static_type_mro(value_type)
@@ -4609,7 +4646,10 @@ class NativePythonCompilation:
 
     @ScanCache.cached
     def _function_source_span(
-        self, code_contents: tuple[bytes, tuple[int, ...]], filename: str
+        self,
+        code_contents: tuple[bytes, tuple[int, ...]],
+        filename: str,
+        first_line: int,
     ) -> SourceByteSpan:
         """Cache source correspondence by complete code contents within one scan.
 
@@ -4624,7 +4664,11 @@ class NativePythonCompilation:
         matches = tuple(
             emission
             for emission in emissions
-            if backend.code_contents(emission.code) == code_contents
+            # The first line is a necessary native code-identity condition,
+            # not correspondence proof. Unsupported constants in unrelated
+            # sibling bodies must not prevent proving this operation's body.
+            if emission.code.co_firstlineno == first_line
+            and backend.code_contents(emission.code) == code_contents
         )
         if len(matches) != 1:
             raise ValueError("Python implementation differs from compiled source")
@@ -4653,7 +4697,9 @@ class NativePythonCompilation:
             raise ValueError("Python implementation requires an exact function")
         code = function.__code__
         span = self._function_source_span(
-            NativeCreationBackend.current().code_contents(code), code.co_filename
+            NativeCreationBackend.current().code_contents(code),
+            code.co_filename,
+            code.co_firstlineno,
         )
         definitions = tuple(
             node
@@ -4664,6 +4710,19 @@ class NativePythonCompilation:
         if len(definitions) != 1:
             raise ValueError("Native body has no unique function source declaration")
         return definitions[0]
+
+    @classmethod
+    def from_native_declaration(cls, declaration: NativeDeclaration) -> Self | None:
+        """Current Python source, or an independently immutable native type.
+
+        Mutable class construction is not admitted by its qualification label.
+        Its selected constructor and reachable dependencies need their own proof.
+        """
+        native = declaration.declaration
+        if type(native) is FunctionType:
+            return cls.from_function(native)
+        NativeCreationBackend.current().require_static_type_mro(native)
+        return None
 
     @classmethod
     def from_function(cls, function: FunctionType) -> Self:

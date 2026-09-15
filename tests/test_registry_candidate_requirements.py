@@ -230,7 +230,7 @@ def test_real_cached_module_proves_candidate_identity_but_not_construction(tmp_p
     assert not entry.operation_conditions
     with pytest.raises(
         ValueError,
-        match="^Native operation needs an explicit entry condition$",
+        match="^Native class construction over prepared inputs remains unproved$",
     ):
         environment.require_class_creation(authority.node)
     # The supplied premise does not mutate the document's default environment.

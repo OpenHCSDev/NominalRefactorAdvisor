@@ -588,13 +588,11 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
         if isinstance(context, cls):
             return context
         snapshot = context.execution_snapshot()
-        return cls(
-            source_index=snapshot.source_index,
-            sources_by_file_path=snapshot.sources_by_file_path,
-            class_family_index=snapshot.class_family_index,
-            module_node_cache=snapshot.module_node_cache,
-            ast_target_node_cache=snapshot.ast_target_node_cache,
-            module_import_graph_cache=snapshot.module_import_graph_cache,
+        return cls._from_modules_with_indexes(
+            snapshot.parsed_modules,
+            snapshot.required_class_family_index,
+            snapshot._source_index_build_artifacts,
+            snapshot.product_flow_repository,
         )
 
     def planned_rewrites_for_recipes(

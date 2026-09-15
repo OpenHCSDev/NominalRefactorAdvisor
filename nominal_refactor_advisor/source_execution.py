@@ -127,6 +127,7 @@ from .native_call import (
     NativeDefinitionApplicationAuthorityABC,
     NativeDescriptorArgumentABC,
     NativeDescriptorResult,
+    NativePythonFunctionSource,
     SignatureCallAuthorityABC,
 )
 from .product_flow import (
@@ -979,7 +980,8 @@ class SourceNativeDecoratorApplication(
         _ = self.native_value
         self.descriptor_argument.require_descriptor_argument()
         try:
-            self.callee.require_native(self.native_declarations)
+            declaration = self.callee.require_native(self.native_declarations)
+            NativeCreationBackend.current().require_descriptor_wrapping(declaration)
         except ValueError as error:
             raise ValueError("Function decorator result remains unproved") from error
         self.execution.require_binding_write(self.creation.node)
@@ -2810,6 +2812,17 @@ class SourceClassBodyEntryABC(
         "capture.prologue.bindings"
     )
 
+    def require_construction_inputs(self) -> None:
+        """Validate actual prepared values, without claiming constructor effects."""
+        tail = self.native_tail
+        names = tail.names
+        for requirement in NativeCreationBackend.current().class_construction_fields(
+            names
+        ):
+            requirement.require_value(tail.require_member(requirement.value), self)
+        for name in names:
+            tail.require_member(name).require_class_installation()
+
     @cached_property
     def annotation_namespace(self) -> SourceAnnotationNamespace:
         values = tuple(
@@ -3335,14 +3348,7 @@ class SourceClassEntry(SourceClassBodyEntryABC):
     @cached_property
     def construction_admission(self) -> None:
         """Complete raw native construction over actual final namespace values."""
-        tail = self.native_tail
-        names = tail.names
-        for requirement in NativeCreationBackend.current().class_construction_fields(
-            names
-        ):
-            requirement.require_value(tail.require_member(requirement.value), self)
-        for name in names:
-            tail.require_member(name).require_class_installation()
+        self.require_construction_inputs()
 
 
 @dataclass(frozen=True, eq=False)
@@ -3439,7 +3445,8 @@ class NativeSourceClassEntryABC(SourceClassBodyEntryABC, NativeDeclarationFamily
         return capture
 
     def require_native_preparation(self) -> None:
-        self.execution.require_native_behavior(self)
+        # Selection is an original header obligation; the exact type_prepare
+        # descriptor supplies only fresh native storage, not constructor effects.
         NativeCreationBackend.current().require_fresh_class_namespace(
             NativeClassMroDeclaration(
                 cast(type, self.metaclass_declaration.declaration)
@@ -3448,6 +3455,12 @@ class NativeSourceClassEntryABC(SourceClassBodyEntryABC, NativeDeclarationFamily
 
     @cached_property
     def construction_admission(self) -> None:
+        self.require_construction_inputs()
+        NativePythonFunctionSource.from_function(
+            NativeClassMroDeclaration(
+                self.metaclass_declaration.declaration
+            ).python_constructor()
+        )
         raise ValueError(
             "Native class construction over prepared inputs remains unproved"
         )

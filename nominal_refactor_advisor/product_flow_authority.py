@@ -50,6 +50,9 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
 )
 from .descriptor_algebra import AliasProperty
+from .native_declarations import NativeDeclaration
+from .native_compilation import NativePythonCompilation
+from .source_identity import source_path_text
 from .product_flow import (
     CompactBindingResolverABC,
     CompactBindingVisit,
@@ -1755,6 +1758,27 @@ class CompactProductFlowRepository(ProductFlowRepository):
 @dataclass(frozen=True)
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""
+
+    def require_native_source_dependency(self, declaration: NativeDeclaration) -> None:
+        """Reconcile native source with the complete current projected module set."""
+        compilation = NativePythonCompilation.from_native_declaration(declaration)
+        if compilation is None:
+            return  # Native type immutability was proved by its compiler authority.
+        candidates = tuple(
+            module
+            for module in self.modules
+            if source_path_text(module.file_path)
+            == source_path_text(compilation.file_path)
+        )
+        if not candidates:
+            return  # External native source remains covered by its explicit entry premise.
+        if len(candidates) != 1:
+            raise ValueError("Native source dependency has ambiguous projected owners")
+        module = candidates[0]
+        if module.source != compilation.source:
+            raise ValueError(
+                "Native source dependency differs from the projected source state"
+            )
 
     def projected_with_source_projection(
         self, projection: ParsedModuleSourceProjection

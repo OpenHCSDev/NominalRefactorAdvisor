@@ -782,6 +782,10 @@ class NamespaceEvidenceABC(ABC):
         self.require_key(key)
         return self._member(key)
 
+    def require_dictionary_contents_current(self, initial: InitialNativeIsland) -> None:
+        """Require original exact-dictionary state at a native operation boundary."""
+        raise ValueError("Native dictionary contents remain unproved")
+
     @abstractmethod
     def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
         raise NotImplementedError
@@ -873,6 +877,11 @@ class CreatedNamespaceDictionary(
     def require_closed(self) -> None:
         self.require_admitted(self.initial)
 
+    def require_dictionary_contents_current(self, initial: InitialNativeIsland) -> None:
+        # Source creation has no analyzer dictionary to resample. The actual
+        # admitted cut and mutations are independently queried by its inventory.
+        self.require_admitted(initial)
+
     def proves_same_object(self, other: CapturedReferenceResolution) -> bool:
         self.require_closed()
         return other is self
@@ -953,6 +962,32 @@ class NativeNamespace(RecordedNamespace):
 
     def is_initial_storage(self, storage: object) -> bool:
         return self.storage is storage
+
+    def current_entries(self) -> Mapping[NativeScalar, object]:
+        """Validate current keys before a native lookup; do not cache validation."""
+        try:
+            return self.capture_initial_entries(self.storage)
+        except TypeError as error:
+            raise ValueError(
+                "Native dictionary acquired an unproved key protocol"
+            ) from error
+
+    def require_current_binding(self, key: NativeScalar) -> None:
+        current = self.current_entries()
+        original = self.initial_entries
+        if (key in current) != (key in original) or (
+            key in original and current[key] is not original[key]
+        ):
+            raise ValueError("Native dictionary binding changed after source entry")
+
+    def require_dictionary_contents_current(self, initial: InitialNativeIsland) -> None:
+        self.require_admitted(initial)
+        current = self.current_entries()
+        if len(current) != len(self.initial_entries) or any(
+            key not in self.initial_entries or value is not self.initial_entries[key]
+            for key, value in current.items()
+        ):
+            raise ValueError("Native dictionary contents changed after source entry")
 
 
 @dataclass(frozen=True, eq=False)

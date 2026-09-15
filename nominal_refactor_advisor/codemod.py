@@ -29,6 +29,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .codemod_native_requirements import (
+    NativeDefinitionUseRequirement,
     DeclaredNativeUseInvariants,
     NativeUseRequirement,
 )
@@ -3586,11 +3587,12 @@ class ConvertManualRegistryToAutoregisterOperation(
             snapshot.parsed_module_for_source_path(targets.file_path)
         )
         return (
-            NativeUseRequirement(
+            NativeDefinitionUseRequirement(
                 type(self),
                 authority.metaclass_operand,
                 (authority.native_metaclass,),
                 environment,
+                source_state=snapshot.product_flow_repository,
             ),
         )
 

@@ -7,9 +7,10 @@ never a captured runtime object and never changes the capture kernel's answer.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from .ast_tools import ParsedModule
 from .captured_reference import OpenCapturedReference
@@ -31,7 +32,11 @@ from .descriptor_algebra import AliasProperty
 from .json_reports import DataclassJsonReport
 from .native_declarations import NativeDeclaration
 from .native_reference import NativeReferenceEnvironment
+from .product_flow import CompactDefinitionTarget, CompactMutation
 from .source_geometry import SourceByteSpan
+
+if TYPE_CHECKING:
+    from .product_flow_authority import SourceProductFlowRepository
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,7 @@ class DeclaredNativeUseInvariants(CodemodPayloadRecord):
 
 
 class NativeUseProvenance(StrEnum):
+    PROVED = ("proved", CodemodPreflightStatus.PASSED)
     CAPTURED_IDENTITY = ("captured_identity", CodemodPreflightStatus.FAILED)
     DECLARED = ("declared", CodemodPreflightStatus.PASSED)
     UNRESOLVED = ("unresolved", CodemodPreflightStatus.FAILED)
@@ -175,6 +181,7 @@ class NativeUseRequirement:
     node: ast.expr
     declarations: tuple[NativeDeclaration, ...]
     environment: NativeReferenceEnvironment
+    source_state: SourceProductFlowRepository | None = field(default=None, kw_only=True)
 
     module = AliasProperty[ParsedModule]("environment.source.module")
 
@@ -183,8 +190,16 @@ class NativeUseRequirement:
         requirements: tuple[NativeUseRequirement, ...],
         correspondence: SourceReadCorrespondence,
         environment: NativeReferenceEnvironment,
+        *,
+        source_state: SourceProductFlowRepository | None = None,
     ) -> tuple[NativeUseRequirement, ...]:
         """Derive a batch of new obligations without transporting old acceptance."""
+        if source_state is None and any(
+            use.source_state is not None for use in requirements
+        ):
+            raise ValueError(
+                "Native-use transport requires its projected source-state authority"
+            )
         if environment.source is not correspondence.after or any(
             use.environment.source is not correspondence.before for use in requirements
         ):
@@ -193,13 +208,20 @@ class NativeUseRequirement:
             )
         nodes = correspondence.corresponding_reads(use.node for use in requirements)
         return tuple(
-            replace(use, node=node, environment=environment)
+            replace(use, node=node, environment=environment, source_state=source_state)
             for use, node in zip(requirements, nodes, strict=True)
         )
 
     def __post_init__(self) -> None:
         if self.node not in self.environment.source.reference_reads_by_node:
             raise ValueError("A native-use requirement needs a canonical original read")
+        if self.source_state is not None and not any(
+            module is self.environment.source.module
+            for module in self.source_state.modules
+        ):
+            raise ValueError(
+                "Native-use source state belongs to different parsed owners"
+            )
 
     @cached_property
     def receipt(self) -> NativeUseReceipt:
@@ -214,7 +236,7 @@ class NativeUseRequirement:
         )
 
     def inspect(self) -> NativeUseResolution:
-        """Inspect identity only; it cannot establish mutable behavior stability."""
+        """Keep captured identity distinct from original-operation behavior proof."""
         capture = self.environment.capture(self.node)
         if isinstance(capture, OpenCapturedReference):
             return NativeUseResolution(
@@ -222,9 +244,66 @@ class NativeUseRequirement:
             )
         # A contradictory known capture cannot be bypassed by an assumption.
         capture.require_native(self.declarations)
+        try:
+            self.require_behavior()
+        except ValueError as error:
+            return NativeUseResolution(
+                self.receipt,
+                NativeUseProvenance.CAPTURED_IDENTITY,
+                str(error),
+            )
         return NativeUseResolution(
             self.receipt,
-            NativeUseProvenance.CAPTURED_IDENTITY,
-            "Identity captured under the supplied native entry premise; "
-            "the relied-on implementation behavior remains a separate obligation.",
+            NativeUseProvenance.PROVED,
+            "Original operation behavior and result proved under the supplied source entry premises.",
         )
+
+    def require_behavior(self) -> None:
+        if self.source_state is None:
+            raise ValueError(
+                "Native operation proof requires its complete source-state authority"
+            )
+        for declaration in self.declarations:
+            self.source_state.require_native_source_dependency(declaration)
+        self.require_operation_behavior()
+
+    def require_operation_behavior(self) -> None:
+        """A declaration read alone specifies no relied-on execution behavior."""
+        raise ValueError(
+            "Identity captured under the supplied native entry premise; "
+            "the relied-on implementation behavior remains a separate obligation."
+        )
+
+
+class NativeInvocationUseRequirement(NativeUseRequirement):
+    """A callee read consumed by its actual original call authority."""
+
+    def require_operation_behavior(self) -> None:
+        read = self.environment.source.reference_reads_by_node[self.node]
+        calls = tuple(
+            call for call in read.context.flow.calls if call.target_use is read.use
+        )
+        if len(calls) != 1:
+            raise ValueError("Native use has no unique original invocation")
+        authority = self.environment.call_authority(read.context, calls[0])
+        authority.require_closed()
+        authority.result().require_closed()
+
+
+class NativeDefinitionUseRequirement(NativeUseRequirement):
+    """An eager definition input consumed by its actual construction/application."""
+
+    def require_operation_behavior(self) -> None:
+        read = self.environment.source.value_reads_by_node.get(self.node)
+        if read is None:
+            raise ValueError("Definition input has no original evaluated value")
+        operations = tuple(
+            operation
+            for operation in self.environment.source.operations
+            if isinstance(operation.event, CompactMutation)
+            and isinstance(operation.event.target, CompactDefinitionTarget)
+            and any(use is read.use for use in operation.event.target.header_uses)
+        )
+        if len(operations) != 1:
+            raise ValueError("Native use has no unique original definition application")
+        self.environment.capture_definition(operations[0].node).require_closed()

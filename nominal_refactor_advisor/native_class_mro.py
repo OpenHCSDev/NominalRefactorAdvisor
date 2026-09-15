@@ -9,6 +9,7 @@ from collections.abc import (
 
 from dataclasses import dataclass
 from functools import lru_cache
+from types import FunctionType
 from typing import (
     ClassVar,
     Generic,
@@ -58,6 +59,24 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
             raise ValueError(
                 "Native preparation does not select the exact type descriptor"
             )
+
+    def python_constructor(self) -> FunctionType:
+        """Select current Python __new__ through actual ordinary metaclass lookup.
+
+        This supplies source provenance, not invocation or constructor effects.
+        """
+        if type(self.declaration) is not type:
+            raise ValueError("Native metaclass invocation has unproved metameta hooks")
+        owner = self.member_owner("__new__")
+        if owner is None:
+            raise ValueError("Native metaclass has no selected constructor")
+        descriptor = self.stored_namespace(owner)["__new__"]
+        if (
+            type(descriptor) is not staticmethod
+            or type(descriptor.__func__) is not FunctionType
+        ):
+            raise ValueError("Native metaclass has no exact Python constructor source")
+        return descriptor.__func__
 
     @classmethod
     def stored_namespace(cls, declaration: type) -> Mapping[str, object]:

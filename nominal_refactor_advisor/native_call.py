@@ -21,6 +21,7 @@ from .ast_tools import SourceModule
 from .captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedReferenceKernel,
+    CapturedNativeObject,
     CapturedReferenceResolution,
     CapturedReferenceViolation,
     CreatedNamespaceDictionary,
@@ -44,6 +45,7 @@ from .descriptor_algebra import AliasProperty
 from .lexical_bindings import FunctionParameterSource
 from .native_class_mro import NativeClassMroDeclaration
 from .native_compilation import (
+    CPythonClassConstruction,
     NativeCreationBackend,
     NativePythonCompilation,
 )
@@ -54,6 +56,7 @@ from .native_declarations import (
     NativeDeclarationFamily,
     NativeParameterDefault,
     NativeScalar,
+    NativeScalarValueABC,
 )
 from .native_subscription import NativeArgumentInspection
 from .product_flow import (
@@ -68,6 +71,7 @@ from .product_flow import (
 )
 from .scan_cache import ScanCache
 from .source_geometry import SourceByteSpan
+from .registry_identity import mro_registry_value
 
 if TYPE_CHECKING:
     from .native_reference import NativeReferenceEnvironment
@@ -252,13 +256,41 @@ class NativeObjectConstruction(
                 raise ValueError("Native object hook differs from the default protocol")
 
 
+class NativeTypeQueryCall(NativeCallAuthority):
+    """One original type(x) operation; construction and unknown operands stay open."""
+
+    native_declarations = (NativeDeclaration(type),)
+
+    @property
+    def operand(self) -> CapturedReferenceResolution:
+        self.require_original_operation()
+        if (
+            len(self.call.arguments.positional) != 1
+            or self.call.arguments.keywords
+            or self.call.arguments.positional[0].is_unpacked
+        ):
+            raise ValueError("Only an exact one-operand type query is supported")
+        return self.environment.kernel._read_use(
+            self.call.arguments.positional[0].value, self.context, frozenset()
+        )
+
+    def require_closed(self) -> None:
+        NativeCreationBackend.current().require_type_query(self.declaration)
+        operand = self.operand
+        operand.require_closed()
+        _ = operand.native_type
+
+    def result(self) -> CapturedReferenceResolution:
+        self.require_closed()
+        return CapturedNativeObject(self.operand.native_type)
+
+
 @dataclass(frozen=True, eq=False)
 class NativePythonFunctionSource:
     """Current function code joined to its exact compact source-flow declaration."""
 
     function: FunctionType
     compilation: NativePythonCompilation
-    definition: ast.FunctionDef | ast.AsyncFunctionDef
 
     @classmethod
     def from_function(cls, function: FunctionType) -> NativePythonFunctionSource:
@@ -280,11 +312,13 @@ class NativePythonFunctionSource:
             != code_contents
         ):
             raise ValueError("Native function code changed during source capture")
-        return NativePythonFunctionSource(
-            function,
-            compilation,
-            compilation.function_definition(function),
-        )
+        _ = compilation.function_definition(function)
+        return NativePythonFunctionSource(function, compilation)
+
+    @property
+    def definition(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        """Expose fresh syntax, never mutable AST stored in a completed proof cache."""
+        return self.compilation.function_definition(self.function)
 
     @cached_property
     def flow(self) -> CompactFunctionFlow:
@@ -293,6 +327,165 @@ class NativePythonFunctionSource:
         ).parse()
         source_span = SourceByteSpan.require_node(self.definition)
         return compact_function_flow_projection(parsed, source_span)
+
+    def require_builtin_at_call(
+        self, authority: CallAuthority, name: str, expected: NativeDeclaration
+    ) -> None:
+        """Join one creator-global lookup to entry facts and revalidate its dependencies."""
+        initial = authority.environment.kernel.initial
+        globals_namespace = initial.namespace_for_storage(self.function.__globals__)
+        prefix = authority.activation_prefix
+        globals_namespace.require_available(authority.environment.kernel, prefix)
+        # Revalidate the relevant mutable binding (including original absence),
+        # never a cached validation receipt. Iteration admits keys before lookup.
+        globals_namespace.require_current_binding(name)
+        captured = authority.environment.kernel._namespace_resolution(
+            globals_namespace, name, prefix, frozenset()
+        )
+        if captured is None:
+            builtins_namespace = initial.namespace_for_storage(
+                self.function.__builtins__
+            )
+            builtins_namespace.require_current_binding(name)
+            captured = authority.environment.kernel._namespace_resolution(
+                builtins_namespace, name, prefix, frozenset()
+            )
+        if captured is None:
+            raise ValueError("Native function dependency lookup remains unproved")
+        captured.require_native((expected,))
+
+
+class NativeMroRegistryLookupCall(NativeCallAuthority):
+    """Current-source nearest-MRO lookup with independently proved mapping operations."""
+
+    native_declarations = (NativeDeclaration(mro_registry_value),)
+
+    def require_lookup_source(self) -> NativePythonFunctionSource:
+        source = NativePythonFunctionSource.from_function(self.declaration.declaration)
+        definition = source.definition
+        if not isinstance(definition, ast.FunctionDef):
+            raise ValueError("MRO registry lookup requires synchronous source")
+        parameters = definition.args
+        if (
+            parameters.posonlyargs
+            or len(parameters.args) != 2
+            or parameters.kwonlyargs
+            or parameters.defaults
+            or parameters.vararg is not None
+            or parameters.kwarg is not None
+        ):
+            raise ValueError(
+                "MRO registry lookup has an unsupported parameter contract"
+            )
+        body = definition.body
+        if (
+            isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and type(body[0].value.value) is str
+        ):
+            body = body[1:]
+        if len(body) != 1 or not isinstance(body[0], ast.Return):
+            raise ValueError("MRO registry lookup has additional source effects")
+        invocation = body[0].value
+        if (
+            not isinstance(invocation, ast.Call)
+            or not isinstance(invocation.func, ast.Name)
+            or invocation.keywords
+            or len(invocation.args) != 2
+            or not isinstance(invocation.args[1], ast.Constant)
+            or invocation.args[1].value is not None
+            or not isinstance(invocation.args[0], ast.GeneratorExp)
+        ):
+            raise ValueError("MRO registry lookup has an unproved next-result contract")
+        generator = invocation.args[0]
+        if len(generator.generators) != 1:
+            raise ValueError("MRO registry lookup has additional generator effects")
+        iteration = generator.generators[0]
+        registry_name, declaration_name = (argument.arg for argument in parameters.args)
+        if (
+            iteration.is_async
+            or not isinstance(iteration.target, ast.Name)
+            or not isinstance(iteration.iter, ast.Attribute)
+            or iteration.iter.attr != "__mro__"
+            or not isinstance(iteration.iter.value, ast.Name)
+            or iteration.iter.value.id != declaration_name
+            or len(iteration.ifs) != 1
+        ):
+            raise ValueError("MRO registry lookup does not iterate its declaration MRO")
+        predicate = iteration.ifs[0]
+        element = generator.elt
+        if (
+            not isinstance(predicate, ast.Compare)
+            or not isinstance(predicate.left, ast.Name)
+            or predicate.left.id != iteration.target.id
+            or len(predicate.ops) != 1
+            or not isinstance(predicate.ops[0], ast.In)
+            or len(predicate.comparators) != 1
+            or not isinstance(predicate.comparators[0], ast.Name)
+            or predicate.comparators[0].id != registry_name
+            or not isinstance(element, ast.Subscript)
+            or not isinstance(element.value, ast.Name)
+            or element.value.id != registry_name
+            or not isinstance(element.slice, ast.Name)
+            or element.slice.id != iteration.target.id
+        ):
+            raise ValueError(
+                "MRO registry lookup has unproved mapping or subscription behavior"
+            )
+        source.require_builtin_at_call(
+            self, invocation.func.id, NativeDeclaration(next)
+        )
+        return source
+
+    def require_closed(self) -> None:
+        source = self.require_lookup_source()
+        binding = self.bound_arguments
+        registry_name, declaration_name = (
+            argument.arg for argument in source.definition.args.args
+        )
+        values = []
+        for parameter in (registry_name, declaration_name):
+            argument = binding.argument_for(parameter)
+            if argument is None or len(argument.values) != 1:
+                raise ValueError("MRO registry operands are not exactly bound")
+            values.append(
+                self.environment.kernel._read_use(
+                    argument.values[0], self.context, frozenset()
+                )
+            )
+        registry, declaration = values
+        if (
+            not isinstance(declaration, CapturedNativeObject)
+            or type(declaration.value) is not type
+        ):
+            raise ValueError(
+                "MRO registry declaration has no exact static-type operand"
+            )
+        NativeCreationBackend.current().require_scalar_dictionary_class_lookup(
+            declaration.value
+        )
+        namespace = registry.dictionary_namespace(self.environment.kernel.initial)
+        if isinstance(namespace, OpenCapturedReference):
+            raise ValueError(
+                "MRO registry mapping storage or key protocols remain unproved"
+            )
+        if registry.native_type is not dict:
+            raise ValueError("MRO registry mapping has non-native protocol hooks")
+        namespace.require_dictionary_contents_current(self.environment.kernel.initial)
+        inventory = NamespaceMemberInventory(
+            self.environment.kernel, namespace, self.activation_prefix
+        )
+        # Scalar-key admission proves membership false for every class in the
+        # actual static MRO. Subscription is therefore unreachable. Non-scalar
+        # keys and hit/result cases deliberately retain their separate obligation.
+        for key in inventory.names:
+            if not NativeScalarValueABC.supports_scalar(key):
+                raise ValueError("MRO registry class-key identity remains unproved")
+            inventory.require_member(key).require_release()
+
+    def result(self) -> CapturedReferenceResolution:
+        self.require_closed()
+        return CapturedNativeObject(None)
 
 
 @dataclass(frozen=True)
@@ -753,9 +946,7 @@ class NativeDescriptorResult(
 ):
     """Native descriptor creation and installation, without runtime identity."""
 
-    native_declarations = tuple(
-        NativeDeclaration(native) for native in (classmethod, property, staticmethod)
-    )
+    native_declarations = CPythonClassConstruction.descriptor_wrappers
     violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     def result(self) -> CapturedReferenceResolution:
@@ -771,6 +962,7 @@ class NativeDescriptorResult(
 
 class NativeDescriptorCall(NativeDescriptorResult, NativeCallAuthority):
     def require_closed(self) -> None:
+        NativeCreationBackend.current().require_descriptor_wrapping(self.declaration)
         if any(keyword.is_unpacked for keyword in self.call.arguments.keywords):
             raise ValueError("Native keyword expansion remains unproved")
         inspection = NativeArgumentInspection(self.environment)

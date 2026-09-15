@@ -318,7 +318,11 @@ class NativeDeclaration(QualifiedDeclaration):
 
     @property
     def qualified_name(self) -> str:
-        return f"{self.declaration.__module__}.{self.declaration.__qualname__}"
+        module = self.declaration.__module__
+        qualname = self.declaration.__qualname__
+        if type(module) is not str or type(qualname) is not str:
+            raise ValueError("Native declaration qualification requires exact text")
+        return f"{module}.{qualname}"
 
     @property
     @lru_cache(maxsize=None)

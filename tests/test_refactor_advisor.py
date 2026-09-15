@@ -7127,6 +7127,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {
+        (tmp_path / "pkg/__init__.py").as_posix(): "",
         source_path.as_posix(): source_path.read_text(),
         destination_path.as_posix(): destination_path.read_text(),
     }

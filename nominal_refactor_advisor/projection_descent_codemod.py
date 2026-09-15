@@ -44,6 +44,8 @@ from .codemod_declaration_source import (
 )
 from .codemod_imports import ImportFromSource
 from .codemod_native_requirements import (
+    NativeDefinitionUseRequirement,
+    NativeInvocationUseRequirement,
     DeclaredNativeUseInvariants,
     NativeUseRequirement,
     NativeUseResolution,
@@ -517,16 +519,21 @@ class _TypeKeyedBehaviorSourceDerivation:
         lookup = cast(ast.Call, assignment.value)
         subject_type = cast(ast.Call, lookup.args[1])
         return tuple(
-            NativeUseRequirement(
+            requirement_type(
                 type(self.operation),
                 node,
                 (NativeDeclaration(declaration),),
                 environment,
+                source_state=self.snapshot.product_flow_repository,
             )
-            for node, declaration in (
-                (self.lookup_method.decorator_list[0], classmethod),
-                (lookup.func, mro_registry_value),
-                (subject_type.func, type),
+            for requirement_type, node, declaration in (
+                (
+                    NativeDefinitionUseRequirement,
+                    self.lookup_method.decorator_list[0],
+                    classmethod,
+                ),
+                (NativeInvocationUseRequirement, lookup.func, mro_registry_value),
+                (NativeInvocationUseRequirement, subject_type.func, type),
             )
         )
 

@@ -9,6 +9,7 @@ from types import FunctionType, ModuleType
 import pytest
 
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
+from nominal_refactor_advisor.native_call import NativePythonFunctionSource
 from nominal_refactor_advisor.scan_cache import ScanCache
 from test_native_dataclass_factory import factory_environment
 
@@ -22,6 +23,47 @@ def compiled_function(tmp_path, monkeypatch, source):
     compilation = NativePythonCompilation(source, str(path))
     exec(compilation.compile(), vars(module))
     return compilation, module.sample
+
+
+def test_unrelated_body_with_new_native_constants_does_not_block_correspondence(
+    tmp_path, monkeypatch
+):
+    compilation, function = compiled_function(
+        tmp_path,
+        monkeypatch,
+        "def sibling(value):\n    return value[1:]\n"
+        "def sample(value):\n    return value\n",
+    )
+    assert compilation.function_definition(function).name == "sample"
+
+
+def test_cached_native_source_owner_does_not_share_mutable_definition_syntax(
+    tmp_path, monkeypatch
+):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    with ScanCache.scope():
+        source = NativePythonFunctionSource.from_function(function)
+        definition = source.definition
+        definition.name = "forged"
+        definition.body = [ast.Return(value=ast.Constant(value="forged"))]
+        current = NativePythonFunctionSource.from_function(function)
+        assert current is source
+        assert current.definition is not definition
+        assert current.definition.name == "sample"
+        assert isinstance(current.definition.body[0].value, ast.Name)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="native slice constants")
+def test_selected_body_with_unsupported_native_constants_remains_unproved(
+    tmp_path, monkeypatch
+):
+    compilation, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value[1:]\n"
+    )
+    with pytest.raises(ValueError, match="unmarshallable object"):
+        compilation.function_definition(function)
 
 
 @pytest.mark.parametrize(
