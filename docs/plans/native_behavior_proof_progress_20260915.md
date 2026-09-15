@@ -34,8 +34,13 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-The current callable-metadata ownership prerequisite is applied locally and
-not yet committed. Its complete Python 3.11/3.14 suites, docs, isolated package
+The callable-metadata ownership prerequisite is committed and pushed as
+`ec541bd2d22d3e3d42097df962a793741b9ddb5f` to
+`checkpoint/native-proof-integration-20260914`; the remote SHA matches. Its
+exact-commit hosted run
+[35005841288](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35005841288)
+is in progress as of 18:11 UTC, not yet a passing gate. Its complete local
+Python 3.11/3.14 suites, docs, isolated package
 builds, installed-wheel mutation/DSL controls, installed public-API self-scan,
 and complete production CLI self-scan pass. Complete-package cold/warm/edit
 gates pass. Construction/registration remains unproved; see the current metadata
@@ -49,7 +54,7 @@ installed-wheel API self-scan, and complete-package cold/warm/one-edit scans.
 See the cleanup audit below. Prior CI
 success does not discharge that newly identified obligation.
 
-Latest published code checkpoint:
+Preceding operand-cleanup code checkpoint:
 `997d85f95466d5f902679d3f221259b15f23748b`, committed and pushed to
 `checkpoint/native-proof-integration-20260914`. The complete corrected-source
 local gates are recorded in the final checkpoint section below. Its exact-SHA
