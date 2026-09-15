@@ -3429,6 +3429,15 @@ class NativeSourceClassEntryABC(SourceClassBodyEntryABC, NativeDeclarationFamily
     Construction and its installed result remain separate native obligations.
     """
 
+    @property
+    def constructor_source(self) -> NativePythonFunctionSource:
+        """Current selected constructor operands, not an admitted body activation."""
+        return NativePythonFunctionSource.from_function(
+            NativeClassMroDeclaration(
+                self.metaclass_declaration.declaration
+            ).python_constructor()
+        )
+
     @cached_property
     def metaclass_declaration(self) -> NativeDeclaration:
         self.require_original_operation()
@@ -3462,11 +3471,7 @@ class NativeSourceClassEntryABC(SourceClassBodyEntryABC, NativeDeclarationFamily
     @cached_property
     def construction_admission(self) -> None:
         self.require_construction_inputs()
-        NativePythonFunctionSource.from_function(
-            NativeClassMroDeclaration(
-                self.metaclass_declaration.declaration
-            ).python_constructor()
-        )
+        _ = self.constructor_source.signature
         raise ValueError(
             "Native class construction over prepared inputs remains unproved"
         )

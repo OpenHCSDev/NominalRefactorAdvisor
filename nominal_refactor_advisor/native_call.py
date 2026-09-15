@@ -161,26 +161,18 @@ class NativeCallAuthority(SignatureCallAuthorityABC, NativeDeclarationFamily):
     """One native invocation, retaining its canonical original operation only."""
 
     @property
-    def signature(self) -> CompactFunctionSignature:
-        return CompactFunctionSignature.from_arguments(
-            self.python_definition.args
-        ).with_default_names(
-            frozenset(default.parameter_name for default in self.python_defaults)
-        )
+    def python_source(self) -> NativePythonFunctionSource:
+        return NativePythonFunctionSource.from_function(self.declaration.declaration)
 
-    @property
-    def python_defaults(self) -> tuple[NativeParameterDefault, ...]:
-        return NativeParameterDefault.from_function(self.declaration.declaration)
+    signature = AliasProperty[CompactFunctionSignature]("python_source.signature")
 
-    @property
-    def python_definition(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        """Derive Python syntax from the current implementation, never its name."""
-        function = self.declaration.declaration
-        if type(function) is not FunctionType:
-            raise ValueError("Python implementation requires an exact function")
-        return NativePythonCompilation.from_function(function).function_definition(
-            function
-        )
+    python_defaults = AliasProperty[tuple[NativeParameterDefault, ...]](
+        "python_source.defaults"
+    )
+
+    python_definition = AliasProperty[ast.FunctionDef | ast.AsyncFunctionDef](
+        "python_source.definition"
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -295,6 +287,21 @@ class NativePythonFunctionSource:
 
     function: FunctionType
     compilation: NativePythonCompilation
+
+    @property
+    def signature(self) -> CompactFunctionSignature:
+        """Source parameter structure with the function's current default presence."""
+        return CompactFunctionSignature.from_arguments(
+            self.definition.args
+        ).with_default_names(
+            frozenset(default.parameter_name for default in self.defaults)
+        )
+
+    @property
+    def defaults(self) -> tuple[NativeParameterDefault, ...]:
+        """Current associations, not values reconstructed from source defaults."""
+        _ = self.definition
+        return NativeParameterDefault.from_function(self.function)
 
     @classmethod
     def from_function(cls, function: FunctionType) -> NativePythonFunctionSource:

@@ -500,3 +500,31 @@ def test_type_query_does_not_hide_temporary_destructor_effects(tmp_path, express
     assert namespace["state"] == {"destroyed": True}
     assert namespace["result"] in (type(lambda: None), tuple)
     assert not requirement.environment.entry.operation_conditions
+
+
+def test_original_constructor_metadata_uses_current_default_owner(monkeypatch):
+    from test_native_source_class_preparation import prepared_execution
+
+    environment, (root,) = prepared_execution(
+        "class Family(metaclass=Creator): pass\n", conditions=False
+    )
+    entry = environment.class_entry(root)
+    source = entry.constructor_source
+    function = source.function
+    assert (
+        function
+        is NativeClassMroDeclaration(
+            metaclass_registry.AutoRegisterMeta
+        ).python_constructor()
+    )
+    before = source.signature
+    with monkeypatch.context() as mutation:
+        mutation.setattr(function, "__defaults__", None)
+        current = entry.constructor_source.signature
+        assert not current.parameters[-1].has_default
+        assert source.defaults == ()
+        assert before.parameters[-1].has_default
+        with pytest.raises(ValueError, match="over prepared inputs remains unproved"):
+            _ = entry.construction_admission
+    assert entry.constructor_source.signature.parameters[-1].has_default
+    assert not environment.entry.operation_conditions

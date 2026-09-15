@@ -3,6 +3,8 @@
 import ast
 import dataclasses
 import marshal
+from pathlib import Path
+import runpy
 import sys
 from types import FunctionType, ModuleType
 
@@ -295,3 +297,138 @@ def test_executable_filename_preserves_backslashes_separately_from_source_identi
     assert compilation.compile(filename=filename).co_filename == filename
     with pytest.raises(ValueError, match="different source path"):
         compilation.compile(filename="unrelated.py")
+
+
+def test_current_source_metadata_owns_live_default_associations(tmp_path, monkeypatch):
+    _, function = compiled_function(
+        tmp_path,
+        monkeypatch,
+        "def sample(value=7, *, option=True):\n"
+        "    raise AssertionError('target body must not run')\n",
+    )
+    with ScanCache.scope():
+        source = NativePythonFunctionSource.from_function(function)
+        before = source.signature
+        observations = source.defaults
+        assert before.bind((), ()).is_exact
+        assert tuple(default.value for default in observations) == (7, True)
+        with monkeypatch.context() as mutation:
+            mutation.setattr(function, "__defaults__", None)
+            mutation.setattr(function, "__kwdefaults__", None)
+            assert not source.signature.bind((), ()).is_exact
+            assert source.defaults == ()
+            assert before.bind(
+                (), ()
+            ).is_exact  # Previous observation, not current proof.
+            assert source.definition.args.defaults  # Source was not rewritten.
+        assert source.signature.bind((), ()).is_exact
+
+
+@pytest.mark.parametrize("query", ("signature", "defaults"))
+def test_warmed_current_metadata_rejoins_code_before_query(
+    tmp_path, monkeypatch, query
+):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value=7):\n    return value\n"
+    )
+    with ScanCache.scope():
+        source = NativePythonFunctionSource.from_function(function)
+        _ = getattr(source, query)
+        original = function.__code__
+        with monkeypatch.context() as mutation:
+            mutation.setattr(function, "__code__", original.replace(co_stacksize=100))
+            with pytest.raises(ValueError, match="differs from compiled source"):
+                _ = getattr(source, query)
+        assert getattr(source, query)
+
+
+def test_current_source_signature_ignores_wrapper_and_annotation_hooks(
+    tmp_path, monkeypatch
+):
+    _, function = compiled_function(
+        tmp_path,
+        monkeypatch,
+        "def sample(value: int = 7):\n"
+        "    raise AssertionError('target body must not run')\n",
+    )
+    with monkeypatch.context() as mutation:
+        mutation.setattr(function, "__signature__", object(), raising=False)
+        mutation.setattr(function, "__wrapped__", len, raising=False)
+        mutation.setattr(function, "__annotations__", {"value": object()})
+        source = NativePythonFunctionSource.from_function(function)
+        assert source.signature.bind((), ()).is_exact
+        assert source.signature.parameters[0].annotation_expression == "int"
+
+
+def test_native_call_projects_metadata_from_current_source_owner():
+    environment, operation = factory_environment("")
+    authority = environment.call_authority(
+        environment.context_for_owner(operation.owner), operation.event
+    )
+    with ScanCache.scope():
+        source = authority.python_source
+        assert source is NativePythonFunctionSource.from_function(dataclasses.dataclass)
+        assert authority.signature == source.signature
+        projected = authority.python_defaults
+        observed = source.defaults
+        assert tuple(default.parameter_name for default in projected) == tuple(
+            default.parameter_name for default in observed
+        )
+        assert all(
+            left.value is right.value
+            for left, right in zip(projected, observed, strict=True)
+        )
+        assert ast.dump(authority.python_definition) == ast.dump(source.definition)
+        authority.require_closed()
+        assert not environment.entry.operation_conditions
+
+
+def test_callable_metadata_dsl_batches_source_ownership_without_effect_admission():
+    from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
+
+    plan = runpy.run_path(
+        str(
+            Path(__file__).parents[1]
+            / "docs/examples/native_callable_metadata_owner.py"
+        )
+    )["callable_metadata_plan"]
+    native_path = "nominal_refactor_advisor/native_call.py"
+    execution_path = "nominal_refactor_advisor/source_execution.py"
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {
+            native_path: (
+                "class NativeCallAuthority:\n"
+                "    @property\n    def signature(self): pass\n"
+                "    @property\n    def python_defaults(self): pass\n"
+                "    @property\n    def python_definition(self): pass\n"
+                "class NativePythonFunctionSource:\n    function = None\n"
+            ),
+            execution_path: (
+                "class NativeSourceClassEntryABC:\n"
+                "    @property\n    def construction_admission(self):\n"
+                "        raise ValueError('construction remains unproved')\n"
+            ),
+        }
+    )
+    result = plan(snapshot).simulate(snapshot)
+    assert result.is_clean
+    assert result.stage_count == 6
+    assert set(result.simulation.changed_file_paths) == {native_path, execution_path}
+    parsed = result.final_snapshot.parsed_module_for_source_path(native_path)
+    caller, source = parsed.module.body
+    assert {node.name for node in caller.body if isinstance(node, ast.FunctionDef)} == {
+        "python_source"
+    }
+    assert {node.name for node in source.body if isinstance(node, ast.FunctionDef)} == {
+        "signature",
+        "defaults",
+    }
+    execution_module = result.final_snapshot.parsed_module_for_source_path(
+        execution_path
+    )
+    assert any(
+        isinstance(node, ast.Raise) for node in ast.walk(execution_module.module)
+    )
+    original = snapshot.parsed_module_for_source_path(native_path)
+    assert original is not parsed
+    assert original.source != parsed.source

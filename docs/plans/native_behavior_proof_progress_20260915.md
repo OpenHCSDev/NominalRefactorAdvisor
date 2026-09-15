@@ -34,6 +34,13 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
+The current callable-metadata ownership prerequisite is applied locally and
+not yet committed. Its complete Python 3.11/3.14 suites, docs, isolated package
+builds, installed-wheel mutation/DSL controls, installed public-API self-scan,
+and complete production CLI self-scan pass. Complete-package cold/warm/edit
+gates pass. Construction/registration remains unproved; see the current metadata
+section for exact scope and current-source evidence.
+
 An audit after the registry-hit checkpoint found an unproved type-query operand
 cleanup that was incorrectly admitted. The committed correction reuses
 original-frame lifetime evidence and passes 142 focused regressions per Python
@@ -48,7 +55,9 @@ Latest published code checkpoint:
 local gates are recorded in the final checkpoint section below. Its exact-SHA
 hosted integration run is
 [35002821051](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35002821051),
-queued as of 17:41 UTC; it is not yet a passing gate. The persistent goal remains
+complete with all seven jobs passing, verified at 18:08 UTC. This gate belongs
+to that code checkpoint; it does not validate the later metadata refactor.
+The persistent goal remains
 active. Generated construction/registration and source-created class keys are
 still unproved and remain the next implementation work.
 
@@ -57,9 +66,9 @@ Preceding registry-hit code checkpoint:
 `checkpoint/native-proof-integration-20260914`. Complete local gates for its
 registry-hit increment are recorded below. Its hosted integration run is
 [34999888194](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/34999888194),
-in progress, with five of seven jobs passing as of 17:34 UTC (docs/wheel,
-both macOS jobs, and Python 3.14 on Windows/Ubuntu). It is not yet a complete
-passing gate. The persistent goal remains active;
+complete with all seven jobs passing, verified at 17:57 UTC. This validates that
+checkpoint, not later local changes or completion of generated registration.
+The persistent goal remains active;
 generated construction/registration and source-created class keys are still
 unproved. Work continues on those original-source joins.
 
@@ -504,3 +513,152 @@ regenerable, not retained proof evidence. Reports, logs, distributions, source
 copy, documentation output, and the installed-wheel environment are retained.
 The original `/home/ts/code/projects/nominal-refactor-advisor` checkout is
 unchanged: its inherited `uv.lock`, `PAUSED_NRA_GOAL.md`, and `cufile.log` remain.
+
+## Current callable metadata ownership prerequisite
+
+Status at 17:58 UTC: applied locally, not yet committed or pushed. Generated
+construction and registration still raise the same unproved obligation.
+
+`NativePythonFunctionSource` now owns current signature and default observations
+alongside its existing current-code/source correspondence. `NativeCallAuthority`
+projects those properties through `AliasProperty`, and the native source-class
+entry selects its constructor source through the same owner. The existing
+`CompactFunctionSignature.with_default_names` contract is reused. Every default
+query rejoins the current function code; cached source ownership is not cached
+mutation validation. No callable body is executed to derive metadata, and no
+source-created activation or generated-class result is manufactured.
+
+The actual `AutoRegisterMeta.__new__` declarations in both dependency versions
+have a fifth, optional `registry_config=None` parameter. Earlier expectations
+that the constructor had only four required parameters were incorrect.
+Changing that actual default association is observed by the same warmed owner;
+the prior signature observation does not become proof of current state.
+
+The refactor was previewed as one six-stage DSL plan over the pre-edit production
+snapshot. The example is `docs/examples/native_callable_metadata_owner.py`.
+It inserts source-owned defaults/signature and the consumer projection, replaces
+three former properties with aliases, adds the constructor source query, and
+updates the still-rejecting construction query. Replacement geometry is derived
+through `FunctionSourceAuthority.declaration_line_span`, not copied old method
+bodies. The combined simulation is clean and emits one two-file diff; its
+portable regression also checks the unchanged input snapshot and the remaining
+explicit rejection. This is an authored syntax plan, not a behavioral-equivalence
+proof. Replacement Python and target selectors remain manually authored, and
+the plan is still verbose. No elapsed-time saving is claimed.
+
+Two first-pass regressions had incorrect fixture expectations: current default
+observations are intentionally distinct `eq=False` objects, and the actual
+constructor already has its `registry_config` default. The controls were
+corrected to compare parameter names plus retained value identity and to mutate
+the actual default association. The production proof contracts were not relaxed.
+
+Focused gates, eight workers and 60-second bounds, now pass:
+
+| Runtime | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 | 190 | 1 | 13.10 |
+| Python 3.14 | 188 | 3 | 17.99 |
+
+The selected files are `test_native_function_source`, `test_native_behavior_proof`,
+`test_native_source_class_preparation`, `test_native_class_mro`,
+`test_native_definition_applications`, `test_native_definition_operand_chain`,
+`test_authored_native_use_invariants`, `test_type_keyed_native_contract`, and
+`test_registry_candidate_requirements` under `tests/`, with `.py` suffixes.
+Logs: `/home/ts/nra-native-behavior-validation-G481Dc/callable-metadata-{311,314}-focused.txt`.
+At 17:59 UTC, the exact new source passes the standalone Python 3.14 `0::16`
+full-suite shard: 318 passed in 132.47 seconds, eight workers, 165-second bound.
+The remaining complete disjoint shards are running two at a time with eight
+workers each, under the same bounds and the file-slice schedule of the preceding
+checkpoint. Logs use the `callable-metadata-full-*` prefix in the validation
+directory. Full-suite totals are not yet established.
+
+Fresh Sphinx `-E -j 8` passes with the same two duplicate API-object warnings.
+Fresh isolated sdist/wheel builds pass. An initial `--no-isolation` build could
+not import the active environment's missing `setuptools.build_meta`; it is not
+a passing gate. The normal isolated build uses the project's declared backend
+dependencies and passes without changing the active interpreter. Logs are
+`callable-metadata-docs.txt`, `callable-metadata-build.txt` (failed non-isolated
+attempt), and `callable-metadata-build-isolated.txt` (successful declared build).
+Installed-wheel and complete cold/warm/edit gates are still pending.
+
+The preceding `997d85f` hosted run now passes five of seven jobs: docs/wheel,
+both macOS jobs, and Python 3.14 on Ubuntu/Windows. Python 3.11 on Ubuntu/Windows
+remain in progress, verified at 17:59 UTC. That CI run does not validate the
+uncommitted metadata refactor.
+
+### Frozen-source metadata checkpoint validation
+
+All full-suite shards pass with eight workers and 165-second bounds:
+
+| Runtime / file shard | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 advisor | 795 | 0 | 102.36 |
+| Python 3.11 `0::4` | 1790 | 12 | 91.80 |
+| Python 3.11 `1::4` | 1606 | 9 | 58.17 |
+| Python 3.11 `2::4` | 1584 | 15 | 71.29 |
+| Python 3.11 `3::4` | 1435 | 38 | 42.39 |
+| **Python 3.11 total** | **7210** | **74** | |
+| Python 3.14 advisor | 795 | 0 | 102.16 |
+| Python 3.14 `0::16` | 318 | 0 | 132.47 |
+| Python 3.14 `8::16` | 457 | 3 | 12.80 |
+| Python 3.14 `4::8` | 1022 | 2 | 73.77 |
+| Python 3.14 `1::4` | 1611 | 4 | 64.82 |
+| Python 3.14 `2::4` | 1593 | 6 | 79.20 |
+| Python 3.14 `3::8` | 659 | 23 | 36.76 |
+| Python 3.14 `7::8` | 791 | 0 | 27.37 |
+| **Python 3.14 total** | **7246** | **38** | |
+
+The same documented sorted non-advisor file lists and disjoint slices are used;
+`0::16` runs alone first, then the remaining shards two at a time. This avoids
+contention in the existing 200-class history control without changing its
+inputs, assertions, or bounds. The complete runner exits zero. Python versions
+and metaclass-registry dependencies are unchanged from the preceding checkpoint.
+
+The freshly built wheel is installed into the existing task-owned isolated
+environment and all 141 production Python files match the current checkout
+byte-for-byte. Outside the checkout, with package imports asserted below that
+environment's `sys.prefix`, its new constructor-default, current call-metadata,
+six-stage DSL, and warmed constructor-code mutation controls pass. The installed
+public `analyze_path` API also returns zero production findings with eight parse
+and analysis workers. Adding only the integration `tests/` directory to the
+control interpreter does not expose an editable package import.
+
+The production CLI self-scan completes all 79 detectors with zero omissions and
+zero findings (16.910 scan seconds). It and the independent installed-API gate
+ran concurrently, so this is a completion gate, not a performance comparison.
+Logs/reports: `callable-metadata-wheel-controls.txt`,
+`callable-metadata-wheel-api.txt`, and `callable-metadata-self.json` under the
+validation directory. Complete-package scans run after all local tests and
+API/self-scan processes have completed.
+
+Complete package gates use the same restored 1057-file source copy as the
+preceding checkpoint, excluding tests and including the eight external
+libraries. All local test/build/self/API processes are terminal before timing.
+
+| Mode | Scan seconds | Wall seconds | Cache |
+| --- | ---: | ---: | --- |
+| Cold | 47.176 | 49.83 | miss |
+| Warm | 1.021 | 2.25 | hit |
+| One edit | 4.335 | 7.03 | partial |
+
+Each mode completes all 79 detectors with zero omissions, 180 active findings,
+and 215 raw findings. The complete semantic projection hash remains
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100` for
+all modes and the preceding checkpoint, normalizing only the same timing and
+scan mode/reason fields. No claim of improved detector recall, behavioral proof,
+or causal performance improvement follows from these equivalent reports.
+Commands use the documented complete-package scope, sixteen parse/analysis
+workers, a fresh task-owned cold cache, and 165/60/60-second bounds. The edit is
+one novel EOF comment in the copied `openhcs/__init__.py`, restored after the
+successful edit scan. Logs, JSON, and wall files use the `callable-metadata-`
+prefix in the validation directory.
+
+The preceding `997d85f` hosted integration run completes all seven jobs
+successfully, verified at 18:08 UTC. The new metadata source has complete local
+gates, but no exact-SHA hosted gate until it is committed and dispatched.
+
+After every local validation process completed, the three exact new task-owned
+self/wheel/performance caches and pytest fixture root were removed, recovering
+approximately 729 MiB. They can be regenerated; retained logs, reports,
+distributions, documentation, installed-wheel environment, and source copy
+are unchanged. The original checkout's inherited changes are still untouched.
