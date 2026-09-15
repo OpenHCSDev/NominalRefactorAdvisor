@@ -51,6 +51,7 @@ from .native_compilation import (
 )
 from .native_declarations import (
     NativeDeclaration,
+    NativeDictionaryKey,
     NativeScalar,
     NativeScalarValueABC,
 )
@@ -122,6 +123,10 @@ class CapturedReferenceRejection(ValueError):
 
 
 class CapturedReferenceResolution(NativeScalarValueABC):
+
+    def require_dictionary_key(self) -> NativeDictionaryKey:
+        """Scalar contents supply a key; other identities need their own evidence."""
+        return self.require_native_scalar()
 
     def require_definition_application_argument(self) -> None:
         """Require this value as the actual input to a definition transformer."""
@@ -280,7 +285,7 @@ class CapturedReferenceResolution(NativeScalarValueABC):
     def require_item_write(
         self,
         resolver: CapturedReferenceKernel,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
         context: CompactFlowContext,
         position: CompactFlowPosition,
     ) -> None:
@@ -294,7 +299,7 @@ class CapturedReferenceResolution(NativeScalarValueABC):
             prefix.require_closed()
             return
         namespace.require_available(resolver, prefix)
-        NativeCreationBackend.current().require_dictionary_scalar_store(key)
+        NativeCreationBackend.current().require_dictionary_store(key)
         namespace.require_slot_release(resolver, key, context, position)
         # STORE_SUBSCR releases the consumed receiver as well as the key/value
         # operands. The newly retained RHS cannot prove receiver retention.
@@ -552,6 +557,10 @@ class CapturedNativeObject(NativeTypeCapture):
     def _native_scalar_value(self) -> object:
         return self.value
 
+    def require_dictionary_key(self) -> NativeDictionaryKey:
+        self.require_closed()
+        return NativeCreationBackend.current().require_dictionary_key(self.value)
+
     def proves_same_object(self, other: CapturedReferenceResolution) -> bool:
         """Compare actual captured objects, never equality or declaration spelling."""
         if not isinstance(other, CapturedNativeObject):
@@ -731,7 +740,7 @@ class NamespaceEvidenceABC(ABC):
         )
 
     @property
-    def initial_names(self) -> frozenset[NativeScalar]:
+    def initial_names(self) -> frozenset[NativeDictionaryKey]:
         raise ValueError("Complete initial namespace membership remains unproved")
 
     def captured_dictionary(self) -> CapturedReferenceResolution:
@@ -747,7 +756,7 @@ class NamespaceEvidenceABC(ABC):
     def require_slot_release(
         self,
         resolver: CapturedReferenceKernel,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
         context: CompactFlowContext,
         position: CompactFlowPosition,
     ) -> CapturedReferenceResolution | None:
@@ -765,8 +774,8 @@ class NamespaceEvidenceABC(ABC):
 
     @staticmethod
     def capture_initial_entries(
-        entries: dict[NativeScalar, NamespaceEntryT],
-    ) -> Mapping[NativeScalar, NamespaceEntryT]:
+        entries: dict[NativeDictionaryKey, NamespaceEntryT],
+    ) -> Mapping[NativeDictionaryKey, NamespaceEntryT]:
         if type(entries) is not dict:
             raise TypeError("A native namespace requires exact dictionary storage")
         for key in entries:
@@ -774,11 +783,13 @@ class NamespaceEvidenceABC(ABC):
         return MappingProxyType(entries.copy())
 
     @staticmethod
-    def require_key(key: NativeScalar) -> None:
-        if not NativeScalarValueABC.supports_scalar(key):
-            raise TypeError("Native dictionary lookup requires an exact scalar key")
+    def require_key(key: NativeDictionaryKey) -> None:
+        try:
+            NativeCreationBackend.current().require_dictionary_key(key)
+        except ValueError as error:
+            raise TypeError(str(error)) from error
 
-    def member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         self.require_key(key)
         return self._member(key)
 
@@ -787,7 +798,7 @@ class NamespaceEvidenceABC(ABC):
         raise ValueError("Native dictionary contents remain unproved")
 
     @abstractmethod
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -808,10 +819,10 @@ class NamespaceEvidenceABC(ABC):
 class RecordedNamespace(NamespaceEvidenceABC, ABC):
     """Complete initial keys derive from the existing admitted entry record."""
 
-    initial_entries: Mapping[NativeScalar, object]
+    initial_entries: Mapping[NativeDictionaryKey, object]
 
     @cached_property
-    def initial_names(self) -> frozenset[NativeScalar]:
+    def initial_names(self) -> frozenset[NativeDictionaryKey]:
         return frozenset(self.initial_entries)
 
 
@@ -917,26 +928,28 @@ class EmptyDictionaryCreation(CreatedNamespaceDictionary):
     """Proved empty birth storage; subsequent writes use the shared namespace kernel."""
 
     @property
-    def initial_names(self) -> frozenset[NativeScalar]:
+    def initial_names(self) -> frozenset[NativeDictionaryKey]:
         self.require_admitted(self.initial)
         return frozenset()
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         self.require_admitted(self.initial)
         return None
 
 
 @dataclass(frozen=True, eq=False)
 class NativeNamespace(RecordedNamespace):
-    """One observed native dictionary and its admitted initial scalar-key state.
+    """One observed native dictionary and its admitted initial key protocols.
 
     Key admission precedes lookup/copy: even an exact dict can contain foreign
     keys whose equality runs code. The effect proof must preserve this invariant
     and account for later index, destruction and external mutation effects.
     """
 
-    storage: dict[NativeScalar, object]
-    initial_entries: Mapping[NativeScalar, object] = field(init=False, repr=False)
+    storage: dict[NativeDictionaryKey, object]
+    initial_entries: Mapping[NativeDictionaryKey, object] = field(
+        init=False, repr=False
+    )
 
     def require_available(
         self, kernel: CapturedReferenceKernel, prefix: AdmittedExecutionPrefixABC
@@ -951,7 +964,7 @@ class NativeNamespace(RecordedNamespace):
             self, "initial_entries", self.capture_initial_entries(self.storage)
         )
 
-    def _member(self, key: NativeScalar) -> CapturedNativeObject | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedNativeObject | None:
         if key not in self.initial_entries:
             return None
         return CapturedNativeObject(self.initial_entries[key])
@@ -963,7 +976,7 @@ class NativeNamespace(RecordedNamespace):
     def is_initial_storage(self, storage: object) -> bool:
         return self.storage is storage
 
-    def current_entries(self) -> Mapping[NativeScalar, object]:
+    def current_entries(self) -> Mapping[NativeDictionaryKey, object]:
         """Validate current keys before a native lookup; do not cache validation."""
         try:
             return self.capture_initial_entries(self.storage)
@@ -972,7 +985,7 @@ class NativeNamespace(RecordedNamespace):
                 "Native dictionary acquired an unproved key protocol"
             ) from error
 
-    def require_current_binding(self, key: NativeScalar) -> None:
+    def require_current_binding(self, key: NativeDictionaryKey) -> None:
         current = self.current_entries()
         original = self.initial_entries
         if (key in current) != (key in original) or (
@@ -1271,7 +1284,7 @@ class AdmittedExecutionPrefixABC(ABC):
         return kernel.effects.entry_contents(kernel, namespace, self)
 
     def binding_sources(
-        self, namespace: NamespaceEvidenceABC, name: NativeScalar
+        self, namespace: NamespaceEvidenceABC, name: NativeDictionaryKey
     ) -> Iterator[
         tuple[SingleFlowPrefix, CompactBindingSource] | OpenCapturedReference
     ]:
@@ -1678,7 +1691,7 @@ class InitialNativeIsland:
     """
 
     modules: tuple[ModuleType, ...]
-    extra_storages: InitVar[tuple[dict[NativeScalar, object], ...]] = ()
+    extra_storages: InitVar[tuple[dict[NativeDictionaryKey, object], ...]] = ()
     modules_by_name: Mapping[str, ModuleType] = field(init=False, repr=False)
     namespaces: tuple[NativeNamespace, ...] = field(init=False, repr=False)
 
@@ -1689,7 +1702,7 @@ class InitialNativeIsland:
                 namespace.require_admitted(self)
 
     def __post_init__(
-        self, extra_storages: tuple[dict[NativeScalar, object], ...]
+        self, extra_storages: tuple[dict[NativeDictionaryKey, object], ...]
     ) -> None:
         if any(type(module) is not ModuleType for module in self.modules):
             raise TypeError(
@@ -1720,7 +1733,7 @@ class InitialNativeIsland:
         )
 
     def namespace_for_storage(
-        self, storage: dict[NativeScalar, object]
+        self, storage: dict[NativeDictionaryKey, object]
     ) -> NativeNamespace:
         for namespace in self.namespaces:
             if namespace.storage is storage:
@@ -1805,7 +1818,7 @@ class CapturedSlotQuery:
     """One namespace slot observed through a contextual admitted prefix."""
 
     namespace: NamespaceEvidenceABC
-    key: NativeScalar
+    key: NativeDictionaryKey
     prefix: AdmittedExecutionPrefixABC
     pending: frozenset[CompactBindingVisit[CompactFlowContext]]
     installed: ContextualMutation | None = None
@@ -1940,7 +1953,7 @@ class CapturedSlotQuery:
     def write_effect(
         self,
         namespace: NamespaceEvidenceABC,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
         mutation: CompactMutation,
     ) -> OpenCapturedReference | None:
         if namespace is self.namespace and key == self.key:
@@ -1955,9 +1968,9 @@ class CapturedSlotQuery:
         key: CapturedReferenceResolution,
         occurrence: ContextualMutation,
     ) -> CapturedReferenceResolution | None:
-        """Exact scalar contents select the query's law; unknown keys never select an installation."""
+        """Admitted key identity selects the slot; unknown key protocols stay open."""
         try:
-            name = key.require_native_scalar()
+            name = key.require_dictionary_key()
         except ValueError as error:
             return OpenCapturedReference(
                 CapturedReferenceViolation.POSSIBLE_SLOT_WRITE,
@@ -1976,7 +1989,9 @@ ImportQuery: TypeAlias = tuple[
 ]
 
 
-NamespaceMembershipContext: TypeAlias = tuple[ContextualMutation, set[NativeScalar]]
+NamespaceMembershipContext: TypeAlias = tuple[
+    ContextualMutation, set[NativeDictionaryKey]
+]
 
 
 @dataclass(frozen=True)
@@ -2030,11 +2045,11 @@ class NamespaceContentsABC(ABC):
 
     @property
     @abstractmethod
-    def names(self) -> frozenset[NativeScalar]:
+    def names(self) -> frozenset[NativeDictionaryKey]:
         raise NotImplementedError
 
     @abstractmethod
-    def member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -2042,7 +2057,7 @@ class NamespaceContentsABC(ABC):
         """Admit the content owner/cut, without asserting all member values closed."""
         raise NotImplementedError
 
-    def require_member(self, key: NativeScalar) -> CapturedReferenceResolution:
+    def require_member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution:
         self.require_closed()
         value = self.member(key)
         if value is None:
@@ -2074,11 +2089,11 @@ class InitialNamespaceContents(NamespaceContentsABC):
         self.namespace.require_admitted(self.kernel.initial)
 
     @property
-    def names(self) -> frozenset[NativeScalar]:
+    def names(self) -> frozenset[NativeDictionaryKey]:
         self.require_closed()
         return self.namespace.initial_names
 
-    def member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         self.require_closed()
         return self.namespace.member(key)
 
@@ -2100,7 +2115,7 @@ class NamespaceMemberInventory(
     namespace: NamespaceEvidenceABC
     prefix: AdmittedExecutionPrefixABC
 
-    def member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         self.require_closed()
         return self.kernel._namespace_resolution(
             self.namespace, key, self.prefix, frozenset()
@@ -2111,7 +2126,7 @@ class NamespaceMemberInventory(
         self.namespace.require_available(self.kernel, self.prefix)
 
     @cached_property
-    def names(self) -> frozenset[NativeScalar]:
+    def names(self) -> frozenset[NativeDictionaryKey]:
         self.require_closed()
         names = set(self.prefix.entry_contents(self.kernel, self.namespace).names)
         for occurrence in self.prefix.mutation_occurrences():
@@ -2122,7 +2137,7 @@ class NamespaceMemberInventory(
         self,
         context: NamespaceMembershipContext,
         namespace: NamespaceEvidenceABC | OpenCapturedReference,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
     ) -> None:
         if isinstance(namespace, OpenCapturedReference):
             namespace.require_closed()
@@ -2172,7 +2187,7 @@ class NamespaceMemberInventory(
             return
         key = kernel._read_use(
             mutation.target.index_use, occurrence.source.context, frozenset()
-        ).require_native_scalar()
+        ).require_dictionary_key()
         self._write(context, namespace, key)
 
     def _receiver_mutation_resolution(
@@ -2244,7 +2259,7 @@ class CapturedReferenceKernel(
         namespace: NamespaceEvidenceABC,
         context: CompactFlowContext,
         position: CompactFlowPosition,
-    ) -> frozenset[NativeScalar]:
+    ) -> frozenset[NativeDictionaryKey]:
         prefix = self._admitted_prefix(context, position)
         if isinstance(prefix, OpenCapturedReference):
             prefix.require_closed()
@@ -2253,7 +2268,7 @@ class CapturedReferenceKernel(
     def _namespace_resolution(
         self,
         namespace: NamespaceEvidenceABC,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
         prefix: AdmittedExecutionPrefixABC,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution | None:
@@ -2478,7 +2493,7 @@ class CapturedReferenceKernel(
     def _slot(
         self,
         namespace: NamespaceEvidenceABC | OpenCapturedReference,
-        key: NativeScalar,
+        key: NativeDictionaryKey,
         context: CompactFlowContext,
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],

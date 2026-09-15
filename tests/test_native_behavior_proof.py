@@ -242,12 +242,19 @@ def test_dsl_projected_source_admits_real_type_operation_without_transporting_ac
 
 
 @pytest.mark.parametrize("spoof_qualification", (False, True))
+@pytest.mark.parametrize(
+    "registry_source,registry_operand",
+    (("", "{}"), ("registry={}\nregistry[object]=property\n", "registry")),
+)
 def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
-    tmp_path, monkeypatch, spoof_qualification
+    tmp_path, monkeypatch, spoof_qualification, registry_source, registry_operand
 ):
     path, initial = snapshot_with_environment(
         tmp_path,
-        "from nominal_refactor_advisor.registry_identity import mro_registry_value\npadding=0\nresult=mro_registry_value({}, type(None))\n",
+        "from nominal_refactor_advisor.registry_identity import mro_registry_value\n"
+        "padding=0\n"
+        + registry_source
+        + f"result=mro_registry_value({registry_operand}, type(None))\n",
     )
     provider_path = registry_identity.__file__
     provider_source = Path(registry_identity.__file__).read_text()

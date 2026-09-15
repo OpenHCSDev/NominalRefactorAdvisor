@@ -61,6 +61,7 @@ from .lexical_bindings import (
 from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import (
     NativeDeclaration,
+    NativeDictionaryKey,
     NativeScalar,
     NativeConstantContentsABC,
     NativeScalarValueABC,
@@ -3498,8 +3499,8 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Require a supported native wrapper over independently proved metadata."""
         raise ValueError("Native descriptor wrapping remains unproved")
 
-    def require_scalar_dictionary_class_lookup(self, declaration_type: type) -> None:
-        """Require exact-dict membership for a static type and inert scalar keys."""
+    def require_dictionary_class_lookup(self, declaration_type: type) -> None:
+        """Require exact-dict membership for an independently admitted class key."""
         raise ValueError("Native dictionary class-key lookup remains unproved")
 
     def require_invocation(
@@ -3599,9 +3600,31 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Require exact dictionary setter behavior under exact scalar-key admission."""
         raise ValueError("Native dictionary item storage remains unproved")
 
+    def require_dictionary_key(self, key: object) -> NativeDictionaryKey:
+        """Compose exact primitive contents or an admitted static-type identity.
+
+        Primitive entry evidence is independent of compiler creation support.
+        Static keys additionally require this backend's immutable native MRO
+        proof. Validation supplies neither storage nor invocation effects.
+        """
+        if NativeScalarValueABC.supports_scalar(key):
+            return cast(NativeDictionaryKey, key)
+        try:
+            self.require_static_type_mro(key)
+        except ValueError as error:
+            raise ValueError(
+                "Native dictionary lookup requires an exact scalar key or "
+                "immutable static type"
+            ) from error
+        return cast(NativeDictionaryKey, key)
+
+    def require_dictionary_store(self, key: NativeDictionaryKey) -> None:
+        """Require native storage and temporary-key release for an admitted key."""
+        raise ValueError("Native dictionary item storage remains unproved")
+
     def class_construction_fields(
         self,
-        names: frozenset[NativeScalar],
+        names: frozenset[NativeDictionaryKey],
     ) -> tuple[CPythonClassConstructionField, ...]:
         """Select native construction obligations; actual values discharge them."""
         raise ValueError("Native class construction namespace remains unproved")
@@ -4217,14 +4240,12 @@ class CPythonClassConstruction(NativeCreationBackend):
             raise ValueError("Descriptor wrapping has no supported native contract")
         self.require_static_type_mro(declaration.declaration)
 
-    def require_scalar_dictionary_class_lookup(self, declaration_type: type) -> None:
-        # Exact static type objects hash and compare by native identity. Scalar
-        # keys have independently admitted native hash/equality and cannot be a
-        # class object. The caller proves exact dict storage and original keys.
+    def require_dictionary_class_lookup(self, declaration_type: type) -> None:
+        # Every resident key has the shared dictionary-key contract. Exact
+        # static type objects use ordinary native identity hash/equality; the
+        # caller independently proves original exact-dictionary contents.
         self.require_static_type_mro(declaration_type)
         self.require_static_type_release(dict)
-        if type(declaration_type) is not type:
-            raise ValueError("Class-key lookup has an unproved metaclass hash hook")
 
     def require_nonabstract_member_type(self, value_type: type) -> None:
         self.require_static_type_mro(value_type)
@@ -4257,7 +4278,7 @@ class CPythonClassConstruction(NativeCreationBackend):
 
     def class_construction_fields(
         self,
-        names: frozenset[NativeScalar],
+        names: frozenset[NativeDictionaryKey],
     ) -> tuple[CPythonClassConstructionField, ...]:
         return tuple(
             requirement
@@ -4452,7 +4473,18 @@ class CPythonContainerConstruction(NativeCreationBackend):
         """
         if not NativeScalarValueABC.supports_scalar(key):
             raise ValueError("Native dictionary stores require an exact scalar key")
-        self.require_inert_instance_release(type(key))
+        self.require_dictionary_store(key)
+
+    def require_dictionary_store(self, key: NativeDictionaryKey) -> None:
+        """Native exact-dict insertion over independently admitted key protocols.
+
+        CPython dict lookup uses hash, pointer identity, then rich comparison
+        (Objects/dictobject.c, 3.11.11 and 3.14.6). Exact primitive and static type
+        keys cannot invoke Python hooks even across hash collisions. Prior-value
+        and temporary-receiver release retain their separate cut obligations.
+        """
+        self.require_dictionary_key(key)
+        self.require_object_release(key)
 
 
 class CPythonTypingConstruction(NativeCreationBackend):

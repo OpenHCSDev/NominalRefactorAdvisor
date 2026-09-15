@@ -117,7 +117,7 @@ from .native_compilation import (
 from .native_declarations import (
     NativeDeclaration,
     NativeDeclarationFamily,
-    NativeScalar,
+    NativeDictionaryKey,
     QualifiedDeclaration,
 )
 from .native_reference import NativeReferenceEnvironment
@@ -691,7 +691,9 @@ class SourceFunctionActivationABC(ABC):
         raise NotImplementedError
 
     @cached_property
-    def initial_entries(self) -> Mapping[NativeScalar, CapturedReferenceResolution]:
+    def initial_entries(
+        self,
+    ) -> Mapping[NativeDictionaryKey, CapturedReferenceResolution]:
         """Bind exact entry values through the callee's source declaration."""
         parameters = FunctionParameterSource.from_arguments(self.callee.node.args)
         declaration = self.callee.declaration
@@ -702,7 +704,7 @@ class SourceFunctionActivationABC(ABC):
             )
         ):
             raise ValueError("Function entry parameters differ from their declaration")
-        entries: dict[NativeScalar, CapturedReferenceResolution] = {}
+        entries: dict[NativeDictionaryKey, CapturedReferenceResolution] = {}
         for source in parameters:
             values = self.argument_values(source.argument.arg)
             if source.kind.variadic:
@@ -1245,7 +1247,7 @@ class SourceNativeStorageABC(
         return SourceNativeTypeCapture(self, value)
 
     def _preceding_native_local_value(
-        self, name: NativeScalar, offset: int
+        self, name: NativeDictionaryKey, offset: int
     ) -> CapturedReferenceResolution | None:
         for binding in reversed(self.native_bindings):
             if binding.name == name and binding.instruction_offset < offset:
@@ -1289,7 +1291,7 @@ class SourceNativeStorageABC(
 
     @abstractmethod
     def _native_initial_local(
-        self, name: NativeScalar
+        self, name: NativeDictionaryKey
     ) -> CapturedReferenceResolution | None:
         raise NotImplementedError
 
@@ -1322,7 +1324,7 @@ class SourceNativePrefixStorageABC(SourceNativeStorageABC):
         return local
 
     def _native_initial_local(
-        self, name: NativeScalar
+        self, name: NativeDictionaryKey
     ) -> CapturedReferenceResolution | None:
         endpoint = self.native_lookup_prefix.endpoint
         return self.execution.kernel._slot(
@@ -1503,11 +1505,11 @@ class SourceModuleEntryContents(InitialNamespaceContents):
         return SourceModuleAnnotationNamespace(self.execution)
 
     @property
-    def names(self) -> frozenset[NativeScalar]:
+    def names(self) -> frozenset[NativeDictionaryKey]:
         names = super().names
         return names if self.setup is None else names | {self.setup.binding.name}
 
-    def member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         value = super().member(key)
         if value is None and self.setup is not None and key == self.setup.binding.name:
             return self.annotation_namespace
@@ -2788,7 +2790,9 @@ class SourceClassBodyEntryABC(
     QualifiedDeclaration,
     NamespaceCreationEvidenceABC,
     NativeClassCaptureResolverABC[ExactNativeClassCapture],
-    NativeClassPrologueResolverABC[dict[NativeScalar, CapturedReferenceResolution]],
+    NativeClassPrologueResolverABC[
+        dict[NativeDictionaryKey, CapturedReferenceResolution]
+    ],
     RecordedNamespace,
     SourceNativeNamespaceABC,
 ):
@@ -2866,7 +2870,7 @@ class SourceClassBodyEntryABC(
         return self
 
     def _native_initial_local(
-        self, name: NativeScalar
+        self, name: NativeDictionaryKey
     ) -> CapturedReferenceResolution | None:
         return None
 
@@ -3080,12 +3084,14 @@ class SourceClassBodyEntryABC(
         return value.as_builtin_namespace(self.initial)
 
     @cached_property
-    def initial_entries(self) -> Mapping[NativeScalar, CapturedReferenceResolution]:
+    def initial_entries(
+        self,
+    ) -> Mapping[NativeDictionaryKey, CapturedReferenceResolution]:
         return self.capture_initial_entries(self.capture.prologue.resolve(self))
 
     def _exact_class_prologue_resolution(
         self, prologue: ExactNativeClassPrologue
-    ) -> dict[NativeScalar, CapturedReferenceResolution]:
+    ) -> dict[NativeDictionaryKey, CapturedReferenceResolution]:
         for value in prologue.values:
             self.native_value(value).require_closed()
         return dict(
@@ -3096,7 +3102,7 @@ class SourceClassBodyEntryABC(
 
     def _open_class_prologue_resolution(
         self, prologue: OpenNativeClassPrologue
-    ) -> dict[NativeScalar, CapturedReferenceResolution]:
+    ) -> dict[NativeDictionaryKey, CapturedReferenceResolution]:
         raise ValueError("Native class prologue remains unproved")
 
     def _cell_store_resolution(self, binding: NativeBindingTransfer) -> None:
@@ -3117,7 +3123,7 @@ class SourceClassBodyEntryABC(
         if initial is not self.initial:
             raise ValueError("Source class belongs to a foreign native admission")
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         return self.initial_entries.get(key)
 
     def prefix(
@@ -3148,14 +3154,14 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
     native_bindings = AliasProperty[tuple[NativeBindingTransfer, ...]]("bindings")
     native_class_entry = AliasProperty[SourceClassBodyEntryABC]("entry")
 
-    def require_member(self, name: NativeScalar) -> CapturedReferenceResolution:
+    def require_member(self, name: NativeDictionaryKey) -> CapturedReferenceResolution:
         value = self.member(name)
         if value is None:
             raise ValueError("Complete native namespace inventory has no member value")
         return value
 
     @property
-    def names(self) -> frozenset[NativeScalar]:
+    def names(self) -> frozenset[NativeDictionaryKey]:
         _ = self.completed
         source = NamespaceMemberInventory(
             self.execution.kernel, self.entry, self.native_lookup_prefix
@@ -3180,13 +3186,13 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
         receipt.value.require_completion(self)
 
     def _native_initial_local(
-        self, name: NativeScalar
+        self, name: NativeDictionaryKey
     ) -> CapturedReferenceResolution | None:
         return self.execution.kernel._namespace_resolution(
             self.entry, name, self.native_lookup_prefix, frozenset()
         )
 
-    def member(self, name: NativeScalar) -> CapturedReferenceResolution | None:
+    def member(self, name: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         _ = self.completed
         return self._preceding_native_local_value(name, self.receipt.instruction_offset)
 
@@ -3688,7 +3694,7 @@ class SourceExecutionABC(
         )
         key = self.kernel._read_use(
             mutation.target.index_use, context, frozenset()
-        ).require_native_scalar()
+        ).require_dictionary_key()
         receiver.require_item_write(self.kernel, key, context, mutation.position)
 
     def _receiver_mutation_resolution(
@@ -4024,7 +4030,7 @@ class SourceFunctionEntry(
     @cached_property
     def initial_entries(
         self,
-    ) -> Mapping[NativeScalar, CapturedReferenceResolution]:
+    ) -> Mapping[NativeDictionaryKey, CapturedReferenceResolution]:
         """Derive exact entry values from the activation's original binding."""
         return self.activation.initial_entries
 
@@ -4064,7 +4070,7 @@ class SourceFunctionEntry(
         if execution is not self.activation.callee.native_execution:
             raise ValueError("Native creator belongs to a different function body")
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         return self.initial_entries.get(key)
 
 

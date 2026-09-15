@@ -55,8 +55,7 @@ from .native_declarations import (
     NativeDeclaration,
     NativeDeclarationFamily,
     NativeParameterDefault,
-    NativeScalar,
-    NativeScalarValueABC,
+    NativeDictionaryKey,
 )
 from .native_subscription import NativeArgumentInspection
 from .product_flow import (
@@ -332,6 +331,9 @@ class NativePythonFunctionSource:
         self, authority: CallAuthority, name: str, expected: NativeDeclaration
     ) -> None:
         """Join one creator-global lookup to entry facts and revalidate its dependencies."""
+        code = self.function.__code__
+        if name in (*code.co_varnames, *code.co_cellvars, *code.co_freevars):
+            raise ValueError("Native body dependency is not a global/builtin lookup")
         initial = authority.environment.kernel.initial
         globals_namespace = initial.namespace_for_storage(self.function.__globals__)
         prefix = authority.activation_prefix
@@ -412,6 +414,8 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             or len(iteration.ifs) != 1
         ):
             raise ValueError("MRO registry lookup does not iterate its declaration MRO")
+        if iteration.target.id in (registry_name, declaration_name):
+            raise ValueError("MRO registry generator has unproved parameter shadowing")
         predicate = iteration.ifs[0]
         element = generator.elt
         if (
@@ -437,7 +441,7 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
         )
         return source
 
-    def require_closed(self) -> None:
+    def lookup_result(self) -> CapturedReferenceResolution:
         source = self.require_lookup_source()
         binding = self.bound_arguments
         registry_name, declaration_name = (
@@ -461,7 +465,7 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             raise ValueError(
                 "MRO registry declaration has no exact static-type operand"
             )
-        NativeCreationBackend.current().require_scalar_dictionary_class_lookup(
+        NativeCreationBackend.current().require_dictionary_class_lookup(
             declaration.value
         )
         namespace = registry.dictionary_namespace(self.environment.kernel.initial)
@@ -475,17 +479,28 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
         inventory = NamespaceMemberInventory(
             self.environment.kernel, namespace, self.activation_prefix
         )
-        # Scalar-key admission proves membership false for every class in the
-        # actual static MRO. Subscription is therefore unreachable. Non-scalar
-        # keys and hit/result cases deliberately retain their separate obligation.
-        for key in inventory.names:
-            if not NativeScalarValueABC.supports_scalar(key):
-                raise ValueError("MRO registry class-key identity remains unproved")
+        # Validate all resident key protocols before membership/subscription.
+        # Native dictionary equality includes boolean/integer aliases, while
+        # admitted static classes compare by identity. The actual MRO orders
+        # selection, never registry insertion order or analyzer class names.
+        keys = inventory.names
+        for key in keys:
+            namespace.require_key(key)
             inventory.require_member(key).require_release()
+        for owner in NativeCreationBackend.current().require_static_type_mro(
+            declaration.value
+        ):
+            if owner in keys:
+                return inventory.require_member(owner)
+        return CapturedNativeObject(None)
+
+    def require_closed(self) -> None:
+        self.lookup_result().require_closed()
 
     def result(self) -> CapturedReferenceResolution:
-        self.require_closed()
-        return CapturedNativeObject(None)
+        result = self.lookup_result()
+        result.require_closed()
+        return result
 
 
 @dataclass(frozen=True)
@@ -1043,7 +1058,7 @@ class CopiedNativeNamespace(
         self.require_closed()
         return self
 
-    names = AliasProperty[frozenset[NativeScalar]]("initial_names")
+    names = AliasProperty[frozenset[NativeDictionaryKey]]("initial_names")
 
     @classmethod
     def from_call(
@@ -1067,7 +1082,7 @@ class CopiedNativeNamespace(
         return result
 
     @cached_property
-    def initial_names(self) -> frozenset[NativeScalar]:
+    def initial_names(self) -> frozenset[NativeDictionaryKey]:
         self.require_admitted(self.initial)
         return self.kernel.namespace_names(
             self.parent, self.context, self.call.position
@@ -1093,7 +1108,7 @@ class CopiedNativeNamespace(
             )
         self.namespace()
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         for argument in self.call.arguments.keywords:
             if argument.name == key:
                 return self.kernel._read_use(argument.value, self.context, frozenset())

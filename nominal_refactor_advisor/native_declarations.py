@@ -111,6 +111,7 @@ if TYPE_CHECKING:
 
 
 NativeScalar: TypeAlias = str | int | bool | None
+NativeDictionaryKey: TypeAlias = NativeScalar | type
 NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
 
 

@@ -34,9 +34,13 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-The scoped implementation passes the frozen-source local gates below. It is a
-checkpoint, not completion of all three targets; registry hits and generated
-registration remain fail-closed. Remote publication is pending.
+Checkpoint `308375890ef8927aafeb95b4eed0a27f50ff95b6` is committed and pushed to
+`checkpoint/native-proof-integration-20260914`. Its scoped implementation passes
+the frozen-source local gates below. Hosted cross-platform validation is running:
+[Integration Tests 34996343607](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/34996343607).
+The following table describes that committed checkpoint, not completion of all
+three targets. Registry-hit work continues separately below; generated
+registration remains fail-closed.
 
 | Target | Automatically derived evidence now available | Remaining obligation |
 | --- | --- | --- |
@@ -177,3 +181,147 @@ accepted result.
    compatibility checks are prerequisites, not construction/effect proof.
 
 The persistent continuation goal remains active after this checkpoint.
+
+## Validated registry-hit increment
+
+The existing compiler backend now owns an explicit dictionary-key operation
+contract. Exact scalar values retain their unchanged value contract; immutable
+non-heap ordinary static type identities acquire supported dictionary-key
+hash/equality and temporary-release evidence. This does not admit heap classes,
+custom metaclasses, compound keys, unknown mapping protocols, or arbitrary
+hash/equality callbacks.
+
+Namespace admission, original member inventory, item-write queries, and copies
+consume that shared key evidence. Supported actual MRO hits return the original
+installed value through the existing call authority; actual MRO order controls
+selection independently of dictionary insertion order. A stored `None` is a
+value, not absence. Returned scalar contents do not acquire unsupported object
+identity evidence.
+
+An authored four-stage DSL plan simulated cleanly and generated the namespace
+annotation refinement; its generated patch was applied without re-rendering
+unrelated source. Scalar producers and the explicit scalar-value query keep
+their narrow annotations. See
+`docs/examples/native_dictionary_key_annotations.py`.
+
+Current-source adversarial controls also reject lexical parameter/generator
+shadowing: authenticating a module builtin is insufficient when native code
+selects a local or closure binding. The selected current function code and
+original source roles retain those independent lookup obligations.
+
+### Registry-hit frozen-source validation
+
+The final explicit class-lookup contract also rejects non-class operands;
+dictionary-key admission alone cannot supply the class/MRO operation law.
+
+| Runtime / file shard | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 advisor | 795 | 0 | 128.02 |
+| Python 3.11 non-advisor `0::4` | 1790 | 12 | 90.56 |
+| Python 3.11 non-advisor `1::4` | 1601 | 9 | 46.62 |
+| Python 3.11 non-advisor `2::4` | 1574 | 15 | 77.14 |
+| Python 3.11 non-advisor `3::4` | 1435 | 38 | 31.10 |
+| **Python 3.11 total** | **7195** | **74** | |
+| Python 3.14 advisor | 795 | 0 | 86.07 |
+| Python 3.14 non-advisor `0::8` | 775 | 3 | 155.72 |
+| Python 3.14 non-advisor `4::8` | 1022 | 2 | 69.59 |
+| Python 3.14 non-advisor `1::4` | 1606 | 4 | 40.82 |
+| Python 3.14 non-advisor `2::4` | 1583 | 6 | 60.28 |
+| Python 3.14 non-advisor `3::8` | 659 | 23 | 34.47 |
+| Python 3.14 non-advisor `7::8` | 791 | 0 | 17.62 |
+| **Python 3.14 total** | **7231** | **38** | |
+
+All rows exit successfully with eight workers and 165-second bounds. File-slice
+selection and interpreters are exactly as documented for the first checkpoint;
+the table replaces its validation for this increment. A final Python 3.11
+focused key/source/effect surface reports 166 passed in 6.22 seconds with a
+60-second bound. No authored native-use invariant supplies registry-hit
+acceptance.
+
+Final docs and sdist/wheel builds pass, with the same two existing Sphinx
+duplicate-API warnings. The final wheel is installed outside the checkout in
+`/home/ts/nra-native-behavior-validation-G481Dc/wheel-venv`; installed-package
+path checks, static-key/scalar-separation checks, unsupported-key rejection, and
+a fresh production self-analysis (zero findings) pass. Its self-analysis uses
+eight parse/analysis workers and a 165-second bound. The earlier 60-second
+wheel self-analysis timed out and is not a passing gate. It was retried with a
+new cache rather than inheriting an interrupted publisher lease. Finished
+self/wheel caches (approximately 320 MB) have been removed; reports and built
+artifacts are retained.
+
+The complete-package check uses the same 1057-file OpenHCS/eight-library copy
+as the preceding checkpoint, excluding tests, with no competing test or smoke
+process. It covers all 79 detectors, zero omissions, and 215 raw findings:
+
+| Scan | Scan seconds | Wall seconds | Cache |
+| --- | ---: | ---: | --- |
+| Cold | 50.751 | 53.55 | miss |
+| Warm | 1.086 | 2.38 | hit |
+| One edit | 4.444 | 7.27 | partial |
+
+Bounds, worker counts, and commands match the earlier complete-package check.
+The copied-source one-edit comment was restored afterward. All three complete
+semantic projections match each other and the preceding checkpoint's hash
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100`.
+This checks report/cache consistency, not detector recall or general proof
+correctness. Small timing differences do not establish a performance change.
+
+Hosted results for `3083758` concern only the preceding checkpoint, not these
+subsequent edits.
+
+The final production NRA CLI self-scan uses the production package as both
+target and explicit context: 79 detectors, zero omissions/findings, 16.730 scan
+seconds. An accidental whole-repository context attempt reached its 60-second
+bound and is not a passing gate. The accepted command is:
+
+```sh
+timeout 60 env NRA_CACHE_HOME="$FRESH_SELF_CACHE" "$PYTHON" \
+  -m nominal_refactor_advisor nominal_refactor_advisor \
+  --context-root nominal_refactor_advisor --no-auto-context-root \
+  --json --json-payload agent --parse-workers 8 --analysis-workers 8 \
+  --scan-budget-seconds 60
+```
+
+Broad testing exposed a layer error in the first key implementation: initial
+primitive-key admission incorrectly required a supported compiler-construction
+backend. The shared base authority now composes the existing primitive-content
+or native static-MRO evidence. Storage/invocation effects still have separate
+fail-closed methods. The four affected unsupported-backend controls are
+unchanged and pass; final focused regressions report 168 passed on both Python
+3.11 (5.33 seconds) and 3.14 (7.25 seconds), before the final explicit non-class
+lookup controls. A timed-out broad shard and earlier red shards do not count as
+green gates.
+
+### Generated-registration source map
+
+The inspected dependencies are metaclass-registry 0.1.4 (local Python 3.11) and
+0.2.1 (local Python 3.14). They have materially different construction paths:
+0.2.1 derives declared/inherited registry configurations and a registry family
+before ABC construction, whereas 0.1.4 starts with ABC construction and then
+auto-configuration. Native proofs must follow actual source, not a version
+label or one copied policy.
+
+Remaining joins, in execution order:
+
+1. Authenticate the original metaclass/base/header and selected construction
+   hooks. Current selection alone does not prove native `type.__call__`,
+   `__init__`, or the selected constructor's implicit `super()` closure binding.
+2. Bind actual prepared inputs into current constructor source. Native/source
+   dependencies must include reachable inherited helpers and closure/global
+   bindings, not just the top-level `__new__` code identity.
+3. Join ABCMeta's current Python forwarding source, native type construction,
+   and `_abc_init` to original members/bases and the resulting class namespace.
+   Inert member installation does not prove inherited abstractness or ABC writes.
+4. Follow actual configuration/key selection and registry writes. Explicit
+   dictionary storage does not by itself prove configuration construction,
+   inherited policy, extractor irrelevance, or attribute-write effects.
+5. Prove irrelevant or account for secondary/discovery and logging callbacks.
+   `_auto_configure_registry` itself can log even if final registration logging
+   is disabled. Existing authored subprocess controls demonstrate reachable
+   handlers that can alter results; never silently assume logging is inert.
+
+Source-created class keys also need symbolic creation-identity evidence joined
+to the existing dictionary slot model. The static-key increment is deliberately
+narrow; it does not turn current heap classes or projected classes into static
+native objects. Generated construction and registration remain unproved while
+these joins are missing.
