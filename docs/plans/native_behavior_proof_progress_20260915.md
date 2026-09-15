@@ -34,8 +34,9 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Current work at 19:12 UTC: the body-cache validation correction and its shared
-source-geometry factoring are applied locally and uncommitted. Four adversarial
+Current work at 19:13 UTC: the body-cache validation correction and its shared
+source-geometry factoring are committed and pushed as
+`b3749510cb309b723234a6968b10ec9523e31a32`. Four adversarial
 controls reproduce failures on the published source and pass after the
 correction. The first broader suite exposed repeated full-module syntax parsing;
 the resulting shared-geometry correction passes 210 tests on Python 3.11 and 208
@@ -46,8 +47,10 @@ the actual test passes directly and with canonical pytest diagnostic settings.
 The complete affected Python 3.11 shard also passes without that added
 diagnostic, with all assertions/input sizes preserved. The installed public-API
 gate now passes against a fresh owned cache. Complete-package cold/warm/edit
-gates pass with unchanged complete semantic reports. Scoped publication and
-exact-SHA hosted validation still follow. Generated
+gates pass with unchanged complete semantic reports. Exact-SHA hosted run
+[35012319015](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35012319015)
+is queued; its source SHA is verified, but hosted validation has not yet passed.
+Generated
 construction/registration still rejects the same unproved obligations.
 
 The callable-metadata ownership prerequisite is committed and pushed as
@@ -977,3 +980,20 @@ to pass that gate. Logs, reports, source copy, environments, docs and build
 artifacts remain. The removed generated caches/fixtures can be regenerated.
 No shared cache, other checkout, user input handoff or unrelated process was
 changed.
+
+### Current correction publication
+
+Code commit `b3749510cb309b723234a6968b10ec9523e31a32` is pushed to
+`checkpoint/native-proof-integration-20260914`; the remote SHA matches. Main
+remains unchanged at `76fda5db5dccb60bcfbdb062a19336ff5a4b569b`. The user's input
+handoff remains untracked and was not staged. All ten committed paths are this
+correction's source, tests, authored replay examples and progress record.
+
+Hosted integration run
+[35012319015](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35012319015)
+was dispatched on the checkpoint branch and reports this exact code SHA. It is
+queued at 19:13 UTC, so local gates are passing but the hosted gate is pending.
+No completed hosted result from the previous metadata commit is transferred to
+this correction. A later documentation-only status commit does not change
+which code SHA the run validates. The long-running goal remains active because
+generated construction/registration evidence is not complete.
