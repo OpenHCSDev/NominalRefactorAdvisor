@@ -34,7 +34,7 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Current work at 19:42 UTC: the body-cache validation correction and its shared
+Current work at 19:43 UTC: the body-cache validation correction and its shared
 source-geometry factoring are committed and pushed as
 `b3749510cb309b723234a6968b10ec9523e31a32`. Four adversarial
 controls reproduce failures on the published source and pass after the
@@ -51,11 +51,15 @@ gates pass with unchanged complete semantic reports. Exact-SHA hosted run
 [35012319015](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35012319015)
 is terminal: five jobs pass and both macOS runtime jobs fail the same
 collected-family fixture assertion. The new current-C3 parent-operand contract
-and derived exact cache-size fixture correction are local and uncommitted.
+and derived exact cache-size fixture correction are committed and pushed as
+`98ca65bf4a104e990bd3ffe2cf10aac97fd991b0` on the same checkpoint branch.
 Their complete local suites pass 7,237/74 and 7,273/38, respectively, along
 with fresh docs/package, installed-wheel/API and production self-scan gates.
 Complete cold/warm/edit gates also pass with unchanged semantic reports.
-Scoped publication and new exact-SHA hosted verification follow.
+Exact-SHA hosted run
+[35015301107](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35015301107)
+matches that code commit. All seven jobs are queued or running at this check;
+hosted verification is not yet complete.
 Generated
 construction/registration still rejects the same unproved obligations.
 
@@ -1193,3 +1197,18 @@ fixtures, and the long-path payload probe fixtures. This freed approximately
 741 MiB. These caches and fixture files are regenerable; retained logs, reports,
 source copy, docs, distributions, helper scripts and environments were not
 removed. No other checkout or shared cache was cleaned.
+
+### Parent-operand checkpoint publication
+
+The five owned implementation/test/example/progress files are committed as
+`98ca65bf4a104e990bd3ffe2cf10aac97fd991b0` and pushed to
+`checkpoint/native-proof-integration-20260914`; `git ls-remote` confirms that
+exact remote SHA. Workflow dispatch produced run
+[35015301107](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35015301107)
+with the same head SHA, independently verified through `gh run view`. At
+19:43 UTC its seven jobs are queued or running. The preceding two macOS
+fixture failures remain failures of their older commit, not passing evidence
+for this correction. This status-only follow-up may have a different HEAD
+from the code SHA under test. The supplied handoff remains untracked and
+unstaged; main, other worktrees, release tags and publications are untouched.
+Generated construction/registration remains the active unfinished objective.
