@@ -11,7 +11,10 @@ from types import FunctionType, ModuleType
 import pytest
 
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
-from nominal_refactor_advisor.native_call import NativePythonFunctionSource
+from nominal_refactor_advisor.native_call import (
+    NativePythonFunctionSource,
+    NativeReturnedClosureFactorySource,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 from test_native_dataclass_factory import factory_environment
 
@@ -432,3 +435,287 @@ def test_callable_metadata_dsl_batches_source_ownership_without_effect_admission
     original = snapshot.parsed_module_for_source_path(native_path)
     assert original is not parsed
     assert original.source != parsed.source
+
+
+def test_warmed_compact_flow_rejoins_current_function_code(tmp_path, monkeypatch):
+    _, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    with ScanCache.scope():
+        source = NativePythonFunctionSource.from_function(function)
+        original_flow = source.flow
+        with monkeypatch.context() as mutation:
+            mutation.setattr(
+                function, "__code__", function.__code__.replace(co_stacksize=100)
+            )
+            with pytest.raises(ValueError, match="differs from compiled source"):
+                _ = source.flow
+        assert source.flow is original_flow
+
+
+def test_warmed_compact_flow_rejects_another_valid_source_body(tmp_path, monkeypatch):
+    compilation, function = compiled_function(
+        tmp_path,
+        monkeypatch,
+        "def sample(value):\n    return value\n" "def other(value):\n    return 999\n",
+    )
+    namespace = {}
+    exec(compilation.compile(), namespace)
+    replacement = namespace["other"]
+    with ScanCache.scope():
+        source = NativePythonFunctionSource.from_function(function)
+        original_flow = source.flow
+        with monkeypatch.context() as mutation:
+            mutation.setattr(function, "__code__", replacement.__code__)
+            assert source.definition.name == "other"  # Correspondence alone is valid.
+            with pytest.raises(ValueError, match="changed after source-flow capture"):
+                _ = source.flow
+            current = NativePythonFunctionSource.from_function(function)
+            assert current is not source
+            assert current.flow.owner.declaration.qualname == "other"
+        assert source.flow is original_flow
+
+
+def test_warmed_closure_factory_rejoins_current_function_code(monkeypatch):
+    with ScanCache.scope():
+        proof = NativeReturnedClosureFactorySource.from_function(dataclasses.dataclass)
+        parameter = proof.selected_parameter_name
+        proof.require_returned_closure(parameter)
+        with monkeypatch.context() as mutation:
+            mutation.setattr(
+                dataclasses.dataclass,
+                "__code__",
+                dataclasses.dataclass.__code__.replace(co_stacksize=100),
+            )
+            with pytest.raises(ValueError, match="differs from compiled source"):
+                proof.require_returned_closure(parameter)
+        proof.require_returned_closure(parameter)
+
+
+def test_closure_factory_exposes_fresh_definition_syntax():
+    with ScanCache.scope():
+        proof = NativeReturnedClosureFactorySource.from_function(dataclasses.dataclass)
+        definition = proof.definition
+        definition.body.clear()
+        assert proof.definition is not definition
+        assert len(proof.body) == 3
+        proof.require_returned_closure(proof.selected_parameter_name)
+
+
+@pytest.mark.parametrize("dependency", ("dataclass", "_process_class"))
+def test_reused_dataclass_application_revalidates_body_dependencies(
+    monkeypatch, dependency
+):
+    from test_definition_application_activation import controlled_execution
+
+    environment = controlled_execution(
+        "from dataclasses import dataclass\n@dataclass\nclass Target: pass\n"
+    )
+    entry = environment.class_entry(environment.module.module.body[-1])
+    _, application = entry.creation_results
+    authority = application.application_authority
+    assert authority.result() is application.argument
+    function = getattr(dataclasses, dependency)
+    with monkeypatch.context() as mutation:
+        mutation.setattr(
+            function, "__code__", function.__code__.replace(co_stacksize=100)
+        )
+        with pytest.raises(ValueError, match="differs from compiled source"):
+            authority.result()
+    assert authority.result() is application.argument
+
+
+def test_current_body_owner_dsl_preserves_docstring_and_explicit_source_ownership():
+    from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
+
+    plans = runpy.run_path(
+        str(Path(__file__).parents[1] / "docs/examples/current_native_body_owner.py")
+    )
+    path = "nominal_refactor_advisor/native_call.py"
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {
+            path: "class NativePythonFunctionSource:\n"
+            "    @cached_property\n    def flow(self): return None\n"
+            "class NativeReturnedClosureFactorySource:\n"
+            "    function: FunctionType\n    definition: ast.FunctionDef\n"
+            "    @classmethod\n    def from_function(cls, function): return cls(function, None)\n"
+            "    def require_returned_closure(self, parameter_name):\n"
+            '        """Preserved documentation."""\n        return None\n'
+            "class NativeDataclassDefinitionApplicationABC:\n"
+            "    @cached_property\n    def factory_parameters(self): return ()\n"
+            "    @cached_property\n    def processor_parameters(self): return ()\n"
+            "    @cached_property\n    def selector_parameter(self): return None\n"
+            "    def require_factory_processor_call(self):\n"
+            "        return self.factory_parameters, self.processor_parameters\n"
+            "    def result(self): return None\n"
+            "class NativeDataclassFactoryCall:\n"
+            "    def require_closed(self):\n"
+            "        NativeReturnedClosureFactorySource(self.declaration, self.definition)\n"
+        }
+    )
+    ownership = plans["current_body_owner_plan"](snapshot).simulate(snapshot)
+    assert ownership.is_clean and ownership.stage_count == 11
+    bounded = plans["bounded_body_query_plan"](ownership.final_snapshot).simulate(
+        ownership.final_snapshot
+    )
+    assert bounded.is_clean and bounded.stage_count == 3
+    parsed = bounded.final_snapshot.parsed_module_for_source_path(path)
+    _, closure, dataclass, factory = parsed.module.body
+    method = next(
+        node
+        for node in closure.body
+        if isinstance(node, ast.FunctionDef) and node.name == "require_returned_closure"
+    )
+    assert ast.get_docstring(method) == "Preserved documentation."
+    assert isinstance(method.body[1], ast.With)
+    fields = {
+        node.target.id for node in closure.body if isinstance(node, ast.AnnAssign)
+    }
+    assert fields == {"source"}
+    for owner in (dataclass, factory):
+        query = next(
+            node
+            for node in owner.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"result", "require_closed"}
+        )
+        assert isinstance(query.body[0], ast.With)
+    assert snapshot.parsed_module_for_source_path(path).source != parsed.source
+
+
+def test_current_flow_geometry_does_not_reparse_syntax(tmp_path, monkeypatch):
+    compilation, function = compiled_function(
+        tmp_path, monkeypatch, "def sample(value):\n    return value\n"
+    )
+    with ScanCache.scope():
+        owner = NativePythonFunctionSource.from_function(function)
+        flow = owner.flow
+
+        def reject_parse(*args, **kwargs):
+            raise AssertionError("Current source geometry must not require fresh AST")
+
+        monkeypatch.setattr(ast, "parse", reject_parse)
+        assert owner.flow is flow
+        assert (
+            compilation.function_source_span(function)
+            == flow.owner.declaration.source_span
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "def sample(value):\n    return value\n",
+        "async def sample(value):\n    return value\n",
+        "class Container:\n    @staticmethod\n    def sample(value):\n        return value\n"
+        "sample = Container.sample\n",
+        "class Container:\n    @(\n        staticmethod\n    )\n"
+        "    def sample(value):\n        return value\n"
+        "sample = Container.sample\n",
+    ),
+)
+def test_fresh_definition_parses_only_authenticated_body_with_original_geometry(
+    tmp_path, monkeypatch, body
+):
+    compilation, function = compiled_function(
+        tmp_path, monkeypatch, "padding = 'unrelated context'\n" * 100 + body
+    )
+    expected = next(
+        node
+        for node in ast.walk(ast.parse(compilation.source))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "sample"
+    )
+    parse = ast.parse
+    inputs = []
+
+    def observe(source, *args, **kwargs):
+        inputs.append(source)
+        return parse(source, *args, **kwargs)
+
+    with ScanCache.scope():
+        # Warm immutable code/source geometry, not a current-code verdict or AST.
+        _ = compilation.function_definition(function)
+        with monkeypatch.context() as observation:
+            observation.setattr(ast, "parse", observe)
+            first = compilation.function_definition(function)
+            second = compilation.function_definition(function)
+        assert first is not second
+        assert ast.dump(first, include_attributes=True) == ast.dump(
+            expected, include_attributes=True
+        )
+        assert ast.dump(second, include_attributes=True) == ast.dump(
+            expected, include_attributes=True
+        )
+        assert len(inputs) == 2
+        assert all("unrelated context" not in source for source in inputs)
+
+
+def test_code_span_and_generic_geometry_dsl_chain_has_one_source_owner():
+    from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
+
+    root = Path(__file__).parents[1]
+    native_plans = runpy.run_path(
+        str(root / "docs/examples/current_native_body_owner.py")
+    )
+    geometry_plan = runpy.run_path(
+        str(root / "docs/examples/shared_declaration_geometry_owner.py")
+    )["shared_geometry_plan"]
+    native = "nominal_refactor_advisor/native_call.py"
+    compilation = "nominal_refactor_advisor/native_compilation.py"
+    geometry = "nominal_refactor_advisor/source_geometry.py"
+    edits = "nominal_refactor_advisor/codemod_source_edits.py"
+    original = CodemodSourceSnapshot.from_source_mapping(
+        {
+            native: "class NativePythonFunctionSource:\n"
+            "    def flow(self): return SourceByteSpan.require_node(self.definition)\n"
+            "    def _flow(self): return SourceByteSpan.require_node(self.definition)\n"
+            "    def _from_current_function(function, compilation, code):\n"
+            "        return compilation.function_definition(function)\n",
+            compilation: "class NativePythonCompilation:\n"
+            "    source: str\n    file_path: str\n"
+            "    def function_definition(self, function):\n"
+            '        """Original declaration."""\n'
+            "        if function is None: raise ValueError('missing')\n"
+            "        code = function.__code__\n"
+            "        span = self._function_source_span(code, '', 1)\n"
+            "        return span\n",
+            geometry: "class SourceLineSegmentAuthority:\n    source: str\n",
+            edits: "class SourceTextGeometry(SourceLineSegmentAuthority):\n"
+            "    def iter_tokens(self): return iter(())\n"
+            "    @cached_property\n    def tokens(self): return tuple(self.iter_tokens())\n"
+            "    def node_start_line(self, span): return span.node.lineno\n",
+        }
+    )
+    spans = native_plans["current_code_span_plan"](original).simulate(original)
+    assert spans.is_clean and spans.stage_count == 5
+    windows = native_plans["fresh_definition_window_plan"](
+        spans.final_snapshot
+    ).simulate(spans.final_snapshot)
+    assert windows.is_clean and windows.stage_count == 1
+    shared = geometry_plan(windows.final_snapshot).simulate(windows.final_snapshot)
+    assert shared.is_clean and shared.stage_count == 13
+    final = shared.final_snapshot
+    owner = final.parsed_module_for_source_path(geometry).module.body[-1]
+    consumer = final.parsed_module_for_source_path(compilation).module.body[-1]
+    editor = final.parsed_module_for_source_path(edits).module.body[-1]
+    fields = lambda node: {
+        statement.target.id
+        for statement in node.body
+        if isinstance(statement, ast.AnnAssign)
+    }
+    assert fields(owner) == {"source"}
+    assert fields(consumer) == {"file_path"}
+    assert consumer.bases[0].id == "SourceLineSegmentAuthority"
+    assert not any(
+        isinstance(statement, ast.FunctionDef)
+        and statement.name in {"tokens", "iter_tokens"}
+        for statement in editor.body
+    )
+    assert set(shared.simulation.changed_file_paths) == {compilation, geometry, edits}
+    assert fields(
+        original.parsed_module_for_source_path(compilation).module.body[0]
+    ) == {
+        "source",
+        "file_path",
+    }

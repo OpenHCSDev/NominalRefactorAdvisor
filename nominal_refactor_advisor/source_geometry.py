@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import io
 import tokenize
+from bisect import bisect_left
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
+from operator import attrgetter
 from pathlib import Path
 
 from .codemod_payload import (
@@ -250,6 +252,34 @@ class SourceLineSegmentAuthority:
     """Project parsed AST spans into exact source text from one line index."""
 
     source: str
+
+    def decorated_node_start_line(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    ) -> int:
+        """Recover exact decorator markers omitted by AST expression positions."""
+        if not node.decorator_list:
+            return node.lineno
+        first = node.decorator_list[0]
+        position = (
+            first.lineno,
+            SourceByteSpan.character_column(
+                self.lines[first.lineno - 1], first.col_offset
+            ),
+        )
+        token_index = bisect_left(self.tokens, position, key=attrgetter("start"))
+        for index in range(token_index - 1, -1, -1):
+            token = self.tokens[index]
+            if token.exact_type == tokenize.AT:
+                return token.start[0]
+        raise ValueError("Decorated declaration has no source decorator marker")
+
+    @cached_property
+    def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
+        return tuple(self.iter_tokens())
+
+    def iter_tokens(self) -> Iterator[tokenize.TokenInfo]:
+        """Read source tokens lazily when only a prefix is required."""
+        return tokenize.generate_tokens(io.StringIO(self.source).readline)
 
     @cached_property
     def lines(self) -> tuple[str, ...]:

@@ -11,6 +11,7 @@ import pytest
 from nominal_refactor_advisor.captured_reference import InitialNativeIsland
 from nominal_refactor_advisor.native_call import (
     NativeDataclassFactoryCall,
+    NativePythonFunctionSource,
     NativeReturnedClosureFactorySource,
 )
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
@@ -48,8 +49,7 @@ def returned_closure_proof(source):
     exec(compilation.compile(), namespace)
     function = namespace["factory"]
     return NativeReturnedClosureFactorySource(
-        function,
-        compilation.function_definition(function),
+        NativePythonFunctionSource(function, compilation),
     )
 
 

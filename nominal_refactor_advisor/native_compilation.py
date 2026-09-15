@@ -68,7 +68,10 @@ from .native_declarations import (
     NativeTypeDeclaration,
 )
 from .scan_cache import ScanCache
-from .source_geometry import SourceByteSpan
+from .source_geometry import (
+    SourceByteSpan,
+    SourceLineSegmentAuthority,
+)
 from .source_identity import (
     python_source_cache_signature,
     source_path_text,
@@ -4667,14 +4670,37 @@ class CPython314CreationBackend(
 
 
 @dataclass(frozen=True)
-class NativePythonCompilation:
+class NativePythonCompilation(SourceLineSegmentAuthority):
     """Lazily project original module context without importing or executing it.
 
     Only compact receipts are cached; native executable code is transient.
     """
 
-    source: str
     file_path: str
+
+    @ScanCache.cached
+    def _definition_start_line(self, span: SourceByteSpan) -> int:
+        """Pure original-source geometry; no mutable AST or current-code verdict retained."""
+        definitions = tuple(
+            node
+            for node in ast.walk(ast.parse(self.source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and SourceByteSpan.require_node(node) == span
+        )
+        if len(definitions) != 1:
+            raise ValueError("Native body has no unique function source declaration")
+        return self.decorated_node_start_line(definitions[0])
+
+    def function_source_span(self, function: FunctionType) -> SourceByteSpan:
+        """Rejoin actual current code to immutable source geometry, without exposing AST."""
+        if type(function) is not FunctionType:
+            raise ValueError("Python implementation requires an exact function")
+        code = function.__code__
+        return self._function_source_span(
+            NativeCreationBackend.current().code_contents(code),
+            code.co_filename,
+            code.co_firstlineno,
+        )
 
     @ScanCache.cached
     def _function_source_span(
@@ -4720,22 +4746,27 @@ class NativePythonCompilation:
     def function_definition(
         self, function: FunctionType
     ) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        """Match current code contents, not function identity or runtime behavior.
+        """Match current code, then expose fresh positioned syntax for its body only.
 
         Defaults, closure values, globals, activation and effects need independent
-        evidence. A fresh syntax tree prevents callers from modifying cached proof.
+        evidence. Neither executable code nor mutable syntax is retained by this query.
         """
-        if type(function) is not FunctionType:
-            raise ValueError("Python implementation requires an exact function")
-        code = function.__code__
-        span = self._function_source_span(
-            NativeCreationBackend.current().code_contents(code),
-            code.co_filename,
-            code.co_firstlineno,
+        span = self.function_source_span(function)
+        start_line_index = self._definition_start_line(span) - 1
+        window = SourceByteSpan(
+            start_line_index=start_line_index,
+            end_line_index=span.end_line_index,
+            start_byte=0,
+            end_byte=span.end_byte,
         )
+        source = window.segment(self.lines)
+        if span.start_byte:
+            source = "if True:\n" + source
+        parsed = ast.parse(source)
+        ast.increment_lineno(parsed, start_line_index - bool(span.start_byte))
         definitions = tuple(
             node
-            for node in ast.walk(ast.parse(self.source))
+            for node in ast.walk(parsed)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and SourceByteSpan.require_node(node) == span
         )

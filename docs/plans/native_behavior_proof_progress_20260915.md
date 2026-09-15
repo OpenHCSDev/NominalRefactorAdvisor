@@ -34,12 +34,28 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
+Current work at 19:12 UTC: the body-cache validation correction and its shared
+source-geometry factoring are applied locally and uncommitted. Four adversarial
+controls reproduce failures on the published source and pass after the
+correction. The first broader suite exposed repeated full-module syntax parsing;
+the resulting shared-geometry correction passes 210 tests on Python 3.11 and 208
+on Python 3.14. The complete suites pass 7,227 tests with 74 skips on Python 3.11
+and 7,263 tests with 38 skips on Python 3.14.
+One Python 3.11 worker crashed while its timed traceback diagnostic was active;
+the actual test passes directly and with canonical pytest diagnostic settings.
+The complete affected Python 3.11 shard also passes without that added
+diagnostic, with all assertions/input sizes preserved. The installed public-API
+gate now passes against a fresh owned cache. Complete-package cold/warm/edit
+gates pass with unchanged complete semantic reports. Scoped publication and
+exact-SHA hosted validation still follow. Generated
+construction/registration still rejects the same unproved obligations.
+
 The callable-metadata ownership prerequisite is committed and pushed as
 `ec541bd2d22d3e3d42097df962a793741b9ddb5f` to
 `checkpoint/native-proof-integration-20260914`; the remote SHA matches. Its
 exact-commit hosted run
 [35005841288](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/35005841288)
-is in progress as of 18:11 UTC, not yet a passing gate. Its complete local
+is complete with all seven jobs passing, verified at 18:42 UTC. Its complete local
 Python 3.11/3.14 suites, docs, isolated package
 builds, installed-wheel mutation/DSL controls, installed public-API self-scan,
 and complete production CLI self-scan pass. Complete-package cold/warm/edit
@@ -667,3 +683,297 @@ self/wheel/performance caches and pytest fixture root were removed, recovering
 approximately 729 MiB. They can be regenerated; retained logs, reports,
 distributions, documentation, installed-wheel environment, and source copy
 are unchanged. The original checkout's inherited changes are still untouched.
+
+## Captured-body cache validation correction
+
+The constructor activation audit exposed two related current-code gaps in the
+existing source owners: `NativePythonFunctionSource.flow` returned a cached
+compact projection without rejoining current code, and
+`NativeReturnedClosureFactorySource` retained a mutable definition AST. Reused
+dataclass application owners also cached parameter and selector observations.
+They are direct prerequisites for captured-function execution, not permission
+to admit generated metaclass behavior.
+
+Four new controls fail on the unchanged published implementation: warmed-flow
+code mutation, a swap to another valid body in the same defining file, warmed
+closure-factory code mutation, and exposed definition-AST mutation. The last two
+still accepted or returned stale syntax; the first two returned stale flow.
+Exact source correspondence alone cannot reject another valid source span.
+The pre-fix gate reports four failures in 2.00 seconds; the same controls pass
+afterwards, four in 3.07 seconds. Logs: `current-body-cache-before.txt` and
+`current-body-after-controls.txt` in the validation directory.
+
+The compact projection remains retained as immutable evidence. Its public flow
+query rejoins actual current code and rejects a changed source span before
+returning that retained projection. A new source owner can represent the new
+valid body; the old warmed owner cannot silently keep using its prior body.
+Closure-factory syntax now derives from its existing `NativePythonFunctionSource`
+owner, not a copied AST. Parameter and selector queries are live properties;
+one local observation tuple is used within an individual binding check so its
+identity comparisons remain coherent. Neither body activation nor arbitrary
+side effects acquire automatic admission from these changes.
+
+The production ownership edit is an eleven-stage DSL preview in
+`docs/examples/current_native_body_owner.py`, clean and applied as its combined
+diff. A declared-call rewrite correctly failed because the synthesized
+dataclass constructor call authority is unresolved. The replacement uses the
+DSL's explicit syntax patch, with the call span derived through
+`SourceTextGeometry`, without inventing a call proof. Repeated property-read
+replacement uses declaration-owned current source, not copied old function
+bodies. No unrelated DSL capability or native whitelist was added.
+
+The initial broader focused runs hit their 60-second bounds near completion,
+on both versions; they are not green gates. A separate diagnostic run shows
+repeated full-module native emission work outside `ScanCache.scope()`.
+The existing bounded, nested-sharing cache scope now encloses the closure and
+dataclass proof queries. This caches immutable correspondence inside an
+invocation, not current-code/default/binding validation. A three-stage DSL
+preview wraps those queries while preserving the function docstring and
+original body. The scoped focused suites pass with eight workers:
+
+| Runtime | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 | 158 | 1 | 20.50 |
+| Python 3.14 | 159 | 0 | 22.23 |
+
+The seven selected files are `test_native_function_source`,
+`test_native_dataclass_factory`, `test_definition_application_activation`,
+`test_native_behavior_proof`, `test_authored_native_use_invariants`,
+`test_type_keyed_native_contract`, and `test_registry_candidate_requirements`,
+under `tests/` with `.py` suffixes. Logs use `current-body-scoped-*-focused.txt`.
+Further controls query a reused end-to-end dataclass application after factory
+or processor mutation, then restore its original code, and replay both DSL
+plans on a portable source snapshot. The final focused gates pass, 161 passed
+and one skip on Python 3.11 in 21.61 seconds; 162 passed on Python 3.14 in
+22.98 seconds. Logs: `current-body-final-{311,314}-focused.txt`. Neither target
+function body is invoked by the mutation controls. Broad validation now follows;
+full-suite/package/installed-wheel/complete-package gates are pending before
+this additional correction is committed.
+
+### Shared current-code geometry and fresh body windows
+
+The first full correction suite did not pass: Python 3.11 shard `0::4` reached
+its 165-second bound. The remaining owned matrix processes were stopped before
+further source edits. A separate eight-worker result-identity diagnostic also
+reached 60 seconds. The stacks showed repeated parsing of the complete stdlib
+`dataclasses` source while revisiting current factory/processor evidence.
+Neither timeout is recorded as a passing gate.
+
+`NativePythonCompilation.function_source_span` now owns the current exact
+code/source correspondence without exposing syntax. Compact flow and initial
+current-source capture consume that immutable geometry directly. Consumers
+requesting syntax still receive a new AST, but only the selected function window
+is reparsed. The first source-layout query derives the original declaration
+boundary; its bounded cache retains an integer, not AST or a mutable-code
+validation answer. Every subsequent query first rejoins actual current code.
+
+An initial window used `co_firstlineno` as its beginning. The multiline
+parenthesized-decorator control correctly rejected that approach: the native
+first line can identify the decorator expression after its `@` marker.
+The existing exact token-marker semantics were factored to
+`SourceLineSegmentAuthority` instead. `SourceTextGeometry` inherits token
+production and projects its decorator policy through that owner.
+`NativePythonCompilation` inherits the same source/geometry contract and no
+longer redeclares `source`. Fresh function windows preserve decorators, UTF-8
+columns and original AST positions; no target function is invoked.
+
+These edits were previewed and applied through existing authored syntax DSL
+operations: a five-stage current-span plan, one fresh-window stage, and a
+thirteen-stage shared-geometry plan, in addition to the preceding eleven plus
+three body-cache stages. Examples are `current_native_body_owner.py` and
+`shared_declaration_geometry_owner.py` under `docs/examples/`. The new portable
+chain checks inherited field ownership, shared token methods and unchanged
+input source. A clean syntax simulation is not a behavior-equivalence proof.
+
+Four fresh-window controls failed before windowing; the warmed compact-flow
+geometry control already passed after the span-only step. The span-only
+result-identity diagnostic still exceeded 60 seconds, so that intermediate
+source was not published. After the shared-geometry correction, the complete
+result-identity/native-source/generic-geometry/class-header selected surface
+passes 97 tests with one skip in 7.72 seconds under eight workers.
+
+The wider final affected surface passes on both runtimes:
+
+| Runtime | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 | 210 | 1 | 14.73 |
+| Python 3.14 | 208 | 3 | 15.02 |
+
+Selected files are `test_native_function_source`, `test_source_geometry`,
+`test_definition_result_identity`, `test_native_dataclass_factory`,
+`test_native_definition_applications`, `test_native_source_class_preparation`,
+`test_authored_native_use_invariants`, `test_type_keyed_native_contract`, and
+`test_registry_candidate_requirements`. Logs use
+`current-body-{311,314}-final-selected.txt`. All runs retain the existing
+fail-closed construction/registration obligations. Final full-suite, docs,
+package, installed-wheel and complete-package cold/warm/edit gates remain
+pending on this frozen source; earlier package/self-scan passes belong to the
+intermediate correction, not this later geometry factoring.
+
+The complete authored trajectory was also replayed from the committed four-file
+source mapping: all `[11, 3, 5, 1, 13]` stages are clean, total 33. After normal
+formatting, its final source matches every current production file exactly, and
+the original snapshot retains its initial source. The aggregate four-file diff
+and result are retained in `current-body-composed-33-replay.txt`. This validates
+composition and replay, not behavioral equivalence or elapsed-time saving.
+
+Frozen-source complete validation started with the large Python 3.14 `0::16`
+shard alone: 318 tests pass in 126.53 seconds, exit zero under its 165-second
+bound. The remaining disjoint Python 3.11/3.14 matrix is running with two pools
+of eight workers and individual 165-second bounds. Final logs use
+`current-body-geometry-full-*`; the previous timed-out `current-body-full-*`
+logs are not reused as gates.
+
+Final-source fresh Sphinx and isolated wheel/sdist builds pass. The newly
+installed wheel matches all 141 production Python modules byte-for-byte against
+the wheel archive and the checkout. Mutation, narrow-syntax, shared-geometry,
+and composed DSL controls pass from outside the checkout with production
+imports verified under the installed environment prefix. Logs use
+`current-body-geometry-{docs,build,wheel-controls}.txt`.
+
+The fresh CLI production self-scan passes with 79 detectors, zero omissions,
+complete status and zero findings (`current-body-geometry-self.json`). Its
+30.837 seconds were measured while tests were running, not as a performance
+benchmark. The first installed public-API scan reached its 60-second process
+bound while the complete matrix was active; it is not a pass. That terminal
+run is now repeated with the allowed 165-second bound and the same owned cache,
+logged to `current-body-geometry-wheel-api-retry165.txt`. The full matrix and
+public-API retry remain live at 18:56 UTC. Complete-package cold/warm/edit scans,
+the scoped commit/push, and exact-SHA hosted validation still follow.
+
+### Complete-suite diagnostic crash audit
+
+The final Python 3.14 disjoint suite is terminal and passes: 7,263 tests with
+38 skips. All its shards return zero. Python 3.11 `0::4` now passes 1,790 tests
+with 12 skips in 97.44 seconds, below the unchanged 165-second bound. This
+replaces the earlier correction's timed-out shard; it does not hide it.
+
+Python 3.11 `2::4` reports a worker crash in
+`test_one_unknown_write_is_shared_across_product_queries_without_class_fanout`.
+A separate eight-worker rerun with `faulthandler_timeout=15` reproduces that
+crash; the timed native stack dump contains invalid frame/line observations.
+The identical 41-product test passes as a direct diagnostic and in pytest with
+its default traceback settings, eight workers, and the same assertions/input:
+one test passes in 31.71 seconds. These observations implicate the added timed
+traceback diagnostic, but are not a complete explanation of the CPython crash.
+No test or production code was changed to bypass the failure.
+
+The complete Python 3.11 `2::4` shard is now being rerun using the normal CI
+settings, without the added timed dump and under the same 165-second process
+bound. Its log is `current-body-geometry-full-311-2of4-canonical.txt`. The crash
+logs and direct diagnostic remain retained. The installed public-API retry also
+reached its 165-second process bound while the earlier matrix was active; it is
+not a pass. The unchanged request is repeated after that matrix is terminal in
+`current-body-geometry-wheel-api-postmatrix.txt`; this functional API gate has
+not yet passed. Complete-package cold/warm/edit scans still await terminal
+heavy processes. The source remains frozen and uncommitted.
+
+### Canonical complete suite and installed-API diagnosis
+
+The complete affected Python 3.11 `2::4` shard passes under canonical CI
+settings: 1,597 tests, 15 skips, 57.98 seconds, exit zero. The complete disjoint
+suite therefore passes 7,227 tests with 74 skips. The timed diagnostic crash
+remains separately recorded above; its failing run is not counted as a pass.
+
+| Runtime | Shard | Passed | Skipped | Seconds |
+| --- | --- | ---: | ---: | ---: |
+| Python 3.11 | Advisor | 795 | 0 | 109.16 |
+| Python 3.11 | `0::4` | 1,790 | 12 | 97.44 |
+| Python 3.11 | `1::4` | 1,606 | 9 | 48.39 |
+| Python 3.11 | `2::4`, canonical diagnostics | 1,597 | 15 | 57.98 |
+| Python 3.11 | `3::4` | 1,439 | 38 | 36.49 |
+| Python 3.14 | Advisor | 795 | 0 | 110.84 |
+| Python 3.14 | `0::16` | 318 | 0 | 126.53 |
+| Python 3.14 | `8::16` | 457 | 3 | 11.29 |
+| Python 3.14 | `4::8` | 1,022 | 2 | 80.43 |
+| Python 3.14 | `1::4` | 1,611 | 4 | 50.45 |
+| Python 3.14 | `2::4` | 1,606 | 6 | 66.68 |
+| Python 3.14 | `3::8` | 663 | 23 | 34.75 |
+| Python 3.14 | `7::8` | 791 | 0 | 17.35 |
+
+The installed public-API request timed out again after the matrix, and is not
+green. Its cache contains an exclusive rebuild lock recording PID `2703355`,
+the original timed-out process, with modification time 18:54:38 UTC. That PID
+is absent at inspection. `AnalysisCacheRebuildLockAuthority.lease` polls an
+existing lock, and its current stale policy is age-only with a default of 600
+seconds. This explains why retries against the same interrupted cache can wait
+instead of performing analysis; it does not explain the initial timeout.
+No cache lock was removed to make the gate pass. The identical installed-API
+request is now running against a new owned cache with the unchanged eight
+parse/analysis workers and 165-second bound. Its log is
+`current-body-geometry-wheel-api-fresh.txt`. The complete CLI self-scan is an
+independent passing gate, not a substitute for this API gate.
+
+The fresh installed public-API request is terminal at 19:10 UTC, exit zero. It
+returns a list with zero production findings using the installed wheel, eight
+parse/analysis workers, and the unchanged 165-second bound. No rebuild lock
+remains in that fresh cache. The original interrupted-cache lock and the failed
+retry logs are retained for the documented age-only lock-policy concern. These
+observations distinguish interrupted-cache waiting from this successful fresh
+analysis; they are not a fix to the existing stale-lock policy.
+
+All full-suite, build, installed controls, API, and CLI self-scan processes are
+terminal before the complete-package timing run. Cold timing now uses the
+restored 1,057-file production source copy and fresh owned cache
+`current-body-geometry-perf-cache-amxtcE`, with sixteen parse/analysis workers,
+the same complete-package scope, and the unchanged 165-second bound. Reports
+use `current-body-geometry-{cold,warm,edit}` prefixes; warm and one-edit timings
+follow the terminal cold run.
+
+### Final current-body/shared-geometry complete-package gates
+
+All three final-source timing runs are terminal, exit zero. The one novel EOF
+comment was added only to the disposable copied `openhcs/__init__.py`, and
+removed after the one-edit run completed. No reference, live OpenHCS, or
+original NRA checkout was changed.
+
+| Mode | Scan seconds | Wall seconds | Cache |
+| --- | ---: | ---: | --- |
+| Cold | 45.984 | 48.63 | miss |
+| Warm | 1.039 | 2.29 | hit |
+| One edit | 4.277 | 6.82 | partial |
+
+Each run completes all 79 detectors, with zero omissions, 180 retained active
+findings and 215 raw findings. The full semantic projection hash is
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100`
+in every mode and matches the preceding checkpoint. Normalization removes only
+`.timing`, `.payload_timing`, and `.scan_status.mode`/`.scan_status.reason`.
+This is report consistency, not proof of complete detector recall or behavioral
+equivalence. Single-run timings do not establish a causal speedup over the
+preceding 47.176/1.021/4.335-second checkpoint.
+
+The command shape remains the documented complete-package gate:
+
+```sh
+timeout 165s env \
+  NRA_CACHE_HOME=/home/ts/nra-native-behavior-validation-G481Dc/current-body-geometry-perf-cache-amxtcE \
+  TMPDIR=/home/ts/nra-native-behavior-validation-G481Dc \
+  /home/ts/code/projects/nominal-refactor-advisor/.venv/bin/python \
+  -m nominal_refactor_advisor \
+  /home/ts/nra-native-behavior-validation-G481Dc/source \
+  --context-root /home/ts/nra-native-behavior-validation-G481Dc/source \
+  --no-auto-context-root --json --json-payload agent \
+  --parse-workers 16 --analysis-workers 16 --scan-budget-seconds 165
+```
+
+Warm and edit use 60 seconds for both bounds, the same scope and cache, and
+the recorded EOF edit between those two terminal runs. Reports, stderr and
+wall records are `current-body-geometry-{cold,warm,edit}.{json,stderr,wall}`.
+The cache is task-owned and disposable; reproducing a cold run requires a new
+empty cache, not a deleted path assumed to contain prior evidence.
+
+The current correction adds 17 test cases without weakening existing inputs,
+assertions, skips or automatic proof obligations. All 33 authored DSL stages
+replay to the exact four final production files. Supported actual MRO lookup
+and narrow native calls remain admitted; generated AutoRegisterMeta
+construction/registration remains explicitly unproved. This checkpoint is a
+validated ownership/cache correction, not completion of target three.
+
+After every local gate was terminal, the resolved task-owned intermediate,
+self-scan, API, performance caches and pytest fixture directory were removed
+(roughly 950 MiB). This includes the documented interrupted-cache lock; its
+removal was cleanup after the successful independent API gate, not a fix used
+to pass that gate. Logs, reports, source copy, environments, docs and build
+artifacts remain. The removed generated caches/fixtures can be regenerated.
+No shared cache, other checkout, user input handoff or unrelated process was
+changed.
