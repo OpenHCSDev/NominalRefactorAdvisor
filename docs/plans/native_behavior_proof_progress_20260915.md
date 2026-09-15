@@ -34,18 +34,29 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Latest validated code checkpoint:
+An audit after the registry-hit checkpoint found an unproved type-query operand
+cleanup that was incorrectly admitted. The working-tree correction reuses
+original-frame lifetime evidence and passes 142 focused regressions per Python
+version, both complete local suites, docs, distribution builds, and an isolated
+installed-wheel API self-scan, and complete-package cold/warm/one-edit scans.
+See the cleanup audit below. Prior CI
+success does not discharge that newly identified obligation.
+
+Latest published code checkpoint:
 `c425cbb20a38031a6cb01bc54a4fb6aa26997ce9`, committed and pushed to
 `checkpoint/native-proof-integration-20260914`. Complete local gates for its
 registry-hit increment are recorded below. Its hosted integration run is
 [34999888194](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/34999888194),
-currently queued, not yet a passing gate. The persistent goal remains active;
+in progress, with five of seven jobs passing as of 17:34 UTC (docs/wheel,
+both macOS jobs, and Python 3.14 on Windows/Ubuntu). It is not yet a complete
+passing gate. The persistent goal remains active;
 generated construction/registration and source-created class keys are still
 unproved. Work continues on those original-source joins.
 
 Checkpoint `308375890ef8927aafeb95b4eed0a27f50ff95b6` is committed and pushed to
 `checkpoint/native-proof-integration-20260914`. Its scoped implementation passes
-the frozen-source local gates below. Hosted cross-platform validation is running:
+the frozen-source local gates below. Hosted cross-platform validation passes
+all seven jobs (both Python versions on Ubuntu/macOS/Windows, plus docs/wheel):
 [Integration Tests 34996343607](https://github.com/OpenHCSDev/NominalRefactorAdvisor/actions/runs/34996343607).
 The following table describes that committed checkpoint, not completion of all
 three targets. Registry-hit work continues separately below; generated
@@ -334,3 +345,144 @@ to the existing dictionary slot model. The static-key increment is deliberately
 narrow; it does not turn current heap classes or projected classes into static
 native objects. Generated construction and registration remain unproved while
 these joins are missing.
+
+## Constructor class-cell and type-cleanup checkpoint
+
+`NativeClassMroDeclaration.python_constructor` now validates the selected
+constructor's actual implicit class cell against its selected MRO owner. An
+inherited constructor belongs to that ancestor, not necessarily the invoked
+metaclass. The same owner revalidates the current cell on every query; function
+identity and code contents do not freeze mutable closure contents.
+
+The supported captured closure has exactly the compiler's implicit `__class__`
+role. Other closure roles remain unresolved. Empty or foreign cells are rejected
+without invoking target equality, representation, constructors, or callbacks.
+This provides initial operand provenance, not a claim that `super`, ABC
+construction, native initialization, or registry writes are proved. Generated
+registration still fails closed.
+
+Six new controls cover actual inherited/diamond selection, same-function cell
+mutation/restoration, empty cells, foreign hooks, unsupported closure roles, and
+the original source class-construction query with no authored native-operation
+conditions. Focused gates: 72 passed on Python 3.11 in 4.55 seconds and 72 passed
+on Python 3.14 in 5.84 seconds, eight workers and a 60-second bound. The initial
+positive fixture accidentally captured a callback; it correctly failed the
+narrow contract and was replaced by a class-cell-only fixture, without weakening
+the production proof. The first broader matrix was stopped after the cleanup
+audit below; its partial passes and timed-out shard do not validate the corrected
+source.
+
+### Native type-query cleanup audit and correction
+
+An authored original-source control exposed a fail-open obligation:
+`type(dataclass(frozen=Ephemeral()))` returned the expected function type but
+destroyed the temporary closure and ran `Ephemeral.__del__`. Before correction,
+the native-use requirement reported `PROVED` even though that cleanup changed
+the control's state. Wrapping the closure in a temporary tuple has the same
+effect. Correct result metadata alone did not prove the complete operation.
+
+`NativeTypeQueryCall` now consumes the original activation frame's existing
+`require_release_in` lifetime/independent-retention evidence. The returned type
+retains its class, not the input object. Unproved temporary release therefore
+stays unresolved; native Py_TYPE lookup is not treated as inert cleanup. No
+parallel release model or authored invariant supplies acceptance. The authored
+execution is a regression control, not automatic proof evidence.
+
+The combined class-cell/type-cleanup/key/native-use regression surface passes
+142 tests on Python 3.11 in 20.79 seconds and 142 on Python 3.14 in 22.11 seconds,
+eight workers and 60-second bounds. Broader/package/performance gates for this
+correction pass locally as recorded below. Earlier checkpoints and their CI do not validate this
+newly identified cleanup obligation. Generated registration remains unproved.
+
+The corrected-source Python 3.11 suite passes all 7203 tests, with 74 skips,
+using disjoint advisor/`0::4`/`1::4`/`2::4`/`3::4` file shards and eight workers.
+Python 3.14's completed shards pass 6921 tests with 38 skips; `0::16` reached
+its 165-second bound and is not counted as a passing gate. A verbose rerun
+with 30-second faulthandler snapshots identified active work in the 200-class
+source-history regression and the historical member-insertion DSL bootstrap,
+not a failed assertion. That rerun passes 318 tests in 132.75 seconds (the
+200-class case takes 125.73 seconds), completing the corrected-source Python
+3.14 suite: 7239 passed, 38 skipped. No tests, input sizes, proof conditions,
+or timeout bounds were weakened. The timed-out attempt is retained as a failed
+validation attempt, separate from the successful complete rerun.
+
+The corrected-source docs and sdist/wheel builds pass; Sphinx retains the same
+two duplicate-object warnings. A fresh install of this wheel outside the
+checkout passes actual constructor class-cell mutation/restoration controls
+and asserts that its imports come from the installed environment. Both temporary
+destructor regression cases pass against that installed wheel. Its public
+`analyze_path` API self-scan passes with zero findings from outside the checkout;
+the earlier incorrectly named `analyse` smoke failed to import and is not counted
+as a passing gate. All 141 production Python files in the wheel match the frozen
+checkout byte-for-byte.
+
+The corrected-source production CLI self-scan completes all 79 detectors,
+with zero omissions and zero findings, in 16.217 scan seconds. Final full-suite
+details (eight workers and 165-second process bounds):
+
+| Runtime / file shard | Passed | Skipped | Seconds |
+| --- | ---: | ---: | ---: |
+| Python 3.11 advisor | 795 | 0 | 101.40 |
+| Python 3.11 `0::4` | 1790 | 12 | 77.53 |
+| Python 3.11 `1::4` | 1606 | 9 | 31.91 |
+| Python 3.11 `2::4` | 1577 | 15 | 77.53 |
+| Python 3.11 `3::4` | 1435 | 38 | 48.65 |
+| **Python 3.11 total** | **7203** | **74** | |
+| Python 3.14 advisor | 795 | 0 | 101.22 |
+| Python 3.14 `0::16` diagnostic rerun | 318 | 0 | 132.75 |
+| Python 3.14 `8::16` | 457 | 3 | 10.63 |
+| Python 3.14 `4::8` | 1022 | 2 | 64.53 |
+| Python 3.14 `1::4` | 1611 | 4 | 48.09 |
+| Python 3.14 `2::4` | 1586 | 6 | 85.53 |
+| Python 3.14 `3::8` | 659 | 23 | 38.76 |
+| Python 3.14 `7::8` | 791 | 0 | 18.66 |
+| **Python 3.14 total** | **7239** | **38** | |
+
+The same sorted non-advisor file list and exclusion described above select these
+complete disjoint shards. `0::16` and `8::16` together replace `0::8`; they do
+not omit tests. The diagnostic rerun changes verbosity, adds duration reporting
+and `-o faulthandler_timeout=30`, and retains the same source, eight workers,
+165-second bound, and assertions. Its log is
+`/home/ts/nra-native-behavior-validation-G481Dc/native-cleanup-314-0of16-diagnostic.txt`.
+
+### Corrected-source complete-package performance
+
+The same disposable 1057-file OpenHCS-plus-eight-libraries source copy is used,
+with 16 parse/analysis workers, a fresh task-owned cache, a 165-second cold bound,
+and 60-second warm/edit bounds. These runs do not overlap tests, wheel smoke, or
+other advisor scans. The copied EOF-comment edit is restored after timing.
+
+| Mode | Scan seconds | Process wall seconds |
+| --- | ---: | ---: |
+| Cold | 49.811 | 52.55 |
+| Warm | 1.086 | 2.33 |
+| One source edit | 4.676 | 7.39 |
+
+All modes complete 79 detectors with zero omissions, 180 active findings and
+215 raw findings. The complete semantic projection hash matches each other and
+the prior checkpoint:
+`b081a09b6acdd41cc3f7b4d57af3383a9d32bc1061c210a21d554ed9aab89100`.
+Only `.timing`, `.payload_timing`, and `.scan_status.mode/reason` are removed;
+detector coverage, completion status, counts, and the full report remain.
+These small timing differences do not establish a performance improvement.
+
+Final validation artifacts are retained under
+`/home/ts/nra-native-behavior-validation-G481Dc/`: `native-cleanup-*` logs,
+JSON reports and wall files, plus `native-cleanup-dist/`. The canonical timing
+invocation follows the command above, using that directory's `source`,
+`--context-root` equal to `source`, `--no-auto-context-root`, `--json-payload agent`,
+and the recorded worker/time bounds. The isolated installed-wheel regressions
+use `runpy.run_path` on the test file from outside the checkout and assert
+package import paths below the fresh wheel environment's `sys.prefix`.
+
+### Next proof work
+
+Generated construction/registration is still unproved. The class-cell increment
+establishes a real current operand prerequisite, not constructor behavior.
+Continue the original-source activation, `super`/ABC construction, returned
+class identity/lifetime, and actual configuration/registration joins listed
+above. A captured Python function must use its genuine initial identity and
+current source/default/global/cell evidence; it must not masquerade as an
+original source-created function. Existing `SourceFunctionActivationABC`
+currently assumes the latter and must be factored at that ownership boundary
+before admitting metaclass-body execution. The persistent goal remains active.

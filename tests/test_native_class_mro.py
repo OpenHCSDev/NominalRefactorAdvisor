@@ -107,3 +107,94 @@ def test_native_roots_with_one_name_do_not_overwrite_identity() -> None:
         _ = SourceNativeClassMro(context, (first, second)).native_declarations
     indexed = SourceNativeClassMro(context, (first, first)).native_declarations
     assert indexed["same.Root"].declaration is first
+
+
+def test_python_constructor_class_cell_belongs_to_selected_ancestor() -> None:
+    class Creator(type):
+        def __new__(mcls, name, bases, namespace):
+            return super().__new__(mcls, name, bases, namespace)
+
+    class Left(Creator):
+        pass
+
+    class Right(Creator):
+        pass
+
+    class Diamond(Left, Right):
+        pass
+
+    native = NativeClassMroDeclaration(Diamond)
+    function = vars(Creator)["__new__"].__func__
+    assert native.python_constructor() is function
+    assert function.__closure__[0].cell_contents is Creator
+
+
+def test_constructor_class_cell_is_revalidated_on_the_same_owner(monkeypatch) -> None:
+    class Creator(type):
+        def __new__(mcls, name, bases, namespace):
+            return super().__new__(mcls, name, bases, namespace)
+
+    native = NativeClassMroDeclaration(Creator)
+    function = native.python_constructor()
+    cell = function.__closure__[0]
+    with monkeypatch.context() as mutation:
+        mutation.setattr(cell, "cell_contents", type)
+        assert vars(Creator)["__new__"].__func__ is function
+        with pytest.raises(ValueError, match="selected MRO owner"):
+            native.python_constructor()
+    assert native.python_constructor() is function
+
+
+def test_empty_constructor_class_cell_stays_unproved(monkeypatch) -> None:
+    class Creator(type):
+        def __new__(mcls, name, bases, namespace):
+            return super().__new__(mcls, name, bases, namespace)
+
+    native = NativeClassMroDeclaration(Creator)
+    function = native.python_constructor()
+    with monkeypatch.context() as mutation:
+        mutation.delattr(function.__closure__[0], "cell_contents")
+        with pytest.raises(ValueError, match="class cell is empty"):
+            native.python_constructor()
+    assert native.python_constructor() is function
+
+
+def test_foreign_class_cell_protocols_are_not_invoked(monkeypatch) -> None:
+    events = []
+
+    class Foreign:
+        def __eq__(self, other):
+            events.append("equality")
+            return True
+
+        def __repr__(self):
+            events.append("representation")
+            return "Creator"
+
+    class Creator(type):
+        def __new__(mcls, name, bases, namespace):
+            return super().__new__(mcls, name, bases, namespace)
+
+    native = NativeClassMroDeclaration(Creator)
+    function = native.python_constructor()
+    with monkeypatch.context() as mutation:
+        mutation.setattr(function.__closure__[0], "cell_contents", Foreign())
+        with pytest.raises(ValueError, match="selected MRO owner"):
+            native.python_constructor()
+    assert events == []
+
+
+def test_constructor_with_other_closure_roles_stays_unproved() -> None:
+    def factory(callback):
+        class Creator(type):
+            def __new__(mcls, name, bases, namespace):
+                callback()
+                return super().__new__(mcls, name, bases, namespace)
+
+        return Creator
+
+    events = []
+    creator = factory(lambda: events.append("callback"))
+    with pytest.raises(ValueError, match="closure roles remain unproved"):
+        NativeClassMroDeclaration(creator).python_constructor()
+    assert events == []

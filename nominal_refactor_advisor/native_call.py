@@ -278,6 +278,11 @@ class NativeTypeQueryCall(NativeCallAuthority):
         operand = self.operand
         operand.require_closed()
         _ = operand.native_type
+        # The returned type keeps the class, not the consumed operand alive.
+        # Py_TYPE itself has no instance hooks, but argument cleanup may run
+        # destructors. Reuse the actual frame's independent-retention/lifetime
+        # evidence rather than assuming native dispatch makes cleanup inert.
+        operand.require_release_in(self.activation_prefix.endpoint.frame)
 
     def result(self) -> CapturedReferenceResolution:
         self.require_closed()

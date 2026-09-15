@@ -63,7 +63,9 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
     def python_constructor(self) -> FunctionType:
         """Select current Python __new__ through actual ordinary metaclass lookup.
 
-        This supplies source provenance, not invocation or constructor effects.
+        A constructor's implicit class cell belongs to the selected MRO owner,
+        not necessarily the invoked metaclass. This supplies current operand
+        provenance, not super lookup, invocation or constructor effects.
         """
         if type(self.declaration) is not type:
             raise ValueError("Native metaclass invocation has unproved metameta hooks")
@@ -76,7 +78,23 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
             or type(descriptor.__func__) is not FunctionType
         ):
             raise ValueError("Native metaclass has no exact Python constructor source")
-        return descriptor.__func__
+        function = descriptor.__func__
+        freevars = function.__code__.co_freevars
+        if freevars:
+            if freevars != ("__class__",):
+                raise ValueError("Native constructor closure roles remain unproved")
+            closure = function.__closure__
+            if closure is None or len(closure) != 1:
+                raise ValueError("Native constructor has no exact class-cell binding")
+            try:
+                declaration = closure[0].cell_contents
+            except ValueError as error:
+                raise ValueError("Native constructor class cell is empty") from error
+            if declaration is not owner:
+                raise ValueError(
+                    "Native constructor class cell differs from its selected MRO owner"
+                )
+        return function
 
     @classmethod
     def stored_namespace(cls, declaration: type) -> Mapping[str, object]:

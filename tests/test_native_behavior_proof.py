@@ -2,6 +2,7 @@
 
 import ast
 import builtins
+import dataclasses
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from nominal_refactor_advisor.codemod_native_requirements import (
     NativeUseProvenance,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 from nominal_refactor_advisor.source_entry import (
@@ -432,3 +434,69 @@ def test_changed_metaclass_prepare_is_rejected_without_running_the_hook(monkeypa
         entry.require_preparation()
     assert calls == []
     assert not environment.entry.operation_conditions
+
+
+def test_original_constructor_query_revalidates_implicit_class_binding(monkeypatch):
+    from test_native_source_class_preparation import prepared_execution
+
+    environment, (root,) = prepared_execution(
+        "class Family(metaclass=Creator): pass\n", conditions=False
+    )
+    entry = environment.class_entry(root)
+    with pytest.raises(ValueError, match="over prepared inputs remains unproved"):
+        _ = entry.construction_admission
+    function = NativeClassMroDeclaration(
+        metaclass_registry.AutoRegisterMeta
+    ).python_constructor()
+    with monkeypatch.context() as mutation:
+        mutation.setattr(function.__closure__[0], "cell_contents", type)
+        with pytest.raises(ValueError, match="selected MRO owner"):
+            _ = entry.construction_admission
+    with pytest.raises(ValueError, match="over prepared inputs remains unproved"):
+        _ = entry.construction_admission
+    assert not environment.entry.operation_conditions
+    assert "construction_admission" not in vars(entry)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "type(dataclass(frozen=Ephemeral()))",
+        "type((dataclass(frozen=Ephemeral()),))",
+    ),
+)
+def test_type_query_does_not_hide_temporary_destructor_effects(tmp_path, expression):
+    class Entry(NoninterferingImportedEntry):
+        @classmethod
+        def from_source(cls, source):
+            initial = InitialNativeIsland((builtins, dataclasses, registry_identity))
+            return cls.from_standard_source_loader(
+                source, initial, initial.namespace_for_storage(vars(builtins))
+            )
+
+    class Repository(ExplicitEnvironmentRepository):
+        source_entry = staticmethod(Entry.from_source)
+
+    source = (
+        "from dataclasses import dataclass\n"
+        "state={}\n"
+        "class Ephemeral:\n"
+        "    def __del__(self): state['destroyed']=True\n" + f"result={expression}\n"
+    )
+    path, initial = snapshot_with_environment(tmp_path, source)
+    repository = Repository.from_modules(initial.parsed_modules)
+    snapshot = initial._from_modules_with_indexes(
+        initial.parsed_modules,
+        initial.required_class_family_index,
+        initial._source_index_build_artifacts,
+        repository,
+    )
+    requirement = invocation_requirement(snapshot, path, type)
+    resolution = requirement.inspect()
+    assert not resolution.provenance.is_admitted
+    assert "Release" in resolution.rationale or "lifetime" in resolution.rationale
+    namespace = {}
+    exec(requirement.module.native_compilation.compile(), namespace)
+    assert namespace["state"] == {"destroyed": True}
+    assert namespace["result"] in (type(lambda: None), tuple)
+    assert not requirement.environment.entry.operation_conditions
