@@ -3122,6 +3122,9 @@ class SourceClassBodyEntryABC(
     def require_admitted(self, initial: InitialNativeIsland) -> None:
         if initial is not self.initial:
             raise ValueError("Source class belongs to a foreign native admission")
+        if self.execution.class_entry(self.node) is not self:
+            self.require_original_operation()
+            raise ValueError("Source class namespace requires its canonical entry")
 
     def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         return self.initial_entries.get(key)

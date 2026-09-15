@@ -34,15 +34,27 @@ or begin OpenHCS extraction or manuscript work.
 
 ## Status
 
-Current work at 20:06 UTC: the new physical-source acquisition is local and
-uncommitted, with focused Python 3.11/3.14 tests and exact two-stage DSL replay
+Current work at 20:37 UTC: the new physical-source acquisition is committed
+and pushed as `93ad35f007379fc156ea6fd24fad057100916d5a`, with focused
+Python 3.11/3.14 tests and exact two-stage DSL replay
 passing. Its installed-wheel/API and complete production self-scan also pass;
 the 39-stage authored replay matches all five production files exactly. Its
 complete frozen-source suites pass 7,247/74 on Python 3.11 and 7,283/38 on
 Python 3.14. Its isolated complete-package cold/warm/edit gate passes with
 all 79 detectors, zero omissions and equal normalized reports: 48.935,
-1.033 and 4.409 scan seconds respectively. It is ready for a scoped
-checkpoint commit; hosted CI for this new code has not yet been dispatched.
+1.033 and 4.409 scan seconds respectively. Hosted run `35017535185` is
+terminal with all seven jobs passing for this exact source checkpoint. It was
+fast-forwarded and pushed to main; local main and remote main both match
+`93ad35f007379fc156ea6fd24fad057100916d5a`. The user-requested different-file edit timing followup passes
+all twelve edited scans and restored controls; results are in
+`edit_location_performance_20260915.md`. Source-copy edits are restored and
+the exact 560,524-KiB disposable experiment cache is removed. Its reports are
+retained. This integration worktree is now on main. The namespace-identity
+follow-up and validation closeout ship with this note; their immutable commit
+can be resolved from `native_behavior_proof_pause_20260915.md`. The user requests
+publishing this checkpoint, saving the handoff and stopping NRA work for OpenHCS use.
+Generated metaclass construction/registration is still unfinished; pausing
+this checkpoint does not complete the full native-behavior objective.
 The following
 published gates apply to the preceding parent-operand checkpoint, not this
 new acquisition edit. The body-cache validation correction and its shared
@@ -1409,3 +1421,105 @@ The preceding parent-operand hosted run `35015301107`, exact code SHA
 `98ca65bf4a104e990bd3ffe2cf10aac97fd991b0`, has six passing jobs;
 Windows 3.11 remains live. It is not CI validation of this physical-source
 checkpoint. Generated construction/registration still remains unproved.
+
+### Different-file timing and main-integration authorization
+
+The followup measurements are complete; the short report is
+`edit_location_performance_20260915.md`. All twelve edit reports complete
+79/79 detectors with zero omissions and match the normalized cold control.
+Comment-only file-location differences are small in these samples. A real
+ZMQ function-body edit takes 6.825-6.853 scan seconds versus 4.983-5.043 for
+a trailing comment in the same file, with the extra measured time in analysis.
+Four simultaneous file edits take 5.895-6.811 scan seconds, not four separate
+one-edit costs. All source-copy edits are restored. The exact new disposable
+cache was removed after terminal-handle/process inspection, reclaiming
+560,524 KiB; reports and command logs remain.
+
+The user explicitly authorizes fast-forwarding main after the exact source
+checkpoint's hosted CI is green, then continuing from main. The preceding
+run `35015301107` is now terminal with all seven jobs passing at its original
+`98ca65bf4a104e990bd3ffe2cf10aac97fd991b0` code SHA. The current source run
+`35017535185` is still live at `93ad35f007379fc156ea6fd24fad057100916d5a`:
+docs/wheel passes and six runtime jobs remain live. Main is not yet advanced.
+The original dirty checkout and the user-supplied untracked handoff stay out
+of this merge. The owned progress/timing notes remain uncommitted while the
+tested source revision stays fixed.
+
+### Next construction proof boundary, verified against current owners
+
+The actual `AutoRegisterMeta.__new__` source delegates to the selected
+`ABCMeta.__new__`, then auto-configures a registry if no explicit configuration
+is supplied. Actual physical source/code correspondence for both Python
+constructors is now available; invocation and results are not thereby proved.
+Generated roots supply class attributes, not an explicit constructor config.
+`_auto_configure_registry` has an unconditional `logger.debug` invocation;
+`log_registration=False` does not make that path irrelevant. Lazy discovery,
+secondary registration, key extraction and writes also have their actual
+configuration-dependent paths. Do not replace this behavior with an inert
+analyzer fixture or special-case the metaclass's label.
+
+Two existing shared boundaries prevent simply reusing source-function calls:
+
+- `SourceFunctionActivationABC` binds source-created callees, reconstructs
+  source defaults and rejects variadic activation. Actual frozen ABC source
+  has `**kwargs`; exact binding alone does not prove its fresh kwargs storage.
+- `SourceFunctionEntry` obtains globals/builtins from the admitted original
+  creator frame. An imported current function has independently observed
+  globals/builtins/closure fields; current code matching does not establish
+  that creator cut. Manufacturing a source-created capture would be invalid.
+
+These are concrete unresolved proof boundaries, not implementation proposals
+or automatic construction evidence. Retain the existing fail-closed
+`NativeSourceClassEntryABC.construction_admission` and
+`AutoRegisterClassEntry._created_result` until real activation, relevant
+native construction/ABC initialization and retained registration effects are
+discharged. No new production semantics have been added by this source audit.
+
+## Canonical prepared namespace follow-up and user-requested pause
+
+The existing `SourceClassBodyEntryABC.require_admitted` checked only the native
+island identity. A copied or reconstructed entry for the same original class
+node could therefore admit a second prepared namespace. The same guard was
+present in main before this continuation; this is a pre-existing owner-identity
+hole, not a regression introduced by the physical-source checkpoint.
+
+Eight real source-execution controls reproduce the hole before the fix: plain
+and actual native-metaclass preparation, copied/reconstructed entries, and
+cold/warm namespace state. All eight failed before the correction. The shared
+namespace owner now authenticates its original operation and requires identity
+with `execution.class_entry(node)`. It does not add another entry registry or
+admit constructor invocation/results. Original-operation diagnostics are
+revalidated on rejected noncanonical paths, preserving stale-node rejection
+without repeating unrelated validation on every successful frame query.
+The canonical identity check remains uncached on every namespace query.
+
+Final focused gates: Python 3.11 passes 141 tests with two skips in 14.17 seconds;
+Python 3.14 passes 143 in 17.80 seconds. Both use eight workers and 60-second
+bounds. Initial broader validation exposed the stale-node diagnostic ordering
+and Python 3.14's missing editable installation in isolated subprocesses. The
+former was corrected in the declaration owner; the latter by installing the
+checkout in the runtime. No assertions or proof rules were weakened.
+
+The updated authored trajectory is 40 clean DSL stages across six exact
+formatted production files. Original input is preserved. Its replay driver is
+51 lines and its five recipe files total 636 lines, including authored
+replacement Python. The final production diff from the trajectory's baseline
+is not its cumulative intermediate edit volume. The demonstrated leverage is
+ordered batching and automatic intermediate-state preflight, not a measured
+manual-tool-call savings ratio or automatic proof of all authored bodies.
+Global ownership auditing remains distinct from syntax replay.
+
+Artifacts remain in `/home/ts/nra-native-behavior-validation-G481Dc`:
+`class-namespace-identity-311-before.txt`, `canonical-namespace-final-*-selected.txt`,
+`canonical-namespace-final-composed-40-replay.txt` and
+`canonical-namespace-full-*`. Final broad/package/scan and publication results
+are recorded in `native_behavior_proof_pause_20260915.md` for the
+user-requested stop. The complete corrected slow shard passes 339 tests in
+138.90 seconds. Aggregate broad coverage is 7,256 passes/74 skips on Python
+3.11 and 7,292/38 on Python 3.14, spanning corrective revisions rather than one
+frozen final local suite. Exact closeout affected suites pass 141/2 and 143/0
+in 8.67/11.27 seconds. Exact closeout wheel bytes and nine controls pass; its
+complete installed CLI self-scan passes all 79 detectors, zero omissions and
+zero findings in 8.759 seconds. Full cold/warm/edit gates, final-source
+installed checks and post-push hosted status are distinguished in the pause
+handoff. Generated construction/registration remains unresolved.
