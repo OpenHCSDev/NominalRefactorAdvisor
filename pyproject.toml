@@ -33,6 +33,9 @@ docs = [
     "Sphinx>=8.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["nominal_refactor_advisor*"]
+
 [tool.black]
 line-length = 88
 target-version = ["py311"]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NRA Refactoring"
+  short_description: "Plan and replay globally grounded nominal refactors"
+  default_prompt: "Use $nra-refactoring to audit ownership and compose a source-validated refactoring plan."
