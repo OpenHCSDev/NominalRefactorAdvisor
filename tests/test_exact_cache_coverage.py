@@ -24,8 +24,9 @@ from nominal_refactor_advisor.analysis_cache import (
     DetectorRegistrySignature,
 )
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.finding_counts import FindingSummary
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 @pytest.fixture
@@ -84,6 +85,46 @@ def test_equal_size_distinct_subsets_have_distinct_aggregate_identities(
     assert analyze_compact_roots_with_cache(
         (source_root,), detector_types=detectors[:1], **options
     ).cache_status.is_hit
+
+
+@pytest.mark.parametrize("subset_count", [None, 0, 1, 2])
+def test_registry_signature_owner_resolves_requested_roster(
+    subset_count: int | None,
+) -> None:
+    detectors = default_detector_types_for_analysis()
+    requested = None if subset_count is None else detectors[:subset_count]
+    expected = detectors if requested is None else requested
+    assert DetectorRegistrySignature.current(detector_types=requested) == (
+        DetectorRegistrySignature.from_detector_types(expected)
+    )
+    assert DetectorRegistrySignature.current() == (
+        DetectorRegistrySignature.from_detector_types(detectors)
+    )
+
+
+def test_default_roster_is_resolved_before_signature_cache_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with ScanCache.scope():
+        original = DetectorRegistrySignature.current()
+        removed = IssueDetector.registered_detector_types()[0]
+        monkeypatch.setattr(
+            IssueDetector,
+            "__registry__",
+            {
+                key: detector
+                for key, detector in IssueDetector.__registry__.items()
+                if detector is not removed
+            },
+        )
+        changed = DetectorRegistrySignature.current()
+        assert changed != original
+        assert changed == DetectorRegistrySignature.from_detector_types(
+            IssueDetector.registered_detector_types()
+        )
+        assert DetectorRegistrySignature.current(detector_types=()) == (
+            DetectorRegistrySignature.from_detector_types(())
+        )
 
 
 @pytest.mark.parametrize("subset_count", [None, 0, 1])

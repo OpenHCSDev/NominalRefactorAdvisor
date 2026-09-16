@@ -709,8 +709,13 @@ class DetectorRegistrySignature:
     detector_types: tuple[DetectorTypeSignature, ...]
 
     @classmethod
-    def current(cls) -> "DetectorRegistrySignature":
-        return cls.from_detector_types(IssueDetector.registered_detector_types())
+    def current(
+        cls, *, detector_types: tuple[type[IssueDetector], ...] | None = None
+    ) -> "DetectorRegistrySignature":
+        """Resolve omitted/full and explicit rosters before caching their signatures."""
+        if detector_types is None:
+            detector_types = IssueDetector.registered_detector_types()
+        return cls.from_detector_types(detector_types)
 
     @classmethod
     @ScanCache.cached
@@ -843,10 +848,8 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         )
         return cls(
             config=config,
-            detector_registry=(
-                DetectorRegistrySignature.current()
-                if detector_types is None
-                else DetectorRegistrySignature.from_detector_types(detector_types)
+            detector_registry=DetectorRegistrySignature.current(
+                detector_types=detector_types
             ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
@@ -870,10 +873,8 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
     ) -> "AnalysisCacheIdentity":
         return cls(
             config=config,
-            detector_registry=(
-                DetectorRegistrySignature.current()
-                if detector_types is None
-                else DetectorRegistrySignature.from_detector_types(detector_types)
+            detector_registry=DetectorRegistrySignature.current(
+                detector_types=detector_types
             ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
