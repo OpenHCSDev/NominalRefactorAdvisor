@@ -2,13 +2,14 @@
 
 import ast
 import dataclasses
+import sys
 
 import pytest
+from test_native_dataclass_factory import factory_environment
 
 from nominal_refactor_advisor.call_binding import CompactFunctionSignature
 from nominal_refactor_advisor.native_declarations import NativeParameterDefault
 from nominal_refactor_advisor.scan_cache import ScanCache
-from test_native_dataclass_factory import factory_environment
 
 
 def default_map(function):
@@ -156,13 +157,26 @@ def test_native_default_inspection_requires_exact_function():
 
 
 def test_binding_does_not_invent_factory_execution_without_its_behavior_premise():
-    environment, operation = factory_environment("frozen=True", condition=None)
+    environment, operation = factory_environment("frozen=True")
     authority = environment.call_authority(
         environment.context_for_owner(operation.owner), operation.event
     )
     assert authority.bound_arguments.is_exact
-    with pytest.raises(ValueError, match="explicit entry condition"):
+    calls = []
+    native_code = dataclasses.dataclass.__code__
+
+    def observe(frame, event, arg):
+        if event == "call" and frame.f_code is native_code:
+            calls.append(frame)
+
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(observe)
         authority.require_closed()
+    finally:
+        sys.setprofile(previous)
+    assert not calls
+    assert not environment.entry.operation_conditions
 
 
 @pytest.mark.parametrize("names", (("unknown",), ("items",), ("options",)))

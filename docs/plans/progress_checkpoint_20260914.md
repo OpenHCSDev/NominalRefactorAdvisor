@@ -77,6 +77,13 @@ and 153 failures in 60.39 seconds. The focused source/native surface passes 86
 tests on Python 3.11 in 6.93 seconds and 85 tests on Python 3.14 in 7.84 seconds,
 using eight workers and 60-second bounds.
 
+The returned-closure increment left two dependent tests asserting the removed
+explicit native-behavior premise. They now prove the preserved invariant
+directly: binding closes from the current source declaration without executing
+the native factory implementation and without recording an operation condition.
+The focused defaults/standard-import/factory surface passes 50 tests on Python
+3.11.
+
 Reproduce the broad tests from an environment with the dev dependencies installed:
 
 ```sh

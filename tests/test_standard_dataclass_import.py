@@ -1,16 +1,17 @@
 """The standard entry admits dataclass imports, not decorator execution effects."""
 
 import dataclasses
+import sys
 
 import pytest
+from test_product_flow_authority import _module
+from test_source_function_result import execution
 
 from nominal_refactor_advisor.native_declarations import (
     DataclassRuntimeDeclaration,
 )
-from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.product_flow import source_product_flow_projection
-from test_product_flow_authority import _module
-from test_source_function_result import execution
+from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 
 
 @pytest.mark.parametrize(
@@ -29,13 +30,25 @@ def test_default_entry_retains_actual_import_identity(statement, expression):
     assert not environment.entry.operation_conditions
 
 
-def test_default_import_does_not_supply_factory_behavior():
+def test_default_import_proves_binding_without_factory_execution():
     environment = execution("from dataclasses import dataclass\nheld = dataclass()\n")
     node = environment.module.module.body[-1].value
     context, call = environment.source_call(node)
     authority = environment.call_authority(context, call)
-    with pytest.raises(ValueError, match="explicit entry condition"):
+    calls = []
+    native_code = dataclasses.dataclass.__code__
+
+    def observe(frame, event, arg):
+        if event == "call" and frame.f_code is native_code:
+            calls.append(frame)
+
+    previous = sys.getprofile()
+    try:
+        sys.setprofile(observe)
         authority.require_closed()
+    finally:
+        sys.setprofile(previous)
+    assert not calls
     assert not environment.entry.operation_conditions
 
 
