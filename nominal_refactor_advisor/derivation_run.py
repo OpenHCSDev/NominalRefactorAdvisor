@@ -65,6 +65,40 @@ class RevisionPin(SemanticRecord):
         _require_text(self.revision, "RevisionPin.revision")
 
 
+@dataclass(frozen=True, order=True)
+class DerivationSetting(SemanticRecord):
+    """One canonical analyzer or solver setting fixed for a run."""
+
+    name: str
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.name, "DerivationSetting.name")
+        _require_text(self.value, "DerivationSetting.value")
+
+
+class DynamicBoundaryKind(StrEnum):
+    """Known source of runtime behavior that static collection must bound."""
+
+    DYNAMIC_LOADING = "dynamic_loading"
+    RUNTIME_MUTATION = "runtime_mutation"
+
+
+@dataclass(frozen=True, order=True)
+class KnownDynamicBoundary(SemanticRecord):
+    """Known loading or mutation boundary and its deterministic treatment."""
+
+    boundary_id: str
+    kind: DynamicBoundaryKind
+    locator: str
+    policy: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.boundary_id, "KnownDynamicBoundary.boundary_id")
+        _require_text(self.locator, "KnownDynamicBoundary.locator")
+        _require_text(self.policy, "KnownDynamicBoundary.policy")
+
+
 @dataclass(frozen=True)
 class DerivationRunBoundary(SemanticRecord):
     """Fixed repository, scope, policy, and runtime boundary for one run."""
@@ -74,6 +108,9 @@ class DerivationRunBoundary(SemanticRecord):
     scope_label: str
     included_roots: tuple[str, ...]
     language_runtime: str
+    analyzer_settings: tuple[DerivationSetting, ...]
+    solver_settings: tuple[DerivationSetting, ...]
+    dynamic_boundaries: tuple[KnownDynamicBoundary, ...]
     dependency_revisions: tuple[RevisionPin, ...] = ()
     generated_policy: str = "exclude"
     vendored_policy: str = "exclude"
@@ -110,6 +147,28 @@ class DerivationRunBoundary(SemanticRecord):
             "dependency_revisions",
             self.dependency_revisions,
             key=lambda pin: (pin.name, pin.revision),
+        )
+        for field_name in ("analyzer_settings", "solver_settings"):
+            settings = getattr(self, field_name)
+            _canonicalize_records(
+                self,
+                field_name,
+                settings,
+                key=lambda setting: setting.name,
+            )
+            _require_unique(
+                tuple(setting.name for setting in settings),
+                f"DerivationRunBoundary {field_name} names",
+            )
+        _canonicalize_records(
+            self,
+            "dynamic_boundaries",
+            self.dynamic_boundaries,
+            key=lambda boundary: boundary.boundary_id,
+        )
+        _require_unique(
+            tuple(boundary.boundary_id for boundary in self.dynamic_boundaries),
+            "DerivationRunBoundary dynamic boundary ids",
         )
         dependency_names = tuple(pin.name for pin in self.dependency_revisions)
         _require_unique(dependency_names, "DerivationRunBoundary dependency names")
@@ -173,7 +232,7 @@ class StructuralCollision(SemanticRecord):
 
 @dataclass(frozen=True, order=True)
 class RequiredRelationRow(SemanticRecord):
-    """One exact implementation/key-to-consumer requirement pair."""
+    """One exact two-column implementation/key-to-consumer pair."""
 
     implementation_key: str
     consumer: str
@@ -184,6 +243,201 @@ class RequiredRelationRow(SemanticRecord):
             "RequiredRelationRow.implementation_key",
         )
         _require_text(self.consumer, "RequiredRelationRow.consumer")
+
+    @property
+    def row_id(self) -> str:
+        """Return a deterministic identity without adding a semantic column."""
+
+        payload = json.dumps(
+            (self.implementation_key, self.consumer),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return f"required-relation-row:{digest}"
+
+
+class RelationEvidenceKind(StrEnum):
+    """Permitted basis for admitting one pair to the required relation."""
+
+    OBSERVED_CODE = "observed_code"
+    CITED_CONTRACT = "cited_contract"
+    CITED_TEST = "cited_test"
+    CITED_DOMAIN = "cited_domain"
+
+
+@dataclass(frozen=True, order=True)
+class RelationEvidenceRecord(SemanticRecord):
+    """Stable observation or authoritative citation referenced by bindings."""
+
+    evidence_id: str
+    kind: RelationEvidenceKind
+    source: str
+    collection_method: str
+    description: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "evidence_id",
+            "source",
+            "collection_method",
+            "description",
+        ):
+            _require_text(
+                getattr(self, field_name),
+                f"RelationEvidenceRecord.{field_name}",
+            )
+
+
+@dataclass(frozen=True, order=True)
+class AdmittedRelationCase(SemanticRecord):
+    """One stable case admitted by the fixed investigation boundary."""
+
+    case_id: str
+    source: str
+    description: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.case_id, "AdmittedRelationCase.case_id")
+        _require_text(self.source, "AdmittedRelationCase.source")
+        _require_text(self.description, "AdmittedRelationCase.description")
+
+
+@dataclass(frozen=True, order=True)
+class RequiredRelationRowBinding(SemanticRecord):
+    """References connecting one exact row to evidence and admitted cases."""
+
+    row_id: str
+    evidence_ids: tuple[str, ...]
+    admitted_case_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text(self.row_id, "RequiredRelationRowBinding.row_id")
+        if not self.evidence_ids:
+            raise ValueError(
+                "RequiredRelationRowBinding.evidence_ids must not be empty"
+            )
+        for field_name, values in (
+            ("evidence_ids", self.evidence_ids),
+            ("admitted_case_ids", self.admitted_case_ids),
+        ):
+            for value in values:
+                _require_text(value, f"RequiredRelationRowBinding.{field_name} item")
+            _canonicalize_records(
+                self,
+                field_name,
+                values,
+                key=lambda value: value,
+            )
+
+
+class RelationCoverageVerdict(StrEnum):
+    """Derived boundary-coverage result for a relation binding artifact."""
+
+    BLOCKED = "blocked"
+    COVERED = "covered"
+
+    @property
+    def is_positive(self) -> bool:
+        """Return whether the fixed boundary has complete relation coverage."""
+
+        return self is RelationCoverageVerdict.COVERED
+
+
+@dataclass(frozen=True)
+class RequiredRelationBindingReceipt(SemanticRecord):
+    """Reference-only deterministic contents of ``relation-binding.json``."""
+
+    run_id: str
+    boundary_digest: str
+    repository_revision: str
+    relation_row_ids: tuple[str, ...]
+    evidence_record_ids: tuple[str, ...]
+    admitted_case_ids: tuple[str, ...]
+    bindings: tuple[RequiredRelationRowBinding, ...]
+    unresolved_exclusion_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text(self.run_id, "RequiredRelationBindingReceipt.run_id")
+        _require_sha256(
+            self.boundary_digest,
+            "RequiredRelationBindingReceipt.boundary_digest",
+        )
+        _require_text(
+            self.repository_revision,
+            "RequiredRelationBindingReceipt.repository_revision",
+        )
+        for field_name in (
+            "relation_row_ids",
+            "evidence_record_ids",
+            "admitted_case_ids",
+            "unresolved_exclusion_ids",
+        ):
+            values = getattr(self, field_name)
+            for value in values:
+                _require_text(
+                    value,
+                    f"RequiredRelationBindingReceipt.{field_name} item",
+                )
+            _canonicalize_records(
+                self,
+                field_name,
+                values,
+                key=lambda value: value,
+            )
+        _canonicalize_records(
+            self,
+            "bindings",
+            self.bindings,
+            key=lambda binding: binding.row_id,
+        )
+        binding_row_ids = tuple(binding.row_id for binding in self.bindings)
+        _require_unique(
+            binding_row_ids,
+            "RequiredRelationBindingReceipt binding row ids",
+        )
+        known_rows = frozenset(self.relation_row_ids)
+        known_evidence = frozenset(self.evidence_record_ids)
+        known_cases = frozenset(self.admitted_case_ids)
+        bound_rows = frozenset(binding_row_ids)
+        bound_evidence = frozenset(
+            evidence_id
+            for binding in self.bindings
+            for evidence_id in binding.evidence_ids
+        )
+        bound_cases = frozenset(
+            case_id
+            for binding in self.bindings
+            for case_id in binding.admitted_case_ids
+        )
+        unknown_rows = bound_rows - known_rows
+        unknown_evidence = bound_evidence - known_evidence
+        unknown_cases = bound_cases - known_cases
+        if unknown_rows or unknown_evidence or unknown_cases:
+            raise ValueError(
+                "RequiredRelationBindingReceipt contains unknown references: "
+                f"rows={tuple(sorted(unknown_rows))!r}, "
+                f"evidence={tuple(sorted(unknown_evidence))!r}, "
+                f"cases={tuple(sorted(unknown_cases))!r}"
+            )
+        uncovered_rows = known_rows - bound_rows
+        orphan_evidence = known_evidence - bound_evidence
+        uncovered_cases = known_cases - bound_cases
+        if uncovered_rows or orphan_evidence or uncovered_cases:
+            raise ValueError(
+                "RequiredRelationBindingReceipt has incomplete coverage: "
+                f"rows={tuple(sorted(uncovered_rows))!r}, "
+                f"evidence={tuple(sorted(orphan_evidence))!r}, "
+                f"cases={tuple(sorted(uncovered_cases))!r}"
+            )
+
+    @json_report_property()
+    def coverage_verdict(self) -> RelationCoverageVerdict:
+        return (
+            RelationCoverageVerdict.BLOCKED
+            if self.unresolved_exclusion_ids
+            else RelationCoverageVerdict.COVERED
+        )
 
 
 @dataclass(frozen=True, order=True)
@@ -273,7 +527,7 @@ class EnumerationDecision(SemanticRecord):
     kind: EnumerationDecisionKind
     determining_authority: str | None
     resolution: str
-    named_divergence: str | None = None
+    divergence_identity: str | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.site, "EnumerationDecision.site")
@@ -283,10 +537,10 @@ class EnumerationDecision(SemanticRecord):
                 self.determining_authority,
                 "EnumerationDecision.determining_authority",
             )
-        if self.named_divergence is not None:
+        if self.divergence_identity is not None:
             _require_text(
-                self.named_divergence,
-                "EnumerationDecision.named_divergence",
+                self.divergence_identity,
+                "EnumerationDecision.divergence_identity",
             )
         if self.kind.requires_determining_authority:
             if self.determining_authority is None:
@@ -296,9 +550,9 @@ class EnumerationDecision(SemanticRecord):
                 "a genuine authority cannot name another determining authority"
             )
         if self.kind.requires_named_divergence:
-            if self.named_divergence is None:
-                raise ValueError("named_divergence requires a divergence receipt")
-        elif self.named_divergence is not None:
+            if self.divergence_identity is None:
+                raise ValueError("named_divergence requires a divergence identity")
+        elif self.divergence_identity is not None:
             label = self.kind.value.replace("_", " ")
             raise ValueError(f"a {label} cannot name a divergence")
 
@@ -313,7 +567,10 @@ class DerivationRunManifest(SemanticRecord):
     required_questions: tuple[RequiredQuestion, ...]
     structural_collisions: tuple[StructuralCollision, ...] = ()
     independent_roles: tuple[IndependentRoleDeclaration, ...] = ()
+    admitted_cases: tuple[AdmittedRelationCase, ...] = ()
+    relation_evidence: tuple[RelationEvidenceRecord, ...] = ()
     required_relation: tuple[RequiredRelationRow, ...] = ()
+    relation_bindings: tuple[RequiredRelationRowBinding, ...] = ()
     exclusions: tuple[DerivationExclusion, ...] = ()
     enumeration_decisions: tuple[EnumerationDecision, ...] = ()
 
@@ -341,9 +598,24 @@ class DerivationRunManifest(SemanticRecord):
                 lambda row: row.role_id,
             ),
             (
+                "admitted_cases",
+                self.admitted_cases,
+                lambda case: case.case_id,
+            ),
+            (
+                "relation_evidence",
+                self.relation_evidence,
+                lambda row: row.evidence_id,
+            ),
+            (
                 "required_relation",
                 self.required_relation,
                 lambda row: (row.implementation_key, row.consumer),
+            ),
+            (
+                "relation_bindings",
+                self.relation_bindings,
+                lambda binding: binding.row_id,
             ),
             ("exclusions", self.exclusions, lambda row: row.exclusion_id),
             (
@@ -368,6 +640,16 @@ class DerivationRunManifest(SemanticRecord):
             tuple(row.role_id for row in self.independent_roles),
             "DerivationRunManifest independent role ids",
         )
+        case_ids = tuple(case.case_id for case in self.admitted_cases)
+        _require_unique(case_ids, "DerivationRunManifest admitted case ids")
+        evidence_ids = tuple(row.evidence_id for row in self.relation_evidence)
+        _require_unique(evidence_ids, "DerivationRunManifest relation evidence ids")
+        _require_unique(
+            tuple(
+                (row.implementation_key, row.consumer) for row in self.required_relation
+            ),
+            "DerivationRunManifest required relation pairs",
+        )
         _require_unique(
             tuple(row.exclusion_id for row in self.exclusions),
             "DerivationRunManifest exclusion ids",
@@ -378,6 +660,9 @@ class DerivationRunManifest(SemanticRecord):
         )
         known_meanings = frozenset(meaning_ids)
         known_questions = frozenset(question_ids)
+        row_ids = tuple(row.row_id for row in self.required_relation)
+        _require_unique(row_ids, "DerivationRunManifest required relation row ids")
+        _ = self.required_relation_binding_receipt
         for collision in self.structural_collisions:
             unknown_meanings = frozenset(collision.meaning_ids) - known_meanings
             unknown_questions = frozenset(collision.question_ids) - known_questions
@@ -387,6 +672,19 @@ class DerivationRunManifest(SemanticRecord):
                     f"meanings={tuple(sorted(unknown_meanings))!r}, "
                     f"questions={tuple(sorted(unknown_questions))!r}"
                 )
+        unknown_divergences = (
+            frozenset(
+                decision.divergence_identity
+                for decision in self.enumeration_decisions
+                if decision.divergence_identity is not None
+            )
+            - known_meanings
+        )
+        if unknown_divergences:
+            raise ValueError(
+                "EnumerationDecision references unknown divergence identities: "
+                f"{tuple(sorted(unknown_divergences))!r}"
+            )
         unknown_roles = (
             frozenset(row.role_id for row in self.independent_roles) - known_meanings
         )
@@ -412,6 +710,32 @@ class DerivationRunManifest(SemanticRecord):
         """Return the SHA-256 identity of the canonical authored inputs."""
 
         return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
+    @property
+    def required_relation_binding_receipt(self) -> RequiredRelationBindingReceipt:
+        """Derive the standalone ``relation-binding.json`` authority."""
+
+        boundary_json = json.dumps(
+            json_report_object(self.boundary),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        boundary_digest = hashlib.sha256(boundary_json.encode("utf-8")).hexdigest()
+        return RequiredRelationBindingReceipt(
+            run_id=self.run_id,
+            boundary_digest=boundary_digest,
+            repository_revision=self.boundary.repository_revision,
+            relation_row_ids=tuple(row.row_id for row in self.required_relation),
+            evidence_record_ids=tuple(
+                evidence.evidence_id for evidence in self.relation_evidence
+            ),
+            admitted_case_ids=tuple(case.case_id for case in self.admitted_cases),
+            bindings=self.relation_bindings,
+            unresolved_exclusion_ids=tuple(
+                exclusion.exclusion_id for exclusion in self.exclusions
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -443,6 +767,7 @@ class DerivationArtifactKind(StrEnum):
     STRUCTURAL_COLLISIONS = "structural_collisions"
     INDEPENDENT_ROLES = "independent_roles"
     REQUIRED_RELATION = "required_relation"
+    RELATION_BINDING = "relation_binding"
     EXCLUSIONS = "exclusions"
     ENUMERATION_DECISIONS = "enumeration_decisions"
     ANALYZER_INPUT = "analyzer_input"
@@ -540,12 +865,17 @@ class DerivationRunReceipt(SemanticRecord):
         )
 
     @json_report_property()
+    def unresolved_exclusion_ids(self) -> tuple[str, ...]:
+        return tuple(exclusion.exclusion_id for exclusion in self.manifest.exclusions)
+
+    @json_report_property()
     def status(self) -> DerivationRunStatus:
         return (
             DerivationRunStatus.COMPLETE
             if self.analyzer is not None
             and not self.blockers
             and not self.missing_artifact_kinds
+            and self.manifest.required_relation_binding_receipt.coverage_verdict.is_positive
             else DerivationRunStatus.INCOMPLETE
         )
 
@@ -561,6 +891,10 @@ class DerivationRunReceipt(SemanticRecord):
             reasons.append(
                 "missing artifacts: "
                 + ", ".join(kind.value for kind in self.missing_artifact_kinds)
+            )
+        if self.unresolved_exclusion_ids:
+            reasons.append(
+                "unresolved exclusions: " + ", ".join(self.unresolved_exclusion_ids)
             )
         reasons.extend(self.blockers)
         raise IncompleteDerivationRunError("; ".join(reasons))

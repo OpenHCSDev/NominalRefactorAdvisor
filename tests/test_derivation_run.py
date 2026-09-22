@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.derivation_run import (
+    AdmittedRelationCase,
     AnalyzerProvenance,
     DerivationArtifact,
     DerivationArtifactKind,
@@ -13,14 +14,21 @@ from nominal_refactor_advisor.derivation_run import (
     DerivationRunManifest,
     DerivationRunReceipt,
     DerivationRunStatus,
+    DerivationSetting,
     DomainMeaning,
+    DynamicBoundaryKind,
     EnumerationDecision,
     EnumerationDecisionKind,
     ExclusionEffect,
     IncompleteDerivationRunError,
     IndependentRoleDeclaration,
+    KnownDynamicBoundary,
+    RelationCoverageVerdict,
+    RelationEvidenceKind,
+    RelationEvidenceRecord,
     RequiredQuestion,
     RequiredRelationRow,
+    RequiredRelationRowBinding,
     RevisionPin,
     StructuralCollision,
 )
@@ -33,6 +41,29 @@ def boundary() -> DerivationRunBoundary:
         repository_revision="abc123",
         scope_label="billing",
         included_roots=("src/billing", "src/contracts"),
+        language_runtime="Python 3.14",
+        analyzer_settings=(
+            DerivationSetting("workers", "1"),
+            DerivationSetting("collection_mode", "static_and_runtime"),
+        ),
+        solver_settings=(
+            DerivationSetting("search", "bounded_exact"),
+            DerivationSetting("tie_break", "lexicographic"),
+        ),
+        dynamic_boundaries=(
+            KnownDynamicBoundary(
+                "plugin-loading",
+                DynamicBoundaryKind.DYNAMIC_LOADING,
+                "billing.plugins",
+                "freeze the installed plugin manifest at input capture",
+            ),
+            KnownDynamicBoundary(
+                "registry-mutation",
+                DynamicBoundaryKind.RUNTIME_MUTATION,
+                "billing.registry",
+                "reject mutation after input capture",
+            ),
+        ),
         dependency_revisions=(
             RevisionPin("schema", "v2"),
             RevisionPin("runtime", "def456"),
@@ -41,14 +72,66 @@ def boundary() -> DerivationRunBoundary:
         vendored_policy="exclude",
         test_policy="include contract tests",
         migration_policy="admit import adapters only",
-        language_runtime="Python 3.14",
     )
+
+
+def test_boundary_canonicalizes_typed_settings_and_dynamic_boundaries() -> None:
+    left = boundary()
+    right = replace(
+        left,
+        analyzer_settings=tuple(reversed(left.analyzer_settings)),
+        solver_settings=tuple(reversed(left.solver_settings)),
+        dynamic_boundaries=tuple(reversed(left.dynamic_boundaries)),
+    )
+
+    assert left == right
+    payload = json_report_object(left)
+    assert tuple(item["name"] for item in payload["analyzer_settings"]) == (
+        "collection_mode",
+        "workers",
+    )
+    assert {item["kind"] for item in payload["dynamic_boundaries"]} == {
+        "dynamic_loading",
+        "runtime_mutation",
+    }
+
+
+@pytest.mark.parametrize("field_name", ("analyzer_settings", "solver_settings"))
+def test_boundary_rejects_duplicate_setting_names(field_name: str) -> None:
+    value = boundary()
+    duplicate_settings = (
+        DerivationSetting("same", "first"),
+        DerivationSetting("same", "second"),
+    )
+
+    with pytest.raises(ValueError, match=f"{field_name} names must not contain"):
+        replace(value, **{field_name: duplicate_settings})
+
+
+def test_boundary_rejects_duplicate_dynamic_boundary_identities() -> None:
+    value = boundary()
+    with pytest.raises(ValueError, match="dynamic boundary ids must not contain"):
+        replace(
+            value,
+            dynamic_boundaries=(
+                value.dynamic_boundaries[0],
+                replace(
+                    value.dynamic_boundaries[0],
+                    policy="a conflicting policy",
+                ),
+            ),
+        )
 
 
 def manifest(*, reverse: bool = False) -> DerivationRunManifest:
     meanings = (
         DomainMeaning("invoice", "billing", "A payable invoice."),
         DomainMeaning("credit", "billing", "A credit against an invoice."),
+        DomainMeaning(
+            "legacy_wire_alias",
+            "billing",
+            "A compatibility-only historical wire identity.",
+        ),
     )
     questions = (
         RequiredQuestion(
@@ -66,6 +149,58 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
         RequiredRelationRow("credit", "ledger"),
         RequiredRelationRow("invoice", "ledger"),
         RequiredRelationRow("invoice", "statement"),
+    )
+    cases = (
+        AdmittedRelationCase(
+            "ledger-current",
+            "tests/test_ledger.py",
+            "Current ledger access cases.",
+        ),
+        AdmittedRelationCase(
+            "statement-current",
+            "contracts/billing.md#statements",
+            "Current statement contract cases.",
+        ),
+    )
+    evidence = (
+        RelationEvidenceRecord(
+            "contract-statement",
+            RelationEvidenceKind.CITED_CONTRACT,
+            "contracts/billing.md#statements",
+            "manual contract review",
+            "Statements must render every invoice.",
+        ),
+        RelationEvidenceRecord(
+            "observed-credit",
+            RelationEvidenceKind.OBSERVED_CODE,
+            "src/billing/ledger.py:42",
+            "static access-site collection",
+            "The ledger dispatches credit records.",
+        ),
+        RelationEvidenceRecord(
+            "observed-invoice",
+            RelationEvidenceKind.OBSERVED_CODE,
+            "src/billing/ledger.py:38",
+            "static access-site collection",
+            "The ledger dispatches invoice records.",
+        ),
+    )
+    bindings = (
+        RequiredRelationRowBinding(
+            relation[0].row_id,
+            ("observed-credit",),
+            ("ledger-current",),
+        ),
+        RequiredRelationRowBinding(
+            relation[1].row_id,
+            ("observed-invoice",),
+            ("ledger-current",),
+        ),
+        RequiredRelationRowBinding(
+            relation[2].row_id,
+            ("contract-statement",),
+            ("statement-current",),
+        ),
     )
     return DerivationRunManifest(
         run_id="billing-v1",
@@ -85,7 +220,10 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
                 "Credits and invoices can change posting policy independently.",
             ),
         ),
+        admitted_cases=tuple(reversed(cases)) if reverse else cases,
+        relation_evidence=tuple(reversed(evidence)) if reverse else evidence,
         required_relation=tuple(reversed(relation)) if reverse else relation,
+        relation_bindings=tuple(reversed(bindings)) if reverse else bindings,
         exclusions=(
             DerivationExclusion(
                 exclusion_id="plugin-keys",
@@ -108,7 +246,7 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
                 kind=EnumerationDecisionKind.NAMED_DIVERGENCE,
                 determining_authority="billing.Record",
                 resolution="retain the import-boundary alias role",
-                named_divergence="historical wire names remain accepted",
+                divergence_identity="legacy_wire_alias",
             ),
             EnumerationDecision(
                 site="billing.Record",
@@ -157,15 +295,65 @@ def test_manifest_canonicalizes_authored_sets_without_changing_relation_rows() -
         "implementation_key": "credit",
         "consumer": "ledger",
     }
+    assert left.required_relation[0].row_id.startswith("required-relation-row:")
+    assert {row["kind"] for row in payload["relation_evidence"]} == {
+        "cited_contract",
+        "observed_code",
+    }
+
+
+def test_relation_binding_receipt_references_authorities_and_derives_coverage() -> None:
+    blocked_manifest = manifest(reverse=True)
+    blocked = blocked_manifest.required_relation_binding_receipt
+    covered = replace(
+        blocked_manifest,
+        exclusions=(),
+    ).required_relation_binding_receipt
+
+    assert blocked.coverage_verdict is RelationCoverageVerdict.BLOCKED
+    assert blocked.unresolved_exclusion_ids == ("plugin-keys",)
+    assert covered.coverage_verdict is RelationCoverageVerdict.COVERED
+    assert covered.unresolved_exclusion_ids == ()
+    assert tuple(binding.row_id for binding in covered.bindings) == (
+        covered.relation_row_ids
+    )
+    assert all(binding.evidence_ids for binding in covered.bindings)
+    assert set(covered.admitted_case_ids) == {
+        case_id for binding in covered.bindings for case_id in binding.admitted_case_ids
+    }
+    payload = json_report_object(covered)
+    assert payload["repository_revision"] == "abc123"
+    assert payload["coverage_verdict"] == "covered"
+    assert len(payload["boundary_digest"]) == 64
+    assert "required_relation" not in payload
+    assert "evidence_records" not in payload
+    assert payload == json_report_object(
+        replace(manifest(), exclusions=()).required_relation_binding_receipt
+    )
 
 
 def test_manifest_digest_changes_with_one_required_pair() -> None:
     original = manifest()
+    added_pair = RequiredRelationRow("credit", "statement")
     changed = replace(
         original,
-        required_relation=(
-            *original.required_relation,
-            RequiredRelationRow("credit", "statement"),
+        required_relation=(*original.required_relation, added_pair),
+        relation_evidence=(
+            *original.relation_evidence,
+            RelationEvidenceRecord(
+                "contract-credit-statement",
+                RelationEvidenceKind.CITED_CONTRACT,
+                "contracts/billing.md#credits",
+                "manual contract review",
+                "Statements must render every credit.",
+            ),
+        ),
+        relation_bindings=(
+            *original.relation_bindings,
+            RequiredRelationRowBinding(
+                added_pair.row_id,
+                ("contract-credit-statement",),
+            ),
         ),
     )
 
@@ -221,11 +409,61 @@ def test_manifest_digest_changes_with_one_required_pair() -> None:
                 ),
             ),
         ),
+        lambda value: replace(
+            value,
+            relation_evidence=(
+                value.relation_evidence[0],
+                replace(
+                    value.relation_evidence[0],
+                    description="different evidence with the same identity",
+                ),
+            ),
+        ),
+        lambda value: replace(
+            value,
+            relation_evidence=value.relation_evidence[:-1],
+        ),
+        lambda value: replace(
+            value,
+            relation_bindings=(
+                replace(
+                    value.relation_bindings[0],
+                    row_id="required-relation-row:" + "0" * 64,
+                ),
+                *value.relation_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            admitted_cases=(
+                *value.admitted_cases,
+                AdmittedRelationCase(
+                    "unbound-case",
+                    "tests/test_unbound.py",
+                    "A case with no relation binding.",
+                ),
+            ),
+        ),
+        lambda value: replace(
+            value,
+            enumeration_decisions=(
+                replace(
+                    value.enumeration_decisions[1],
+                    divergence_identity="unknown-divergence",
+                ),
+            ),
+        ),
     ),
 )
 def test_manifest_rejects_incomplete_or_foreign_domain_inputs(invalid) -> None:
     with pytest.raises(ValueError):
         invalid(manifest())
+
+
+def test_manifest_requires_every_relation_pair_to_have_evidence() -> None:
+    value = manifest()
+    with pytest.raises(ValueError, match="incomplete coverage"):
+        replace(value, relation_bindings=value.relation_bindings[:-1])
 
 
 def test_required_relation_rejects_duplicate_pairs() -> None:
@@ -267,7 +505,7 @@ def test_required_relation_rejects_duplicate_pairs() -> None:
             EnumerationDecisionKind.NAMED_DIVERGENCE,
             "Owner",
             None,
-            "requires a divergence receipt",
+            "requires a divergence identity",
         ),
     ),
 )
@@ -283,7 +521,7 @@ def test_enumeration_decisions_enforce_three_way_receipts(
             kind=kind,
             determining_authority=authority,
             resolution="record the decision",
-            named_divergence=divergence,
+            divergence_identity=divergence,
         )
 
 
@@ -314,7 +552,7 @@ def test_artifact_and_analyzer_digests_are_exact_sha256_values() -> None:
 
 
 def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() -> None:
-    run = manifest()
+    run = replace(manifest(), exclusions=())
     receipt = DerivationRunReceipt(
         manifest=run,
         analyzer=analyzer_for(run),
@@ -328,9 +566,53 @@ def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() ->
     assert payload["manifest_digest"] == run.input_digest
     assert payload["status"] == "complete"
     assert payload["missing_artifact_kinds"] == ()
+    assert payload["unresolved_exclusion_ids"] == ()
     assert tuple(item["kind"] for item in payload["artifacts"]) == tuple(
         sorted(kind.value for kind in DerivationArtifactKind)
     )
+
+
+def test_completion_requires_relation_binding_artifact_and_positive_verdict() -> None:
+    run = replace(manifest(), exclusions=())
+    artifacts_without_binding = tuple(
+        artifact
+        for artifact in complete_artifacts()
+        if artifact.kind is not DerivationArtifactKind.RELATION_BINDING
+    )
+    receipt = DerivationRunReceipt(
+        manifest=run,
+        analyzer=analyzer_for(run),
+        artifacts=artifacts_without_binding,
+    )
+
+    assert (
+        run.required_relation_binding_receipt.coverage_verdict
+        is RelationCoverageVerdict.COVERED
+    )
+    assert receipt.status is DerivationRunStatus.INCOMPLETE
+    assert receipt.missing_artifact_kinds == (DerivationArtifactKind.RELATION_BINDING,)
+
+
+def test_unresolved_relation_exclusion_blocks_otherwise_complete_receipt() -> None:
+    run = manifest()
+    receipt = DerivationRunReceipt(
+        manifest=run,
+        analyzer=analyzer_for(run),
+        artifacts=complete_artifacts(),
+    )
+
+    assert (
+        run.required_relation_binding_receipt.coverage_verdict
+        is RelationCoverageVerdict.BLOCKED
+    )
+    assert receipt.status is DerivationRunStatus.INCOMPLETE
+    assert receipt.missing_artifact_kinds == ()
+    assert receipt.unresolved_exclusion_ids == ("plugin-keys",)
+    with pytest.raises(
+        IncompleteDerivationRunError,
+        match="unresolved exclusions: plugin-keys",
+    ):
+        receipt.require_complete()
 
 
 def test_receipt_retains_explicit_incomplete_state_and_fails_loud_on_demand() -> None:
@@ -344,9 +626,13 @@ def test_receipt_retains_explicit_incomplete_state_and_fails_loud_on_demand() ->
 
     assert receipt.status is DerivationRunStatus.INCOMPLETE
     assert DerivationArtifactKind.GAP_CERTIFICATE in receipt.missing_artifact_kinds
+    assert receipt.unresolved_exclusion_ids == ("plugin-keys",)
     with pytest.raises(
         IncompleteDerivationRunError,
-        match="analyzer provenance is absent.*missing artifacts.*plugin keys",
+        match=(
+            "analyzer provenance is absent.*missing artifacts.*"
+            "unresolved exclusions: plugin-keys.*runtime plugin keys"
+        ),
     ):
         receipt.require_complete()
 
@@ -355,9 +641,12 @@ def test_receipt_rejects_analyzer_provenance_for_another_manifest() -> None:
     run = manifest()
     other = replace(
         run,
-        required_relation=(
-            *run.required_relation,
-            RequiredRelationRow("credit", "statement"),
+        relation_evidence=(
+            replace(
+                run.relation_evidence[0],
+                description="The contract was revised after this analyzer run.",
+            ),
+            *run.relation_evidence[1:],
         ),
     )
 
