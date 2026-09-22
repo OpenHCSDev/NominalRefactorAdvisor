@@ -267,12 +267,18 @@ def analyzer_for(value: DerivationRunManifest) -> AnalyzerProvenance:
     )
 
 
-def complete_artifacts() -> tuple[DerivationArtifact, ...]:
+def complete_artifacts(
+    run: DerivationRunManifest,
+) -> tuple[DerivationArtifact, ...]:
     return tuple(
         DerivationArtifact(
             kind=kind,
             relative_path=f"{kind.value}.json",
-            sha256=f"{index:064x}",
+            sha256=(
+                run.required_relation_binding_receipt.content_digest
+                if kind is DerivationArtifactKind.RELATION_BINDING
+                else f"{index:064x}"
+            ),
         )
         for index, kind in enumerate(DerivationArtifactKind, start=1)
     )
@@ -556,7 +562,7 @@ def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() ->
     receipt = DerivationRunReceipt(
         manifest=run,
         analyzer=analyzer_for(run),
-        artifacts=tuple(reversed(complete_artifacts())),
+        artifacts=tuple(reversed(complete_artifacts(run))),
     )
 
     assert receipt.status is DerivationRunStatus.COMPLETE
@@ -572,11 +578,28 @@ def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() ->
     )
 
 
+def test_receipt_rejects_arbitrary_relation_binding_artifact_digest() -> None:
+    run = replace(manifest(), exclusions=())
+    artifacts = tuple(
+        replace(artifact, sha256="f" * 64)
+        if artifact.kind is DerivationArtifactKind.RELATION_BINDING
+        else artifact
+        for artifact in complete_artifacts(run)
+    )
+
+    with pytest.raises(ValueError, match="does not match the typed receipt"):
+        DerivationRunReceipt(
+            manifest=run,
+            analyzer=analyzer_for(run),
+            artifacts=artifacts,
+        )
+
+
 def test_completion_requires_relation_binding_artifact_and_positive_verdict() -> None:
     run = replace(manifest(), exclusions=())
     artifacts_without_binding = tuple(
         artifact
-        for artifact in complete_artifacts()
+        for artifact in complete_artifacts(run)
         if artifact.kind is not DerivationArtifactKind.RELATION_BINDING
     )
     receipt = DerivationRunReceipt(
@@ -598,7 +621,7 @@ def test_unresolved_relation_exclusion_blocks_otherwise_complete_receipt() -> No
     receipt = DerivationRunReceipt(
         manifest=run,
         analyzer=analyzer_for(run),
-        artifacts=complete_artifacts(),
+        artifacts=complete_artifacts(run),
     )
 
     assert (
@@ -620,7 +643,7 @@ def test_receipt_retains_explicit_incomplete_state_and_fails_loud_on_demand() ->
     receipt = DerivationRunReceipt(
         manifest=run,
         analyzer=None,
-        artifacts=(complete_artifacts()[0],),
+        artifacts=(complete_artifacts(run)[0],),
         blockers=("runtime plugin keys remain unresolved",),
     )
 
@@ -658,10 +681,11 @@ def test_receipt_rejects_analyzer_provenance_for_another_manifest() -> None:
 
 
 def test_receipt_rejects_duplicate_artifact_authorities() -> None:
-    artifact = complete_artifacts()[0]
+    run = manifest()
+    artifact = complete_artifacts(run)[0]
     with pytest.raises(ValueError, match="artifact kinds must not contain duplicates"):
         DerivationRunReceipt(
-            manifest=manifest(),
+            manifest=run,
             analyzer=None,
             artifacts=(artifact, replace(artifact, relative_path="copy.json")),
         )

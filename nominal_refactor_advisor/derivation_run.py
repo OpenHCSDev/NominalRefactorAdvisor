@@ -439,6 +439,23 @@ class RequiredRelationBindingReceipt(SemanticRecord):
             else RelationCoverageVerdict.COVERED
         )
 
+    @property
+    def canonical_json(self) -> str:
+        """Return deterministic JSON for the machine-readable artifact."""
+
+        return json.dumps(
+            json_report_object(self),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @property
+    def content_digest(self) -> str:
+        """Return the SHA-256 identity of ``relation-binding.json``."""
+
+        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True, order=True)
 class IndependentRoleDeclaration(SemanticRecord):
@@ -849,6 +866,22 @@ class DerivationRunReceipt(SemanticRecord):
         ):
             raise ValueError(
                 "AnalyzerProvenance.input_digest does not match the run manifest"
+            )
+        relation_binding_artifact = next(
+            (
+                artifact
+                for artifact in self.artifacts
+                if artifact.kind is DerivationArtifactKind.RELATION_BINDING
+            ),
+            None,
+        )
+        if (
+            relation_binding_artifact is not None
+            and relation_binding_artifact.sha256
+            != self.manifest.required_relation_binding_receipt.content_digest
+        ):
+            raise ValueError(
+                "RELATION_BINDING artifact digest does not match the typed receipt"
             )
 
     @json_report_property()
