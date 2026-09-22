@@ -5,7 +5,9 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.derivation_run import (
+    AdmittedCaseCoverageBinding,
     AdmittedRelationCase,
+    AnalyzerConfiguration,
     AnalyzerProvenance,
     DerivationArtifact,
     DerivationArtifactKind,
@@ -27,8 +29,8 @@ from nominal_refactor_advisor.derivation_run import (
     RelationEvidenceKind,
     RelationEvidenceRecord,
     RequiredQuestion,
+    RequiredRelationEvidenceBinding,
     RequiredRelationRow,
-    RequiredRelationRowBinding,
     RevisionPin,
     StructuralCollision,
 )
@@ -42,13 +44,17 @@ def boundary() -> DerivationRunBoundary:
         scope_label="billing",
         included_roots=("src/billing", "src/contracts"),
         language_runtime="Python 3.14",
-        analyzer_settings=(
-            DerivationSetting("workers", "1"),
-            DerivationSetting("collection_mode", "static_and_runtime"),
-        ),
-        solver_settings=(
-            DerivationSetting("search", "bounded_exact"),
-            DerivationSetting("tie_break", "lexicographic"),
+        analyzer_configuration=AnalyzerConfiguration(
+            analyzer_name="exact-relation",
+            analyzer_version="1.0.0",
+            analyzer_settings=(
+                DerivationSetting("workers", "1"),
+                DerivationSetting("collection_mode", "static_and_runtime"),
+            ),
+            solver_settings=(
+                DerivationSetting("search", "bounded_exact"),
+                DerivationSetting("tie_break", "lexicographic"),
+            ),
         ),
         dynamic_boundaries=(
             KnownDynamicBoundary(
@@ -79,14 +85,27 @@ def test_boundary_canonicalizes_typed_settings_and_dynamic_boundaries() -> None:
     left = boundary()
     right = replace(
         left,
-        analyzer_settings=tuple(reversed(left.analyzer_settings)),
-        solver_settings=tuple(reversed(left.solver_settings)),
+        analyzer_configuration=replace(
+            left.analyzer_configuration,
+            analyzer_settings=tuple(
+                reversed(left.analyzer_configuration.analyzer_settings)
+            ),
+            solver_settings=tuple(
+                reversed(left.analyzer_configuration.solver_settings)
+            ),
+        ),
         dynamic_boundaries=tuple(reversed(left.dynamic_boundaries)),
     )
 
     assert left == right
+    assert (
+        left.analyzer_configuration.configuration_digest
+        == right.analyzer_configuration.configuration_digest
+    )
     payload = json_report_object(left)
-    assert tuple(item["name"] for item in payload["analyzer_settings"]) == (
+    assert tuple(
+        item["name"] for item in payload["analyzer_configuration"]["analyzer_settings"]
+    ) == (
         "collection_mode",
         "workers",
     )
@@ -98,7 +117,7 @@ def test_boundary_canonicalizes_typed_settings_and_dynamic_boundaries() -> None:
 
 @pytest.mark.parametrize("field_name", ("analyzer_settings", "solver_settings"))
 def test_boundary_rejects_duplicate_setting_names(field_name: str) -> None:
-    value = boundary()
+    value = boundary().analyzer_configuration
     duplicate_settings = (
         DerivationSetting("same", "first"),
         DerivationSetting("same", "second"),
@@ -161,6 +180,11 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
             "contracts/billing.md#statements",
             "Current statement contract cases.",
         ),
+        AdmittedRelationCase(
+            "zero-pair-case",
+            "contracts/billing.md#no-posting",
+            "A covered case that intentionally requires no relation row.",
+        ),
     )
     evidence = (
         RelationEvidenceRecord(
@@ -184,22 +208,43 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
             "static access-site collection",
             "The ledger dispatches invoice records.",
         ),
+        RelationEvidenceRecord(
+            "zero-pair-contract",
+            RelationEvidenceKind.CITED_DOMAIN,
+            "contracts/billing.md#no-posting",
+            "manual domain review",
+            "This admitted case intentionally requires no pair.",
+        ),
     )
-    bindings = (
-        RequiredRelationRowBinding(
+    relation_evidence_bindings = (
+        RequiredRelationEvidenceBinding(
             relation[0].row_id,
             ("observed-credit",),
-            ("ledger-current",),
         ),
-        RequiredRelationRowBinding(
+        RequiredRelationEvidenceBinding(
             relation[1].row_id,
             ("observed-invoice",),
-            ("ledger-current",),
         ),
-        RequiredRelationRowBinding(
+        RequiredRelationEvidenceBinding(
             relation[2].row_id,
             ("contract-statement",),
-            ("statement-current",),
+        ),
+    )
+    case_coverage_bindings = (
+        AdmittedCaseCoverageBinding(
+            "ledger-current",
+            (relation[0].row_id, relation[1].row_id),
+            ("observed-credit", "observed-invoice"),
+        ),
+        AdmittedCaseCoverageBinding(
+            "statement-current",
+            (relation[2].row_id,),
+            ("contract-statement",),
+        ),
+        AdmittedCaseCoverageBinding(
+            "zero-pair-case",
+            (),
+            ("zero-pair-contract",),
         ),
     )
     return DerivationRunManifest(
@@ -223,7 +268,16 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
         admitted_cases=tuple(reversed(cases)) if reverse else cases,
         relation_evidence=tuple(reversed(evidence)) if reverse else evidence,
         required_relation=tuple(reversed(relation)) if reverse else relation,
-        relation_bindings=tuple(reversed(bindings)) if reverse else bindings,
+        relation_evidence_bindings=(
+            tuple(reversed(relation_evidence_bindings))
+            if reverse
+            else relation_evidence_bindings
+        ),
+        admitted_case_coverage_bindings=(
+            tuple(reversed(case_coverage_bindings))
+            if reverse
+            else case_coverage_bindings
+        ),
         exclusions=(
             DerivationExclusion(
                 exclusion_id="plugin-keys",
@@ -260,8 +314,9 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
 
 def analyzer_for(value: DerivationRunManifest) -> AnalyzerProvenance:
     return AnalyzerProvenance(
-        analyzer_name="exact-relation",
-        analyzer_version="1.0.0",
+        configuration_digest=(
+            value.boundary.analyzer_configuration.configuration_digest
+        ),
         input_digest=value.input_digest,
         invocation=("exact-relation", "analyzer-input.json"),
     )
@@ -304,6 +359,7 @@ def test_manifest_canonicalizes_authored_sets_without_changing_relation_rows() -
     assert left.required_relation[0].row_id.startswith("required-relation-row:")
     assert {row["kind"] for row in payload["relation_evidence"]} == {
         "cited_contract",
+        "cited_domain",
         "observed_code",
     }
 
@@ -320,13 +376,22 @@ def test_relation_binding_receipt_references_authorities_and_derives_coverage() 
     assert blocked.unresolved_exclusion_ids == ("plugin-keys",)
     assert covered.coverage_verdict is RelationCoverageVerdict.COVERED
     assert covered.unresolved_exclusion_ids == ()
-    assert tuple(binding.row_id for binding in covered.bindings) == (
-        covered.relation_row_ids
+    assert (
+        tuple(binding.row_id for binding in covered.relation_evidence_bindings)
+        == covered.relation_row_ids
     )
-    assert all(binding.evidence_ids for binding in covered.bindings)
-    assert set(covered.admitted_case_ids) == {
-        case_id for binding in covered.bindings for case_id in binding.admitted_case_ids
-    }
+    assert all(binding.evidence_ids for binding in covered.relation_evidence_bindings)
+    assert (
+        tuple(binding.case_id for binding in covered.admitted_case_coverage_bindings)
+        == covered.admitted_case_ids
+    )
+    zero_pair_binding = next(
+        binding
+        for binding in covered.admitted_case_coverage_bindings
+        if binding.case_id == "zero-pair-case"
+    )
+    assert zero_pair_binding.row_ids == ()
+    assert zero_pair_binding.evidence_ids == ("zero-pair-contract",)
     payload = json_report_object(covered)
     assert payload["repository_revision"] == "abc123"
     assert payload["coverage_verdict"] == "covered"
@@ -354,9 +419,9 @@ def test_manifest_digest_changes_with_one_required_pair() -> None:
                 "Statements must render every credit.",
             ),
         ),
-        relation_bindings=(
-            *original.relation_bindings,
-            RequiredRelationRowBinding(
+        relation_evidence_bindings=(
+            *original.relation_evidence_bindings,
+            RequiredRelationEvidenceBinding(
                 added_pair.row_id,
                 ("contract-credit-statement",),
             ),
@@ -431,12 +496,12 @@ def test_manifest_digest_changes_with_one_required_pair() -> None:
         ),
         lambda value: replace(
             value,
-            relation_bindings=(
+            relation_evidence_bindings=(
                 replace(
-                    value.relation_bindings[0],
+                    value.relation_evidence_bindings[0],
                     row_id="required-relation-row:" + "0" * 64,
                 ),
-                *value.relation_bindings[1:],
+                *value.relation_evidence_bindings[1:],
             ),
         ),
         lambda value: replace(
@@ -466,10 +531,120 @@ def test_manifest_rejects_incomplete_or_foreign_domain_inputs(invalid) -> None:
         invalid(manifest())
 
 
+def test_row_evidence_binding_has_no_case_field_or_json() -> None:
+    binding = manifest().relation_evidence_bindings[0]
+
+    assert not hasattr(binding, "case_id")
+    assert not hasattr(binding, "case_ids")
+    assert not hasattr(binding, "admitted_case_ids")
+    assert set(json_report_object(binding)) == {"row_id", "evidence_ids"}
+
+
+def test_case_coverage_binding_requires_evidence_even_with_zero_rows() -> None:
+    with pytest.raises(ValueError, match="evidence_ids must not be empty"):
+        AdmittedCaseCoverageBinding("zero-pair-case", (), ())
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    (
+        lambda value: replace(
+            value,
+            relation_evidence_bindings=(
+                replace(
+                    value.relation_evidence_bindings[0],
+                    evidence_ids=("unknown-evidence",),
+                ),
+                *value.relation_evidence_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            admitted_case_coverage_bindings=(
+                replace(
+                    value.admitted_case_coverage_bindings[0],
+                    case_id="unknown-case",
+                ),
+                *value.admitted_case_coverage_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            admitted_case_coverage_bindings=(
+                replace(
+                    value.admitted_case_coverage_bindings[0],
+                    row_ids=("unknown-row",),
+                ),
+                *value.admitted_case_coverage_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            relation_evidence_bindings=(
+                replace(
+                    value.relation_evidence_bindings[0],
+                    evidence_ids=("observed-credit", "observed-credit"),
+                ),
+                *value.relation_evidence_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            relation_evidence_bindings=(
+                value.relation_evidence_bindings[0],
+                replace(
+                    value.relation_evidence_bindings[0],
+                    evidence_ids=("observed-invoice",),
+                ),
+                *value.relation_evidence_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            admitted_case_coverage_bindings=(
+                value.admitted_case_coverage_bindings[0],
+                replace(
+                    value.admitted_case_coverage_bindings[0],
+                    evidence_ids=("contract-statement",),
+                ),
+                *value.admitted_case_coverage_bindings[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            admitted_case_coverage_bindings=(
+                *value.admitted_case_coverage_bindings[:-1],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            relation_evidence=(
+                *value.relation_evidence,
+                RelationEvidenceRecord(
+                    "unused-evidence",
+                    RelationEvidenceKind.CITED_TEST,
+                    "tests/test_unused.py",
+                    "test inspection",
+                    "Evidence that no binding references.",
+                ),
+            ),
+        ),
+    ),
+)
+def test_manifest_rejects_unknown_duplicate_missing_or_unused_binding_refs(
+    invalid,
+) -> None:
+    with pytest.raises(ValueError):
+        invalid(manifest())
+
+
 def test_manifest_requires_every_relation_pair_to_have_evidence() -> None:
     value = manifest()
     with pytest.raises(ValueError, match="incomplete coverage"):
-        replace(value, relation_bindings=value.relation_bindings[:-1])
+        replace(
+            value,
+            relation_evidence_bindings=value.relation_evidence_bindings[:-1],
+        )
 
 
 def test_required_relation_rejects_duplicate_pairs() -> None:
@@ -531,6 +706,15 @@ def test_enumeration_decisions_enforce_three_way_receipts(
         )
 
 
+def test_artifact_roster_uses_one_atomic_factorization_certificate() -> None:
+    values = {kind.value for kind in DerivationArtifactKind}
+
+    assert "relation_factorization_certificate" in values
+    assert "gap_certificate" not in values
+    assert "provider_cover" not in values
+    assert "residual_gap" not in values
+
+
 @pytest.mark.parametrize(
     "relative_path",
     ("/tmp/gap.json", "../gap.json", "proofs/../../gap.json", r"proofs\gap.json"),
@@ -540,7 +724,7 @@ def test_artifact_paths_cannot_escape_the_portable_run_directory(
 ) -> None:
     with pytest.raises(ValueError, match="run directory|POSIX separators"):
         DerivationArtifact(
-            DerivationArtifactKind.GAP_CERTIFICATE,
+            DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
             relative_path,
             "1" * 64,
         )
@@ -549,12 +733,12 @@ def test_artifact_paths_cannot_escape_the_portable_run_directory(
 def test_artifact_and_analyzer_digests_are_exact_sha256_values() -> None:
     with pytest.raises(ValueError, match="lowercase SHA-256"):
         DerivationArtifact(
-            DerivationArtifactKind.GAP_CERTIFICATE,
-            "gap.json",
+            DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
+            "relation-factorization-certificate.json",
             "A" * 64,
         )
     with pytest.raises(ValueError, match="lowercase SHA-256"):
-        AnalyzerProvenance("analyzer", "1", "short", ("analyzer",))
+        AnalyzerProvenance("short", "1" * 64, ("analyzer",))
 
 
 def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() -> None:
@@ -648,7 +832,10 @@ def test_receipt_retains_explicit_incomplete_state_and_fails_loud_on_demand() ->
     )
 
     assert receipt.status is DerivationRunStatus.INCOMPLETE
-    assert DerivationArtifactKind.GAP_CERTIFICATE in receipt.missing_artifact_kinds
+    assert (
+        DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE
+        in receipt.missing_artifact_kinds
+    )
     assert receipt.unresolved_exclusion_ids == ("plugin-keys",)
     with pytest.raises(
         IncompleteDerivationRunError,
@@ -658,6 +845,21 @@ def test_receipt_retains_explicit_incomplete_state_and_fails_loud_on_demand() ->
         ),
     ):
         receipt.require_complete()
+
+
+def test_receipt_rejects_analyzer_configuration_digest_mismatch() -> None:
+    run = replace(manifest(), exclusions=())
+    wrong_provenance = replace(
+        analyzer_for(run),
+        configuration_digest="f" * 64,
+    )
+
+    with pytest.raises(ValueError, match="does not match the run boundary"):
+        DerivationRunReceipt(
+            manifest=run,
+            analyzer=wrong_provenance,
+            artifacts=complete_artifacts(run),
+        )
 
 
 def test_receipt_rejects_analyzer_provenance_for_another_manifest() -> None:
