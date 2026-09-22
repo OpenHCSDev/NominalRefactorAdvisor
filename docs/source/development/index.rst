@@ -13,8 +13,9 @@ For the current shipped surface, use the generated API docs:
 If you are changing the advisor itself, read these pages in roughly this order:
 
 1. :doc:`nominal_refactor_advisor`
-2. :doc:`nominal_architecture_playbook`
-3. :doc:`agent_refactoring_crash_course`
+2. :doc:`semantic_derivation_protocol`
+3. :doc:`nominal_architecture_playbook`
+4. :doc:`agent_refactoring_crash_course`
 
 This directory then branches into three kinds of material:
 
@@ -36,6 +37,7 @@ Conceptual Background
 .. toctree::
    :maxdepth: 1
 
+   semantic_derivation_protocol
    nominal_architecture_playbook
    agent_refactoring_crash_course
    nominal_identity_case_studies
