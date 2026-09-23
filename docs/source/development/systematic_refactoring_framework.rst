@@ -6,7 +6,8 @@ Python codebases the tool analyzes.
 
 This page is intentionally generic. It does not define the advisor's shipped
 pattern taxonomy; it records the maintenance procedure that keeps structural
-refactors disciplined.
+refactors disciplined.  For the complete domain-extraction, relation-recovery,
+and proof-receipt algorithm, use :doc:`semantic_derivation_protocol`.
 
 Core Goal
 ---------
