@@ -29,13 +29,20 @@ Semantic completeness is relative to a domain and its required questions.  Let:
 - ``A(q, d)`` be the required answer for question ``q`` in state ``d``; and
 - ``R(d)`` be the representation available to the implementation.
 
-The chosen mechanisms are semantically complete for the task when they can
-preserve every distinction needed to derive ``A(q, d)``.  If two domain states
+The chosen mechanisms are semantically complete for the task when their native
+derivation preserves every distinction needed to supply ``A(q, d)``.  A wider
+system may still be correct by completing missing answers in code or tooling
+while the restricted mechanism remains incomplete.  If two domain states
 collapse to the same representation while some required question gives them
 different answers, no helper operating only on that representation can recover
 the answer.  The architecture must retain a distinguishing name, enrich the
 representation, or make one of the states unreachable by an enforced
 precondition.
+
+Correct maintenance is also stronger than one correct snapshot: the program
+must continue to satisfy its declared specification on every reachable state as
+requirements change.  This protocol additionally minimizes avoidable external
+semantic obligations; it does not redefine correctness as mere derivation.
 
 This is not Turing completeness.  A language can compute arbitrary functions
 and still encourage an architecture that erases the identity, provenance,
@@ -128,9 +135,10 @@ agree.
 Empirical Pattern From Epoch-Defining Changes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A direct inventory of the OpenHCS history found 94 PRs, of which 71 were
-merged.  The important evidence was not raw churn or old case-study prose, but
-the recurring transformation visible in the merged trees:
+The primary OpenHCS PR-history snapshot inspected for this protocol contained
+94 PRs, of which 71 were merged.  The important evidence was not raw churn or
+old case-study prose, but the recurring transformation visible in the merged
+trees:
 
 - PR #38 replaced a hand-maintained conversion grid with derivation over a
   closed memory-type axis.
@@ -223,6 +231,15 @@ can change independently.  This declaration cannot be recovered from the
 pair table after meanings have been merged, so it is a mandatory input to
 minimisation.
 
+Reconcile the observed table with the Phase 1 contract before certifying it as
+the required relation.  Source and runtime extraction recover observable pairs;
+they do not infer undocumented intent.  An intended-but-absent pair needs cited
+contract, test, or domain evidence and should be recorded as a current semantic
+bug.  Unknown or external cases remain in the exclusion log rather than becoming
+zero-valued absences; until they are resolved, relation completeness is unknown.
+Current behavior is evidence, not automatically the correctness oracle.  Preserve
+provenance for every included pair, exclusion, and added requirement.
+
 Rules:
 
 - record what the code does, not the architecture you want;
@@ -300,18 +317,38 @@ Phase 4 — Compute The Factoring
 -------------------------------
 
 Feed the Phase 2 relation and the independent-role declarations to the exact
-analyzer.  For an ancestry-based target, require it to return:
+analyzer.  Write the required relation as :math:`R \subseteq I \times C`, where
+:math:`(i, c)` means that consumer :math:`c` requires the answer owned by
+implementation :math:`i`.  In the declared finite, deletion-only single-parent
+model, an admissible retained relation :math:`L \subseteq R` has laminar
+implementation scopes: every pair of scopes is nested or disjoint.  Under the
+admitted construction, latent provider nodes and consumer leaves are permitted;
+a scope-containment forest over the nonempty retained implementation scopes
+witnesses realizability.  These forest edges are not necessarily direct consumer-
+inheritance edges in the target program.  Require the analyzer to return:
 
-- the minimum required-pair gap left by any admissible single-parent
-  arrangement;
-- at least one arrangement attaining that minimum;
+- a maximum-cardinality admissible retained relation :math:`L^*`;
+- the exact residual relation :math:`R \setminus L^*` and ancestry gap
+  :math:`|R \setminus L^*|`;
+- an arrangement attaining that optimum;
 - a checkable certificate; and
-- the complete set of tied minima, or a declared deterministic tie-break.
+- the tied-optimum count and a declared deterministic selection policy.
 
-Then compute a cover of the missing relation.  Each rectangle contains a set of
-implementations and the set of consumers that require all of them.  Interpret
-that rectangle as one latent provider role.  The minimum cover size is the
-number of irreducible providers under the admitted model.
+Then compute an exact cover of the residual relation.  A provider rectangle is a
+nonempty complete subrelation :math:`A \times B \subseteq R \setminus L^*`:
+every consumer in :math:`B` requires every implementation in :math:`A`, so the
+rectangle contains no forbidden pair.  A provider cover has union exactly equal
+to the residual.  It is a cover, not a partition; rectangles may overlap.
+Interpret each selected rectangle as one latent provider role.
+
+With the relation, independence declarations, laminar repair model, and rectangle
+provider model fixed, an exact solver that completes within its declared bounds
+can certify the minimum cover cardinality for that admitted representation.  It
+is not a universal implementation-cost claim: ordering, state, precedence, and
+other carrier constraints require separate certificates.  A complete certificate
+must prove the selected union equals the residual.  Exceeding a declared exact
+search limit yields ``unknown`` and no certificate, never a heuristic or partial
+optimum.
 
 The result is a blueprint derived from the required relation.  It is not a
 class diagram proposed by taste.
@@ -337,11 +374,13 @@ that incomplete domain evidence can produce a unique architecture.
 Phase 5 — Derive Choke Points And Invalidation Surface
 ------------------------------------------------------
 
-For each proposed owner, compute the residual required pairs outside its
-ancestry or derivation closure.
+For each proposed owner, record its retained or derived consumers and compute
+its exact residual required pairs outside ancestry or derivation closure.
 
-- An owner with zero residual gap is a true choke point.  A cached or derived
-  value placed there reaches every required consumer through declared structure.
+- A carrier with nonempty required or derived consumer coverage and zero residual
+  gap is a true choke point.  A cached or derived value placed there reaches every
+  required consumer through declared structure.
+- A zero-degree carrier is vacuous and is not an owner or choke point.
 - An owner with residual gap is not a universal choke point.  Every residual
   pair is an explicit invalidation or adapter site.
 
@@ -420,8 +459,8 @@ show that the derived architecture did not unintentionally change behavior.
 Behavior is not the factoring oracle.  Two implementations can pass identical
 runs while one derives the relation and the other maintains it manually in many
 places.  A suite exercises points; independently variable roles define a space
-of possible histories.  Passing samples cannot establish that two meanings have
-one future.
+of possible histories.  Passing samples alone cannot establish that two meanings
+have one future; finite-suite completeness needs a separate coverage proof.
 
 Add negative architecture tests as well as positive behavior tests:
 
@@ -448,6 +487,7 @@ replay the reasoning from these artifacts alone:
      structural-collisions.csv
      independent-roles.csv
      required-relation.csv
+     relation-binding.json
      exclusions.csv
      enumeration-decisions.csv
      analyzer-input.json
@@ -456,6 +496,16 @@ replay the reasoning from these artifacts alone:
      residual-gap.csv
      migration-map.csv
      validation.md
+
+``relation-binding.json`` is a deterministic machine-readable receipt, not a
+second prose authority.  It binds each exact two-column relation pair to one or
+more evidence-record identifiers and records the boundary identity, source
+revision, covered case identifiers, exclusions, and coverage verdict.  Pair,
+evidence-record, and case identifiers must be stable and unique within the run.
+A positive verdict requires every pair to reference evidence, every admitted
+case to be bound, and no unresolved exclusion that could add or remove a pair.
+The receipt points to the required relation and evidence; it does not restate or
+invent either one.
 
 Use stable identifiers and deterministic ordering.  Record tool versions,
 command lines, source revisions, and hashes of analyzer inputs.  Never overwrite
@@ -514,7 +564,9 @@ A region is complete only when all of these exist:
 - the fixed investigation boundary;
 - the example-derived surface catalog;
 - the domain vocabulary and collision table;
-- the Phase 2 relation and exclusion log;
+- the Phase 2 relation, pair-level provenance, and exclusion log;
+- a binding and coverage verdict showing why that relation still describes the
+  declared boundary at the recorded revision;
 - an independence declaration for every merge candidate;
 - one three-way decision per enumeration site;
 - the analyzer's minimum gap and checkable certificate;
