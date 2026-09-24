@@ -86,6 +86,10 @@ For this project's nominal architecture:
 - Trust guaranteed fields and ABC contracts directly. Fix the violated boundary
   instead of adding `getattr` defaults, string-key fallbacks or Protocol substitutes.
 
+When a lead suggests Enum behavior, an ABC, multiple inheritance or
+class-definition registration, read [nominal mechanism choices](references/nominal-mechanisms.md).
+It contrasts the user's status/dict/flag examples with exact #38/#44/#58/#60/#69
+primary-source transitions and falsifiers; no mechanism is an automatic fix.
 Preserve real external formats and genuinely optional contracts. These are
 ownership rules, not a blanket ban on strings, branches or dictionaries.
 
