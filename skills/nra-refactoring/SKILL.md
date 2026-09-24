@@ -1,6 +1,6 @@
 ---
 name: nra-refactoring
-description: "Use NominalRefactorAdvisor (NRA) to audit Python semantic ownership and compose declaration-targeted, multistage refactoring DSL plans. Applies to NRA-assisted refactoring, bootstrapping NRA itself, and interpreting its scan or proof results."
+description: "Use NominalRefactorAdvisor (NRA), domain-driven ownership reasoning, and source-checked OpenHCS cases to discover underowned Python semantics, adjudicate a nominal contract, and compose proof-gated multistage refactoring DSL plans. Applies to NRA-assisted architectural refactoring and interpreting its scan or proof results."
 ---
 
 # NRA Refactoring
@@ -23,14 +23,27 @@ Use the current NRA checkout as the API authority:
 - `docs/source/api/codemod_catalog.rst`: declaration-generated operation catalog.
 - `docs/source/api/public_api.rst`: shared proof and execution contracts.
 - `docs/source/development/nominal_architecture_playbook.rst`: architectural reasoning.
+- `nominal_refactor_advisor/codemod_runtime.py`: recipes, plans and ordered stages.
+- `nominal_refactor_advisor/codemod_architecture_guards.py`: guards.
 - `nominal_refactor_advisor/codemod.py`: public Python exports.
 
 Inspect `python -m nominal_refactor_advisor --help` in the intended environment.
 Discover operations through their registered declarations and generated catalog;
-do not maintain a second operation inventory in this skill. Read the applicable
+selected source/registrations outrank stale catalog prose. Do not maintain a
+second operation inventory in this skill. Read the applicable
 operation's constructor, preflight and proof scope before adapting a recipe.
 
 ## Reason globally, choose ownership explicitly
+
+Bound one domain question first. Inventory **actual classes, ABCs, enums,
+dataclasses, ancestry and methods** using NRA's existing source/class indexes;
+then overlay residual rosters, string-key accesses, case comparisons, dispatch,
+forwarded parameters and delegated state. Reuse NRA's lexical/product-flow
+owners rather than a second parser, roster or call resolver. Keep original
+positions, nested executable ownership, unmatched/OPEN cases, aliases, rebinding,
+ordered guards, final fallback and alternate callers. A literal match, matching
+helper name or nominally resolved callee is a search question, not live binding,
+domain identity or behavioral proof.
 
 Start with a complete scan of the relevant package and dependency context.
 Use `--context-root` for explicit global context while limiting reported findings
@@ -46,11 +59,13 @@ authority before introducing another carrier, wrapper or registry.
 
 For this project's nominal architecture:
 
-- Put shared implementation on the owning ABC/ancestor; keep concrete classes
-  as small behavior hooks. Use MI and declared MRO where independent nominal
-  capabilities compose, rather than recreating dispatch or priority tables.
-- Put closed-family leaf behavior on its existing declaration/member. Consumers
-  should use the nominal contract, not branch on strings or concrete types.
+- Where an admitted domain contract supports it, put shared implementation on
+  its meaningful public ancestor and irreducible behavior on substitutable
+  children. MI requires positive MRO, constructor and method-lookup evidence;
+  priority checks are not automatically replaceable by inheritance.
+- Where an admitted closed-family contract supports it, put leaf behavior on
+  its owner and derive consumers. An enum plus another handwritten roster or
+  a service that retains the same dispatch does not remove an authority.
 - Derive views from declarations or original proof objects. A typed class can
   still mirror another authority; introducing classes is not sufficient.
 - Trust guaranteed fields and ABC contracts directly. Fix the violated boundary
@@ -64,10 +79,33 @@ bases/MRO, moved members, fields, signatures, callers, imports and obsolete uses
 Consider what the projected change will expose next; do not optimize a single
 finding into a local minimum that leaves competing authorities intact.
 
+## Produce a bounded decision receipt before prescribing a refactor
+
+Read [architecture decisions and case contrasts](references/architecture-decisions.md)
+for the task-relative required-answer model and exact #44/#58/#60 positive/negative
+controls. Record: bounded context, domain noun and required questions; the
+existing declarations and executable consumers with source revision and original
+positions; each independently writable authority versus derived view; proposed
+required/forbidden implementation–consumer/class pairs (`R*`), independent
+provider roles, alternative UI/transport/schema ownership; and every OPEN
+binding, alias, priority, unknown/fallback, dynamic or alternate-caller row.
+A missing subclass is required only if the admitted relation demands it. The
+LLM may propose and justify a relation or abstain, but its `R*` is **provisional**
+until the bounded context admits its pairs and exclusions under explicit task
+decision authority. Escalate disputed domain meaning; neither a model answer
+nor a human assertion proves equivalence.
+
+For a **prescriptive** plan, first admit the required/forbidden relation and
+determining owner(s) under that decision authority. Before admission, label any
+candidate DSL sequence exploratory/unproved and never present it as the repair.
+There may be one determining authority *per admitted fact family*, not one
+class/aggregate for independent domain, UI, transport and setup roles.
+
 ## Compose a trajectory, not isolated edits
 
-Read [references/batching.md](references/batching.md) when authoring or extending
-an ordered plan. Prefer declaration-selected movement, promotion, projection,
+Read [references/batching.md](references/batching.md) and
+[ownership-to-DSL gates](references/ownership-to-dsl.md) when authoring or
+extending an ordered plan. Prefer declaration-selected movement, promotion, projection,
 rename and call-migration operations over copying implementations into authored
 replacement bodies. Use exact target patches when needed, but label the semantic
 decision and unsupported DSL gap honestly.
@@ -87,7 +125,8 @@ stale write set. Rescan after creating modules or changing dependency boundaries
 Report separately:
 
 - **Coverage:** analyzed source/dependency context, detector omissions and scan mode.
-- **Ownership:** the chosen nominal authority and applicable global claims/guards.
+- **Ownership:** admitted or provisional `R*`, determining authority per fact,
+  independent provider/adapter roles, and applicable claims/guards.
 - **Replay:** exact stages, preflight requirements, final source and unchanged input.
 - **Behavior:** the specific native proof obligations or executed tests that passed.
 
@@ -111,6 +150,9 @@ seconds per shard, or 165 for larger shards. Preserve timed-out/failed evidence;
 split slow shards without weakening inputs or assertions. Check CLI budget flag
 scope: a shell timeout bounds the command when its internal flag does not.
 
+Claim completion only when the admitted relation is represented with every
+intended consumer deriving from its authority **and** scoped behavior/equivalence
+gates pass. Otherwise stop with named OPEN obligations, not a completion claim.
 Keep a concise checkpoint with exact source revision, recipe, commands, results,
 proof limits and unfinished work. Publish only within the user's authorization,
 and verify CI for the exact pushed revision. Keep task caches in an owned root
