@@ -5,8 +5,9 @@ description: "Use NominalRefactorAdvisor (NRA), domain-driven ownership reasonin
 
 # NRA Refactoring
 
-Help the practitioner decide where semantics belong, then let NRA manage the
-deterministic source transformations and intermediate states. Optimize for
+**The agent does the ownership investigation and proposes the refactor**, then
+lets NRA manage deterministic source transformations and intermediate states.
+Do not hand the practitioner an unfilled checklist as the result. Optimize for
 collapsing semantic surface area: independent authorities, repeated decisions,
 forwarding layers and duplicated implementation. Stage count and fewer lines
 are useful observations, not the objective or proof of correct factoring.
@@ -35,27 +36,39 @@ operation's constructor, preflight and proof scope before adapting a recipe.
 
 ## Reason globally, choose ownership explicitly
 
-Bound one domain question first. Inventory **actual classes, ABCs, enums,
-dataclasses, ancestry and methods** using NRA's existing source/class indexes;
-then overlay residual rosters, string-key accesses, case comparisons, dispatch,
-forwarded parameters and delegated state. Reuse NRA's lexical/product-flow
+First bound a **source corpus** (revision, import roots, selected production
+modules), not a presumed domain noun. NRA observations and cheap exact-string,
+substring or helper-prefix searches may help select/rank that corpus; false
+positives are acceptable as retrieval. Within the selected boundary, census **every original `ClassDef`** through
+NRA's `ModuleSyntaxIndex`, then join eligible direct declarations to its
+canonical class-family projection for actual bases, methods, ABC/Enum/dataclass
+roles. Conditional/function-local/ambiguous classes remain original syntax
+rows marked unprojected OPEN; do not invent family members. Only then overlay
+residual rosters, string-key accesses, case comparisons, dispatch, forwarded
+parameters and delegated state. Keep unaligned classes as alternative-owner
+and counterevidence rows. Then the agent names bounded domain questions from the joined
+source, rather than requiring the user to supply them. Reuse NRA's lexical/product-flow
 owners rather than a second parser, roster or call resolver. Keep original
 positions, nested executable ownership, unmatched/OPEN cases, aliases, rebinding,
-ordered guards, final fallback and alternate callers. A literal match, matching
-helper name or nominally resolved callee is a search question, not live binding,
-domain identity or behavioral proof.
+ordered guards, final fallback and alternate callers. A literal or substring match, matching helper name or nominally resolved
+callee is a useful lead, not live binding, domain identity or behavioral proof.
+The agent—not the user—clusters source-backed leads into candidate maintenance
+questions, keeping nonmatches and unsupported sites visible.
 
-Start with the bounded class-first source question; expand to a complete scan
-of the relevant package and dependency context **when the proposed ownership
-claim depends on that context**. Use `--context-root` for explicit global context
+Start with the bounded class-first corpus; expand to a complete scan of the
+relevant package and dependency context **when a proposed ownership claim
+depends on that context**. Use `--context-root` for explicit global context
 while limiting reported findings to selected paths. Tests are excluded by
 default; do not exclude production dependencies merely to obtain a smaller or
 cleaner scan. Inspect `scan_status` and analyzed/omitted detector counts.
 A `focused_local_partial` loop result is useful feedback, not a global
 ownership audit.
 
-For each proposed change, trace the declaration owner, its implementations,
-consumers and dependent projections. Repetition identifies a maintenance object;
+For each proposed change, **the agent must trace** the declaration that
+determines each answer, its implementations, consumers and dependent projections.
+Follow [the owner-finding procedure](references/finding-owners.md) and supply
+an actual ranked, source-backed ownership proposal with counterevidence;
+do not ask the user to perform the trace. Repetition identifies a maintenance object;
 it does not alone establish its correct owner. Look for an existing richer
 authority before introducing another carrier, wrapper or registry.
 
@@ -83,22 +96,29 @@ finding into a local minimum that leaves competing authorities intact.
 
 ## Produce a bounded decision receipt before prescribing a refactor
 
-Read [architecture decisions and case contrasts](references/architecture-decisions.md)
+Use [the reusable transformations and case contrasts](references/architecture-decisions.md)
 for the task-relative required-answer model and exact #44/#58/#60 positive/negative
-controls. Record: bounded context, domain noun and required questions; the
+controls. **Extract and fill**: bounded context, domain noun and required questions; the
 existing declarations and executable consumers with source revision and original
 positions; each independently writable authority versus derived view; proposed
 required/forbidden implementation–consumer/class pairs (`R*`), independent
 provider roles, alternative UI/transport/schema ownership; and every OPEN
 binding, alias, priority, unknown/fallback, dynamic or alternate-caller row.
 A missing subclass is required only if the admitted relation demands it. The
-LLM may propose and justify a relation or abstain, but its `R*` is **provisional**
-until the bounded context admits its pairs and exclusions under explicit task
-decision authority. Escalate disputed domain meaning; neither a model answer
-nor a human assertion proves equivalence.
+Agent must propose and justify a relation (or a specific alternative) from the
+admitted task intent and source; its `R*` remains **provisional** until the
+bounded context admits its pairs and exclusions under explicit task decision
+authority. First inspect more code, tests, history and counterexamples to settle
+uncertainty yourself. Ask the user only the **minimal set of precise questions**
+when genuinely unavailable domain intent prevents an authorized choice; do not
+outsource routine source tracing or pattern recognition. Neither an agent nor human assertion
+proves equivalence.
 
-For a **prescriptive** plan, first admit the required/forbidden relation and
-determining owner(s) under that decision authority. Before admission, label any
+This separates the leverage layers: cheap heuristics and NRA observations
+find where to look; the agent chooses a bounded domain ownership decision;
+NRA's existing selectors, staged planner, preflights and guards then mechanize
+and check a chosen trajectory. For a **prescriptive** plan, first admit the
+required/forbidden relation and determining owner(s) under that decision authority. Before admission, label any
 candidate DSL sequence exploratory/unproved and never present it as the repair.
 There may be one determining authority *per admitted fact family*, not one
 class/aggregate for independent domain, UI, transport and setup roles.
