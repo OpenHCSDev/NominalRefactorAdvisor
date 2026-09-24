@@ -45,12 +45,14 @@ ordered guards, final fallback and alternate callers. A literal match, matching
 helper name or nominally resolved callee is a search question, not live binding,
 domain identity or behavioral proof.
 
-Start with a complete scan of the relevant package and dependency context.
-Use `--context-root` for explicit global context while limiting reported findings
-to selected paths. Tests are excluded by default; do not exclude production
-dependencies merely to obtain a smaller or cleaner scan. Inspect `scan_status`
-and analyzed/omitted detector counts. A `focused_local_partial` loop result is
-useful feedback, not a global ownership audit.
+Start with the bounded class-first source question; expand to a complete scan
+of the relevant package and dependency context **when the proposed ownership
+claim depends on that context**. Use `--context-root` for explicit global context
+while limiting reported findings to selected paths. Tests are excluded by
+default; do not exclude production dependencies merely to obtain a smaller or
+cleaner scan. Inspect `scan_status` and analyzed/omitted detector counts.
+A `focused_local_partial` loop result is useful feedback, not a global
+ownership audit.
 
 For each proposed change, trace the declaration owner, its implementations,
 consumers and dependent projections. Repetition identifies a maintenance object;
