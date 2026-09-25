@@ -2,8 +2,10 @@
 
 **Use examples to propose a solution, not merely to report a smell.** For each lead,
 the agent identifies the applicable move below, traces current declarations and
-consumers, fills the missing domain decisions itself, and drafts the migration
-with NRA's existing DSL. Start with the positive destination; inspect its failure
+consumers, and proposes a migration grounded in the task's supplied rules and
+authorized specifications. It resolves routine source questions itself and
+surfaces genuinely missing or contested domain decisions before prescribing
+the migration with NRA's existing DSL. Start with the positive destination; inspect its failure
 cases before applying. This is a growing catalog of the **selected** epoch PRs,
 not a claim to cover every change or a second NRA detector/operation registry.
 
@@ -163,6 +165,10 @@ return tuple(
     for alias in module_type.aliases
 )
 ```
+
+For the corresponding settings-owner migration, retained independent roles and
+concrete semantic differences, see the
+[worked #60 trajectory](theory-to-workflow.md#worked-60-settings-and-capability-migration).
 
 **Maintenance gain:** the declared class carries the name/aliases that consumers
 project. Shared validation belongs at the class-definition boundary, not in every

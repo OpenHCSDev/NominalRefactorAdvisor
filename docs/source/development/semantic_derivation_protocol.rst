@@ -54,8 +54,9 @@ mechanism, not the definition of semantic completeness.
 
 The protocol therefore has two distinct parts:
 
-1. **domain extraction** recovers the meanings, required answers, and
-   independently variable roles;
+1. **domain extraction** makes supplied domain rules and task-authorized
+   specifications/declarations explicit, traces their source representations,
+   and proposes unresolved meanings, required answers, and independent roles;
 2. **semantic implementation** encodes those facts once and makes all other
    surfaces derivations.
 
@@ -76,12 +77,23 @@ Before beginning, freeze a reproducible investigation boundary:
 - analyzer version and solver settings; and
 - known dynamic loading or mutation boundaries.
 
-The protocol expects three inputs:
+The protocol expects four inputs:
 
-1. the code and its current observable behavior;
-2. worked architectural changes whose before and after states can be inspected;
-3. an exact analyzer for the required relation, including ancestry-gap and
+1. intended domain rules and authoritative declarations supplied by the task
+   owner, including existing specifications or tests the task authorizes as
+   normative;
+2. the code and its current observable behavior;
+3. worked architectural changes whose before and after states can be inspected;
+4. an exact analyzer for the required relation, including ancestry-gap and
    rectangle-cover certificates when those are the chosen factoring model.
+
+The agent performs the source investigation and proposes concrete ownership
+moves; it may derive all pairs entailed by already authorized rules without
+asking the human to enumerate them.  Genuinely missing or contested domain
+meaning remains OPEN until adjudicated.  Source, historical outcomes and an
+LLM's confidence do not independently supply normative business rules.  NRA
+checks supported observations, provenance, uncertainty and transformations
+against the admitted inputs; it does not certify the truth of those rules.
 
 Do not silently broaden or narrow the boundary during the run.  A newly found
 external source, dynamic key, or runtime mutation is an exclusion until it is
@@ -142,7 +154,9 @@ trees:
 
 - PR #38 replaced a hand-maintained conversion grid with derivation over a
   closed memory-type axis.
-- PR #44 replaced UI capability probing with nominal contracts and services.
+- PR #44 introduced nominal get/set capability contracts and services, but
+  retained concrete Qt dispatch for other operations; its reset fallback also
+  changed.  Service extraction alone is not dispatch elimination or parity.
 - PR #58 moved model state, snapshots, provenance, and dirty tracking out of a
   widget manager into ``ObjectState``; UI became a projection.
 - PR #60 integrated the typed declaration/compiler/runtime cutover: authored
@@ -175,7 +189,11 @@ required answer gained one owner and its other appearances became derivations.
 Phase 1 — Name Before Factoring
 -------------------------------
 
-This is the domain-driven extraction phase.
+This is the domain-driven extraction phase.  Start from the supplied rules and
+identify which existing specifications/declarations have task-authorized domain
+authority.  Trace code, tests and history to recover their implementation and
+expose contradictions or missing decisions; do not infer authority merely from
+which implementation survives a historical PR.
 
 Structure cannot distinguish meanings that happen to look alike.  Before
 proposing helpers, bases, registries, schemas, or services:
@@ -233,9 +251,10 @@ minimisation.
 
 Reconcile the observed table with the Phase 1 contract before certifying it as
 the required relation.  Source and runtime extraction recover observable pairs;
-they do not infer undocumented intent.  An intended-but-absent pair needs cited
-contract, test, or domain evidence and should be recorded as a current semantic
-bug.  Unknown or external cases remain in the exclusion log rather than becoming
+they do not infer undocumented intent.  An intended-but-absent pair needs a
+cited task-authorized contract, normative test or domain decision; once that
+requirement and its absence are established, record the current semantic bug.
+Unknown or external cases remain in the exclusion log rather than becoming
 zero-valued absences; until they are resolved, relation completeness is unknown.
 Current behavior is evidence, not automatically the correctness oracle.  Preserve
 provenance for every included pair, exclusion, and added requirement.
@@ -266,7 +285,9 @@ proof obligation, not a data-cleaning preference.
 Phase 3 — Audit Every Enumeration
 ---------------------------------
 
-For every enumeration found by the Phase 0 catalog, apply one three-way test.
+For every enumeration found by the Phase 0 catalog, apply one three-way test
+against the admitted question and authority.  If those are not established,
+retain OPEN rather than forcing the site into a branch.
 
 Branch 1 — Genuine authority
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -292,12 +313,19 @@ An existing set currently determines the values, but the two roles may
 legitimately diverge.
 
 Name the divergent required answer or independently changeable future.  Give
-that role its own identity and include it in the Phase 1 model.  If no one can
-name the divergence, classify the site as Branch 2.
+that role its own identity and include it in the Phase 1 model.  Classify the
+site as Branch 2 only when the admitted question and authority require equality.
+If the role or intended future is unknown, retain OPEN; inability to name a
+divergence does not establish an equality obligation.
 
-Record one decision per site:
+Record one decision per site, or OPEN with the missing rule/evidence during
+investigation.  Completion still requires those in-scope cases to be resolved.
+The example below assumes an **admitted public API rule** that ``__all__`` must
+contain exactly this declaration family's public names.  Without that rule,
+inspect whether exports are an independent API policy; do not classify them as
+a replica merely because current names match.
 
-.. list-table:: Enumeration decision
+.. list-table:: Enumeration decision (under the stated API rule)
    :header-rows: 1
 
    * - Site
@@ -481,6 +509,7 @@ replay the reasoning from these artifacts alone:
 
    derivation-run/
      boundary.md
+     domain-rules.md
      example-transformations.csv
      domain-glossary.md
      required-questions.csv
@@ -497,6 +526,14 @@ replay the reasoning from these artifacts alone:
      migration-map.csv
      validation.md
 
+``domain-rules.md`` records supplied rules, task-authorized specifications and
+admission decisions, including the rule/decision licensing each required or
+forbidden pair and the disposition of unknown cases.  These are provenance
+metadata, not a third semantic relation column.  The agent derives entailed
+pairs and records the rationale; the task owner need not enumerate each edge.
+This is a workflow decision record, not a newly implemented NRA wire schema or
+a claim that the current source-binding checker validates business meaning.
+
 ``relation-binding.json`` is a deterministic machine-readable receipt, not a
 second prose authority.  It binds each exact two-column relation pair to one or
 more evidence-record identifiers and records the boundary identity, source
@@ -505,7 +542,9 @@ evidence-record, and case identifiers must be stable and unique within the run.
 A positive verdict requires every pair to reference evidence, every admitted
 case to be bound, and no unresolved exclusion that could add or remove a pair.
 The receipt points to the required relation and evidence; it does not restate or
-invent either one.
+invent either one.  Its source-binding verdict does not itself admit domain
+requirements: review it alongside ``domain-rules.md``, including
+intended-but-absent requirements and explicit exclusions.
 
 Use stable identifiers and deterministic ordering.  Record tool versions,
 command lines, source revisions, and hashes of analyzer inputs.  Never overwrite
@@ -561,7 +600,7 @@ Completion Receipts
 
 A region is complete only when all of these exist:
 
-- the fixed investigation boundary;
+- the fixed investigation boundary and supplied domain-rule/authority decisions;
 - the example-derived surface catalog;
 - the domain vocabulary and collision table;
 - the Phase 2 relation, pair-level provenance, and exclusion log;

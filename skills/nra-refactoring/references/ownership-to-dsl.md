@@ -4,7 +4,7 @@ Read the selected checkout's `../../../docs/source/api/getting_started.rst`, `..
 
 ## Preconditions and minimal trajectory
 
-A prescriptive plan needs the bounded domain's **admitted** required and forbidden implementation–consumer/class pairs, determining owner per fact family, independently varying roles, known adapter boundaries and unknown/excluded cells. An LLM can propose these from evidence, but a provisional worksheet authorizes only an exploratory/unproved preview. Link every operation to one admitted decision, source witness and reject-on-missing-evidence condition. Do not equate one file or one class with one semantic authority for all roles.
+A prescriptive plan needs the bounded domain's **admitted** required and forbidden implementation–consumer/class pairs, determining owner per fact family, independently varying roles, known adapter boundaries and unknown/excluded cells. An LLM can propose these from evidence and derive pairs entailed by supplied rules or task-authorized specifications, but it cannot turn source similarity into normative business meaning. Record the authority for admission; a provisional worksheet authorizes only an exploratory/unproved preview. Link every operation to one admitted decision, source witness and reject-on-missing-evidence condition. Do not equate one file or one class with one semantic authority for all roles.
 
 Choose only the stages needed for the admitted migration:
 
