@@ -12,6 +12,34 @@ collapsing semantic surface area: independent authorities, repeated decisions,
 forwarding layers and duplicated implementation. Stage count and fewer lines
 are useful observations, not the objective or proof of correct factoring.
 
+## Architectural objective: polymorphism maximalism
+
+For behavior-bearing domain families, **prefer an ABC and concrete subclasses**
+over enums plus case switches, handler tables or detached configuration maps.
+Co-locate each case's related declarations, data, invariants and behavior on its
+class; put common algorithms on the public parent and leave only irreducible
+hooks on leaves. Compose overlapping nominal capabilities through inheritance
+and meaningful MI instead of copying implementation or externalizing selection.
+Derive discovery/lookup from the declared family where needed. A consumer should
+invoke the public contract, not repeatedly recover which concrete case it has.
+
+An enum needs a specific value-only/boundary justification; it is not an equally
+preferred endpoint when other code still interprets its members. Maximize
+polymorphic ownership and shared derivation, **not class count**. The agent owns
+this architectural judgment under the user's task intent; NRA must separately
+check the chosen migration's binding, MRO, effects and behavioral obligations.
+Do not turn an unresolved proof into a reason to praise the existing mirror:
+record the blocker and work toward proving or refining the nominal design.
+
+## Start with worked transformations
+
+Use the [anti-pattern → owned-structure cookbook](references/pattern-cookbook.md)
+for concrete declaration, ABC, shared-algorithm, registration, MI and state moves.
+For a complete executable trajectory, read the
+[action-dispatch batching example](references/action-batch.md): it uses the existing
+DSL, includes a new-case maintenance experiment and tests changed-source rejection.
+The example is an authored exact-fixture migration, not automatic async extraction.
+
 ## Establish the actual source and contracts
 
 Resolve the requested checkout, branch, dirty work and Python import location
