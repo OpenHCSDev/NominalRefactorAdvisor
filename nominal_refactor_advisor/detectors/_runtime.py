@@ -24,9 +24,11 @@ from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
 from ..ast_tools import (
     CollectedFamily,
+    LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
     SourceModule,
     collect_family_items,
+    module_syntax_index,
     walk_function_body_nodes,
 )
 from ..native_syntax import NativePythonSyntaxIndex
@@ -2555,6 +2557,250 @@ class ExactTypeGuardInheritanceRetreatDetector(
                 class_count=1 + len(candidate.descendant_classes),
             ),
         )
+
+
+def _source_spelled_elif(lines: list[str], line: int) -> bool:
+    """Disambiguate AST-identical elif and else/if using original source."""
+    return bool(re.match(r"\s*elif\b", lines[line - 1]))
+
+
+def _following_original_statements(
+    parent: ast.AST | None, root: ast.If
+) -> tuple[ast.stmt, ...]:
+    """Retain block siblings after a ladder; do not infer they are its fallback."""
+    if parent is None:
+        return ()
+    for _field, value in ast.iter_fields(parent):
+        if isinstance(value, list) and any(statement is root for statement in value):
+            position = next(i for i, statement in enumerate(value) if statement is root)
+            return tuple(
+                statement
+                for statement in value[position + 1:]
+                if isinstance(statement, ast.stmt)
+            )
+    return ()
+
+
+class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
+    """Retain original ordered cases, including guards the matcher cannot bind.
+
+    The shared syntax index and literal matcher own parsing/recognition. Unlike
+    compact literal observations, the original if/elif chain keeps intervening
+    membership/compound guards, chain-local else and trailing siblings as OPEN rows.
+    AST's identical shape for `elif` and `else: if` must not invent one ladder.
+    """
+
+    finding_spec = finding_spec_template(
+        PatternId.SOURCE_BACKED_DISPATCH_LEAD,
+        "String case ladder is a candidate for case ownership",
+        "Original ordered string cases suggest a possible behavior-bearing family. If the domain contract admits those variants and behavior, the destination is concrete case-owned subclasses of a public ABC with shared implementation inherited, not another enum-plus-switch. Source syntax alone does not establish the family, input domain, binding, effects or equivalence.",
+        "candidate case ownership and a source-bound whole-migration decision; no automatic async or method recipe",
+        "original string case comparisons in one source-spelled if/elif ladder; required and forbidden case-consumer pairs remain OPEN",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.LITERAL_ID_DISPATCH, ObservationTag.PARTIAL_VIEW),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        index = module_syntax_index(module.module)
+        lines = module.source.splitlines()
+        findings: list[RefactorFinding] = []
+        for node_index, root in index.indexed_nodes_of_type(ast.If):
+            parent = index.parent_node(node_index)
+            if (
+                isinstance(parent, ast.If)
+                and len(parent.orelse) == 1
+                and parent.orelse[0] is root
+                and _source_spelled_elif(lines, root.lineno)
+            ):
+                continue
+            chain: list[ast.If] = [root]
+            current = root
+            while len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                following = current.orelse[0]
+                if not _source_spelled_elif(lines, following.lineno):
+                    break
+                chain.append(following)
+                current = following
+            if len(chain) < 2:
+                continue
+            axis_fingerprint: str | None = None
+            axis_expression: str | None = None
+            literal_cases: list[str] = []
+            unresolved: list[str] = []
+            for item in chain:
+                matched = LITERAL_DISPATCH_CASE_MATCHER.match(item.test, str)
+                if matched is None:
+                    original_test = ast.get_source_segment(module.source, item.test)
+                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    continue
+                fingerprint, expression, literal_case = matched
+                if axis_fingerprint is None:
+                    axis_fingerprint, axis_expression = fingerprint, expression
+                if fingerprint != axis_fingerprint:
+                    original_test = ast.get_source_segment(module.source, item.test)
+                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    continue
+                literal_cases.append(literal_case)
+            if len(literal_cases) < max(2, config.min_string_cases):
+                continue
+            assert axis_expression is not None
+            owners = tuple(
+                ancestor.name
+                for ancestor in index.ancestor_nodes(node_index)
+                if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+            symbol = ".".join(owners) or "<module>"
+            chain_else = tuple(current.orelse)
+            trailing = _following_original_statements(parent, root)
+            evidence = tuple(
+                SourceLocation(module.file_path, item.lineno, symbol)
+                for item in (*chain, *chain_else, *trailing)
+            )
+            findings.append(
+                self.build_finding(
+                    f"{module.path} has source-ordered string cases {tuple(literal_cases)} on `{axis_expression}` in {symbol}; "
+                    f"unmatched original guards (including root) {tuple(unresolved)}; "
+                    f"chain-local else rows {tuple(item.lineno for item in chain_else)}, "
+                    f"else_nested_if {any(isinstance(item, ast.If) for item in chain_else)} OPEN, "
+                    f"trailing sibling rows {tuple(item.lineno for item in trailing)} OPEN; "
+                    "binding, effects and domain relation OPEN.",
+                    evidence,
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        axis_expression, tuple(literal_cases)
+                    ),
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class _OriginalGuardedStringCase:
+    line: int
+    root_line: int
+    axis: str
+    literal_case: str
+    is_guarded: bool
+    source_test: str
+
+    def location(self, module: ParsedModule, symbol: str) -> SourceLocation:
+        return SourceLocation(module.file_path, self.line, symbol)
+
+    def test_label(self) -> str:
+        return f"line {self.line}: {self.source_test}"
+
+
+class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
+    """Surface selected direct conjunctive cases, not a closed event inventory.
+
+    The original AST index owns source order and lexical scope. Only one
+    direct string equality within an And test is recognized at each site;
+    other tests can be missed. Every selected test retains its original source
+    and root; full source closure, short-circuit behavior and effects are OPEN.
+    """
+
+    finding_spec = finding_spec_template(
+        PatternId.SOURCE_BACKED_DISPATCH_LEAD,
+        "Selected guarded string cases suggest a variant ownership question",
+        "Repeated kind checks inside guarded event handling can indicate behavior separated from its nominal variant. For an admitted behavior-bearing family, concrete variants own facts and behavior under a public ABC and inherit shared implementation; independent guards, order and effects cannot be erased from this observation.",
+        "selected source-backed guarded case sites; full source coverage, domain relation, effects and any whole-migration recipe remain OPEN",
+        "original equality conjuncts grouped by lexical source owner and axis, without equating distinct decision roots",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.LITERAL_ID_DISPATCH, ObservationTag.PARTIAL_VIEW),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        index = module_syntax_index(module.module)
+        lines = module.source.splitlines()
+        # Preserve original whole tests and roots even though only selected
+        # direct conjuncts are recognized; this is not an exhaustive inventory.
+        groups: dict[
+            tuple[ast.AST, tuple[str, ...], str],
+            list[_OriginalGuardedStringCase],
+        ] = defaultdict(list)
+        for node_index, node in index.indexed_nodes_of_type(ast.If):
+            is_guarded = isinstance(node.test, ast.BoolOp) and isinstance(
+                node.test.op, ast.And
+            )
+            comparisons = node.test.values if is_guarded else (node.test,)
+            ancestors = index.ancestor_nodes(node_index)
+            owners = tuple(
+                ancestor.name
+                for ancestor in ancestors
+                if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+            owner = next(
+                (
+                    ancestor
+                    for ancestor in reversed(ancestors)
+                    if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                ),
+                module.module,
+            )
+            root: ast.If = node
+            parent = index.parent_by_node.get(root)
+            while (
+                isinstance(parent, ast.If)
+                and len(parent.orelse) == 1
+                and parent.orelse[0] is root
+                and _source_spelled_elif(lines, root.lineno)
+            ):
+                root = parent
+                parent = index.parent_by_node.get(root)
+            matches = tuple(
+                matched
+                for comparison in comparisons
+                if (matched := LITERAL_DISPATCH_CASE_MATCHER.match(comparison, str))
+                is not None
+            )
+            # Two kind equalities in one conjunction are not two alternative
+            # cases. Keep that test outside this narrow grouped candidate.
+            if len(matches) != 1:
+                continue
+            fingerprint, expression, literal_case = matches[0]
+            groups[(owner, owners, fingerprint)].append(
+                _OriginalGuardedStringCase(
+                    node.lineno,
+                    root.lineno,
+                    expression,
+                    literal_case,
+                    is_guarded,
+                    ast.get_source_segment(module.source, node.test)
+                    or ast.unparse(node.test),
+                )
+            )
+        findings: list[RefactorFinding] = []
+        for (_owner, owners, _fingerprint), entries in groups.items():
+            if not any(entry.is_guarded for entry in entries):
+                continue
+            if len({entry.literal_case for entry in entries}) < max(
+                2, config.min_string_cases
+            ):
+                continue
+            symbol = ".".join(owners) or "<module>"
+            ordered = sorted(entries, key=lambda entry: entry.line)
+            evidence = tuple(entry.location(module, symbol) for entry in ordered)
+            cases = tuple(entry.literal_case for entry in ordered)
+            roots = tuple(entry.root_line for entry in ordered)
+            guarded_tests = tuple(
+                entry.line for entry in ordered if entry.is_guarded
+            )
+            original_tests = tuple(entry.test_label() for entry in ordered)
+            findings.append(
+                self.build_finding(
+                    f"{module.path} has selected string cases {cases} on `{ordered[0].axis}` in {symbol}; "
+                    f"original decision roots {roots}, conjunctive guard lines {guarded_tests}, "
+                    f"original whole tests {original_tests}; "
+                    "unselected source tests, short-circuit reachability, effects, "
+                    "priority, binding and domain relation OPEN.",
+                    evidence,
+                    metrics=DispatchCountMetrics.from_literal_family(ordered[0].axis, cases),
+                )
+            )
+        return findings
 
 
 class NumericLiteralDispatchDetector(
