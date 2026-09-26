@@ -25,13 +25,21 @@ invoke the public contract, not repeatedly recover which concrete case it has.
 
 An enum needs a specific value-only/boundary justification; it is not an equally
 preferred endpoint when other code still interprets its members. Maximize
-polymorphic ownership and shared derivation, **not class count**. The agent owns
-this architectural judgment under the user's task intent; NRA must separately
-check the chosen migration's binding, MRO, effects and behavioral obligations.
+polymorphic ownership and shared derivation, **not class count**. The agent
+proposes and justifies this architecture against the user's supplied domain rules and task-authorized
+specifications/declarations; source patterns do not independently establish
+business meaning. Resolve routine source questions yourself, and surface genuinely
+missing or contested domain decisions. NRA must separately check the chosen
+migration's binding, MRO, effects and behavioral obligations.
 Do not turn an unresolved proof into a reason to praise the existing mirror:
 record the blocker and work toward proving or refining the nominal design.
 
 ## Start with worked transformations
+
+Read [theory → evidence → migration](references/theory-to-workflow.md) for the
+shared Paper 1 anchor: intended answers govern the relation, the agent performs
+the investigation and design reasoning, and NRA checks supported source/proof
+obligations. The guide includes a worked #60 settings-and-capabilities migration.
 
 Use the [anti-pattern → owned-structure cookbook](references/pattern-cookbook.md)
 for concrete declaration, ABC, shared-algorithm, registration, MI and state moves.
@@ -64,9 +72,11 @@ operation's constructor, preflight and proof scope before adapting a recipe.
 
 ## Reason globally, choose ownership explicitly
 
-First bound a **source corpus** (revision, import roots, selected production
-modules), not a presumed domain noun. NRA observations and cheap exact-string,
-substring or helper-prefix searches may help select/rank that corpus; false
+Record any supplied domain rules, authoritative declarations and task scope first;
+do not replace them with a pattern inferred from code. Bound a **source corpus**
+(revision, import roots, selected production modules), without requiring the user
+to invent a domain noun or enumerate source pairs before investigation. NRA
+observations and cheap exact-string, substring or helper-prefix searches may help select/rank that corpus; false
 positives are acceptable as retrieval. Within the selected boundary, census **every original `ClassDef`** through
 NRA's `ModuleSyntaxIndex`, then join eligible direct declarations to its
 canonical class-family projection for actual bases, methods, ABC/Enum/dataclass
@@ -133,23 +143,29 @@ for the task-relative required-answer model and exact #44/#58/#60 positive/negat
 controls. **Extract and fill**: bounded context, domain noun and required questions; the
 existing declarations and executable consumers with source revision and original
 positions; each independently writable authority versus derived view; proposed
-required/forbidden implementation–consumer/class pairs (`R*`), independent
+required/forbidden implementation–consumer/class pairs (`R*`), with the supplied
+rule or task-authorized specification licensing each judgment; independent
 provider roles, alternative UI/transport/schema ownership; and every OPEN
 binding, alias, priority, unknown/fallback, dynamic or alternate-caller row.
 A missing subclass is required only if the admitted relation demands it. The
 Agent must propose and justify a relation (or a specific alternative) from the
 admitted task intent and source; its `R*` remains **provisional** until the
 bounded context admits its pairs and exclusions under explicit task decision
-authority. First inspect more code, tests, history and counterexamples to settle
-uncertainty yourself. Ask the user only the **minimal set of precise questions**
-when genuinely unavailable domain intent prevents an authorized choice; do not
+authority. The agent may derive pairs entailed by already authorized rules
+without asking the user to enumerate or approve each edge. First inspect more code, tests,
+history and counterexamples to settle source uncertainty yourself; their authority
+to prescribe intended behavior depends on the task, not merely their existence.
+Ask the user only the **minimal set of precise questions** when genuinely
+unavailable domain intent prevents an authorized choice; do not
 outsource routine source tracing or pattern recognition. Neither an agent nor human assertion
 proves equivalence.
 
 This separates the leverage layers: cheap heuristics and NRA observations
-find where to look; the agent chooses a bounded domain ownership decision;
-NRA's existing selectors, staged planner, preflights and guards then mechanize
-and check a chosen trajectory. For a **prescriptive** plan, first admit the
+find where to look; the agent proposes and justifies an ownership decision against
+the supplied or task-authorized domain contract; NRA's existing selectors, staged
+planner, preflights and guards then mechanize and check a chosen trajectory.
+An admitted domain rule is an input to these checks, not a theorem NRA proves
+about the user's business intent. For a **prescriptive** plan, first admit the
 required/forbidden relation and determining owner(s) under that decision authority. Before admission, label any
 candidate DSL sequence exploratory/unproved and never present it as the repair.
 There may be one determining authority *per admitted fact family*, not one
