@@ -313,6 +313,17 @@ class PatternId(IntEnum):
         ),
     )
 
+    SOURCE_BACKED_DISPATCH_LEAD = _pattern(
+        stable_id=22,
+        display_name="Source-Backed Dispatch Ownership Lead (Domain OPEN)",
+        required_relation=(
+            "Selected original source tests compare literals against one syntactic "
+            "axis within a lexical decision context. Intended family, closed "
+            "membership, behavior and safe migration remain OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+
     def __new__(
         cls,
         stable_id: int,

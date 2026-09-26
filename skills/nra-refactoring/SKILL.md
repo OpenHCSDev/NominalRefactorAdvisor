@@ -47,6 +47,9 @@ For a complete executable trajectory, read the
 [action-dispatch batching example](references/action-batch.md): it uses the existing
 DSL, includes a new-case maintenance experiment and tests changed-source rejection.
 The example is an authored exact-fixture migration, not automatic async extraction.
+For a current source-backed string-dispatch lead and a full migration-closure
+receipt, read [string dispatch → whole plan](references/source-backed-dispatch-planning.md).
+The lead preserves intervening unmatched guards and has no executable recipe.
 
 ## Establish the actual source and contracts
 
