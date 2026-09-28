@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Callable, ClassVar, Iterator
 
@@ -13,6 +14,8 @@ from ._base import (
     ContextualGlobalCacheContract,
     DetectorConfig,
     SemanticMirrorIssueDetector,
+    IssueDetector,
+    high_confidence_spec,
     high_confidence_certified_spec,
 )
 from ..ast_tools import ParsedModule
@@ -22,6 +25,7 @@ from ..class_index import (
 )
 from ..models import (
     RefactorFinding,
+    MappingMetrics,
     SemanticMirrorMetricRelation,
 )
 from ..patterns import PatternId
@@ -30,6 +34,8 @@ from ..semantic_descent import (
     CompactSemanticModuleProjectionFamily,
     MirrorEdge,
     PresentationProjection,
+    PresentationProjectionKind,
+    SemanticAuthorityKind,
     ResolvedDescentCertificate,
     SemanticAuthorityMirrorPolicy,
     SemanticDescentGraph,
@@ -101,9 +107,26 @@ class SemanticMirrorClassKeySourceResolver(AliasOverlapClassKeySourceResolver):
         return super().key_source_for(fact, projection, matched_token_set)
 
 
+class SemanticProjectionDetector(
+    CompactClassIndexMultiProjectionDetector, ContextualGlobalCacheContract, IssueDetector
+):
+    """Shared compact syntax/schema join for semantic projection consumers."""
+
+    module_projection_families = (
+        CompactSemanticModuleProjectionFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    @classmethod
+    def context_signature(
+        cls,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> str:
+        del cls, config
+        return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
+
 class SemanticMirrorWithoutDescentDetector(
-    CompactClassIndexMultiProjectionDetector,
-    ContextualGlobalCacheContract,
+    SemanticProjectionDetector,
     SemanticMirrorIssueDetector,
     SemanticMirrorFindingRecipeEvaluator,
 ):
@@ -112,10 +135,6 @@ class SemanticMirrorWithoutDescentDetector(
     compact_finding_chunk_size = 64
     class_key_source_resolver: ClassVar[SemanticMirrorClassKeySourceResolver] = (
         SemanticMirrorClassKeySourceResolver()
-    )
-    module_projection_families = (
-        CompactSemanticModuleProjectionFamily,
-        CompactModuleClassProjectionFamily,
     )
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -137,15 +156,6 @@ class SemanticMirrorWithoutDescentDetector(
             ObservationTag.PROJECTION_DICT,
         ),
     )
-
-    @classmethod
-    def context_signature(
-        cls,
-        modules: tuple[ParsedModule, ...],
-        config: DetectorConfig,
-    ) -> str:
-        del cls, config
-        return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
 
     def _findings_from_compact_projection_groups_context(
         self,
@@ -296,3 +306,54 @@ class SemanticMirrorWithoutDescentDetector(
                 )
             ),
         )
+
+
+class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
+    """Aggregate raw key sets which have no declared schema owner."""
+
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Raw record shape has no declared schema owner",
+        "Three or more literal keys are read from one subject, with no matching "
+        "schema in the complete source context. Domain meaning remains OPEN.",
+        "a declared record owner for the observed key set",
+        "unmodeled raw read shape; investigate domain intent before introducing a type",
+        (CapabilityTag.NOMINAL_IDENTITY,),
+        (ObservationTag.PROJECTION_DICT,),
+    )
+
+    def _findings_from_compact_projection_groups_context(
+        self, projections_by_family: CompactProjectionGroups,
+        context: object | None, config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        repository = CompactSemanticDescentRepository.from_projection_groups(
+            projections_by_family, class_index=CompactClassFamilyIndex.require(context)
+        )
+        fields_by_owner: dict[str, set[str]] = defaultdict(set)
+        for fact in repository.authority_catalog.facts:
+            fields_by_owner[fact.authority_id].add(fact.name)
+        schemas = tuple(
+            fields_by_owner[authority.authority_id]
+            for authority in repository.authority_catalog.authorities
+            if authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
+        )
+        groups = defaultdict(list)
+        for module in repository.semantic_projections:
+            for projection in module.projections:
+                if projection.kind is not PresentationProjectionKind.MAPPING_READ:
+                    continue
+                keys = projection.normalized_tokens
+                if len(keys) >= 3 and not any(set(keys) <= fields for fields in schemas):
+                    groups[keys].append(projection.location)
+        return [
+            self.build_finding(
+                f"Unmodeled key set {', '.join(keys)} read at {len(sites)} function/subject sites; "
+                "no matching declared record schema in this scan context.",
+                tuple(sites),
+                metrics=MappingMetrics.from_field_names(
+                    mapping_site_count=len(sites), field_names=keys,
+                ),
+            )
+            for keys, sites in sorted(groups.items())
+        ]

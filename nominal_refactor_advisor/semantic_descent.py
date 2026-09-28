@@ -316,6 +316,11 @@ class PresentationProjectionKind(StrEnum):
         "detector finding",
         PresentationProjectionPolicy.NONE,
     )
+    MAPPING_READ = (
+        "mapping_read",
+        "mapping read",
+        PresentationProjectionPolicy.NONE,
+    )
     MAPPING_LITERAL = (
         "mapping_literal",
         "mapping literal",
@@ -448,7 +453,7 @@ class DescentStatus(StrEnum):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 12
+    version: int = 13
     digest_size: int = 16
 
 
@@ -1964,6 +1969,8 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            return False
         if candidate.projection.is_public_export_contract:
             return False
         if self.call_projection_is_inadmissible(context, candidate):
@@ -2048,6 +2055,10 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            return set(candidate.projection.normalized_tokens) <= {
+                fact.name for fact in candidate.facts
+            }
         names_authority = context.projection_semantics.names_authority(
             candidate.projection,
             candidate.authority,
@@ -2133,6 +2144,8 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
                 candidate,
                 proof_edges,
             )
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            return SemanticAuthorityProjectionResolution.mirrored(candidate)
         if context.dataclass_descent.projection_owner_constructs_dataclass_authority(
             candidate.projection,
             candidate.authority,
@@ -4486,6 +4499,59 @@ def build_compact_semantic_descent_graph(
     ).graph()
 
 
+class MappingReadProjectionCollector(ast.NodeVisitor):
+    """Read sets for one lexical function, with site-local constructor descent.
+
+    Only stable name/attribute subjects are grouped. A constructor is evidence
+    only when every read feeds its identically named keyword; another call in
+    the function cannot excuse a raw consumer. These are source shape leads,
+    not value-flow or domain-equivalence proofs.
+    """
+
+    def __init__(self) -> None:
+        self.reads: dict[str, list[tuple[ast.AST, str, set[tuple[str, tuple[str, ...]]]]]] = {}
+        self.parents: list[ast.AST] = []
+
+    def visit(self, node: ast.AST) -> None:
+        self.parents.append(node)
+        try:
+            super().visit(node)
+        finally:
+            self.parents.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_ClassDef = visit_FunctionDef
+    visit_Lambda = visit_FunctionDef
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, node.value, node.slice)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+                and 1 <= len(node.args) <= 2 and not node.keywords):
+            self._record(node, node.func.value, node.args[0])
+        self.generic_visit(node)
+
+    def _record(self, node: ast.AST, subject: ast.AST, key_node: ast.AST) -> None:
+        if (not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str)
+                or AstExpressionProjection.attribute_chain(subject) is None):
+            return
+        key = key_node.value
+        constructions = set()
+        for index, ancestor in enumerate(self.parents[:-1]):
+            if (isinstance(ancestor, ast.keyword) and ancestor.arg == key and index > 0
+                    and isinstance(call := self.parents[index - 1], ast.Call)):
+                parts = AstExpressionProjection.attribute_chain(call.func)
+                if parts:
+                    constructions.add((parts[-1], parts))
+        self.reads.setdefault(ast.unparse(subject), []).append((node, key, constructions))
+
+
 @dataclass
 class ProjectionOwnerConstructionFrame:
     """Single-pass function construction state for direct owner projections."""
@@ -4677,6 +4743,27 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         try:
             super().visit_FunctionDef(node)
+            if self.include_presentations:
+                collector = MappingReadProjectionCollector()
+                for statement in node.body:
+                    collector.visit(statement)
+                for subject, reads in collector.reads.items():
+                    keys = sorted_tuple({key for _, key, _ in reads})
+                    if len(keys) < 2:
+                        continue
+                    constructions = set.intersection(*(targets for _, _, targets in reads))
+                    self.function_stack.append(node.name)
+                    self._append_projection(
+                        node,
+                        PresentationProjectionKind.MAPPING_READ,
+                        f"{node.name}:{subject}",
+                        tuple(PresentationToken(key, PresentationTokenKind.STRING_LITERAL,
+                                                PresentationTokenRole.DICT_KEY)
+                              for key in keys),
+                        tuple(PresentationAuthorityConstruction(name, keys, parts)
+                              for name, parts in sorted(constructions)),
+                    )
+                    self.function_stack.pop()
         finally:
             self.type_scopes.pop()
             if frame is not None:
