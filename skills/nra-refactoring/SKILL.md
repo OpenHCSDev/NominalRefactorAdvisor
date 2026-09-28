@@ -147,7 +147,9 @@ required/forbidden implementation–consumer/class pairs (`R*`), with the suppli
 rule or task-authorized specification licensing each judgment; independent
 provider roles, alternative UI/transport/schema ownership; and every OPEN
 binding, alias, priority, unknown/fallback, dynamic or alternate-caller row.
-Beside the implementation pairs, report raw record shapes from the complete scan:
+Beside the implementation pairs, report raw record shapes from the complete scan.
+Use full JSON with `--json --raw-findings --json-payload full` and an explicit
+scan budget large enough to finish; inspect `supporting_raw_findings`:
 `mapping_read` projections and their bypassed schema owners, and
 `unmodeled_record_shape` key sets with their function/subject sites. Distinguish
 constructor decode sites that descend to a schema from other raw consumers.
