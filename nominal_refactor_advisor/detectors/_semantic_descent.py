@@ -108,7 +108,9 @@ class SemanticMirrorClassKeySourceResolver(AliasOverlapClassKeySourceResolver):
 
 
 class SemanticProjectionDetector(
-    CompactClassIndexMultiProjectionDetector, ContextualGlobalCacheContract, IssueDetector
+    CompactClassIndexMultiProjectionDetector,
+    ContextualGlobalCacheContract,
+    IssueDetector,
 ):
     """Shared compact syntax/schema join for semantic projection consumers."""
 
@@ -116,6 +118,7 @@ class SemanticProjectionDetector(
         CompactSemanticModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+
     @classmethod
     def context_signature(
         cls,
@@ -124,6 +127,7 @@ class SemanticProjectionDetector(
     ) -> str:
         del cls, config
         return SemanticDescentGraphCacheIdentity.from_modules(modules).cache_token
+
 
 class SemanticMirrorWithoutDescentDetector(
     SemanticProjectionDetector,
@@ -323,8 +327,10 @@ class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
     )
 
     def _findings_from_compact_projection_groups_context(
-        self, projections_by_family: CompactProjectionGroups,
-        context: object | None, config: DetectorConfig,
+        self,
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
         repository = CompactSemanticDescentRepository.from_projection_groups(
@@ -344,7 +350,9 @@ class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
                 if projection.kind is not PresentationProjectionKind.MAPPING_READ:
                     continue
                 keys = projection.normalized_tokens
-                if len(keys) >= 3 and not any(set(keys) <= fields for fields in schemas):
+                if len(keys) >= 3 and not any(
+                    set(keys) <= fields for fields in schemas
+                ):
                     groups[keys].append(projection.location)
         return [
             self.build_finding(
@@ -352,7 +360,8 @@ class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
                 "no matching declared record schema in this scan context.",
                 tuple(sites),
                 metrics=MappingMetrics.from_field_names(
-                    mapping_site_count=len(sites), field_names=keys,
+                    mapping_site_count=len(sites),
+                    field_names=keys,
                 ),
             )
             for keys, sites in sorted(groups.items())
