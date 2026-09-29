@@ -11,11 +11,16 @@ from pathlib import Path
 
 from action_batch import BEFORE, build_plan
 
+from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     DispatchToPolymorphismOperation,
     RefactorRecipe,
     SourceRewriteTarget,
+)
+from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._runtime import (
+    StringLiteralDispatchOwnershipLeadDetector,
 )
 
 
@@ -85,6 +90,22 @@ class ActionBatchTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.temp.cleanup()
+
+    def test_original_dispatch_lead_is_not_an_automatic_whole_migration(self):
+        detector = StringLiteralDispatchOwnershipLeadDetector()
+        module = SourceModule(self.path, "rpc_fixture", BEFORE).parse()
+        leads = detector.detect([module], DetectorConfig())
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(leads[0].certification, "strong_heuristic")
+        self.assertEqual(leads[0].metrics.literal_cases, ("'set_goal'", "'clear_goal'"))
+        self.assertEqual([site.line for site in leads[0].evidence], [10, 17, 22])
+        self.assertEqual(self.result.stage_count, 5)
+        self.assertTrue(all(stage.document_simulation.is_clean for stage in self.result.stage_reports))
+        self.assertFalse(detector.detect([
+            SourceModule(self.path, "rpc_fixture", self.after).parse()
+        ], DetectorConfig()))
+        self.assertTrue(self.result.architecture_guard_report.is_clean)
+        self.assertEqual(self.path.read_text(), BEFORE)
 
     def test_one_batched_simulation_no_source_writes(self):
         self.assertTrue(self.result.is_clean)
